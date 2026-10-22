@@ -2,7 +2,7 @@
 
 DOMAIN = "assist_improver"
 NAME = "Assist Improver"
-VERSION = "0.5.0"
+VERSION = "0.5.2"
 SUPPORTED_CORE = "2026.10.2"
 STORAGE_VERSION = 1
 CONF_AI_TASK = "ai_task_entity_id"

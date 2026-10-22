@@ -1,20 +1,30 @@
 """Guided choice of the AI Task entity the improver's roles call.
 
 Reads the chosen entity's settings where its integration exposes them, warns
-when they look too weak for these roles, and can create a recommended entry
-by driving that integration's own "Add AI Task" flow. If the flow asks for
-anything unexpected, it stops and the user is linked to HA's screen instead.
+when they look too weak for these roles, and can create a new entry by driving
+that integration's own "Add AI Task" flow. Claude Opus 5.5 is recommended where
+the household can reach it (Anthropic, or OpenRouter when its account lists the
+model); OpenAI and Google get an entry with their own default settings. If a
+flow asks for anything unexpected, it stops and the user is told why.
 """
 
 import asyncio
+import re
 
+from homeassistant.config_entries import ConfigEntryState
 from homeassistant.helpers import entity_registry as er
 
 RECOMMENDED = {"chat_model": "claude-opus-5-5", "max_tokens": 16000, "thinking_effort": "high"}
 RECOMMENDED_NAME = "Assist Improver"
+RECOMMENDED_MODEL = re.compile(r"claude-opus-5[.-]5")
 MIN_MAX_TOKENS = 8000
 WEAK_EFFORTS = {"low"}
 WEAK_MODEL_WORDS = ("haiku", "mini", "nano", "flash", "lite")
+# Providers the improver can add an AI Task to, and how.
+PROVIDERS = {"anthropic": ("Anthropic", "recommended"), "open_router": ("OpenRouter", "recommended"),
+             "openai_conversation": ("OpenAI", "default"),
+             "google_generative_ai_conversation": ("Google Gemini", "default")}
+_PICK_RECOMMENDED = object()  # Answer with the list option naming Claude Opus 5.5.
 
 
 def ai_task_entities(hass):
@@ -43,6 +53,10 @@ def _provider_settings(hass, entity_id):
     return config_entry.domain, config_entry, dict(subentry.data) if subentry else None
 
 
+def is_recommended(assessment):
+    return assessment["ok"] and bool(RECOMMENDED_MODEL.search(assessment.get("model") or ""))
+
+
 def assess(hass, entity_id):
     """What the improver can tell about an AI Task entity, and any warnings."""
     if not entity_id:
@@ -51,6 +65,11 @@ def assess(hass, entity_id):
         return {"entity_id": entity_id, "ok": False, "warnings": [f"{entity_id} is not available."]}
     provider, _, data = _provider_settings(hass, entity_id)
     result = {"entity_id": entity_id, "provider": provider, "warnings": []}
+    if provider == "open_router" and data is not None:
+        result.update(model=data.get("model"), ok=True)
+        if not RECOMMENDED_MODEL.search(result["model"] or ""):
+            result["warnings"].append("It works, but Claude Opus 5.5 is recommended for the improver.")
+        return result
     if provider != "anthropic" or data is None:
         result["warnings"].append("The improver can't read this provider's settings. A strong model such as "
                                   "Claude Opus 5.5 with a high output limit is recommended.")
@@ -77,14 +96,43 @@ def assess(hass, entity_id):
     return result
 
 
-def anthropic_entries(hass):
-    return [e for e in hass.config_entries.async_entries("anthropic")]
+def create_options(hass):
+    """New-AI-Task choices for loaded providers: [(entry_id, kind, label)], recommended ones first."""
+    options = []
+    for domain, (name, kind) in PROVIDERS.items():
+        for entry in hass.config_entries.async_entries(domain):
+            if getattr(entry, "state", ConfigEntryState.LOADED) is not ConfigEntryState.LOADED:
+                continue
+            label = (f"New: {RECOMMENDED_NAME} AI Task with Claude Opus 5.5 (recommended)" if domain == "anthropic"
+                     else f"New: {RECOMMENDED_NAME} AI Task with Claude Opus 5.5 via {name} (recommended)"
+                     if kind == "recommended" else f"New: {RECOMMENDED_NAME} AI Task in {name} (default settings)")
+            options.append((entry.entry_id, kind, label))
+    return sorted(options, key=lambda o: o[1] != "recommended")
 
 
-async def create_recommended(hass, config_entry_id):
+def _answers(domain, kind):
+    if domain == "open_router":
+        return {"model": _PICK_RECOMMENDED}
+    if kind == "recommended":
+        return {"name": RECOMMENDED_NAME, "recommended": False, **RECOMMENDED}
+    return {"name": RECOMMENDED_NAME, "recommended": True}  # The provider's own defaults.
+
+
+def _pick_recommended(key):
+    options = getattr(getattr(key, "config", None), "get", lambda *_: None)("options") or []
+    for option in options:
+        value = option["value"] if isinstance(option, dict) else option
+        if RECOMMENDED_MODEL.search(str(value)):
+            return value
+    return None
+
+
+async def create_ai_task(hass, config_entry_id, kind):
     """Drive the provider's own add-AI-Task flow. Returns (entity_id, None) or (None, reason)."""
+    entry = hass.config_entries.async_get_entry(config_entry_id)
+    wanted = _answers(entry.domain, kind)
+    before = set(entry.subentries)
     manager = hass.config_entries.subentries
-    wanted = {"name": RECOMMENDED_NAME, "recommended": False, **RECOMMENDED}
     try:
         result = await manager.async_init((config_entry_id, "ai_task_data"), context={"source": "user"})
         for _ in range(6):
@@ -92,8 +140,19 @@ async def create_recommended(hass, config_entry_id):
                 break
             if result["type"] != "form" or result.get("errors"):
                 return None, f"The provider's setup stopped: {result.get('reason') or result.get('errors')}"
-            fields = {str(key): key for key in (result["data_schema"].schema if result.get("data_schema") else {})}
-            answer = {name: wanted[name] for name in fields if name in wanted}
+            schema = result["data_schema"].schema if result.get("data_schema") else {}
+            answer = {}
+            for key, value in schema.items():
+                name = str(key)
+                if name not in wanted:
+                    continue
+                if wanted[name] is _PICK_RECOMMENDED:
+                    picked = _pick_recommended(value)
+                    if picked is None:
+                        return None, "Claude Opus 5.5 isn't available through this provider account."
+                    answer[name] = picked
+                else:
+                    answer[name] = wanted[name]
             result = await manager.async_configure(result["flow_id"], answer)
         else:
             return None, "The provider's setup took more steps than expected"
@@ -103,7 +162,7 @@ async def create_recommended(hass, config_entry_id):
         return None, f"The provider's setup ended with {result['type']}"
     entry = hass.config_entries.async_get_entry(config_entry_id)
     created = [sid for sid, sub in entry.subentries.items()
-               if sub.subentry_type == "ai_task_data" and sub.title == RECOMMENDED_NAME]
+               if sub.subentry_type == "ai_task_data" and sid not in before]
     registry = er.async_get(hass)
     for _ in range(20):  # The provider reloads to add the entity; give it a moment.
         for item in er.async_entries_for_config_entry(registry, config_entry_id):

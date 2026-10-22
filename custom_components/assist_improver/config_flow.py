@@ -13,7 +13,7 @@ from homeassistant.helpers.selector import SelectOptionDict, SelectSelector, Sel
 from . import ai_setup
 from .const import CONF_ACCEPTED_WEAK, CONF_AI_TASK, DOMAIN, NAME
 
-CREATE = "create_recommended"  # The list's value for "create a new recommended one".
+CREATE = "create"  # List values "create:<config entry>:<recommended|default>" add a new AI Task.
 USE_ANYWAY = "use_anyway"
 
 
@@ -32,28 +32,38 @@ class _AiTaskSteps:
         return options
 
     def _choices(self, current):
-        """List options and the default: keep a good current choice, else preselect creating the recommended one."""
-        can_create = bool(ai_setup.anthropic_entries(self.hass))
-        options = []
-        if can_create:
-            options.append(SelectOptionDict(value=CREATE, label=f"New: {ai_setup.RECOMMENDED_NAME} AI Task with "
-                                                               f"Claude Opus 5.5 (recommended)"))
+        """List options, the default and guidance. Offers new AI Tasks only until a recommended one exists."""
+        existing = []
         for entity_id in ai_setup.ai_task_entities(self.hass):
             state = self.hass.states.get(entity_id)
             assessment = ai_setup.assess(self.hass, entity_id)
             label = state.attributes.get("friendly_name", entity_id) if state else entity_id
             if assessment.get("model"):
                 label += f" ({assessment['model']})"
-            if not assessment["ok"]:
+            if ai_setup.is_recommended(assessment):
+                label += ", recommended"
+            elif not assessment["ok"]:
                 label += ", not recommended"
-            options.append(SelectOptionDict(value=entity_id, label=label))
+            existing.append((entity_id, assessment, label))
+        recommended = [e for e, a, _ in existing if ai_setup.is_recommended(a)]
+        creates = [] if recommended else ai_setup.create_options(self.hass)
+        options = [SelectOptionDict(value=f"{CREATE}:{entry_id}:{kind}", label=label) for entry_id, kind, label in creates]
+        options += [SelectOptionDict(value=e, label=label) for e, _, label in existing]
         current = current or ai_setup.suggested_entity(self.hass)
-        if current and ai_setup.assess(self.hass, current)["ok"]:
+        if current and ai_setup.assess(self.hass, current)["ok"]:  # Never preselect creating over a working choice.
             return options, current, "Your current AI Task is selected. You can switch to another one from the list."
-        if can_create:
-            return options, CREATE, ("The recommended option is selected for you. To use one of your own AI Tasks "
-                                     "instead (not recommended), pick it from the list.")
-        return options, current, "Pick the AI Task to use. Claude Opus 5.5 with a high output limit is recommended."
+        if recommended or (creates and creates[0][1] == "recommended"):
+            default = recommended[0] if recommended else options[0]["value"]
+            return options, default, ("The recommended option is selected for you. To use one of your own AI Tasks "
+                                      "instead (not recommended), pick it from the list.")
+        if creates:
+            return options, options[0]["value"], ("A new AI Task with your provider's default settings is selected. "
+                                                  "It works, but Claude Opus 5.5 gives better results.")
+        if options:
+            return options, current, "Pick the AI Task to use. Claude Opus 5.5 is recommended."
+        return options, None, ("No AI provider that can run AI Tasks is set up yet. Add Anthropic, OpenAI, Google "
+                               "Gemini or OpenRouter in Settings → Devices & services → Add integration, then come "
+                               "back here.")
 
     def _choose_schema(self, options, default):
         selector = SelectSelector(SelectSelectorConfig(options=options, mode=SelectSelectorMode.DROPDOWN))
@@ -68,9 +78,9 @@ class _AiTaskSteps:
         errors, extra = {}, {}
         if user_input is not None:
             choice = user_input.get(CONF_AI_TASK)
-            if choice == CREATE:
-                entry = ai_setup.anthropic_entries(self.hass)[0]
-                choice, reason = await ai_setup.create_recommended(self.hass, entry.entry_id)
+            if choice and choice.startswith(f"{CREATE}:"):
+                _, entry_id, kind = choice.split(":", 2)
+                choice, reason = await ai_setup.create_ai_task(self.hass, entry_id, kind)
                 if choice is None:
                     errors["base"] = "create_failed"
                     extra["reason"] = reason

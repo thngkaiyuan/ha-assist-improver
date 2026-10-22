@@ -4,9 +4,11 @@ from uuid import uuid4
 
 import probatio
 from homeassistant.const import __version__ as CORE_VERSION
-from homeassistant.core import SupportsResponse
+from homeassistant.core import SupportsResponse, callback
 from homeassistant.exceptions import ConfigEntryError, HomeAssistantError
 from homeassistant.helpers import issue_registry as ir
+from homeassistant.helpers.event import async_track_state_change_event
+from homeassistant.helpers.start import async_at_started
 from homeassistant.helpers.service import async_register_admin_service
 
 from . import ai_setup, analyzer
@@ -45,7 +47,14 @@ async def async_setup_entry(hass, entry):
     except Exception:
         await recorder.stop()
         raise
-    _update_setup_issue(hass, entry)
+    # Providers may create the chosen AI Task after this entry loads: judge it once HA has started, then on changes.
+    @callback
+    def recheck(_event_or_hass):
+        _update_setup_issue(hass, entry)
+
+    entry.async_on_unload(async_at_started(hass, recheck))
+    if chosen := entry.options.get(CONF_AI_TASK):
+        entry.async_on_unload(async_track_state_change_event(hass, [chosen], recheck))
     entry.async_on_unload(entry.add_update_listener(_reload_on_options))
     entry.runtime_data = recorder
     hass.data[DOMAIN] = recorder
