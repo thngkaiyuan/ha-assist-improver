@@ -27,15 +27,15 @@ Approved improvements stay even if you uninstall Assist Improver.
 
 ## Where we are
 
-- ✅ Record conversations
-- ✅ Replay a conversation safely, with simulated devices
-- ✅ Prepare conversations for AI analysis, and choose the AI model ⬅️ **we are here**
-- ⬜ Find journeys and interventions
-- ⬜ Spot recurring problems and propose fixes
-- ⬜ Build and test the fixes
-- ⬜ Review and apply them in Home Assistant
-- ⬜ Run on its own schedule
-- ⬜ Ready for other households
+- [x] Record conversations
+- [x] Replay a conversation safely, with simulated devices
+- [ ] Prepare conversations for AI analysis, and choose the AI model <===== we are here
+- [ ] Find journeys and interventions
+- [ ] Spot recurring problems and propose fixes
+- [ ] Build and test the fixes
+- [ ] Review and apply them in Home Assistant
+- [ ] Run on its own schedule
+- [ ] Ready for other households
 
 ## Install
 
