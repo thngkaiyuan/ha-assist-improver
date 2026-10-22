@@ -1,0 +1,361 @@
+{
+  "title": "Assist Improver",
+  "config": {
+    "step": {
+      "user": {
+        "title": "Set up Assist Improver",
+        "description": "Records supported conversations, tool activity and local state in HA storage. The improver's AI roles run only when an administrator allows paid inference, through the AI model chosen here. HA device actions in replays stay simulated. {guidance} {reason}",
+        "data": {
+          "ai_task_entity_id": "AI model"
+        },
+        "data_description": {
+          "ai_task_entity_id": "The improver's own AI roles call this. The recommended option is created with your AI provider's own setup; nothing else changes."
+        }
+      },
+      "confirm": {
+        "title": "This AI Task may be too weak",
+        "description": "{entity}:\n{warnings}\n\nTo go back to the list and pick the recommended option, submit without ticking the box. You can also add an AI Task yourself in Settings → Devices & services → your AI provider → Add AI Task ({link}).",
+        "data": {
+          "use_anyway": "Use it anyway"
+        }
+      }
+    },
+    "abort": {
+      "already_configured": "Only one recorder is needed."
+    },
+    "error": {
+      "create_failed": "Couldn't create the AI Task automatically: {reason} Add one in Settings → Devices & services → your AI provider → Add AI Task, then choose it here."
+    }
+  },
+  "services": {
+    "status": {
+      "name": "Recording status",
+      "description": "Show recording status and compatibility limits."
+    },
+    "list_recordings": {
+      "name": "List recordings",
+      "description": "List locally retained conversation recordings."
+    },
+    "export_recording": {
+      "name": "Export recording",
+      "description": "Return one recording as JSON. Includes household conversations; administrators only.",
+      "fields": {
+        "recording_id": {
+          "name": "Recording ID",
+          "description": "ID returned by List recordings."
+        }
+      }
+    },
+    "list_cases": {
+      "name": "List learning cases",
+      "description": "Show grounded journeys and cases awaiting feedback.",
+      "fields": {}
+    },
+    "get_case": {
+      "name": "Inspect learning case",
+      "description": "Return the case, grounding evidence, feedback and offline checks.",
+      "fields": {
+        "case_id": {
+          "name": "Case ID",
+          "description": "ID returned by List learning cases."
+        }
+      }
+    },
+    "create_case": {
+      "name": "Create learning case",
+      "description": "Select a journey from a recording. Leave its destination blank if feedback is needed. Makes no AI requests.",
+      "fields": {
+        "recording_id": {
+          "name": "Recording ID",
+          "description": "ID returned by List recordings."
+        },
+        "title": {
+          "name": "Title",
+          "description": "A short name for this journey."
+        },
+        "first_turn": {
+          "name": "First user turn",
+          "description": "First user turn in this journey, starting at 1."
+        },
+        "last_turn": {
+          "name": "Last user turn",
+          "description": "Last user turn in this journey."
+        },
+        "intervention_turns": {
+          "name": "Intervention turns",
+          "description": "List of correction or clarification turn numbers."
+        },
+        "destination": {
+          "name": "Intended outcome",
+          "description": "What the user wanted to happen."
+        },
+        "criteria": {
+          "name": "Command-level criteria",
+          "description": "State or transition-sequence criteria. These do not prove physical position."
+        },
+        "evidence": {
+          "name": "Grounding evidence",
+          "description": "Where the desired outcome and any physical observation came from."
+        }
+      }
+    },
+    "case_feedback": {
+      "name": "Give case feedback",
+      "description": "Confirm or revise the desired outcome, or mark the request fine as it was. Preserve prior feedback.",
+      "fields": {
+        "case_id": {
+          "name": "Case ID",
+          "description": "ID returned by List learning cases."
+        },
+        "expected_revision": {
+          "name": "Case revision",
+          "description": "Current revision from Inspect learning case; prevents overwriting newer feedback."
+        },
+        "feedback": {
+          "name": "Your feedback",
+          "description": "What should have happened, or what needs correction."
+        },
+        "outcome": {
+          "name": "Feedback type",
+          "description": "Confirm the destination, request revision, or mark it fine as-is."
+        },
+        "destination": {
+          "name": "Intended outcome",
+          "description": "What the user wanted to happen."
+        },
+        "criteria": {
+          "name": "Command-level criteria",
+          "description": "State or transition-sequence criteria. These do not prove physical position."
+        },
+        "evidence": {
+          "name": "Grounding evidence",
+          "description": "Where the desired outcome and any physical observation came from."
+        }
+      }
+    },
+    "audit_case": {
+      "name": "Check recorded actions offline",
+      "description": "Check the recorded tool results and simulated state transitions. This does not run a model or operate devices.",
+      "fields": {
+        "case_id": {
+          "name": "Case ID",
+          "description": "ID returned by List learning cases."
+        }
+      }
+    },
+    "prepare_baseline": {
+      "name": "Prepare original-profile baseline",
+      "description": "Inspect the recorded profile, immutable inputs and compatibility before spending. Makes no model requests.",
+      "fields": {
+        "case_id": {
+          "name": "Case ID",
+          "description": "ID returned by List learning cases."
+        }
+      }
+    },
+    "start_baseline": {
+      "name": "Start baseline first turn",
+      "description": "Opt-in paid evaluation of the first original input. Requires the reviewed plan ID. Pauses for response review and never silently resamples a completed attempt.",
+      "fields": {
+        "case_id": {
+          "name": "Case ID",
+          "description": "ID returned by List learning cases."
+        },
+        "plan_id": {
+          "name": "Reviewed plan ID",
+          "description": "Exact ID returned by Prepare original-profile baseline."
+        },
+        "allow_paid_inference": {
+          "name": "Allow paid inference for this turn",
+          "description": "Off by default. Sends this original user turn through the existing provider. Normal API charges apply. HA device actions use simulated state; provider-hosted tools retain their original settings."
+        }
+      }
+    },
+    "review_baseline_turn": {
+      "name": "Review baseline response",
+      "description": "Judge whether this response reproduces the issue and keeps the next original input meaningful. Matching tool calls alone is insufficient. Makes no model requests.",
+      "fields": {
+        "case_id": {
+          "name": "Case ID",
+          "description": "ID returned by List learning cases."
+        },
+        "expected_turn": {
+          "name": "Expected original turn",
+          "description": "Next original user-turn number shown by Inspect learning case."
+        },
+        "reproduced": {
+          "name": "Response reproduces the relevant behavior",
+          "description": "Off ends the attempt as not reproducible. On allows the next unchanged input, or completes the baseline."
+        },
+        "feedback": {
+          "name": "Review evidence",
+          "description": "Explain the response match or mismatch, including compatibility with the next original input."
+        }
+      }
+    },
+    "continue_baseline": {
+      "name": "Continue reviewed baseline",
+      "description": "Opt-in paid evaluation of the next original input after review. Keeps this trial's generated conversation and native provider history.",
+      "fields": {
+        "case_id": {
+          "name": "Case ID",
+          "description": "ID returned by List learning cases."
+        },
+        "expected_turn": {
+          "name": "Expected original turn",
+          "description": "Next original user-turn number shown by Inspect learning case."
+        },
+        "allow_paid_inference": {
+          "name": "Allow paid inference for this turn",
+          "description": "Off by default. Sends this original user turn through the existing provider. Normal API charges apply. HA device actions use simulated state; provider-hosted tools retain their original settings."
+        }
+      }
+    },
+    "prepare_candidate": {
+      "name": "Prepare script-exposure candidate",
+      "description": "Groups learning cases into one theme and prepares a candidate that exposes existing scripts to Assist. Reads the scripts' current configuration. Makes no model request and changes nothing.",
+      "fields": {
+        "title": {
+          "name": "Theme title",
+          "description": "Short name for the shared problem."
+        },
+        "friction": {
+          "name": "Shared friction",
+          "description": "What made these journeys need extra turns."
+        },
+        "evidence": {
+          "name": "Evidence",
+          "description": "List of {case_id, role, rationale}. Role is friction, related_success or counterexample."
+        },
+        "evaluation_case_id": {
+          "name": "Case to test",
+          "description": "One friction case with a reproduced baseline; its first original input is replayed."
+        },
+        "hypothesis": {
+          "name": "Hypothesis",
+          "description": "The one change being proposed and why it should help."
+        },
+        "scripts": {
+          "name": "Scripts to expose",
+          "description": "Existing scripts that were hidden from Assist when the case was recorded."
+        }
+      }
+    },
+    "run_candidate": {
+      "name": "Run candidate",
+      "description": "Opt-in paid evaluation: replays the case's first original input with the scripts exposed, through the existing provider, once. Scripts and devices are simulated; nothing in the house runs.",
+      "fields": {
+        "plan_id": {
+          "name": "Plan ID",
+          "description": "Exact ID returned by Prepare script-exposure candidate."
+        },
+        "allow_paid_inference": {
+          "name": "Allow paid inference",
+          "description": "Off by default. Normal API charges apply. One attempt; never resampled."
+        }
+      }
+    },
+    "review_candidate": {
+      "name": "Review candidate result",
+      "description": "Records a human review of the candidate's reply and expected side effects. Makes no model request.",
+      "fields": {
+        "plan_id": {
+          "name": "Plan ID",
+          "description": "Candidate awaiting review."
+        },
+        "destination_reached": {
+          "name": "Destination reached",
+          "description": "The reply and simulated actions reach the case's established destination."
+        },
+        "no_regressions_expected": {
+          "name": "No regressions expected",
+          "description": "The change should not make other known journeys worse."
+        },
+        "feedback": {
+          "name": "Review notes",
+          "description": "What was checked and why."
+        }
+      }
+    },
+    "apply_candidate": {
+      "name": "Accept and apply candidate",
+      "description": "Exposes the candidate's scripts to Assist for future use. Never runs a script. Reports already-present settings and conflicts instead of overwriting them.",
+      "fields": {
+        "plan_id": {
+          "name": "Plan ID",
+          "description": "A reviewed, recommended candidate."
+        }
+      }
+    },
+    "analyze_recording": {
+      "name": "Analyze recording (journey analyzer)",
+      "description": "Opt-in paid evaluation: sends one recording's compact digest to the configured AI Task and returns the journeys it finds, in the label format. One call, never retried. Nothing in the house changes.",
+      "fields": {
+        "recording_id": {
+          "name": "Recording ID",
+          "description": "ID returned by List recordings."
+        },
+        "allow_paid_inference": {
+          "name": "Allow paid inference",
+          "description": "Off by default. Normal API charges apply."
+        }
+      }
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Configure Assist Improver",
+        "description": "Assist Improver uses an AI model to analyse your conversations. {guidance} {reason}",
+        "data": {
+          "ai_task_entity_id": "AI model"
+        },
+        "data_description": {
+          "ai_task_entity_id": "The improver's own AI roles call this. The recommended option is created with your AI provider's own setup; nothing else changes."
+        }
+      },
+      "confirm": {
+        "title": "This AI Task may be too weak",
+        "description": "{entity}:\n{warnings}\n\nTo go back to the list and pick the recommended option, submit without ticking the box. You can also add an AI Task yourself in Settings → Devices & services → your AI provider → Add AI Task ({link}).",
+        "data": {
+          "use_anyway": "Use it anyway"
+        }
+      }
+    },
+    "error": {
+      "create_failed": "Couldn't create the AI Task automatically: {reason} Add one in Settings → Devices & services → your AI provider → Add AI Task, then choose it here."
+    }
+  },
+  "issues": {
+    "ai_task_setup": {
+      "title": "Assist Improver needs an AI model",
+      "fix_flow": {
+        "step": {
+          "choose": {
+            "title": "Assist Improver needs an AI model",
+            "description": "Assist Improver uses an AI model to analyse your conversations. {guidance} {reason}",
+            "data": {
+              "ai_task_entity_id": "AI model"
+            },
+            "data_description": {
+              "ai_task_entity_id": "The improver's own AI roles call this. The recommended option is created with your AI provider's own setup; nothing else changes."
+            }
+          },
+          "confirm": {
+            "title": "This AI Task may be too weak",
+            "description": "{entity}:\n{warnings}\n\nTo go back to the list and pick the recommended option, submit without ticking the box. You can also add an AI Task yourself in Settings → Devices & services → your AI provider → Add AI Task ({link}).",
+            "data": {
+              "use_anyway": "Use it anyway"
+            }
+          }
+        },
+        "error": {
+          "create_failed": "Couldn't create the AI Task automatically: {reason} Add one in Settings → Devices & services → your AI provider → Add AI Task, then choose it here."
+        },
+        "abort": {
+          "no_choice": "No AI model was chosen, so Assist Improver can't analyse conversations yet."
+        }
+      }
+    }
+  }
+}

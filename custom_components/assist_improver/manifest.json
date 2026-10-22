@@ -1,0 +1,18 @@
+{
+  "domain": "assist_improver",
+  "name": "Assist Improver",
+  "codeowners": [
+    "@thngkaiyuan"
+  ],
+  "config_flow": true,
+  "dependencies": [
+    "conversation",
+    "ai_task"
+  ],
+  "documentation": "https://github.com/thngkaiyuan/ha-assist-improver",
+  "integration_type": "service",
+  "iot_class": "local_push",
+  "issue_tracker": "https://github.com/thngkaiyuan/ha-assist-improver/issues",
+  "requirements": [],
+  "version": "0.5.0"
+}

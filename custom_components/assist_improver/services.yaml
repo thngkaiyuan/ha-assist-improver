@@ -1,0 +1,225 @@
+status:
+  fields: {}
+list_recordings:
+  fields: {}
+export_recording:
+  fields:
+    recording_id:
+      required: true
+      selector:
+        text:
+list_cases:
+  fields: {}
+get_case:
+  fields:
+    case_id:
+      required: true
+      selector:
+        text:
+create_case:
+  fields:
+    recording_id:
+      required: true
+      selector:
+        text:
+    title:
+      required: true
+      selector:
+        text:
+    first_turn:
+      required: true
+      selector:
+        number:
+          min: 1
+          mode: box
+    last_turn:
+      required: true
+      selector:
+        number:
+          min: 1
+          mode: box
+    intervention_turns:
+      selector:
+        object:
+    destination:
+      selector:
+        text:
+          multiline: true
+    criteria:
+      selector:
+        object:
+    evidence:
+      selector:
+        object:
+case_feedback:
+  fields:
+    case_id:
+      required: true
+      selector:
+        text:
+    expected_revision:
+      required: true
+      selector:
+        number:
+          min: 1
+          mode: box
+    feedback:
+      required: true
+      selector:
+        text:
+          multiline: true
+    outcome:
+      selector:
+        select:
+          options:
+            - revision_requested
+            - destination_confirmed
+            - fine_as_is
+    destination:
+      selector:
+        text:
+          multiline: true
+    criteria:
+      selector:
+        object:
+    evidence:
+      selector:
+        object:
+audit_case:
+  fields:
+    case_id:
+      required: true
+      selector:
+        text:
+prepare_baseline:
+  fields:
+    case_id:
+      required: true
+      selector:
+        text:
+start_baseline:
+  fields:
+    case_id:
+      required: true
+      selector:
+        text:
+    plan_id:
+      required: true
+      selector:
+        text:
+    allow_paid_inference:
+      default: false
+      selector:
+        boolean:
+review_baseline_turn:
+  fields:
+    case_id:
+      required: true
+      selector:
+        text:
+    expected_turn:
+      required: true
+      selector:
+        number:
+          min: 1
+          mode: box
+    reproduced:
+      required: true
+      selector:
+        boolean:
+    feedback:
+      required: true
+      selector:
+        text:
+          multiline: true
+continue_baseline:
+  fields:
+    case_id:
+      required: true
+      selector:
+        text:
+    expected_turn:
+      required: true
+      selector:
+        number:
+          min: 1
+          mode: box
+    allow_paid_inference:
+      default: false
+      selector:
+        boolean:
+prepare_candidate:
+  fields:
+    title:
+      required: true
+      selector:
+        text:
+    friction:
+      required: true
+      selector:
+        text:
+          multiline: true
+    evidence:
+      required: true
+      selector:
+        object:
+    evaluation_case_id:
+      required: true
+      selector:
+        text:
+    hypothesis:
+      required: true
+      selector:
+        text:
+          multiline: true
+    scripts:
+      required: true
+      selector:
+        entity:
+          domain: script
+          multiple: true
+run_candidate:
+  fields:
+    plan_id:
+      required: true
+      selector:
+        text:
+    allow_paid_inference:
+      default: false
+      selector:
+        boolean:
+review_candidate:
+  fields:
+    plan_id:
+      required: true
+      selector:
+        text:
+    destination_reached:
+      required: true
+      selector:
+        boolean:
+    no_regressions_expected:
+      required: true
+      selector:
+        boolean:
+    feedback:
+      required: true
+      selector:
+        text:
+          multiline: true
+apply_candidate:
+  fields:
+    plan_id:
+      required: true
+      selector:
+        text:
+analyze_recording:
+  fields:
+    recording_id:
+      required: true
+      selector:
+        text:
+    allow_paid_inference:
+      default: false
+      selector:
+        boolean:
