@@ -29,7 +29,7 @@ Approved improvements stay even if you uninstall Assist Improver.
 
 - [x] Record conversations
 - [x] Replay a conversation safely, with simulated devices
-- [ ] Prepare conversations for AI analysis, and choose the AI model <===== we are here
+- [ ] Prepare conversations for AI analysis, and choose the AI model **<===== we are here**
 - [ ] Find journeys and interventions
 - [ ] Spot recurring problems and propose fixes
 - [ ] Build and test the fixes
