@@ -110,7 +110,9 @@ def build_digest(recording):
                           "user_says": turn["messages"][0]["content"], "assistant": steps})
 
     changes, flaps = {}, 0
-    for change in recording.get("state_changes", []):
+    # Practice changes a simulated home; its real state changes belong to someone else.
+    practice = recording.get("practice")
+    for change in practice["simulated_changes"] if practice else recording.get("state_changes", []):
         entity_id = change["entity_id"]
         old = (change.get("old") or {}).get("state")
         new = (change.get("new") or {}).get("state")
@@ -157,7 +159,9 @@ def build_digest(recording):
             "background_domains": sorted(NOISE_DOMAINS),
             "note": "Full state and registry snapshots stay in the recording; this digest is a selection.",
         },
-        "limitations": deepcopy(recording.get("limitations", [])),
+        "limitations": deepcopy(recording.get("limitations", [])) + (
+            [f"practice session: devices were simulated; {len(practice['unsimulated_actions'])} action(s) "
+             "were reported to the assistant as done without being simulated"] if practice else []),
     }
 
 

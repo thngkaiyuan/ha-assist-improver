@@ -206,6 +206,14 @@ class Recorder:
                            "status": session["status"], "user_turns": len(session["turns"])}
         self.schedule(key)
 
+    def practice(self, conversation_id):
+        """The practice part of a session's recording, created on first use; None if not recorded."""
+        session = self.sessions.get(self.keys.get(conversation_id))
+        if session is None:
+            return None
+        self.schedule(session["id"])
+        return session.setdefault("practice", {"simulated_changes": [], "unsimulated_actions": []})
+
     @callback
     def on_state(self, event):
         if not self.running:

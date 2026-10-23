@@ -74,9 +74,13 @@ def score_recording(predicted, label):
     for item in label.get("not_journeys", []):
         turn = item["turn"]
         ok = turn in predicted_not
-        if not ok and item.get("also_acceptable"):
-            alt = by_turns.get((turn, turn))
-            ok = alt is not None and _is_speech_test(alt) and not alt.get("interventions")
+        alt = by_turns.get((turn, turn))
+        if not ok and alt is not None and not alt.get("interventions"):
+            # Labels may also accept a journey called a speech test, a question back to the user, or any
+            # reading of the turn without interventions (harmless: it can't lead to a fix).
+            ok = ((item.get("also_acceptable") and _is_speech_test(alt))
+                  or (item.get("question_acceptable") and alt["destination"].get("status") == "needs_feedback")
+                  or item.get("any_without_interventions"))
             if ok:
                 used.add((turn, turn))
         check(f"turn {turn}: not a journey ({item['what']})", ok)

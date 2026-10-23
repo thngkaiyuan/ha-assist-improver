@@ -12,7 +12,7 @@ ROLE = "journey_analyzer"
 
 INSTRUCTIONS = """You analyse one recorded session between a household and its Home Assistant voice assistant ("Assist"). The input is a digest. It contains the user's turns, what the assistant said and which tools it called with what results, real device state changes with the turn they happened in, and what Assist could and could not control.
 
-Split the session into journeys. A journey is a trip from a source state to the destination the user intended, carried out by the assistant. The destination can be device states, a sequence of device states, or something the user needed to know. A session can hold several journeys. Keep separately requested journeys separate. Never merge them into a broader request the user did not make, even if their intent seems predictable.
+Split the session into journeys. A journey is a trip from a source state to the destination the user intended, carried out by the assistant. The destination is what the user wanted to be true: final device states, device changes in a given order (such as a relay pressed off then on), or something they needed to know. A session can hold several journeys. Several things asked for at once are one journey. A question or request the user makes in order to complete the current journey is part of that journey, not a new one. Once a journey's destination is reached, the next request starts a new journey, even if it repeats the same action. Keep separately requested journeys separate. Never merge them into a broader request the user did not make, even if their intent seems predictable.
 
 Use the whole session, including later corrections and how it ended, to work out what the user wanted. Use only entity IDs that appear in the digest. Judge "reached" from recorded state changes and tool results, never from the assistant's own claims. A relay's on/off state does not prove a physical position.
 
@@ -67,7 +67,7 @@ def _criteria(kind, items):
             continue
         if kind == "transition":
             out[entity] = list(item.get("sequence") or [])
-        elif "brightness_pct" in item:
+        elif item.get("brightness_pct") is not None:  # Some providers send every optional field, as null.
             out[entity] = {"state": item.get("state"), "brightness_pct": item["brightness_pct"]}
         else:
             out[entity] = item.get("state")

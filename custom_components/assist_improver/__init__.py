@@ -6,12 +6,12 @@ import probatio
 from homeassistant.const import __version__ as CORE_VERSION
 from homeassistant.core import SupportsResponse, callback
 from homeassistant.exceptions import ConfigEntryError, HomeAssistantError
-from homeassistant.helpers import issue_registry as ir
+from homeassistant.helpers import entity_registry as er, issue_registry as ir
 from homeassistant.helpers.event import async_track_state_change_event
 from homeassistant.helpers.start import async_at_started
 from homeassistant.helpers.service import async_register_admin_service
 
-from . import ai_setup, analyzer
+from . import ai_setup, analyzer, practice
 from .const import CONF_ACCEPTED_WEAK, CONF_AI_TASK, DOMAIN, SUPPORTED_CORE
 from .casebook import CaseBook
 from .baseline import BaselineManager
@@ -21,6 +21,7 @@ from .digest import build_digest
 from .recorder import Recorder
 from .reflective import RoleRuns, run_role
 
+PLATFORMS = ["switch"]
 SERVICES = ("status", "list_recordings", "export_recording", "list_cases", "get_case",
             "create_case", "case_feedback", "audit_case", "prepare_baseline", "start_baseline",
             "review_baseline_turn", "continue_baseline", "prepare_candidate", "run_candidate",
@@ -58,6 +59,16 @@ async def async_setup_entry(hass, entry):
     entry.async_on_unload(entry.add_update_listener(_reload_on_options))
     entry.runtime_data = recorder
     hass.data[DOMAIN] = recorder
+    hass.data[practice.MODE_KEY] = mode = practice.PracticeMode(hass, recorder)
+    await mode.async_load()
+    practice.install()
+    await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+
+    @callback
+    def remove_old_practice_assistant(_hass):
+        hass.async_create_task(_remove_old_practice_assistant(hass, entry), "assist_improver_practice_cleanup")
+
+    entry.async_on_unload(async_at_started(hass, remove_old_practice_assistant))
 
     async def status(call):
         return recorder.status()
@@ -186,7 +197,30 @@ async def _analyze(hass, entry, recorder, recording_id, allow_paid_inference=Fal
     return await recorder.role_runs.record(run)
 
 
+def _pipeline_store(hass):
+    from homeassistant.components.assist_pipeline.pipeline import KEY_ASSIST_PIPELINE
+    pipelines = hass.data.get(KEY_ASSIST_PIPELINE)
+    return pipelines.pipeline_store if pipelines else None
+
+
+async def _remove_old_practice_assistant(hass, entry):
+    """0.6.0 added a "Practice (simulated home)" Assist assistant; practice mode replaced it in 0.6.2."""
+    registry = er.async_get(hass)
+    agent = registry.async_get_entity_id("conversation", DOMAIN, f"{entry.entry_id}-practice")
+    if agent is None:
+        return
+    if (store := _pipeline_store(hass)) is None:
+        return
+    for pipeline in list(store.async_items()):
+        if pipeline.conversation_engine == agent:
+            await store.async_delete_item(pipeline.id)
+    registry.async_remove(agent)
+
+
 async def async_unload_entry(hass, entry):
+    await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+    practice.uninstall()
+    hass.data.pop(practice.MODE_KEY, None)
     await entry.runtime_data.stop()
     for name in SERVICES:
         hass.services.async_remove(DOMAIN, name)
