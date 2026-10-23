@@ -154,7 +154,8 @@ def effect(domain, service, state, data):
     if domain == "lock" and service in ("lock", "unlock", "open"):
         return {"lock": "locked", "unlock": "unlocked", "open": "open"}[service], attrs
     if domain == "vacuum":
-        target = {"start": "cleaning", "pause": "paused", "stop": "idle", "return_to_base": "returning"}.get(service)
+        target = {"start": "cleaning", "clean_area": "cleaning", "clean_spot": "cleaning", "pause": "paused",
+                  "stop": "idle", "return_to_base": "returning"}.get(service)
         return (target, attrs) if target else None
     if domain in ("input_number", "number") and service == "set_value" and "value" in data:
         return str(data["value"]), attrs

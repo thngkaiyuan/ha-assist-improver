@@ -223,3 +223,30 @@ analyze_recording:
       default: false
       selector:
         boolean:
+generate_hypotheses:
+  fields:
+    analyses:
+      required: true
+      selector:
+        object:
+    seeded:
+      selector:
+        object:
+    allow_paid_inference:
+      default: false
+      selector:
+        boolean:
+review_hypothesis:
+  fields:
+    hypothesis:
+      required: true
+      selector:
+        object:
+    analyses:
+      required: true
+      selector:
+        object:
+    allow_paid_inference:
+      default: false
+      selector:
+        boolean:

@@ -78,7 +78,7 @@ def _entity_card(source, entity_id, detailed=False):
 
 def build_digest(recording):
     """Return the digest for a closed recording. Raises CaseError when unusable."""
-    turns = recording_turns(recording)
+    turns = recording_turns(recording, replay=False)
     first = turns[0]["source"]
     starts = [t["messages"][0]["created"] for t in turns]
 
@@ -107,7 +107,9 @@ def build_digest(recording):
                 mentioned.update(ENTITY_ID.findall(result))
                 steps.append({"result_of": message.get("tool_name"), "result": _clip(result)})
         out_turns.append({"turn": turn["number"], "at": turn["messages"][0]["created"],
-                          "user_says": turn["messages"][0]["content"], "assistant": steps})
+                          "user_says": turn["messages"][0]["content"], "assistant": steps,
+                          **({"handled_by": "Home Assistant itself, without the AI model"}
+                             if turn["handled_locally"] else {})})
 
     changes, flaps = {}, 0
     # Practice changes a simulated home; its real state changes belong to someone else.
@@ -150,7 +152,7 @@ def build_digest(recording):
         "relevant_entities": relevant_cards,
         "capabilities": {
             "assist_tools": [{"name": t["name"], "description": t.get("description")}
-                             for t in turns[0]["prepared"]["tools"]],
+                             for t in next((t["prepared"]["tools"] for t in turns if t["prepared"]), [])],
             "exposed_entities_by_area": by_area,
             "scripts_scenes_automations": actions,
         },
@@ -176,13 +178,12 @@ def label_coverage(digest, label):
     for cards in digest["capabilities"]["exposed_entities_by_area"].values():
         present |= {c["entity_id"] for c in cards}
     missing = []
-    for journey in label.get("journeys", []):
-        first, last = journey["turns"]
-        missing += [f"turn {n}" for n in range(first, last + 1) if n not in turns]
-        criteria = journey["destination"].get("criteria")
-        if isinstance(criteria, dict):
-            missing += [e for e in criteria if e not in present]
-    for item in label.get("not_journeys", []):
+    for goal in label.get("goals", []) + label.get("optional_goals", []) + label.get("sub_goals", []):
+        if goal["turn"] not in turns:
+            missing.append(f"turn {goal['turn']}")
+        if goal.get("entity_id") and goal["entity_id"] not in present:
+            missing.append(goal["entity_id"])
+    for item in label.get("not_requests", []):
         if item["turn"] not in turns:
             missing.append(f"turn {item['turn']}")
     if label.get("recording_id") != digest["recording_id"]:

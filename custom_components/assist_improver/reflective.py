@@ -34,7 +34,8 @@ def role_marker(role):
         ROLE_ACTIVE.reset(token)
 
 
-async def run_role(hass, *, role, entity_id, instructions, payload, structure, allow_paid_inference=False):
+async def run_role(hass, *, role, entity_id, instructions, payload, structure, llm_api=None,
+                   allow_paid_inference=False):
     """One AI Task call. Returns a run record; never retries or resamples."""
     if not allow_paid_inference:
         raise CaseError("Paid inference has not been authorized")
@@ -48,7 +49,7 @@ async def run_role(hass, *, role, entity_id, instructions, payload, structure, a
         try:
             result = await ai_task.async_generate_data(
                 hass, task_name=f"Assist Improver: {role}", entity_id=entity_id,
-                instructions=text, structure=structure)
+                instructions=text, structure=structure, llm_api=llm_api)
             record.update(status="completed", output=plain(result.data), conversation_id=result.conversation_id)
         except Exception as err:
             record.update(status="failed", error={"type": type(err).__name__, "message": str(err)[:500]})

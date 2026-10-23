@@ -11,13 +11,13 @@ from homeassistant.helpers.event import async_track_state_change_event
 from homeassistant.helpers.start import async_at_started
 from homeassistant.helpers.service import async_register_admin_service
 
-from . import ai_setup, analyzer, practice
+from . import ai_setup, analyzer, hypotheses, practice
 from .const import CONF_ACCEPTED_WEAK, CONF_AI_TASK, DOMAIN, SUPPORTED_CORE
 from .casebook import CaseBook
 from .baseline import BaselineManager
 from .candidates import CandidateManager
 from .cases import CaseError, digest as content_digest
-from .digest import build_digest
+from .exploration import SessionAPI, SessionView
 from .recorder import Recorder
 from .reflective import RoleRuns, run_role
 
@@ -25,7 +25,7 @@ PLATFORMS = ["switch"]
 SERVICES = ("status", "list_recordings", "export_recording", "list_cases", "get_case",
             "create_case", "case_feedback", "audit_case", "prepare_baseline", "start_baseline",
             "review_baseline_turn", "continue_baseline", "prepare_candidate", "run_candidate",
-            "review_candidate", "apply_candidate", "analyze_recording")
+            "review_candidate", "apply_candidate", "analyze_recording", "generate_hypotheses", "review_hypothesis")
 
 
 async def async_setup_entry(hass, entry):
@@ -109,6 +109,8 @@ async def async_setup_entry(hass, entry):
                 return await recorder.candidates.review(**call.data)
             if call.service == "analyze_recording":
                 return await _analyze(hass, entry, recorder, **call.data)
+            if call.service in ("generate_hypotheses", "review_hypothesis"):
+                return await _hypotheses(hass, entry, recorder, call.service, **call.data)
             if call.service == "apply_candidate":
                 return await recorder.candidates.apply(call.data["plan_id"], accepted_by=call.context.user_id)
             return await recorder.casebook.audit(call.data["case_id"])
@@ -159,6 +161,13 @@ async def async_setup_entry(hass, entry):
         ("apply_candidate", case_action, probatio.Schema(plan_id)),
         ("analyze_recording", case_action, probatio.Schema({
             probatio.Required("recording_id"): str, **paid})),
+        ("generate_hypotheses", case_action, probatio.Schema({
+            probatio.Required("analyses"): probatio.All([dict], probatio.Length(min=1)),
+            probatio.Optional("seeded"): [{probatio.Required("name"): str, probatio.Required("hypothesis"): dict}],
+            **paid})),
+        ("review_hypothesis", case_action, probatio.Schema({
+            probatio.Required("hypothesis"): dict,
+            probatio.Required("analyses"): probatio.All([dict], probatio.Length(min=1)), **paid})),
     ):
         async_register_admin_service(hass, DOMAIN, name, handler, schema,
                                      supports_response=SupportsResponse.ONLY)
@@ -181,19 +190,66 @@ def _update_setup_issue(hass, entry):
 
 
 async def _analyze(hass, entry, recorder, recording_id, allow_paid_inference=False):
-    """Journey analyzer on one recording: one paid AI Task call, recorded either way."""
+    """Journey analyzer on one recording: one paid AI Task call with read-only session tools, recorded either way.
+
+    The answer comes from the submit_goals tool, not the model's final text: the last accepted submission, or
+    the best rejected one (with its problems) if none was accepted.
+    """
     if not allow_paid_inference:
         raise CaseError("Paid inference has not been authorized")
     entity_id = entry.options.get(CONF_AI_TASK)
-    payload = build_digest(await recorder.export(recording_id))
+    view = SessionView(await recorder.export(recording_id))
     run = {"id": uuid4().hex, "kind": analyzer.ROLE, "recording_id": recording_id, "status": "running",
-           "digest_sha256": content_digest(payload), "entity_id": entity_id}
+           "digest_sha256": content_digest(view.digest), "entity_id": entity_id, "agentic": True}
     await recorder.role_runs.record(run)  # Persist the attempt BEFORE any inference.
+    submit = analyzer.SubmitGoals(view)
     result = await run_role(hass, role=analyzer.ROLE, entity_id=entity_id, instructions=analyzer.INSTRUCTIONS,
-                            payload=payload, structure=analyzer.STRUCTURE, allow_paid_inference=True)
-    run.update(result)
-    if result["status"] == "completed":
-        run["analysis"] = analyzer.to_label(recording_id, result["output"])
+                            payload=view.overview(), structure=None, llm_api=SessionAPI(hass, view, [submit]),
+                            allow_paid_inference=True)
+    run.update(result, reply=result["output"], submissions=len(submit.submissions))
+    run["answer_status"], answer, found = submit.best()
+    if answer is None:
+        if run["status"] == "completed":
+            run.update(status="failed", error={"message": "The analyzer never called submit_goals"})
+    else:
+        run["output"] = answer
+        run["analysis"] = {**analyzer.to_analysis(recording_id, answer, view), "problems": found}
+    return await recorder.role_runs.record(run)
+
+
+async def _hypotheses(hass, entry, recorder, service, analyses, hypothesis=None, seeded=None,
+                      allow_paid_inference=False):
+    """The hypothesis generator over analysed sessions (with one long-running reviewer beside it), or the reviewer
+    alone on one hypothesis. Paid AI Task calls with read-only tools, recorded either way; answers come from the
+    roles' submit tools (last accepted, else best)."""
+    if not allow_paid_inference:
+        raise CaseError("Paid inference has not been authorized")
+    entity_id = entry.options.get(CONF_AI_TASK)
+    views = [SessionView(await recorder.export(a["recording_id"])) for a in analyses]
+    sessions = hypotheses.Sessions(analyses, views)
+    generating = service == "generate_hypotheses"
+    role = hypotheses.GENERATOR_ROLE if generating else hypotheses.REVIEWER_ROLE
+    run = {"id": uuid4().hex, "kind": role, "status": "running", "entity_id": entity_id,
+           "sessions": sorted(sessions.analyses)}
+    await recorder.role_runs.record(run)  # Persist the attempt BEFORE any inference.
+    if generating:
+        result, submit, ask, reviewer_run, seeded_reviews = await hypotheses.run_generator(
+            hass, sessions, entity_id, [(s["name"], s["hypothesis"]) for s in seeded or []])
+        run["reviews"], run["seeded_reviews"] = ask.reviews, seeded_reviews
+        run["reviewer_run"] = {k: reviewer_run.get(k) for k in ("status", "error", "usage", "output")}
+    else:
+        submit = hypotheses.SubmitReview(sessions)
+        result = await run_role(hass, role=role, entity_id=entity_id, instructions=hypotheses.REVIEWER_INSTRUCTIONS,
+                                payload={"hypothesis": hypothesis, "household": sessions.summary()}, structure=None,
+                                allow_paid_inference=True,
+                                llm_api=SessionAPI(hass, tools=hypotheses.reviewer_tools(sessions, submit)))
+    run.update(result, reply=result["output"], submissions=len(submit.submissions))
+    run["answer_status"], answer, found = submit.best()
+    if answer is None:
+        if run["status"] == "completed":
+            run.update(status="failed", error={"message": f"The {role} never called {submit.name}"})
+    else:
+        run.update(output=answer, problems=found)
     return await recorder.role_runs.record(run)
 
 

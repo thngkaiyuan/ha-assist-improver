@@ -14,14 +14,34 @@ def digest(value):
                              ensure_ascii=False).encode()).hexdigest()
 
 
-def recording_turns(recording):
-    """Join final ChatLog to source snapshots without inferring user intent."""
+def _content(recording, replay):
+    """The conversation's messages: the final ChatLog, or for analysis, rebuilt from the recorded events when
+    the final copy is stale (HA deletes a locally handled conversation before the recorder sees it again)."""
+    content = recording.get("chat_log", {}).get("content", [])
+    users = sum(1 for m in content if m["role"] == "user")
+    if replay or users >= len(recording.get("turns", [])):
+        return content
+    rebuilt = []
+    for event in recording.get("events", []):
+        if event["type"] == "created":
+            rebuilt = list((event.get("data") or {}).get("chat_log", {}).get("content", []))
+        elif event["type"] == "content_added":
+            rebuilt.append(event["data"]["content"])
+    return rebuilt
+
+
+def recording_turns(recording, replay=True):
+    """Join final ChatLog to source snapshots without inferring user intent.
+
+    replay=False is for analysis: it also accepts turns Home Assistant handled itself, without the AI model
+    (no prepared context; marked handled_locally), which a replay could not reproduce.
+    """
     if recording.get("format") != 1:
         raise CaseError("Unsupported recording format")
     if recording.get("status") not in {"session_expired", "interrupted", "capture_timed_out"}:
         raise CaseError("Recording is still active")
     exchanges = []
-    for item in recording.get("chat_log", {}).get("content", []):
+    for item in _content(recording, replay):
         if item["role"] == "user":
             exchanges.append({"messages": [deepcopy(item)]})
         elif exchanges:
@@ -33,13 +53,14 @@ def recording_turns(recording):
         if exchange["messages"][0]["content"] != snapshot["user"]["content"]:
             raise CaseError("User text differs between recording views")
         preparations = snapshot.get("preparations", [])
-        if not preparations or not snapshot.get("prepared") or not snapshot.get("source"):
+        local = not replay and snapshot.get("source") and not preparations and not snapshot.get("prepared")
+        if not local and (not preparations or not snapshot.get("prepared") or not snapshot.get("source")):
             raise CaseError(f"Turn {number} lacks prepared context or source state")
-        history = preparations[0].get("content", [])
+        history = [] if local else preparations[0].get("content", [])
         expected = [t["user"]["content"] for t in snapshots[:number]]
-        if ([m["content"] for m in history if m["role"] == "user"] != expected
-                or not history or history[-1]["role"] != "user"
-                or history[0]["role"] != "system"):
+        if not local and ([m["content"] for m in history if m["role"] == "user"] != expected
+                          or not history or history[-1]["role"] != "user"
+                          or history[0]["role"] != "system"):
             raise CaseError(f"Turn {number} has incomplete or future-contaminated context")
         if any(m.get("attachments") for m in history):
             raise CaseError("Attachments are not supported by this replay slice")
@@ -53,8 +74,8 @@ def recording_turns(recording):
         result_ids = [r["tool_call_id"] for r in results]
         if len(ids) != len(set(ids)) or len(result_ids) != len(set(result_ids)) or set(ids) != set(result_ids):
             raise CaseError(f"Turn {number} has missing or duplicate tool results")
-        exchange.update(number=number, source=deepcopy(snapshot["source"]),
-                        prepared=deepcopy(snapshot["prepared"]), history=deepcopy(history),
+        exchange.update(number=number, source=deepcopy(snapshot["source"]), handled_locally=bool(local),
+                        prepared=deepcopy(snapshot.get("prepared")), history=deepcopy(history),
                         calls=deepcopy(calls), results=deepcopy(results),
                         final_reply=finals[-1]["content"], ended=finals[-1]["created"])
     return exchanges

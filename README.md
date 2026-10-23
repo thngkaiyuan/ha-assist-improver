@@ -25,14 +25,16 @@ Assist Improver aims for that with your assistant. The goal is to cut the effort
 
 Approved improvements stay even if you uninstall Assist Improver.
 
+The principles behind each step: [Design principles](docs/DESIGN.md).
+
 ## Where we are
 
 - [x] Record conversations
 - [x] Replay a conversation safely, with simulated devices
 - [x] Prepare conversations for AI analysis, and choose the AI model
-- [ ] Find journeys and interventions **<===== we are here**
-- [ ] Spot recurring problems and propose fixes
-- [ ] Build and test the fixes
+- [x] Find journeys and interventions
+- [x] Spot recurring problems and propose fixes
+- [ ] Build and test the fixes **<===== we are here**
 - [ ] Review and apply them in Home Assistant
 - [ ] Run on its own schedule
 - [ ] Ready for other households

@@ -300,6 +300,42 @@
           "description": "Off by default. Normal API charges apply."
         }
       }
+    },
+    "generate_hypotheses": {
+      "name": "Generate hypotheses (hypothesis generator)",
+      "description": "Opt-in paid evaluation: sends analysed sessions to the configured AI Task, which groups their friction into themes and proposes one change per theme. One call, never retried. Nothing in the house changes.",
+      "fields": {
+        "analyses": {
+          "name": "Analyses",
+          "description": "Analysed sessions, as Analyze recording returns them."
+        },
+        "allow_paid_inference": {
+          "name": "Allow paid inference",
+          "description": "Off by default. Normal API charges apply."
+        },
+        "seeded": {
+          "name": "Seeded cases",
+          "description": "Optional, for testing the reviewer: named hypotheses it reviews after the generator finishes."
+        }
+      }
+    },
+    "review_hypothesis": {
+      "name": "Review hypothesis (reviewer)",
+      "description": "Opt-in paid evaluation: the configured AI Task keeps, revises or drops one hypothesis and flags likely regressions. One call, never retried. Nothing in the house changes.",
+      "fields": {
+        "hypothesis": {
+          "name": "Hypothesis",
+          "description": "One hypothesis, as Generate hypotheses returns them."
+        },
+        "analyses": {
+          "name": "Analyses",
+          "description": "The analysed sessions the review checks against."
+        },
+        "allow_paid_inference": {
+          "name": "Allow paid inference",
+          "description": "Off by default. Normal API charges apply."
+        }
+      }
     }
   },
   "options": {
