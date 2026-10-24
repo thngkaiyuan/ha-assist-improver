@@ -1,9 +1,11 @@
-"""Fix the AI Task notice in place: the same steps as Configure, inside Repairs."""
+"""Repairs: fix the AI Task notice, or review an improvement, with the same steps as Configure."""
 
 from homeassistant.components.repairs import RepairsFlow
 
 from .config_flow import _AiTaskSteps
 from .const import CONF_AI_TASK
+from .improvements import ISSUE_PREFIX
+from .review_flow import _ReviewSteps
 
 
 class AiTaskRepairFlow(_AiTaskSteps, RepairsFlow):
@@ -32,5 +34,17 @@ class AiTaskRepairFlow(_AiTaskSteps, RepairsFlow):
         return self.async_create_entry(data={})
 
 
+class ImprovementRepairFlow(_ReviewSteps, RepairsFlow):
+    """The improvement's review; the list keeps its Repairs item in sync, so the flow always ends by aborting."""
+
+    def __init__(self, improvement_id):
+        self._improvement_id = improvement_id
+
+    async def async_step_init(self, user_input=None):
+        return await self.async_step_review()
+
+
 async def async_create_fix_flow(hass, issue_id, data):
+    if issue_id.startswith(ISSUE_PREFIX):
+        return ImprovementRepairFlow(data["improvement_id"])
     return AiTaskRepairFlow(data["entry_id"])

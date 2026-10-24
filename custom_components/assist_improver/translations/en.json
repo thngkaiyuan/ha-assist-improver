@@ -298,6 +298,10 @@
         "allow_paid_inference": {
           "name": "Allow paid inference",
           "description": "Off by default. Normal API charges apply."
+        },
+        "full": {
+          "name": "Full analysis",
+          "description": "Skip the quick check and always run the full analysis."
         }
       }
     },
@@ -368,22 +372,69 @@
           "description": "How many fixes each goal may be tested with, in each conversation where it came up; defaults to the tests-per-goal setting."
         }
       }
+    },
+    "list_improvements": {
+      "name": "List improvements",
+      "description": "The tested improvements, with their status, tests and decisions. Makes no AI requests and changes nothing.",
+      "fields": {}
+    },
+    "quick_check": {
+      "name": "Quick check (calibration)",
+      "description": "Run only the quick check on some recordings, with a chosen model, to calibrate it. Can cost a little with your AI provider; nothing else runs.",
+      "fields": {
+        "recording_ids": {
+          "name": "Recordings",
+          "description": "Recording IDs to check."
+        },
+        "entity_id": {
+          "name": "Model",
+          "description": "The AI Task to check with; defaults to the quick-check model in Settings."
+        },
+        "allow_paid_inference": {
+          "name": "Allow paid inference",
+          "description": "Required: each recording is one call to the model."
+        }
+      }
     }
   },
   "options": {
     "step": {
       "init": {
+        "title": "Assist Improver",
+        "description": "Improvements to review: {pending}.",
+        "menu_options": {
+          "improvements": "Improvements",
+          "settings": "Settings"
+        }
+      },
+      "settings": {
         "title": "Assist Improver settings",
         "description": "Assist Improver uses an AI model to analyse your conversations. {guidance} {reason}",
         "data": {
           "ai_task_entity_id": "AI model",
           "check_ai_task_entity_id": "Follow-up check model",
-          "tests_per_goal": "Tests per goal"
+          "tests_per_goal": "Tests per goal",
+          "triage_ai_task_entity_id": "Quick-check model"
         },
         "data_description": {
           "ai_task_entity_id": "The improver's own AI roles call this. The recommended option is created with your AI provider's own setup; nothing else changes.",
           "check_ai_task_entity_id": "Optional. A small, cheap model is enough: it checks that the replay's follow-up messages (your recorded words, replayed in order) still fit the replies around them. Leave empty to skip the check.",
-          "tests_per_goal": "A multiplier on what your assistant normally costs. A goal can come up in several conversations, phrased differently; each time it came up is tested on its own. Each test replays that conversation with a fix, on your own assistant, so it costs about what the conversation did: with 3, testing costs roughly 3 times those conversations, plus one replay of each original."
+          "tests_per_goal": "A multiplier on what your assistant normally costs. A goal can come up in several conversations, phrased differently; each time it came up is tested on its own. Each test replays that conversation with a fix, on your own assistant, so it costs about what the conversation did: with 3, testing costs roughly 3 times those conversations, plus one replay of each original.",
+          "triage_ai_task_entity_id": "Optional. A small, cheap model (a local one works) that checks each conversation first; one it's sure went smoothly skips the full analysis, saving its cost. Unsure means a full analysis. Leave empty to analyse every conversation."
+        }
+      },
+      "improvements": {
+        "title": "Improvements",
+        "description": "Improvements tested on your recorded conversations. Waiting for your review: {pending}. Applied ones can be undone here.",
+        "data": {
+          "improvement": "Improvement"
+        }
+      },
+      "review": {
+        "title": "{title}",
+        "description": "{proposal}\n\n{error}",
+        "data": {
+          "decision": "Decision"
         }
       },
       "confirm": {
@@ -392,10 +443,24 @@
         "data": {
           "use_anyway": "Use it anyway"
         }
+      },
+      "note": {
+        "title": "{decision}",
+        "description": "Add a note for the improver (optional, except when asking for a revision: say what to change). {error}",
+        "data": {
+          "note": "Note"
+        }
       }
     },
     "error": {
-      "create_failed": "Couldn't create the AI Task automatically: {reason} Add one in Settings → Devices & services → your AI provider → Add AI Task, then choose it here."
+      "create_failed": "Couldn't create the AI Task automatically: {reason} Add one in Settings → Devices & services → your AI provider → Add AI Task, then choose it here.",
+      "decision": "{error}"
+    },
+    "abort": {
+      "decided": "{result}",
+      "closed": "{proposal}\n\nThis improvement is {status}; nothing is left to decide.",
+      "not_found": "This improvement is no longer in the list.",
+      "no_improvements": "No improvements yet. They appear here once tests show a change helps."
     }
   },
   "issues": {
@@ -426,6 +491,68 @@
         },
         "abort": {
           "no_choice": "No AI model was chosen, so Assist Improver can't analyse conversations yet."
+        }
+      }
+    },
+    "improvement_ready": {
+      "title": "An improvement to Assist is ready: {title}",
+      "description": "Review it here or in Assist Improver → Configure → Improvements.",
+      "fix_flow": {
+        "step": {
+          "review": {
+            "title": "{title}",
+            "description": "{proposal}\n\n{error}",
+            "data": {
+              "decision": "Decision"
+            }
+          },
+          "note": {
+            "title": "{decision}",
+            "description": "Add a note for the improver (optional, except when asking for a revision: say what to change). {error}",
+            "data": {
+              "note": "Note"
+            }
+          }
+        },
+        "abort": {
+          "decided": "{result}",
+          "closed": "{proposal}\n\nThis improvement is {status}; nothing is left to decide.",
+          "not_found": "This improvement is no longer in the list.",
+          "no_improvements": "No improvements yet. They appear here once tests show a change helps."
+        },
+        "error": {
+          "decision": "{error}"
+        }
+      }
+    },
+    "improvement_attention": {
+      "title": "An improvement needs attention: {title}",
+      "description": "Review it here or in Assist Improver → Configure → Improvements.",
+      "fix_flow": {
+        "step": {
+          "review": {
+            "title": "{title}",
+            "description": "{proposal}\n\n{error}",
+            "data": {
+              "decision": "Decision"
+            }
+          },
+          "note": {
+            "title": "{decision}",
+            "description": "Add a note for the improver (optional, except when asking for a revision: say what to change). {error}",
+            "data": {
+              "note": "Note"
+            }
+          }
+        },
+        "abort": {
+          "decided": "{result}",
+          "closed": "{proposal}\n\nThis improvement is {status}; nothing is left to decide.",
+          "not_found": "This improvement is no longer in the list.",
+          "no_improvements": "No improvements yet. They appear here once tests show a change helps."
+        },
+        "error": {
+          "decision": "{error}"
         }
       }
     }

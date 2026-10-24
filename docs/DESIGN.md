@@ -50,6 +50,13 @@ Models answer through tools that validate their answer against the household and
 - **One reviewer per run.** The reviewer keeps a single conversation across all the drafts of a run, so it remembers what it already approved and asked for.
 - **Bounded back-and-forth:** at most 15 reviews per run and 5 per idea, tuned from observed runs.
 
+## Asking you, and applying what you accept
+
+- **One list, two places.** Each tested improvement shows the idea and its cause, the exact changes, and before and after from the replays, with what was tested and what's only expected. It's in the integration's Configure → Improvements and in Repairs; a notification links to both. A decision in either place updates both.
+- **Your choices:** accept, ask for a revision, decline, "things were fine as they were", or "ignore, that was a test". An applied improvement can be undone.
+- **All of it or none of it.** Every change is checked before anything is written: a value you changed since the improvement was tested is a conflict, reported instead of overwritten, and Home Assistant validates scripts and instructions first. Changes then go in a safe order (scripts, saved but not exposed; aliases; exposure; instruction lines last), with a journal saved before each write. A failure undoes the steps already done; if Home Assistant stops midway, the next start undoes them and tells you. Every value is read back before the improvement counts as applied.
+- **Instruction lines go where they belong:** a line for one person inside their block of Assist's instructions, a household fact outside it. A line already there isn't added twice.
+
 ## Shared knowledge
 
 - **Home Assistant's own rules, upfront.** The generator and reviewer get a short primer on how Assist works (exposure, the tools it has per device type, aliases, scripts) and Home Assistant's published best practices, checked against the Home Assistant sources.
@@ -62,6 +69,10 @@ Models answer through tools that validate their answer against the household and
 - **Changes are ordinary Home Assistant configuration.** They are shown to you before they apply, nothing runs when they do, and they stay if you uninstall Assist Improver.
 
 ## Cost and data
+
+- **A quick check before the deep analysis.** With a quick-check model chosen in Settings (a small or local model), each conversation is checked first; one it's sure went smoothly skips the journey analyzer. Unsure means a full analysis. The check is calibrated on labelled conversations: it must never skip one that had friction.
+- **Every conversation stays visible.** The generator and reviewer see all recordings, analysed, skipped as smooth, or not analysed yet: the ones with friction upfront, the rest through their session tools, and all of them in the regression replays. Filtering only saves the deep analysis.
+
 
 - **Your conversations stay in your Home Assistant.** Analysis sends what it needs to the AI model you chose, through Home Assistant's own AI Task.
 - **Paid analysis runs only when you allow it.** Cost controls are coarse on purpose, not per-call accounting: the **tests per goal** setting caps how many fixes each goal is tested with, in each conversation where it came up. Each test replays a conversation on the household's own assistant, so it works as a multiplier on what the assistant normally costs.

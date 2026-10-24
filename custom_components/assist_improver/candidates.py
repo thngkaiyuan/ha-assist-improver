@@ -184,6 +184,7 @@ class CandidateTrial:
         setup = self.plan["setup"]
         self.log = FrozenTurnLog(hass, case, recording, scripts={**scripts, **setup["scripts"]},
                                  exposure_changes=setup["exposure"], alias_changes=setup["aliases"],
+                                 alias_removals=setup.get("alias_removals"),
                                  prompt_template=setup["prompt"], use_sandbox_prompt=setup["prompt_changed"])
         self.agent = clone_provider(agent, plan["baseline_plan"])
         self.start = len(self.log.content)

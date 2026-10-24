@@ -245,6 +245,10 @@ analyze_recording:
       required: true
       selector:
         text:
+    full:
+      default: false
+      selector:
+        boolean:
     allow_paid_inference:
       default: false
       selector:
@@ -272,6 +276,22 @@ review_hypothesis:
       required: true
       selector:
         object:
+    allow_paid_inference:
+      default: false
+      selector:
+        boolean:
+list_improvements:
+  fields: {}
+quick_check:
+  fields:
+    recording_ids:
+      required: true
+      selector:
+        object:
+    entity_id:
+      selector:
+        entity:
+          domain: ai_task
     allow_paid_inference:
       default: false
       selector:

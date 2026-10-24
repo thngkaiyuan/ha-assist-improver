@@ -2,7 +2,7 @@
 
 DOMAIN = "assist_improver"
 NAME = "Assist Improver"
-VERSION = "0.17.10"
+VERSION = "0.19.5"
 # How replays run and are judged; changing it makes earlier baselines a different test (a new plan), not a resample.
 REPLAY_ENGINE = "2026-10-24.5"  # .2: a fix commanding what the baseline also changed isn't unintended. .3: baselines
 # are judged on the goal's devices. .4: a goal newly met counts, not only fewer turns. .5: controls the user would
@@ -20,6 +20,8 @@ CONF_ACCEPTED_WEAK = "ai_task_accepted_weak"  # Entity the user chose despite wa
 CONF_TESTS_PER_GOAL, DEFAULT_TESTS_PER_GOAL = "tests_per_goal", 3
 # A small model that checks the replay's scripted follow-ups still fit the replies around them; unset skips it.
 CONF_CHECK_AI_TASK = "check_ai_task_entity_id"
+# A small model that checks each session first; a session it's sure was smooth skips the analyzer. Unset analyses all.
+CONF_TRIAGE_AI_TASK = "triage_ai_task_entity_id"
 SAVE_DELAY = 1
 ATTRIBUTES = {
     "friendly_name", "supported_features", "device_class", "unit_of_measurement",

@@ -13,9 +13,10 @@ from homeassistant.helpers.selector import (EntitySelector, EntitySelectorConfig
                                             SelectSelectorMode)
 
 from . import ai_setup
-from .const import (CONF_ACCEPTED_WEAK, CONF_AI_TASK, CONF_CHECK_AI_TASK, CONF_TESTS_PER_GOAL, DEFAULT_TESTS_PER_GOAL,
-                    DOMAIN, NAME)
-SETTINGS = (CONF_TESTS_PER_GOAL, CONF_CHECK_AI_TASK)  # The improver's settings beside the AI model, in Configure.
+from .review_flow import _ReviewSteps
+from .const import (CONF_ACCEPTED_WEAK, CONF_AI_TASK, CONF_CHECK_AI_TASK, CONF_TESTS_PER_GOAL, CONF_TRIAGE_AI_TASK,
+                    DEFAULT_TESTS_PER_GOAL, DOMAIN, NAME)
+SETTINGS = (CONF_TESTS_PER_GOAL, CONF_TRIAGE_AI_TASK, CONF_CHECK_AI_TASK)  # The improver's settings beside the AI model, in Configure.
 
 CREATE = "create"  # List values "create:<config entry>:<recommended|default>" add a new AI Task.
 USE_ANYWAY = "use_anyway"
@@ -81,9 +82,10 @@ class _AiTaskSteps:
             fields[probatio.Optional(CONF_TESTS_PER_GOAL, default=current.get(
                 CONF_TESTS_PER_GOAL, current.get("tests_per_cycle", DEFAULT_TESTS_PER_GOAL)))] = \
                 NumberSelector(NumberSelectorConfig(min=1, max=20, step=1, mode=NumberSelectorMode.BOX))
-            check = current.get(CONF_CHECK_AI_TASK)
-            fields[probatio.Optional(CONF_CHECK_AI_TASK, **({"default": check} if check else {}))] = \
-                EntitySelector(EntitySelectorConfig(domain="ai_task"))
+            for key in (CONF_TRIAGE_AI_TASK, CONF_CHECK_AI_TASK):  # Optional small models.
+                chosen = current.get(key)
+                fields[probatio.Optional(key, **({"default": chosen} if chosen else {}))] = \
+                    EntitySelector(EntitySelectorConfig(domain="ai_task"))
         return probatio.Schema(fields)
 
     def _placeholders(self, extra=None):
@@ -149,14 +151,23 @@ class AssistantImproverConfigFlow(_AiTaskSteps, ConfigFlow, domain=DOMAIN):
         return self.async_create_entry(title=NAME, data={}, options=self._options({}, choice))
 
 
-class AssistantImproverOptionsFlow(_AiTaskSteps, OptionsFlow):
+class AssistantImproverOptionsFlow(_AiTaskSteps, _ReviewSteps, OptionsFlow):
+    """Configure: the improvements to review, and the improver's settings."""
     _with_settings = True
 
     async def async_step_init(self, user_input=None):
-        return await self._choose(user_input, self.config_entry.options.get(CONF_AI_TASK), "init")
+        recorder = self.hass.data.get(DOMAIN)
+        if recorder is None or not hasattr(recorder, "improvements"):  # Not loaded: only the settings.
+            return await self.async_step_settings()
+        pending = len(recorder.improvements.pending())
+        return self.async_show_menu(step_id="init", menu_options=["improvements", "settings"],
+                                    description_placeholders={"pending": str(pending)})
+
+    async def async_step_settings(self, user_input=None):
+        return await self._choose(user_input, self.config_entry.options.get(CONF_AI_TASK), "settings")
 
     async def _back(self):
-        return await self.async_step_init()
+        return await self.async_step_settings()
 
     def _finish(self, choice):
         return self.async_create_entry(data=self._options(self.config_entry.options, choice))

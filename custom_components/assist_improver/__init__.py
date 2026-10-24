@@ -10,13 +10,14 @@ from homeassistant.helpers.event import async_track_state_change_event
 from homeassistant.helpers.start import async_at_started
 from homeassistant.helpers.service import async_register_admin_service
 
-from . import ai_setup, analyzer, hypotheses, practice
-from .const import CONF_ACCEPTED_WEAK, CONF_AI_TASK, DOMAIN
+from . import ai_setup, analyzer, hypotheses, practice, triage
+from .const import CONF_ACCEPTED_WEAK, CONF_AI_TASK, CONF_TRIAGE_AI_TASK, DOMAIN
 from .casebook import CaseBook
 from .baseline import BaselineManager
 from .candidates import CandidateManager
 from .cases import CaseError, digest as content_digest
 from .exploration import SessionAPI, SessionView
+from .improvements import Improvements
 from .recorder import Recorder
 from .reflective import RoleRuns, run_role
 
@@ -25,7 +26,7 @@ SERVICES = ("status", "list_recordings", "export_recording", "list_cases", "get_
             "create_case", "case_feedback", "audit_case", "prepare_baseline", "start_baseline",
             "review_baseline_turn", "continue_baseline", "prepare_candidate", "run_candidate",
             "review_candidate", "apply_candidate", "analyze_recording", "generate_hypotheses", "review_hypothesis",
-            "check_replay_fidelity", "test_hypotheses")
+            "check_replay_fidelity", "test_hypotheses", "list_improvements", "quick_check")
 
 
 async def async_setup_entry(hass, entry):
@@ -40,9 +41,11 @@ async def async_setup_entry(hass, entry):
     recorder.baselines = BaselineManager(hass, recorder.casebook)
     recorder.candidates = CandidateManager(hass, recorder.casebook)
     recorder.role_runs = RoleRuns(hass)
+    recorder.improvements = Improvements(hass, recorder)
     try:
         await recorder.candidates.start()
         await recorder.role_runs.start()
+        await recorder.improvements.start()  # Recovers a change HA stopped in the middle of.
     except Exception:
         await recorder.stop()
         raise
@@ -90,9 +93,34 @@ async def async_setup_entry(hass, entry):
     async def test_hypotheses(call):
         from .validation import test_hypotheses as run
         try:
-            return await run(hass, entry, recorder, **call.data)
+            report = await run(hass, entry, recorder, **call.data)
         except (CaseError, ValueError) as err:
             raise HomeAssistantError(str(err)) from err
+        await recorder.improvements.refresh()  # Improvements the tests showed go up for review.
+        return report
+
+    async def quick_check(call):
+        """The quick check alone on some recordings, with a given model (for calibrating it); nothing else runs."""
+        if not call.data.get("allow_paid_inference"):
+            raise HomeAssistantError("Paid inference has not been authorized")
+        checker = call.data.get("entity_id") or entry.options.get(CONF_TRIAGE_AI_TASK)
+        answers = {}
+        for recording_id in call.data["recording_ids"]:
+            try:
+                view = SessionView(await recorder.export(recording_id))
+            except (CaseError, ValueError) as err:
+                answers[recording_id] = {"status": "unreadable", "error": str(err)}
+                continue
+            check = await run_role(hass, role=triage.ROLE, entity_id=checker, instructions=triage.INSTRUCTIONS,
+                                   payload=triage.payload(view), structure=triage.STRUCTURE, allow_paid_inference=True)
+            answers[recording_id] = {k: check.get(k) for k in ("status", "output", "error", "usage")}
+        report = {"id": uuid4().hex, "kind": "quick_check", "status": "completed", "entity_id": checker,
+                  "output": answers}
+        await recorder.role_runs.record(report)  # Kept, so a lost page or connection loses nothing.
+        return report
+
+    async def list_improvements(call):
+        return {"improvements": recorder.improvements.listed()}
 
     async def list_cases(call):
         return {"cases": recorder.casebook.summaries()}
@@ -144,6 +172,10 @@ async def async_setup_entry(hass, entry):
         ("list_recordings", list_recordings, probatio.Schema({})),
         ("export_recording", export, probatio.Schema({probatio.Required("recording_id"): str})),
         ("list_cases", list_cases, probatio.Schema({})),
+        ("list_improvements", list_improvements, probatio.Schema({})),
+        ("quick_check", quick_check, probatio.Schema({
+            probatio.Required("recording_ids"): probatio.All([str], probatio.Length(min=1)),
+            probatio.Optional("entity_id"): str, **paid})),
         ("check_replay_fidelity", check_replay_fidelity, probatio.Schema({probatio.Required("recording_id"): str})),
         ("test_hypotheses", test_hypotheses, probatio.Schema({
             probatio.Required("hypotheses"): probatio.All([dict], probatio.Length(min=1)),
@@ -177,7 +209,7 @@ async def async_setup_entry(hass, entry):
             probatio.Required("feedback"): str})),
         ("apply_candidate", case_action, probatio.Schema(plan_id)),
         ("analyze_recording", case_action, probatio.Schema({
-            probatio.Required("recording_id"): str, **paid})),
+            probatio.Required("recording_id"): str, probatio.Optional("full", default=False): bool, **paid})),
         ("generate_hypotheses", case_action, probatio.Schema({
             probatio.Required("analyses"): probatio.All([dict], probatio.Length(min=1)),
             probatio.Optional("seeded"): [{probatio.Required("name"): str, probatio.Required("hypothesis"): dict}],
@@ -206,11 +238,12 @@ def _update_setup_issue(hass, entry):
                           translation_key="ai_task_setup", data={"entry_id": entry.entry_id})
 
 
-async def _analyze(hass, entry, recorder, recording_id, allow_paid_inference=False):
+async def _analyze(hass, entry, recorder, recording_id, allow_paid_inference=False, full=False):
     """Journey analyzer on one recording: one paid AI Task call with read-only session tools, recorded either way.
 
     The answer comes from the submit_goals tool, not the model's final text: the last accepted submission, or
-    the best rejected one (with its problems) if none was accepted.
+    the best rejected one (with its problems) if none was accepted. With a triage model set (and not full), a
+    quick check runs first; a session it's sure was smooth is recorded as one without friction instead.
     """
     if not allow_paid_inference:
         raise CaseError("Paid inference has not been authorized")
@@ -219,6 +252,14 @@ async def _analyze(hass, entry, recorder, recording_id, allow_paid_inference=Fal
     run = {"id": uuid4().hex, "kind": analyzer.ROLE, "recording_id": recording_id, "status": "running",
            "digest_sha256": content_digest(view.digest), "entity_id": entity_id, "agentic": True}
     await recorder.role_runs.record(run)  # Persist the attempt BEFORE any inference.
+    if (checker := entry.options.get(CONF_TRIAGE_AI_TASK)) and not full:
+        check = await run_role(hass, role=triage.ROLE, entity_id=checker, instructions=triage.INSTRUCTIONS,
+                               payload=triage.payload(view), structure=triage.STRUCTURE, allow_paid_inference=True)
+        run["triage"] = {k: check.get(k) for k in ("status", "output", "error", "usage", "entity_id")}
+        if check["status"] == "completed" and triage.skips_analysis(check.get("output")):
+            run.update(status="completed", output=check["output"], answer_status="triaged_smooth",
+                       analysis=triage.smooth_analysis(recording_id, check["output"]))
+            return await recorder.role_runs.record(run)
     submit = analyzer.SubmitGoals(view)
     result = await run_role(hass, role=analyzer.ROLE, entity_id=entity_id, instructions=analyzer.INSTRUCTIONS,
                             payload=view.overview(), structure=None, llm_api=SessionAPI(hass, view, [submit]),
@@ -243,6 +284,15 @@ async def _hypotheses(hass, entry, recorder, service, analyses, hypothesis=None,
         raise CaseError("Paid inference has not been authorized")
     entity_id = entry.options.get(CONF_AI_TASK)
     views = [SessionView(await recorder.export(a["recording_id"])) for a in analyses]
+    # Every other recording too, analysed or not: rules are checked against all of them (regressions, and
+    # whether a rule generalises), not only the sessions with friction.
+    analyses, given = list(analyses), {a["recording_id"] for a in analyses}
+    for recording_id in sorted(set(recorder.index) - given):
+        try:
+            views.append(SessionView(await recorder.export(recording_id)))
+        except (CaseError, ValueError):
+            continue  # Still being recorded, or not a conversation the tools can read.
+        analyses.append(triage.unanalysed(recording_id))
     sessions = hypotheses.Sessions(analyses, views)
     generating = service == "generate_hypotheses"
     role = hypotheses.GENERATOR_ROLE if generating else hypotheses.REVIEWER_ROLE

@@ -24,13 +24,13 @@ def ha_step(step):
 
 
 def setup_from_changes(changes, *, source, prompt, scripts):
-    """{exposure, aliases, prompt, scripts, prompt_changed} for a sandbox, from a hypothesis's changes.
+    """{exposure, aliases, alias_removals (when any), prompt, scripts, prompt_changed} for a sandbox, from a hypothesis's changes.
 
     source is the recorded home, prompt the assistant's recorded instruction template, scripts the household's
     script definitions ({object id: config}). A line for this_user is appended like one for everyone: a replay
     renders the instructions for the recorded person only, so both read the same there.
     """
-    exposure, aliases, new_scripts = {}, {}, {}
+    exposure, aliases, removals, new_scripts = {}, {}, {}, {}
     template, prompt_changed = prompt or "", False
     for n, change in enumerate(changes, 1):
         kind, where = change["kind"], f"Change {n} ({change['kind']})"
@@ -48,6 +48,8 @@ def setup_from_changes(changes, *, source, prompt, scripts):
             if entity_id not in source["states"] or not alias:
                 raise CaseError(f"{where}: needs a recorded device and an alias")
             aliases.setdefault(entity_id, []).append(alias)
+            for old in change.get("replaces") or []:
+                removals.setdefault(entity_id, []).append(old)
             prompt_changed = True  # Assist's device list shows aliases.
         elif kind == "exposure":
             if entity_id not in source["states"]:
@@ -78,5 +80,8 @@ def setup_from_changes(changes, *, source, prompt, scripts):
                     exposure[f"script.{object_id}"] = True
         else:
             raise CaseError(f"{where}: unknown change kind")
-    return {"exposure": exposure, "aliases": aliases, "prompt": template if prompt_changed else None,
-            "scripts": new_scripts, "prompt_changed": prompt_changed}
+    setup = {"exposure": exposure, "aliases": aliases, "prompt": template if prompt_changed else None,
+             "scripts": new_scripts, "prompt_changed": prompt_changed}
+    if removals:  # Only when an alias replaces another, so plans without one keep their IDs.
+        setup["alias_removals"] = removals
+    return setup

@@ -66,7 +66,8 @@ async def _start(recording, turn, definitions, setup=None):
     try:
         await sandbox.run(lambda hass: seed(hass, source, **seed_options(turn), scripts=scripts,
                                             automations=automations, exposure_changes=setup.get("exposure"),
-                                            alias_changes=setup.get("aliases")))
+                                            alias_changes=setup.get("aliases"),
+                                            alias_removals=setup.get("alias_removals")))
     except BaseException:
         await sandbox.stop()
         raise

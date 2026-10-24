@@ -150,6 +150,12 @@ def short(recording_id):
     return recording_id[:8]
 
 
+TRIAGED_NOTE = ("A quick check found every request here fulfilled smoothly, so its goals weren't extracted; read its "
+                "turns for what was asked and what Assist did.")
+UNANALYSED_NOTE = ("Not analysed, so its goals and friction weren't extracted; read its turns for what was asked and "
+                   "what Assist did.")
+
+
 def friction(analysis):
     """The turns with friction in one analysed session: extra turns (with the sub-goals they served) and asks."""
     goals = analysis.get("goals", [])
@@ -205,6 +211,8 @@ def scenario(analysis, view):
         device = (view.source.get("devices", {}).get(heard or "") or {}) if heard else {}
         if device:
             turn["heard_by"] = device.get("name_by_user") or device.get("name")
+        if line.get("assist_acted_on"):
+            turn["assist_acted_on"] = line["assist_acted_on"]
         started = [{k: g[k] for k in ("summary", "kind", "entity_id", "state", "states", "brightness_pct", "reached")
                     if k in g} for g in top_level(goals) if g["turn"] == n and g["kind"] != "ask"]
         if started:
@@ -221,6 +229,10 @@ def scenario(analysis, view):
         turns.append(turn)
     out = {"session": short(analysis["recording_id"]), "turns": turns,
            "goals_with_friction": sorted(friction_by_goal(analysis))}
+    if analysis.get("triaged"):  # A quick check found it smooth, so the analyzer didn't extract its goals.
+        out["not_analysed"] = TRIAGED_NOTE
+    elif analysis.get("not_analysed"):
+        out["not_analysed"] = UNANALYSED_NOTE
     if analysis.get("side_effects_left"):
         out["side_effects_left"] = analysis["side_effects_left"]
     return out
@@ -296,7 +308,8 @@ class Sessions:
     def listing(self):
         """Every session in one line each."""
         return [{"session": s, "first_request": self.views[s].conversation()[0]["user_says"].strip(),
-                 "turns": len(self.views[s].digest["turns"]), "friction": bool(friction(a))}
+                 "turns": len(self.views[s].digest["turns"]), "friction": bool(friction(a)),
+                 **({"goals_extracted": False} if a.get("triaged") or a.get("not_analysed") else {})}
                 for s, a in sorted(self.analyses.items())]
 
     def assist_tools(self):

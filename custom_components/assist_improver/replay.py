@@ -72,11 +72,12 @@ class SandboxHome(llm.API):
     """
 
     def __init__(self, hass, recording, turn, run_id, *, scripts=None, automations=None, exposure_changes=None,
-                 alias_changes=None, prompt_template=None):
+                 alias_changes=None, alias_removals=None, prompt_template=None):
         super().__init__(hass=hass, id=run_id, name="Recorded home")
         self.recording, self.first_turn = recording, turn
         self.scripts, self.automations, self.exposure_changes = scripts, automations, exposure_changes or {}
         self.alias_changes, self.prompt_template = alias_changes or {}, prompt_template
+        self.alias_removals = alias_removals or {}
         self.sandbox = self.ha_api = None
         self.unsupported, self.dispatched = [], []
         self.world = SimpleNamespace(states={}, transitions=[], calls=[])
@@ -103,7 +104,7 @@ class SandboxHome(llm.API):
         try:
             await self.sandbox.run(lambda hass: seed(
                 hass, source, user_name=user_name, **seed_options(self.first_turn), scripts=scripts, automations=automations, exposure_changes=self.exposure_changes,
-                alias_changes=self.alias_changes))
+                alias_changes=self.alias_changes, alias_removals=self.alias_removals))
         except Exception as err:
             await self.stop()
             raise UnsupportedSimulation(f"The sandbox could not be seeded as the recorded home: {err}") from err
@@ -142,7 +143,8 @@ class SandboxHome(llm.API):
 class FrozenTurnLog(conversation.ChatLog):
     """Use the exact prepared prefix, never later user turns or today's context."""
     def __init__(self, hass, case, recording, *, turn_number=None, scripts=None, automations=None,
-                 exposure_changes=None, alias_changes=None, prompt_template=None, use_sandbox_prompt=False):
+                 exposure_changes=None, alias_changes=None, alias_removals=None, prompt_template=None,
+                 use_sandbox_prompt=False):
         turns = verify_case(case, recording)
         turn = next((t for t in turns if t["number"] == (turn_number or case["turns"][0])), None)
         if turn is None:
@@ -172,7 +174,8 @@ class FrozenTurnLog(conversation.ChatLog):
         super().__init__(hass, run_id, content=content)
         self.replay_api = SandboxHome(hass, recording, verify_case(case, recording)[0], run_id, scripts=scripts,
                                       automations=automations, exposure_changes=exposure_changes,
-                                      alias_changes=alias_changes, prompt_template=prompt_template)
+                                      alias_changes=alias_changes, alias_removals=alias_removals,
+                                      prompt_template=prompt_template)
         # A candidate whose change shows in Assist's instructions (a preference, an alias) uses the prompt HA builds
         # in the sandbox with the change; otherwise the model sees exactly the recorded prompt.
         self.use_sandbox_prompt = use_sandbox_prompt

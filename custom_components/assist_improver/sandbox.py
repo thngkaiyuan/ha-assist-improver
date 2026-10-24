@@ -238,11 +238,11 @@ def seed_options(turn):
 
 
 async def seed(hass, source, *, user_name=None, integrations=(), timer_device=None, scripts=None, automations=None,
-               exposure_changes=None, alias_changes=None):
+               exposure_changes=None, alias_changes=None, alias_removals=None):
     """Make the sandbox the recorded home: its areas, devices, entities (names, aliases, areas), states and what
     Assist could see; the integrations whose Assist tools the request had; then its scripts and automations,
     which create their own entities. exposure_changes ({entity_id: exposed}) and alias_changes ({entity_id:
-    [aliases]}) apply on top of the recorded setup. Runs in the sandbox's loop."""
+    [aliases added]}, alias_removals {entity_id: [aliases removed]}) apply on top of the recorded setup. Runs in the sandbox's loop."""
     from homeassistant.components.homeassistant.exposed_entities import async_expose_entity
     from homeassistant.components.intent import async_register_timer_handler
     from homeassistant.core import CoreState
@@ -286,10 +286,12 @@ async def seed(hass, source, *, user_name=None, integrations=(), timer_device=No
                 entity_id, name=entry.get("name"), original_name=entry.get("original_name"), aliases=_aliases(entry),
                 area_id=areas.get(entry.get("area_id")), device_id=devices.get(entry.get("device_id")),
                 hidden_by=er.RegistryEntryHider(entry["hidden_by"]) if entry.get("hidden_by") else None)
-    for entity_id, added in (alias_changes or {}).items():
+    for entity_id in {*(alias_changes or {}), *(alias_removals or {})}:
         if (entry := registry.async_get(entity_id)) is None:
             raise RuntimeError(f"{entity_id} isn't in the sandbox")
-        registry.async_update_entity(entity_id, aliases=[*entry.aliases, *added])
+        removed = set((alias_removals or {}).get(entity_id, []))
+        registry.async_update_entity(entity_id, aliases=[*(a for a in entry.aliases if a not in removed),
+                                                         *(alias_changes or {}).get(entity_id, [])])
     for entity_id in exposure_changes or {}:  # A change to something HA couldn't load can't be tested.
         if (state := hass.states.get(entity_id)) is None or state.state == "unavailable":
             raise RuntimeError(f"{entity_id} could not be loaded")
