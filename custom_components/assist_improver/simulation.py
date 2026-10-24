@@ -1,148 +1,65 @@
-"""Deterministic recorded-action checks in a private state dictionary.
+"""What a recording shows the assistant did, and whether that established a case's destination.
 
-This module cannot access hass, services, credentials, a network or a model.
-It validates recorded HA on/off and context calls; it does not rediscover the
-assistant's decisions, execute scripts, or infer physical garage positions.
+Replays themselves run in a sandboxed HA instance (sandbox.py, replay.py).
 """
 
-from copy import deepcopy
+from .cases import CaseError, replay_readiness, verify_case
 
-from .cases import CaseError, digest, replay_readiness, verify_case
+
+# The conversation machinery's own entities change with every turn; they aren't the home.
+MACHINERY = {"conversation", "ai_task", "tts", "stt", "wake_word", "assist_satellite"}
 
 
 class UnsupportedSimulation(CaseError):
     pass
 
 
-class RecordedWorld:
-    def __init__(self, source):
-        self.source = deepcopy(source)
-        self.states = {k: v["state"] for k, v in source["states"].items()}
-        self.transitions = []
-        self.calls = []
+def recorded_transitions(recording, turn):
+    """The state changes the assistant made during one recorded turn: practice's simulated changes, or the real
+    changes HA attributes to the turn's request."""
+    start, end = turn["source"]["at"], turn["ended"]
+    practice = recording.get("practice")
+    if practice:
+        changes = practice["simulated_changes"]
+    else:
+        request = (turn.get("prepared") or {}).get("context", {}).get("context", {}).get("id")
+        changes = [c for c in recording.get("state_changes", [])
+                   if request and request in ((c.get("new") or {}).get("context") or {}).values()]
+    return [{"entity_id": c["entity_id"], "old": c["old"]["state"], "new": c["new"]["state"]}
+            for c in changes if start <= c["at"] <= end and c.get("old") and c.get("new")
+            and c["old"]["state"] != c["new"]["state"] and c["entity_id"].split(".", 1)[0] not in MACHINERY]
 
-    def apply_recorded(self, call, receipt, source):
-        """A recorded result is reusable only with checked applicability."""
-        if call.get("external"):
-            raise UnsupportedSimulation("External provider tools are receipts, not simulated functions")
-        if call["id"] != receipt["tool_call_id"] or receipt["tool_name"] != call["tool_name"]:
-            raise CaseError("Mismatched call and result")
-        name, args = call["tool_name"], call["tool_args"]
-        result = deepcopy(receipt["result"])
-        if name == "homeassistant__GetLiveContext":
-            matched = self._context_scope(args, source)
-            for entity in matched:
-                if self.states.get(entity) != source["states"][entity]["state"]:
-                    raise UnsupportedSimulation("Recorded context result is stale in this simulated world")
-            if not matched and not result["error"]:
-                raise CaseError("Successful context receipt has no matching exposed state")
-            if matched and result["error"]:
-                raise UnsupportedSimulation("Context lookup error is not modeled for matching entities")
-        elif name in {"intent__HassTurnOn", "intent__HassTurnOff"}:
-            if set(args) != {"name", "domain"} or not isinstance(args["name"], str):
-                raise UnsupportedSimulation("Only recorded named on/off targets are supported")
-            data = result.get("data", {})
-            if result.get("error") or data.get("response_type") != "action_done":
-                raise UnsupportedSimulation("Failed control actions require an explicit failure model")
-            successes = data.get("data", {}).get("success", [])
-            if len(successes) != 1 or data["data"].get("failed"):
-                raise UnsupportedSimulation("Only one successful named target per recorded call is supported")
-            target = successes[0]
-            entity = target.get("id")
-            if (target.get("type") != "entity" or target.get("name") != args["name"]
-                    or entity not in self.states or entity not in source["states"]
-                    or source["exposure"].get(entity) is not True
-                    or entity.split(".")[0] not in {"fan", "switch", "light"}
-                    or args["domain"] != [entity.split(".")[0]]):
-                raise UnsupportedSimulation("Target is unsupported, unexposed, or absent from recorded state")
-            registry = source["entities"].get(entity, {})
-            names = [source["states"][entity].get("attributes", {}).get("friendly_name"),
-                     registry.get("name"), registry.get("original_name"), *registry.get("aliases", [])]
-            if args["name"].casefold() not in [v.casefold() for v in names if isinstance(v, str)]:
-                raise UnsupportedSimulation("Target name cannot be verified from the captured inventory")
-            if self.states[entity] not in {"on", "off"}:
-                raise UnsupportedSimulation("On/off effect is unknown from this source state")
-            state = "on" if name.endswith("TurnOn") else "off"
-            before = self.states[entity]
-            self.calls.append({"tool": name, "args": deepcopy(args), "entity_id": entity, "state": state})
-            if before != state:
-                self.transitions.append({"entity_id": entity, "old": before, "new": state})
-            self.states[entity] = state
-        else:
-            raise UnsupportedSimulation(f"No deterministic simulator for {name}")
-        return result
 
-    @staticmethod
-    def _context_scope(args, source):
-        if set(args) - {"domain", "area", "name"}:
-            raise UnsupportedSimulation("Unsupported context query fields")
-        domains = args.get("domain")
-        if isinstance(domains, str):
-            domains = [domains]
-        matched = []
-        for entity, state in source["states"].items():
-            if source["exposure"].get(entity) is not True:
-                continue
-            if domains and entity.split(".")[0] not in domains:
-                continue
-            registry = source["entities"].get(entity, {})
-            device = source.get("devices", {}).get(registry.get("device_id"), {})
-            area = source.get("areas", {}).get(registry.get("area_id") or device.get("area_id"), {})
-            if args.get("area") and args["area"].casefold() not in [str(x).casefold() for x in [area.get("name", ""), *area.get("aliases", [])]]:
-                continue
-            names = [state.get("attributes", {}).get("friendly_name"), registry.get("name"),
-                     registry.get("original_name"), *registry.get("aliases", [])]
-            if args.get("name") and args["name"].casefold() not in [x.casefold() for x in names if isinstance(x, str)]:
-                continue
-            matched.append(entity)
-        return matched
+def destination_met(criteria, states, transitions):
+    """Whether a replay's home meets a case's destination: its states at the end, or each device's sequence."""
+    if criteria["kind"] == "state":
+        return all(states.get(e) == s for e, s in criteria["states"].items())
+    return all([t["new"] for t in transitions if t["entity_id"] == e] == seq for e, seq in criteria["sequences"].items())
+
+
+def per_entity(transitions):
+    return {e: [(t["old"], t["new"]) for t in transitions if t["entity_id"] == e]
+            for e in {t["entity_id"] for t in transitions}}
 
 
 def audit_recorded_case(case, recording):
-    """Check tool receipts and state trajectories; never claim model reproduction."""
+    """Check the recorded changes establish the destination; never claim model reproduction."""
     turns = verify_case(case, recording)
-    world = RecordedWorld(turns[0]["source"])
     criteria = case["destination"]["criteria"]
     targets = set(criteria.get("states", criteria.get("sequences", {})))
-    external_receipts = []
-    local_calls = 0
-    for turn in turns:
-        for entity in targets:
-            if world.states.get(entity) != turn["source"]["states"][entity]["state"]:
-                raise CaseError("Simulated trajectory disagrees with the next recorded source state")
-        receipts = {r["tool_call_id"]: r for r in turn["results"]}
-        for call in turn["calls"]:
-            receipt = receipts[call["id"]]
-            if call.get("external"):
-                external_receipts.append({"tool_name": call["tool_name"],
-                                          "result_digest": digest(receipt["result"]),
-                                          "provenance": "recorded external receipt; not simulated"})
-                continue
-            result = world.apply_recorded(call, receipt, turn["source"])
-            if result != receipt["result"]:
-                raise CaseError("Simulated tool result differs from recorded receipt")
-            local_calls += 1
-    observed = {entity: [] for entity in targets}
-    start, end = turns[0]["source"]["at"], turns[-1]["ended"]
-    for change in recording.get("state_changes", []):
-        entity = change["entity_id"]
-        if (entity in targets and start <= change["at"] <= end and change.get("old") and change.get("new")
-                and change["old"]["state"] != change["new"]["state"]):
-            observed[entity].append((change["old"]["state"], change["new"]["state"]))
-    simulated = {entity: [(t["old"], t["new"]) for t in world.transitions if t["entity_id"] == entity]
-                 for entity in targets}
-    if observed != simulated:
-        raise CaseError("Simulated target transitions differ from recorded observations")
+    observed = [t for turn in turns for t in recorded_transitions(recording, turn)]
     if criteria["kind"] == "state":
-        met = all(world.states[e] == state for e, state in criteria["states"].items())
+        final = {e: turns[0]["source"]["states"][e]["state"] for e in targets}
+        final.update({t["entity_id"]: t["new"] for t in observed if t["entity_id"] in targets})
+        met = all(final[e] == state for e, state in criteria["states"].items())
     else:
-        met = all([t["new"] for t in world.transitions if t["entity_id"] == e] == sequence
+        met = all([t["new"] for t in observed if t["entity_id"] == e] == sequence
                   for e, sequence in criteria["sequences"].items())
-    unintended = sorted({t["entity_id"] for t in world.transitions} - targets)
-    return {"status": "recorded_actions_verified", "evidence_kind": "deterministic_receipt_audit",
+    unintended = sorted({t["entity_id"] for t in observed} - targets)
+    return {"status": "recorded_changes_checked", "evidence_kind": "recorded_change_audit",
             "recording_digest": case["recording_digest"], "case_revision": case["revision"],
-            "local_tool_calls_checked": local_calls, "external_receipts": external_receipts,
-            "transitions": world.transitions, "command_criteria_met": met and not unintended,
+            "practice": bool(recording.get("practice")),
+            "transitions": observed, "command_criteria_met": met and not unintended,
             "unintended_targets": unintended, "user_turns": len(turns),
             "physical_outcome": "See separately attributed owner observation; relay states alone do not prove position",
             "model_behavior_reproduced": False, "intervention_reduction_proven": False,

@@ -3,16 +3,15 @@
 from uuid import uuid4
 
 import probatio
-from homeassistant.const import __version__ as CORE_VERSION
 from homeassistant.core import SupportsResponse, callback
-from homeassistant.exceptions import ConfigEntryError, HomeAssistantError
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import entity_registry as er, issue_registry as ir
 from homeassistant.helpers.event import async_track_state_change_event
 from homeassistant.helpers.start import async_at_started
 from homeassistant.helpers.service import async_register_admin_service
 
 from . import ai_setup, analyzer, hypotheses, practice
-from .const import CONF_ACCEPTED_WEAK, CONF_AI_TASK, DOMAIN, SUPPORTED_CORE
+from .const import CONF_ACCEPTED_WEAK, CONF_AI_TASK, DOMAIN
 from .casebook import CaseBook
 from .baseline import BaselineManager
 from .candidates import CandidateManager
@@ -25,12 +24,11 @@ PLATFORMS = ["switch"]
 SERVICES = ("status", "list_recordings", "export_recording", "list_cases", "get_case",
             "create_case", "case_feedback", "audit_case", "prepare_baseline", "start_baseline",
             "review_baseline_turn", "continue_baseline", "prepare_candidate", "run_candidate",
-            "review_candidate", "apply_candidate", "analyze_recording", "generate_hypotheses", "review_hypothesis")
+            "review_candidate", "apply_candidate", "analyze_recording", "generate_hypotheses", "review_hypothesis",
+            "check_replay_fidelity", "test_hypotheses")
 
 
 async def async_setup_entry(hass, entry):
-    if CORE_VERSION != SUPPORTED_CORE:
-        raise ConfigEntryError("Recording compatibility is tested for HA 2026.10.2 only")
     recorder = Recorder(hass)
     await recorder.start()
     recorder.casebook = CaseBook(hass, recorder)
@@ -80,6 +78,20 @@ async def async_setup_entry(hass, entry):
         try:
             return await recorder.export(call.data["recording_id"])
         except ValueError as err:
+            raise HomeAssistantError(str(err)) from err
+
+    async def check_replay_fidelity(call):
+        from .replay import check_fidelity
+        try:
+            return await check_fidelity(hass, await recorder.export(call.data["recording_id"]))
+        except (CaseError, ValueError) as err:
+            raise HomeAssistantError(str(err)) from err
+
+    async def test_hypotheses(call):
+        from .validation import test_hypotheses as run
+        try:
+            return await run(hass, entry, recorder, **call.data)
+        except (CaseError, ValueError) as err:
             raise HomeAssistantError(str(err)) from err
 
     async def list_cases(call):
@@ -132,6 +144,11 @@ async def async_setup_entry(hass, entry):
         ("list_recordings", list_recordings, probatio.Schema({})),
         ("export_recording", export, probatio.Schema({probatio.Required("recording_id"): str})),
         ("list_cases", list_cases, probatio.Schema({})),
+        ("check_replay_fidelity", check_replay_fidelity, probatio.Schema({probatio.Required("recording_id"): str})),
+        ("test_hypotheses", test_hypotheses, probatio.Schema({
+            probatio.Required("hypotheses"): probatio.All([dict], probatio.Length(min=1)),
+            probatio.Required("analyses"): probatio.All([dict], probatio.Length(min=1)),
+            probatio.Optional("per_goal"): probatio.All(int, probatio.Range(min=1, max=20)), **paid})),
         ("get_case", case_action, probatio.Schema(case_id)),
         ("create_case", case_action, probatio.Schema({
             probatio.Required("recording_id"): str, probatio.Required("title"): str,
@@ -278,6 +295,8 @@ async def async_unload_entry(hass, entry):
     practice.uninstall()
     hass.data.pop(practice.MODE_KEY, None)
     await entry.runtime_data.stop()
+    from .sandbox import stop_all
+    await stop_all()  # No replay sandbox outlives the improver.
     for name in SERVICES:
         hass.services.async_remove(DOMAIN, name)
     hass.data.pop(DOMAIN, None)

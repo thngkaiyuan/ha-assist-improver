@@ -26,6 +26,7 @@ class SessionView:
     """One recording, sliced for the tools."""
 
     def __init__(self, recording):
+        self.recording = recording
         self.digest = build_digest(recording)
         turns = recording_turns(recording, replay=False)
         self.source = turns[0]["source"]

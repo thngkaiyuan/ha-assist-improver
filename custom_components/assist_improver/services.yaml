@@ -10,6 +10,32 @@ export_recording:
         text:
 list_cases:
   fields: {}
+check_replay_fidelity:
+  fields:
+    recording_id:
+      required: true
+      selector:
+        text:
+test_hypotheses:
+  fields:
+    hypotheses:
+      required: true
+      selector:
+        object:
+    analyses:
+      required: true
+      selector:
+        object:
+    per_goal:
+      selector:
+        number:
+          min: 1
+          max: 20
+          mode: box
+    allow_paid_inference:
+      default: false
+      selector:
+        boolean:
 get_case:
   fields:
     case_id:

@@ -52,7 +52,10 @@ class CaseBook:
         case = create_case(recording, **grounding)
         async with self.lock:
             if case["id"] in self.cases:
-                return self.get(case["id"])  # Repeated import cannot overwrite feedback.
+                existing = self.get(case["id"])  # Repeated import cannot overwrite feedback.
+                upgrade = {k: case[k] for k in ("goal_unmet", "acceptable_devices")  # Cases from before 0.17.10.
+                           if case[k] and not existing.get(k)}
+                return await self._save({**existing, **upgrade}) if upgrade else existing
             return await self._save(case)
 
     async def feedback(self, case_id, *, expected_revision, feedback,

@@ -7,7 +7,7 @@ How Assist Improver is built, and why. The code follows these; when a principle 
 1. **Record.** Each Assist conversation is kept in Home Assistant with what happened in the home during it: the words, the assistant's tool calls and the device changes.
 2. **Analyze.** An AI *journey analyzer* reads one session and lists what the user wanted (goals) and the steps they took only to get there (sub-goals).
 3. **Propose.** An AI *hypothesis generator* looks at the friction across sessions, groups it into themes and proposes one change per theme. A separate AI *reviewer* checks each idea before any money is spent testing it.
-4. **Test** (in development). Each change is replayed against the original conversations, with devices simulated, and kept only if it saves effort.
+4. **Test.** Each change is replayed against the original conversations, on the household's own assistant, in a sandboxed Home Assistant set up as the recorded home, and kept only if it saves effort.
 5. **Ask.** Changes that proved themselves are shown to you to accept, revise or decline.
 
 ## Models judge; code derives
@@ -33,6 +33,15 @@ Models answer through tools that validate their answer against the household and
 - **Evidence, both ways.** Each proposal lists the sessions that support it and any that contradict it.
 - **Fix the real cause.** Speech recognition mishearing the user is in scope, but only when the sessions show it happened.
 
+## Testing changes
+
+- **Home Assistant's own engine, in a sandbox.** Each replay gets a separate Home Assistant instance, seeded from the recording: areas, devices, names and aliases, states, what the assistant could see, scripts and automations. Home Assistant's own intents, tools, scripts and automations run there; only commands to devices are emulated. Before trusting a replay, the sandbox's version of the assistant's instructions and tools is compared with the recorded one.
+- **Friction is measured two ways:** goals that went unmet (the assistant guessed or missed what the user wanted), and extra turns. A fix improves a goal when it meets a goal the original conversation didn't, in no more turns, or meets it in fewer turns.
+- **The baseline comes first.** The original conversation is replayed without the change; it reproduces when, every turn, the goal's devices behave as recorded, so the friction still happens. A model's other variations are kept as notes.
+- **The user's own words, in order.** After the first message, the replay continues with the user's recorded follow-ups until the goal is met, so a fix that still needs a follow-up counts its turns.
+- **Facts for the AI roles.** Before any model replay, code runs each proposed script from the state its goal started in, matches new names the way Assist does, and replays every recorded tool call with the change; calls that now resolve differently are signals to weigh, not proof of a regression.
+- **No resampling.** A test is never repeated hoping for a better result; a different plan (a change in how replays are judged, say) is a different test.
+
 ## Reviewing changes
 
 - **A separate reviewer** reads each idea with read-only access to the same sessions and devices. It writes [Conventional Comments](https://conventionalcomments.org/) (each labelled, marked blocking or non-blocking, and backed by session evidence).
@@ -48,14 +57,14 @@ Models answer through tools that validate their answer against the household and
 
 ## Safety
 
-- **Nothing in your home moves during testing.** Replays and practice mode run against a simulated copy of the home; only commands to devices are intercepted.
+- **Nothing in your home moves during testing.** Replays run in a sandboxed Home Assistant with no device integrations, and practice mode runs against a simulated copy of the home; only commands to devices are intercepted.
 - **Practice mode is per person.** It affects only the signed-in person who turned it on; others and voice satellites are never affected.
 - **Changes are ordinary Home Assistant configuration.** They are shown to you before they apply, nothing runs when they do, and they stay if you uninstall Assist Improver.
 
 ## Cost and data
 
 - **Your conversations stay in your Home Assistant.** Analysis sends what it needs to the AI model you chose, through Home Assistant's own AI Task.
-- **Paid analysis runs only when you allow it.** Cost controls are coarse on purpose: the number of counterfactual tests per cycle, not per-call accounting.
+- **Paid analysis runs only when you allow it.** Cost controls are coarse on purpose, not per-call accounting: the **tests per goal** setting caps how many fixes each goal is tested with, in each conversation where it came up. Each test replays a conversation on the household's own assistant, so it works as a multiplier on what the assistant normally costs.
 
 ## How the AI roles are tested
 

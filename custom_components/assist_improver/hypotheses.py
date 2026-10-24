@@ -47,7 +47,7 @@ Home Assistant's own published best practices (home-assistant.io, voice_control 
 - The domain sets the verbs: a switch called "main valve" can't be opened by voice, but a valve can. Change the device type (switch_as_x, or a template entity) when a switch is really a valve, cover, lock, fan or light, and set a proper device class (a window sensor needs device class window to answer "is it open?").
 - A script's description is the most important part of exposing it: say what it does, when to use it, and what to tell the user afterwards; keep it concise. Describe each field (what, format, limits). End with a stop action carrying a success or error message, so the AI doesn't make up a response. At most 128 exposed scripts and tools in total."""
 
-GENERATOR_INSTRUCTIONS = """You help one household get the most out of Home Assistant's voice assistant ("Assist"). How Assist works is summarised at the end. Your input names the home, its areas and Assist's tools, and what Assist can and can't do with each device involved below.
+GENERATOR_INSTRUCTIONS = """You help one household get the most out of Home Assistant's voice assistant ("Assist"). How Assist works is summarised at the end. Your input names the home, its areas and Assist's tools, and what Assist can and can't do with each device involved below (what Home Assistant carried out when each of Assist's tools was tried on it).
 
 The user seems to be encountering friction in the scenarios in your input. Each is a session written as a script, turn by turn: what the user and Assist said, the user's goals marked at the turn they started, and the friction marked where it happened: extra turns the user spent on a goal (with what each served) and settings the user's words left open (with what the user chose). Side effects Assist left behind are listed too. You can look at every other session with list_sessions and read_session, at a turn's tool calls and state changes with read_session_turn, and at the household with the other tools. They answer from the recordings, except read_script, which reads a script's current definition.
 
@@ -63,8 +63,9 @@ How to work:
    An idea may combine several changes when they serve the same theme, such as a preference and the exposure it relies on.
    Prefer the simplest rule that fits every session, not only the ones it fixes. Test each rule against all the sessions where it would apply, including sessions without friction (list_sessions, read_session): a rule that explains them all in one idea beats one with special cases. A special case, or a rule built from a single session, needs a reason the sessions show. Record what you found: in support, the sessions the rule agrees with; in conflicts, any it contradicts.
 3. Read what is already there before changing it: Assist's current instructions (read_assistant_instructions), a device's aliases, a script's steps. Prefer editing what exists over adding to it: rewrite or merge existing lines into a more general one (give the lines a change replaces in replaces), replace an alias, rework a script.
-4. Discuss each idea with the reviewer, a separate model, using ask_reviewer: send it a draft hypothesis, and it answers with review comments backed by household evidence; any blocking comment requests changes. Take its points seriously: revise, or find another fix for the same goals, and ask again, answering each blocking comment (resolved, or wont_fix with a note).
-5. Implement: make the changes concrete and submit all hypotheses with submit_hypotheses. Every goal with friction needs a fix in some hypothesis, or a place in not_fixed with why its friction is outside the assistant's control. The submit tool checks this and everything else against the sessions and the household; if it reports problems, fix them and submit again. When it accepts your answer, finish with one short sentence.
+4. Check each idea with Home Assistant itself (check_hypothesis): your scripts run in a sandbox of the recorded home from the state each goal started in, showing whether the goal's devices end up as the goal wants, and new aliases are matched the way Assist matches names. It also replays every session's recorded tool calls with your change and lists those that now resolve differently: weigh each against what the user wanted there; it may be a problem, or expected when a more general change covers what the old call did.
+5. Discuss each idea with the reviewer, a separate model, using ask_reviewer: send it a draft hypothesis, and it answers with review comments backed by household evidence; any blocking comment requests changes. Take its points seriously: revise, or find another fix for the same goals, and ask again, answering each blocking comment (resolved, or wont_fix with a note).
+6. Implement: make the changes concrete and submit all hypotheses with submit_hypotheses. Every goal with friction needs a fix in some hypothesis, or a place in not_fixed with why its friction is outside the assistant's control. The submit tool checks this and everything else against the sessions and the household; if it reports problems, fix them and submit again. When it accepts your answer, finish with one short sentence.
 
 Respect the timing and separation of the user's requests: what they asked for separately, at different times, stays separate; what they asked for together can be done together. Speech recognition mishearing the user is in scope too, when the sessions show it happened (for example, an alias for a name that's often misheard). Use only devices and scripts the tools show you.
 
@@ -78,7 +79,7 @@ Write your review as comments in the Conventional Comments style. Each comment h
 - subject: the comment in one sentence;
 - discussion: why, and what you'd do instead;
 - evidence: the household facts that support it: sessions and turns (what the user said or did there), devices (names, aliases, exposure, states), or patterns across sessions (as a note). Every comment except praise needs at least one; a comment without household evidence is opinion.
-Test every rule against all the sessions where it would apply, not only the ones it fixes, and check the hypothesis's support and conflicts against them. Prefer the simplest rule consistent with all of them; a rule with special cases, or one resting on a single session, needs a reason the sessions show, and a simpler rule that fits as well is a blocking comment with those sessions as evidence. Look for: a wrong cause (including a claimed mishearing that the sessions don't show); combining requests the user made separately, at different times; a change that would break, confuse or misfire on other things the household does, or won't carry over to the cases it should cover; and a simpler, more general or more polished version. The outcome follows from the comments: any blocking comment requests changes, otherwise the change is approved with your comments. So mark a comment blocking only when the evidence supports it, and put a revised hypothesis in revised when you know the better version. When you get responses to your previous comments, check each: comment again if a resolution didn't resolve it, and don't repeat comments that were resolved.
+Test every rule against all the sessions where it would apply, not only the ones it fixes, and check the hypothesis's support and conflicts against them. Prefer the simplest rule consistent with all of them; a rule with special cases, or one resting on a single session, needs a reason the sessions show, and a simpler rule that fits as well is a blocking comment with those sessions as evidence. Each draft comes with checks from Home Assistant itself, run in a sandbox of the recorded home: implementation (whether each script, run from the state its goal started in, leaves the goal's devices as the goal wants; what a new alias matches) and resolution_signals (recorded tool calls that resolve differently with the change). Use them as evidence. A call that resolves differently is a signal to weigh, not proof of a regression: it may misfire (a name now matching another device), or be expected (a more general script covering what the old call did); judge it against what the user wanted in that session. Look for: a wrong cause (including a claimed mishearing that the sessions don't show); combining requests the user made separately, at different times; a change that would break, confuse or misfire on other things the household does, or won't carry over to the cases it should cover; and a simpler, more general or more polished version. The outcome follows from the comments: any blocking comment requests changes, otherwise the change is approved with your comments. So mark a comment blocking only when the evidence supports it, and put a revised hypothesis in revised when you know the better version. When you get responses to your previous comments, check each: comment again if a resolution didn't resolve it, and don't repeat comments that were resolved.
 
 A hypothesis's changes: preference and prompt lines say who they're for (everyone, or this_user, inside that person's block in the instructions); an exposure change exposes a device unless expose is false, which hides it; a script change makes a new script (script_name, steps; exposed to Assist unless expose is false) or edits an existing one (its entity_id, with a new description in text and/or new steps), and its steps may end with a stop step carrying the message for the user.
 
@@ -251,37 +252,19 @@ def session_brief(analysis, view):
 
 
 # What Assist can do with an exposed device, by domain, as (tool name, what it does); see HA_PRIMER.
-ASSIST_CAN = {
-    "light": [("intent__HassTurnOn", "turn on"), ("intent__HassTurnOff", "turn off"),
-              ("light__HassLightSet", "set brightness or colour")],
-    "climate": [("intent__HassTurnOn", "turn on (resumes its last mode)"), ("intent__HassTurnOff", "turn off"),
-                ("climate__HassClimateSetTemperature", "set the target temperature")],
-    "fan": [("intent__HassTurnOn", "turn on"), ("intent__HassTurnOff", "turn off"), ("fan__HassFanSetSpeed", "set speed")],
-    "cover": [("intent__HassTurnOn", "open"), ("intent__HassTurnOff", "close"), ("intent__HassSetPosition", "set position")],
-    "valve": [("intent__HassTurnOn", "open"), ("intent__HassTurnOff", "close")],
-    "lock": [("intent__HassTurnOn", "lock"), ("intent__HassTurnOff", "unlock")],
-    "media_player": [("intent__HassTurnOn", "turn on"), ("intent__HassTurnOff", "turn off"),
-                     ("media_player__HassMediaPause", "pause"), ("media_player__HassMediaUnpause", "resume"),
-                     ("media_player__HassSetVolume", "set volume"), ("media_player__HassMediaNext", "skip")],
-    "vacuum": [("vacuum__HassVacuumStart", "start"), ("vacuum__HassVacuumReturnToBase", "return to base"),
-               ("vacuum__HassVacuumCleanArea", "clean an area")],
-    "script": [("intent__HassTurnOn", "run")], "scene": [("intent__HassTurnOn", "activate")],
-    "button": [("intent__HassTurnOn", "press")],
-    **dict.fromkeys(("switch", "input_boolean", "humidifier", "siren", "automation"),
-                    [("intent__HassTurnOn", "turn on"), ("intent__HassTurnOff", "turn off")]),
-}
-
-
-def capabilities(view, entity_id, tools):
-    """What Assist can and can't do with one device, given the tools it had."""
+def capabilities(view, entity_id, found):
+    """What Assist can and can't do with one device: what HA carried out when each Assist tool was tried on it."""
     card = view._card(entity_id)
-    can = [what for tool, what in ASSIST_CAN.get(entity_id.split(".")[0], []) if tool in tools]
     out = {"entity_id": entity_id, "name": card["name"], "area": card.get("area"), "exposed": card.get("exposed"),
            "aliases": view.aliases(entity_id)}
-    if not card.get("exposed"):
+    facts = (found or {}).get(entity_id)
+    if facts is None:
+        out["assist_can"] = "unknown"
+    elif not facts["exposed"]:
         out["assist_can"] = "nothing directly: it isn't exposed (a script could control it)"
     else:
-        out["assist_can"] = can or ["nothing: no Assist tool can change this kind of device (a script could)"]
+        out["assist_can"] = [f"{c['what']} ({c['tool']})" for c in facts["assist_can"]] or [
+            "nothing: no Assist tool carried out a command on it (a script could)"]
     return out
 
 
@@ -292,6 +275,14 @@ class Sessions:
         self.analyses = {short(a["recording_id"]): a for a in analyses}
         self.views = {short(a["recording_id"]): v for a, v in zip(analyses, views)}
         self.household = max(views, key=lambda v: v.digest["started"])
+        self.evidence, self.capability_facts = None, None
+
+    async def load_evidence(self, definitions):
+        """Facts from HA's own engine: what Assist can do with each device in friction, and an Evidence for
+        checking drafts. definitions: the household's scripts and automations, for recordings without them."""
+        from .evidence import Evidence, capabilities as probe
+        self.evidence = Evidence(self, definitions)
+        self.capability_facts = await probe(self.household.recording, self._entities_in_friction(), definitions)
 
     def overview(self):
         """Background, then only the sessions with friction, as scripts; the rest are read on demand."""
@@ -315,10 +306,8 @@ class Sessions:
                 return [t["name"] for t in view.digest["capabilities"]["assist_tools"]]
         return []
 
-    def devices_in_friction(self):
-        """What Assist can and can't do with each device in a session with friction, so causes are checkable."""
-        tools, entities = set(self.assist_tools()), set()
-        known = set(self.household._entities())
+    def _entities_in_friction(self):
+        entities, known = set(), set(self.household._entities())
         for s, analysis in self.analyses.items():
             if friction(analysis):
                 for goal in analysis.get("goals", []):
@@ -326,7 +315,11 @@ class Sessions:
                 for turn in self.views[s].digest["turns"]:
                     for step in turn["assistant"]:
                         entities.update(e for e in (step.get("args") or {}).values() if isinstance(e, str) and e in known)
-        return [capabilities(self.household, e, tools) for e in sorted(entities & known)]
+        return sorted(entities & known)
+
+    def devices_in_friction(self):
+        """What Assist can and can't do with each device in a session with friction, so causes are checkable."""
+        return [capabilities(self.household, e, self.capability_facts) for e in self._entities_in_friction()]
 
     def summary(self):
         """For the reviewer: what each session asked for and how it went, and the user's known choices."""
@@ -492,7 +485,8 @@ class SubmitHypotheses(_Submit):
                    "this_user) or the script's description (script, which Assist reads to decide when to run it). A "
                    "script change makes a new script (script_name, steps; exposed to Assist unless expose is false), "
                    "or edits an existing one when it gives that script's entity_id (a new description in text, "
-                   "and/or new steps); its steps may end with a stop step carrying the message Assist tells the "
+                   "and/or new steps; editing doesn't expose it, so add an exposure change if Assist should run an "
+                   "unexposed one); its steps may end with a stop step carrying the message Assist tells the "
                    "user. An exposure change exposes a device unless expose is false, which hides it. It is checked against "
                    "the sessions and the household; if problems are reported, fix them and submit again.")
     parameters = HYPOTHESES
@@ -698,17 +692,21 @@ class AskReviewer(llm.Tool):
         earlier = [r for r in self.reviews if r["hypothesis"].get("title") == hypothesis.get("title")]
         if len(self.reviews) >= REVIEWS_PER_RUN or len(earlier) >= REVIEWS_PER_IDEA:
             return llm.ToolResult(data={"error": "The review budget for this run or idea is used up; submit your best version."})
-        answer = await self.channel.ask(args)
+        checks = await self.sessions.evidence.check(hypothesis) if self.sessions.evidence else None
+        answer = await self.channel.ask({**args, **({"checks": checks} if checks else {})})
         self.reviews.append({"hypothesis": hypothesis, "responses": args.get("responses"), "review": answer,
-                             "verdict": verdict(answer) if answer else None})
+                             "verdict": verdict(answer) if answer else None, "checks": checks})
         if answer is None:
             return llm.ToolResult(data={"error": "The reviewer stopped; decide yourself."})
-        return llm.ToolResult(data=review_result(hypothesis, answer))
+        return llm.ToolResult(data={**review_result(hypothesis, answer), **({"checks": checks} if checks else {})})
 
 
 async def run_generator(hass, sessions, entity_id, seeded=()):
     """The generator and one long-running reviewer, side by side: (generator run, its submit tool, ask tool,
     reviewer run, seeded reviews). Seeded cases (a test of the reviewer) go through the same reviewer afterwards."""
+    from .snapshot import live_definitions
+    scripts, automations = live_definitions(hass)
+    await sessions.load_evidence({"scripts": scripts, "automations": automations})
     channel = ReviewChannel()
     review_submit = ChannelSubmitReview(sessions, channel)
     reviewer = hass.async_create_task(run_role(
@@ -722,7 +720,8 @@ async def run_generator(hass, sessions, entity_id, seeded=()):
                                llm_api=SessionAPI(hass, tools=tools(sessions, submit, ask)))
     seeded_reviews = {}
     for name, hypothesis in seeded:
-        answer = await channel.ask(hypothesis)
+        checks = await sessions.evidence.check(hypothesis)
+        answer = await channel.ask({**hypothesis, "checks": checks})
         seeded_reviews[name] = {"review": answer, "verdict": verdict(answer) if answer else None}
     channel.close()
     reviewer_run = await reviewer
@@ -744,6 +743,29 @@ def review_result(hypothesis, answer):
             "(resolved, or wont_fix with a note). Only if the friction is outside the assistant's control, "
             "list those goals in not_fixed with why.")
     return result
+
+
+class CheckHypothesis(llm.Tool):
+    """Facts from Home Assistant itself about a draft hypothesis, run in sandboxes: no model, no device."""
+    name = "check_hypothesis"
+    description = ("Check a draft hypothesis (same fields as submit_hypotheses) with Home Assistant itself, in a "
+                   "sandbox of the recorded home. implementation: for each named goal, each new, edited or newly "
+                   "exposed script runs alone from the state the goal started in (and all of them together if none "
+                   "reaches it alone), showing whether the goal's devices end up as the goal wants, including what "
+                   "the user chose for settings left open; new aliases are matched by Home Assistant's own name "
+                   "matching. resolution_signals: every session's recorded tool calls are replayed with the change, "
+                   "listing those that now resolve differently: signals to weigh, not proof of a regression. "
+                   "Instruction lines (preference, prompt) don't change how Home Assistant resolves devices; their "
+                   "effect shows only when the conversation is replayed with the model, later.")
+    parameters = probatio.Schema(_HYPOTHESIS)
+    integration = "assist_improver"
+    annotations = llm.ToolAnnotations(read_only=True, open_world=False)
+
+    def __init__(self, sessions):
+        self.sessions = sessions
+
+    async def async_call(self, hass, tool_input, llm_context):
+        return llm.ToolResult(data=await self.sessions.evidence.check(dict(tool_input.tool_args)))
 
 
 class ReadAssistantInstructions(_SessionTool):
@@ -800,7 +822,8 @@ def reviewer_tools(sessions, submit, scripts=None):
     scripts: offline script definitions for read_script; live from Home Assistant when None."""
     return ([cls(sessions.household) for cls in TOOLS if cls not in (ReadTurn, DeviceDetails, DevicesInArea)]
             + [DevicesInAreaNow(sessions.household), DeviceDetailsAt(sessions), ListSessions(sessions), ReadSession(sessions), ReadSessionTurn(sessions),
-               ReadAssistantInstructions(sessions), ReadScript(scripts), submit])
+               ReadAssistantInstructions(sessions), ReadScript(scripts)]
+            + ([CheckHypothesis(sessions)] if sessions.evidence else []) + [submit])
 
 
 def tools(sessions, submit, reviewer=None, scripts=None):

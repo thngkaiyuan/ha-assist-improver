@@ -29,9 +29,9 @@ def create_theme(cases, *, title, friction, observations, provenance):
         role = observation.get("role")
         if role not in {"friction", "related_success", "counterexample"}:
             raise CaseError("Unknown theme evidence role")
-        if role == "friction" and not case["intervention_turns"]:
+        if role == "friction" and not case["intervention_turns"] and not case.get("goal_unmet"):
             raise CaseError("A successful journey cannot be counted as observed friction")
-        if role == "related_success" and case["intervention_turns"]:
+        if role == "related_success" and (case["intervention_turns"] or case.get("goal_unmet")):
             raise CaseError("An intervention journey cannot be counted as a related success")
         rationale = observation.get("rationale")
         if not isinstance(rationale, str) or not rationale.strip():

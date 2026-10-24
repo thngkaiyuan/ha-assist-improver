@@ -336,18 +336,54 @@
           "description": "Off by default. Normal API charges apply."
         }
       }
+    },
+    "check_replay_fidelity": {
+      "name": "Check replay fidelity",
+      "description": "Rebuild a recorded conversation's home in a sandbox and compare Assist's system prompt and tools there with the recorded ones. No AI model is called.",
+      "fields": {
+        "recording_id": {
+          "name": "Recording",
+          "description": "The recording to check."
+        }
+      }
+    },
+    "test_hypotheses": {
+      "name": "Test hypotheses",
+      "description": "Replay recorded conversations with each hypothesis's changes, on every goal it names, in a sandbox where devices are simulated; up to the tests-per-goal setting for each goal. Can cost money with your AI providers.",
+      "fields": {
+        "hypotheses": {
+          "name": "Hypotheses",
+          "description": "The hypothesis generator's hypotheses."
+        },
+        "analyses": {
+          "name": "Analyses",
+          "description": "The journey analyses the hypotheses were built from."
+        },
+        "allow_paid_inference": {
+          "name": "Allow paid inference",
+          "description": "Required: replays call your assistant's AI model."
+        },
+        "per_goal": {
+          "name": "Tests per goal",
+          "description": "How many fixes each goal may be tested with, in each conversation where it came up; defaults to the tests-per-goal setting."
+        }
+      }
     }
   },
   "options": {
     "step": {
       "init": {
-        "title": "Configure Assist Improver",
+        "title": "Assist Improver settings",
         "description": "Assist Improver uses an AI model to analyse your conversations. {guidance} {reason}",
         "data": {
-          "ai_task_entity_id": "AI model"
+          "ai_task_entity_id": "AI model",
+          "check_ai_task_entity_id": "Follow-up check model",
+          "tests_per_goal": "Tests per goal"
         },
         "data_description": {
-          "ai_task_entity_id": "The improver's own AI roles call this. The recommended option is created with your AI provider's own setup; nothing else changes."
+          "ai_task_entity_id": "The improver's own AI roles call this. The recommended option is created with your AI provider's own setup; nothing else changes.",
+          "check_ai_task_entity_id": "Optional. A small, cheap model is enough: it checks that the replay's follow-up messages (your recorded words, replayed in order) still fit the replies around them. Leave empty to skip the check.",
+          "tests_per_goal": "A multiplier on what your assistant normally costs. A goal can come up in several conversations, phrased differently; each time it came up is tested on its own. Each test replays that conversation with a fix, on your own assistant, so it costs about what the conversation did: with 3, testing costs roughly 3 times those conversations, plus one replay of each original."
         }
       },
       "confirm": {

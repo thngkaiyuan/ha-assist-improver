@@ -8,10 +8,14 @@ own flow) and the household's existing AI Tasks; a weak choice is confirmed.
 import probatio
 from homeassistant.config_entries import ConfigFlow, OptionsFlow
 from homeassistant.core import callback
-from homeassistant.helpers.selector import SelectOptionDict, SelectSelector, SelectSelectorConfig, SelectSelectorMode
+from homeassistant.helpers.selector import (EntitySelector, EntitySelectorConfig, NumberSelector, NumberSelectorConfig,
+                                            NumberSelectorMode, SelectOptionDict, SelectSelector, SelectSelectorConfig,
+                                            SelectSelectorMode)
 
 from . import ai_setup
-from .const import CONF_ACCEPTED_WEAK, CONF_AI_TASK, DOMAIN, NAME
+from .const import (CONF_ACCEPTED_WEAK, CONF_AI_TASK, CONF_CHECK_AI_TASK, CONF_TESTS_PER_GOAL, DEFAULT_TESTS_PER_GOAL,
+                    DOMAIN, NAME)
+SETTINGS = (CONF_TESTS_PER_GOAL, CONF_CHECK_AI_TASK)  # The improver's settings beside the AI model, in Configure.
 
 CREATE = "create"  # List values "create:<config entry>:<recommended|default>" add a new AI Task.
 USE_ANYWAY = "use_anyway"
@@ -21,10 +25,14 @@ class _AiTaskSteps:
     """Shared by first setup, Configure and the Repairs fix: choose, create, then confirm warnings."""
     _choice = None
     _accepted = False
+    _settings = {}
+    _with_settings = False  # Configure shows all the improver's settings; first setup only the AI model.
 
     def _options(self, base, choice):
         """Options with the choice; remembers an accepted weak choice so Repairs stops asking."""
-        options = {k: v for k, v in base.items() if k not in (CONF_AI_TASK, CONF_ACCEPTED_WEAK)}
+        options = {k: v for k, v in base.items() if k not in (CONF_AI_TASK, CONF_ACCEPTED_WEAK, *self._settings)
+                   and not (self._settings and k == "tests_per_cycle")}  # The setting's name before 0.17.4.
+        options.update({k: v for k, v in self._settings.items() if v not in (None, "")})
         if choice:
             options[CONF_AI_TASK] = choice
             if self._accepted:
@@ -67,7 +75,16 @@ class _AiTaskSteps:
 
     def _choose_schema(self, options, default):
         selector = SelectSelector(SelectSelectorConfig(options=options, mode=SelectSelectorMode.DROPDOWN))
-        return probatio.Schema({probatio.Optional(CONF_AI_TASK, **({"default": default} if default else {})): selector})
+        fields = {probatio.Optional(CONF_AI_TASK, **({"default": default} if default else {})): selector}
+        if self._with_settings:
+            current = self.config_entry.options
+            fields[probatio.Optional(CONF_TESTS_PER_GOAL, default=current.get(
+                CONF_TESTS_PER_GOAL, current.get("tests_per_cycle", DEFAULT_TESTS_PER_GOAL)))] = \
+                NumberSelector(NumberSelectorConfig(min=1, max=20, step=1, mode=NumberSelectorMode.BOX))
+            check = current.get(CONF_CHECK_AI_TASK)
+            fields[probatio.Optional(CONF_CHECK_AI_TASK, **({"default": check} if check else {}))] = \
+                EntitySelector(EntitySelectorConfig(domain="ai_task"))
+        return probatio.Schema(fields)
 
     def _placeholders(self, extra=None):
         found = ai_setup.ai_task_entities(self.hass)
@@ -78,6 +95,9 @@ class _AiTaskSteps:
         errors, extra = {}, {}
         if user_input is not None:
             choice = user_input.get(CONF_AI_TASK)
+            self._settings = {k: user_input.get(k) for k in SETTINGS} if self._with_settings else {}
+            if self._settings.get(CONF_TESTS_PER_GOAL) is not None:
+                self._settings[CONF_TESTS_PER_GOAL] = int(self._settings[CONF_TESTS_PER_GOAL])
             if choice and choice.startswith(f"{CREATE}:"):
                 _, entry_id, kind = choice.split(":", 2)
                 choice, reason = await ai_setup.create_ai_task(self.hass, entry_id, kind)
@@ -130,6 +150,8 @@ class AssistantImproverConfigFlow(_AiTaskSteps, ConfigFlow, domain=DOMAIN):
 
 
 class AssistantImproverOptionsFlow(_AiTaskSteps, OptionsFlow):
+    _with_settings = True
+
     async def async_step_init(self, user_input=None):
         return await self._choose(user_input, self.config_entry.options.get(CONF_AI_TASK), "init")
 

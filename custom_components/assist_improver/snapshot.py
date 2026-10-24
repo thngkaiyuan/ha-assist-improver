@@ -48,9 +48,11 @@ def snapshot(hass):
                for d in dr.async_get(hass).devices}
     areas = {a.id: {"name": a.name, "aliases": sorted(a.aliases)}
              for a in ar.async_get(hass).areas.values()}
+    scripts, automations = live_definitions(hass)
     return {"at": utcnow().isoformat(), "time_zone": hass.config.time_zone,
             "home_name": hass.config.location_name, "states": states,
             "entities": entities, "devices": devices, "areas": areas, "exposure": exposure,
+            "scripts": plain(scripts), "automations": plain(automations),
             "attribute_policy": "allowlist-v1; omitted attributes are not recorded"}
 
 
@@ -64,3 +66,18 @@ def provider_config(hass, platform):
                                "title": sub.title, "options": plain({k: v for k, v in sub.data.items()
                                                                       if k in PROVIDER_OPTIONS})})
     return output
+
+
+def live_definitions(hass):
+    """The script and automation configurations, as the household has them now."""
+    from copy import deepcopy
+    scripts, automations = {}, []
+    if (component := hass.data.get("script")) is not None:
+        for entity in getattr(component, "entities", ()):
+            if getattr(entity, "raw_config", None):
+                scripts[entity.entity_id.split(".", 1)[1]] = deepcopy(dict(entity.raw_config))
+    if (component := hass.data.get("automation")) is not None:
+        for entity in getattr(component, "entities", ()):
+            if getattr(entity, "raw_config", None):
+                automations.append(deepcopy(dict(entity.raw_config)))
+    return scripts, automations

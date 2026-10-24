@@ -4,6 +4,10 @@ from copy import deepcopy
 from hashlib import sha256
 import json
 
+import homeassistant.const as ha_const
+
+from .const import TESTED_PROVIDERS
+
 
 class CaseError(ValueError):
     """Evidence is incomplete, inconsistent, or outside the supported slice."""
@@ -47,6 +51,8 @@ def recording_turns(recording, replay=True):
         elif exchanges:
             exchanges[-1]["messages"].append(deepcopy(item))
     snapshots = recording.get("turns", [])
+    if replay and len(exchanges) < len(snapshots) and any(e["type"] == "deleted" for e in recording.get("events", [])):
+        raise CaseError("Home Assistant handled this conversation itself, without the AI model; there is nothing to replay")
     if len(exchanges) != len(snapshots) or not exchanges:
         raise CaseError("User turns and source snapshots do not align")
     for number, (exchange, snapshot) in enumerate(zip(exchanges, snapshots, strict=True), 1):
@@ -78,6 +84,14 @@ def recording_turns(recording, replay=True):
                         prepared=deepcopy(snapshot.get("prepared")), history=deepcopy(history),
                         calls=deepcopy(calls), results=deepcopy(results),
                         final_reply=finals[-1]["content"], ended=finals[-1]["created"])
+    if replay and recording.get("practice"):
+        # A practice turn's snapshot holds the real states; the assistant saw them with practice's earlier
+        # simulated changes on top.
+        for exchange in exchanges:
+            states = exchange["source"]["states"]
+            for change in recording["practice"]["simulated_changes"]:
+                if change["at"] < exchange["source"]["at"] and change["entity_id"] in states and change.get("new"):
+                    states[change["entity_id"]] = deepcopy(change["new"])
     return exchanges
 
 
@@ -101,7 +115,7 @@ def validate_criteria(criteria, source):
 
 
 def create_case(recording, *, title, first_turn, last_turn, destination=None,
-                criteria=None, evidence=None, intervention_turns=None):
+                criteria=None, evidence=None, intervention_turns=None, goal_unmet=False, acceptable=()):
     """Explicit grounding input, not an automatic destination inference."""
     turns = recording_turns(recording)
     if (type(first_turn) is not int or type(last_turn) is not int
@@ -122,6 +136,10 @@ def create_case(recording, *, title, first_turn, last_turn, destination=None,
             "recording_digest": digest(recording), "title": title,
             "turns": selected, "original_user_turns": len(selected),
             "intervention_turns": sorted(interventions),
+            # The friction may be the goal itself going unmet (settings guessed or missed), not extra turns.
+            "goal_unmet": bool(goal_unmet),
+            # Controls the user would accept being set alongside the goal (a car's climate when warming it up).
+            "acceptable_devices": sorted(set(acceptable)),
             "destination": {"status": "established" if established else "needs_feedback",
                             "summary": destination, "criteria": deepcopy(criteria),
                             "evidence": deepcopy(evidence)},
@@ -150,7 +168,8 @@ def retained_inputs(case, recording, turn_numbers):
     if (not turn_numbers or any(type(n) is not int or n not in allowed for n in turn_numbers)
             or turn_numbers != sorted(set(turn_numbers))):
         raise CaseError("Inputs must be an ordered subsequence of original journey turns")
-    if len(turn_numbers) >= len(allowed):
+    if len(turn_numbers) >= len(allowed) and not case.get("goal_unmet"):
+        # For an unmet goal, meeting it in as many turns is an improvement too.
         raise CaseError("Same or more user turns is not an improvement")
     by_number = {t["number"]: t for t in turns}
     return [by_number[n]["messages"][0]["content"] for n in turn_numbers]
@@ -160,8 +179,10 @@ def replay_readiness(case, recording):
     """Report gaps before spending; offline receipt playback does not fill them."""
     turns = verify_case(case, recording)
     gaps, notes = [], []
-    if recording.get("core_version") != "2026.10.2":
-        gaps.append("untested_core_version")
+    running = ha_const.__version__
+    if recording.get("core_version") != running:
+        # The sandbox runs this HA's engine; the replay fidelity check shows whether the request still looks the same.
+        notes.append(f"recorded_on_ha_{recording.get('core_version')}_replayed_on_ha_{running}")
     if turns[0]["number"] > 1 and any("provider_native_history_omitted" in x for x in recording.get("limitations", [])):
         gaps.append("provider_native_history_missing_at_cutoff")
     if any(not t["prepared"]["context"].get("context", {}).get("id") for t in turns):
@@ -171,11 +192,11 @@ def replay_readiness(case, recording):
         gaps.append("provider_configuration_missing_or_ambiguous")
     else:
         options = configs[0]["options"]
-        if turns[0]["prepared"]["context"].get("platform") != "anthropic":
-            gaps.append("untested_journey_provider")
+        if turns[0]["prepared"]["context"].get("platform") not in TESTED_PROVIDERS:
+            notes.append("provider_not_yet_tested_for_replay")
         if any(t["prepared"].get("provider_config") != configs for t in turns):
             gaps.append("provider_configuration_changed_during_journey")
-        if any(options.get(k) for k in ("code_execution", "web_fetch", "web_search")):
+        if any(options.get(k) not in (None, False, "off") for k in ("code_execution", "web_fetch", "web_search")):
             notes.append("original_hosted_tools_preserved; provider_execution_is_not_intercepted_by_HA")
         if turns[0]["number"] == 1:
             notes.append("replay_from_start_carries_its_own_native_history; no_historical_native_backfill")
@@ -183,7 +204,7 @@ def replay_readiness(case, recording):
         # request. Runtime model metadata is a fidelity note, not a new gate.
         if "provider_model_capabilities" not in turns[0]["prepared"]:
             notes.append("provider_runtime_capabilities_were_not_captured; exact_wire_identity_not_claimed")
-        if (options.get("web_search") or options.get("web_fetch")) and any(
+        if any(options.get(k) not in (None, False, "off") for k in ("web_search", "web_fetch")) and any(
                 key not in options for key in ("web_search_max_uses", "web_fetch_max_uses", "user_location")):
             notes.append("uncaptured_hosted_tool_limits_and_location_use_pinned_HA_defaults; old_capture_does_not_prove_their_original_values")
     if any(c.get("external") and c["tool_name"] != "tool_search_tool_bm25"
