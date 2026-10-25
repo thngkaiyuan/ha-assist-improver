@@ -82,8 +82,8 @@ def _conversation(recording, first, last):
 class Improvements:
     """The list, its decisions and their application; the source of truth for both review screens."""
 
-    def __init__(self, hass, recorder):
-        self.hass, self.recorder = hass, recorder
+    def __init__(self, hass, recorder, casebook, candidates):
+        self.hass, self.recorder, self.casebook, self.candidates = hass, recorder, casebook, candidates
         self.store = Store(hass, STORAGE_VERSION, f"{DOMAIN}.improvements", private=True, atomic_writes=True)
         self.changesets = Changesets(hass)
         self.items = {}
@@ -258,7 +258,7 @@ class Improvements:
         derived before from the same candidate, case and recording is reused as it was, without reading its recording
         again; only new or changed ones are derived."""
         groups = {}  # One improvement per set of changes (what gets applied), however its idea was worded.
-        for item in getattr(self.recorder.candidates, "items", {}).values():
+        for item in getattr(self.candidates, "items", {}).values():
             plan = item["plan"]
             if plan.get("kind") == "hypothesis_changes" and item.get("result"):
                 groups.setdefault(digest(plan["hypothesis"]["changes"]), []).append(item)
@@ -316,7 +316,7 @@ class Improvements:
 
     def _case(self, case_id):
         """A case, read in place (the casebook's get copies it): CaseError if it's gone."""
-        book = self.recorder.casebook
+        book = self.casebook
         if (cases := getattr(book, "cases", None)) is None:
             return book.get(case_id)
         if case_id not in cases:

@@ -71,6 +71,7 @@ class Recorder:
         self.capture_error = None
         self.running = False
         self.on_filed_closed = None  # Called with a filed recording's ID once it ends (on-demand: the pipeline runs).
+        self.brief_cache = None  # Each recording's brief (sessions.BriefCache), loaded when a proposal first needs it.
 
     def store(self, key):
         # Serializes in an executor: flush hands it a copy the event loop doesn't change (_frozen).

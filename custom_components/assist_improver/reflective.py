@@ -230,7 +230,7 @@ class RoleRuns:
     async def record(self, run):
         """Keep a record (replacing the one with its id). One a pipeline run creates names the run and its trace."""
         kept = deepcopy(run)
-        if kept.get("kind") not in ("pipeline", "pipeline_state"):
+        if kept.get("kind") != "pipeline":
             for key, value in ids().items():
                 kept.setdefault(key, value)
         async with self.lock:

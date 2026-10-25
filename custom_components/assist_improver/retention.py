@@ -211,12 +211,12 @@ async def prune(recorder, referenced, now=None, named=None):
 
 def needed_runs(runs, recordings):
     """Positions of the records the pipeline still reads, each with the fields it reads (None: the whole record).
-    Its state, anything still running, each existing conversation's latest analysis, unreadable marker, failed
+    Anything still running, each existing conversation's latest analysis, unreadable marker, failed
     attempts (while it's not analysed) and held verdict, and the latest proposal with its hypotheses."""
     needed, latest, analysed, settled = {}, {}, set(), set()
     for n, run in enumerate(runs):
         kind, status, rid = run.get("kind"), run.get("status"), run.get("recording_id")
-        if kind == "pipeline_state" or status == "running":
+        if status == "running":
             needed[n] = None
         elif kind == "hypothesis_generator" and status == "completed":
             latest["generator"] = n

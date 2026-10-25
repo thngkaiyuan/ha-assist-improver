@@ -1,8 +1,9 @@
 """The review panel: improvements as a code-review page, where the user reviews and decides.
 
 A sidebar panel (admins only) served from this integration: a web component in
-www/panel.js that talks to Home Assistant over websocket commands (improvements
-and decisions, runs, household knowledge, settings). Each review has its own
+www/panel.js (the modules it loads are in www/panel/, under the same ?v=VERSION)
+that talks to Home Assistant over websocket commands (improvements and
+decisions, runs, household knowledge, settings). Each review has its own
 address, so the notification links straight to it; settings are at
 /assist-improver?view=settings.
 """
@@ -18,6 +19,7 @@ from .cases import CaseError
 from .changeset import plan_steps
 from .const import DOMAIN, VERSION
 from .improvements import DECISIONS, KINDS, PENDING, benefits, choices, display_title
+from .runtime import loaded
 
 URL_PATH = "assist-improver"  # The panel's address: /assist-improver?id=<improvement>.
 STATIC = f"/{DOMAIN}_static"
@@ -200,23 +202,22 @@ def _change_text(change, assistant):
     return kind
 
 
-def _recorder(hass, connection, msg, needs="improvements"):
+def _runtime(hass, connection, msg):
     """The loaded improver, or None after answering that it isn't loaded, as devview.py does: the panel can stay open
-    after the integration unloads. needs: the part the command uses (improvements, or the pipeline)."""
-    recorder = hass.data.get(DOMAIN)
-    if getattr(recorder, needs, None) is None:
+    after the integration unloads."""
+    if (runtime := loaded(hass)) is None:
         connection.send_error(msg["id"], "not_loaded", "Assist Improver isn't loaded.")
         return None
-    return recorder
+    return runtime
 
 
 @websocket_api.websocket_command({probatio.Required("type"): f"{DOMAIN}/improvements"})
 @websocket_api.require_admin
 @callback
 def ws_list(hass, connection, msg):
-    if (recorder := _recorder(hass, connection, msg)) is None:
+    if (runtime := _runtime(hass, connection, msg)) is None:
         return
-    items = recorder.improvements.listed()
+    items = runtime.improvements.listed()
     connection.send_result(msg["id"], {"improvements": [
         {"id": i["id"], "title": display_title(i), "status": i["status"], "pending": i["status"] in PENDING,
          "enabled": len(benefits(i)[0]), "removed": len(benefits(i)[1])} for i in items]})
@@ -227,9 +228,9 @@ def ws_list(hass, connection, msg):
 @websocket_api.require_admin
 @websocket_api.async_response
 async def ws_get(hass, connection, msg):
-    if (recorder := _recorder(hass, connection, msg)) is None:
+    if (runtime := _runtime(hass, connection, msg)) is None:
         return
-    improvements = recorder.improvements  # Kept: the integration may unload while this waits.
+    improvements = runtime.improvements  # Kept: the integration may unload while this waits.
     try:
         item = improvements.get(msg["improvement_id"])
     except CaseError as err:
@@ -255,10 +256,10 @@ async def ws_get(hass, connection, msg):
 @websocket_api.require_admin
 @websocket_api.async_response
 async def ws_decide(hass, connection, msg):
-    if (recorder := _recorder(hass, connection, msg)) is None:
+    if (runtime := _runtime(hass, connection, msg)) is None:
         return
     try:
-        item = await recorder.improvements.decide(msg["improvement_id"], msg["decision"], note=msg["note"],
+        item = await runtime.improvements.decide(msg["improvement_id"], msg["decision"], note=msg["note"],
                                                   user_id=connection.user.id)
     except CaseError as err:
         connection.send_error(msg["id"], "decision", str(err))
@@ -367,9 +368,9 @@ def ws_assistant_prefer(hass, connection, msg):
 @callback
 def ws_run_status(hass, connection, msg):
     """The run in progress (or the last one), and what Run now would do."""
-    if (recorder := _recorder(hass, connection, msg, "pipeline")) is None:
+    if (runtime := _runtime(hass, connection, msg)) is None:
         return
-    connection.send_result(msg["id"], recorder.pipeline.status())
+    connection.send_result(msg["id"], runtime.pipeline.status())
 
 
 @websocket_api.websocket_command({probatio.Required("type"): f"{DOMAIN}/run/start",
@@ -379,10 +380,10 @@ def ws_run_status(hass, connection, msg):
 @callback
 def ws_run_start(hass, connection, msg):
     """Start a run; the panel asks the user to confirm what it will spend first."""
-    if (recorder := _recorder(hass, connection, msg, "pipeline")) is None:
+    if (runtime := _runtime(hass, connection, msg)) is None:
         return
     try:
-        run = recorder.pipeline.start(trigger="manual", force=msg["force"], only=msg.get("only"))
+        run = runtime.pipeline.start(trigger="manual", force=msg["force"], only=msg.get("only"))
     except CaseError as err:
         connection.send_error(msg["id"], "busy", str(err))
         return
@@ -393,16 +394,16 @@ def ws_run_start(hass, connection, msg):
 @websocket_api.require_admin
 @websocket_api.async_response
 async def ws_run_cancel(hass, connection, msg):
-    if (recorder := _recorder(hass, connection, msg, "pipeline")) is None:
+    if (runtime := _runtime(hass, connection, msg)) is None:
         return
-    await recorder.pipeline.cancel()
+    await runtime.pipeline.cancel()
     connection.send_result(msg["id"], {"cancelled": True})
 
 
 def _entry(hass, connection, msg):
     """The improver's config entry, or None after answering that it isn't loaded."""
-    recorder = _recorder(hass, connection, msg, "pipeline")
-    return recorder.pipeline.entry if recorder else None
+    runtime = _runtime(hass, connection, msg)
+    return runtime.pipeline.entry if runtime else None
 
 
 @websocket_api.websocket_command({probatio.Required("type"): f"{DOMAIN}/settings"})
@@ -524,7 +525,7 @@ async def ws_practice(hass, connection, msg):
 @websocket_api.async_response
 async def ws_log(hass, connection, msg):
     """What the improver did, newest first: runs, improvements going up for review, and decisions on them."""
-    if (recorder := _recorder(hass, connection, msg)) is None:
+    if (runtime := _runtime(hass, connection, msg)) is None:
         return
     names = {}
 
@@ -534,12 +535,12 @@ async def ws_log(hass, connection, msg):
             names[user_id] = getattr(user, "name", None)
         return names[user_id]
     events = []
-    for run in getattr(recorder.role_runs, "runs", []):
+    for run in getattr(runtime.role_runs, "runs", []):
         if run.get("kind") == "pipeline" and run.get("status") != "running":
             events.append({"at": run.get("finished") or run.get("started"), "kind": "run", "status": run.get("status"),
                            "trigger": run.get("trigger"), "only": run.get("only"), "progress": run.get("progress") or {},
                            "error": run.get("error")})
-    for item in recorder.improvements.items.values():
+    for item in runtime.improvements.items.values():
         title = display_title(item)
         if item.get("copy"):
             events.append({"at": item.get("created"), "kind": "posted", "id": item["id"], "title": title})

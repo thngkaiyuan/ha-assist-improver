@@ -36,10 +36,11 @@ import time
 from uuid import uuid4
 
 from homeassistant.core import callback
+from homeassistant.helpers.storage import Store
 from homeassistant.util.dt import utcnow
 
 from .cases import CaseError
-from .const import CONF_AUTO_ACCEPT, CONF_ON_DEMAND, CONF_TESTS_PER_GOAL, DEFAULT_TESTS_PER_GOAL
+from .const import CONF_AUTO_ACCEPT, CONF_ON_DEMAND, CONF_TESTS_PER_GOAL, DEFAULT_TESTS_PER_GOAL, DOMAIN
 from .reflective import index_of
 from .settings import GATES, blocked_stages, listed, paused, role_model
 from .trace import for_run, ids, journal, span, tag
@@ -48,7 +49,7 @@ _LOGGER = logging.getLogger(__name__)
 MAX_ATTEMPTS = 3  # A conversation that keeps failing for an unexpected reason is set aside after this many runs.
 
 STAGES = ("analyze", "propose", "test", "write")
-STATE_ID = "pipeline-state"  # Where each taken-in conversation waits ({recording id: "triage" | "analyze"}).
+STORE = f"{DOMAIN}.pipeline"  # Where each taken-in conversation waits: {"at": {recording id: "triage" | "analyze"}}.
 
 
 def editor_model(entry):
@@ -58,11 +59,16 @@ CLOSED = ("session_expired", "interrupted", "capture_timed_out")
 
 
 class Pipeline:
-    def __init__(self, hass, entry, recorder):
-        self.hass, self.entry, self.recorder = hass, entry, recorder
+    def __init__(self, hass, entry, runtime):
+        self.hass, self.entry, self.runtime, self.recorder = hass, entry, runtime, runtime.recorder
         self.current = None  # The run in progress, or the last one.
         self._task = None
         self._again = False  # A filed conversation ended during a run: run again right after it.
+        self.store = Store(hass, 1, STORE, private=True, atomic_writes=True)
+        self.waiting = {}  # {recording id: the stage it waits at}, as last kept (_at() leaves out what's done).
+
+    async def load(self):
+        self.waiting = ((await self.store.async_load()) or {}).get("at", {})
 
     # On-demand improvements.
 
@@ -96,7 +102,7 @@ class Pipeline:
 
     def _runs(self):
         """The run log's index (reflective.RunIndex): what the stages read from the log, without scanning it."""
-        return index_of(self.recorder.role_runs)
+        return index_of(self.runtime.role_runs)
 
     def _analyzed(self):
         """{recording id: its latest accepted analysis}."""
@@ -105,13 +111,13 @@ class Pipeline:
     def _tests(self):
         """Recordings the household said were tests (ignored when deciding an improvement)."""
         out = set()
-        for item in self.recorder.improvements.items.values():
+        for item in self.runtime.improvements.items.values():
             if any(d["decision"] == "was_test" for d in item.get("decisions", [])):
                 out |= {t["case_id"] for t in item.get("tests", [])}
         recordings = set()
         for case_id in out:
             try:
-                recordings.add(self.recorder.casebook.get(case_id)["recording_id"])
+                recordings.add(self.runtime.casebook.get(case_id)["recording_id"])
             except CaseError:
                 continue
         return recordings
@@ -137,11 +143,11 @@ class Pipeline:
     def _at(self):
         """{recording id: the stage it waits at} for conversations a run took in that aren't analysed yet."""
         runs = self._runs()
-        return {rid: stage for rid, stage in (runs.ids.get(STATE_ID) or {}).get("at", {}).items()
-                if rid not in runs.analyzed and self._readable(rid, runs)}
+        return {rid: stage for rid, stage in self.waiting.items() if rid not in runs.analyzed and self._readable(rid, runs)}
 
     async def _save_at(self, at):
-        await self.recorder.role_runs.record({"id": STATE_ID, "kind": "pipeline_state", "status": "completed", "at": at})
+        self.waiting = dict(at)
+        await self.store.async_save({"at": self.waiting})
 
     def _new(self):
         """Finished conversations no run has taken in yet: they wait at the start."""
@@ -164,14 +170,14 @@ class Pipeline:
         """What the proposer has to work on: analyses with friction since it last ran, and revisions asked for."""
         from .hypotheses import friction_by_goal, short
         tests = self._tests() if tests is None else tests
-        count, settled = 0, set(self.recorder.improvements.settled_goals())
+        count, settled = 0, set(self.runtime.improvements.settled_goals())
         for rid, analysis in self._runs().since:
             if rid not in tests:
                 try:  # Goals an existing improvement already covers (marked duplicates too) go no further.
                     count += any(f"{short(rid)}:{turn}" not in settled for turn in friction_by_goal(analysis))
                 except (KeyError, TypeError):
                     count += bool(analysis.get("goals"))
-        return count + sum(1 for i in self.recorder.improvements.items.values() if i["status"] == "revision_requested")
+        return count + sum(1 for i in self.runtime.improvements.items.values() if i["status"] == "revision_requested")
 
     def backlog(self, todo=None, tests=None):
         """What waits at each stage: {stage: count}, as the settings view shows it. todo, tests: to_analyze() and
@@ -182,9 +188,9 @@ class Pipeline:
         return {"requests": sum(1 for rid in (self.to_analyze(tests) if todo is None else todo) if rid not in at),
                 "triage": waiting.count("triage"), "analyze": waiting.count("analyze"),
                 "propose": self._to_propose(tests), "test": len(self._untested(copy=False)[0]),
-                "write": len(self.recorder.improvements.unwritten()),
-                "review": len(self.recorder.improvements.pending()),
-                "household": sum(1 for i in self.recorder.improvements.items.values() if i["status"] == "applied")}
+                "write": len(self.runtime.improvements.unwritten()),
+                "review": len(self.runtime.improvements.pending()),
+                "household": sum(1 for i in self.runtime.improvements.items.values() if i["status"] == "applied")}
 
     def preview(self):
         """What Run now will do, in numbers the confirmation shows (no per-call cost accounting: coarse controls)."""
@@ -222,7 +228,7 @@ class Pipeline:
                                 "started": now, "finished": now, "stage": None, "progress": {}, "error": reason,
                                 "force": False, "only": None}
                 journal("warning", f"{trigger.capitalize()} run not started: {reason}", run_id=self.current["id"])
-                self.hass.async_create_task(self.recorder.role_runs.record(self.current))
+                self.hass.async_create_task(self.runtime.role_runs.record(self.current))
             raise CaseError(reason)
         run_id = uuid4().hex
         self.current = {"id": run_id, "kind": "pipeline", "trigger": trigger, "status": "running",
@@ -251,7 +257,7 @@ class Pipeline:
     async def _stage(self, stage, **progress):
         self.current["stage"] = stage
         self.current["progress"].update(progress)
-        await self.recorder.role_runs.record(self.current)  # Kept, so a restart loses nothing.
+        await self.runtime.role_runs.record(self.current)  # Kept, so a restart loses nothing.
 
     async def _guarded(self, stage, work):
         """One stage's work. An unexpected failure stays with that stage: kept with why (and logged with its
@@ -282,7 +288,7 @@ class Pipeline:
             await self._stages()
 
     async def _stages(self):
-        from . import _hypotheses
+        from .proposal import propose as run_proposal
         from .validation import test_hypotheses
         run = self.current
         only = run.get("only")  # Read at each stage: a pause applies right away.
@@ -323,28 +329,28 @@ class Pipeline:
             tests = self._tests()
             state["analyses"] = analyses = [a for rid, a in self._analyzed().items() if rid not in tests]
             # Goals with an improvement already: left out.
-            state["settled"] = settled = self.recorder.improvements.settled_goals()
+            state["settled"] = settled = self.runtime.improvements.settled_goals()
             state["hypotheses"], state["generator"] = self._untested()
             if not (analyses and gate("propose") and (self._to_propose(tests) or run.get("force")
                                                       or self._last_generator()[1] is None)):
                 return
             await self._stage("propose", sessions=len(analyses))
             async with span("propose", sessions=len(analyses)) as section:
-                generator = await _hypotheses(self.hass, self.entry, self.recorder, "generate_hypotheses",
-                                              analyses=analyses, feedback=self.recorder.improvements.feedback(),
+                generator = await run_proposal(self.hass, self.entry, self.runtime, "generate_hypotheses",
+                                              analyses=analyses, feedback=self.runtime.improvements.feedback(),
                                               settled=settled,
-                                              existing=self.recorder.improvements.catalog(detailed=True),
+                                              existing=self.runtime.improvements.catalog(detailed=True),
                                               allow_paid_inference=True)
                 section.tag(status=generator.get("status"), generator_run=generator.get("id"))
             hypotheses = (generator.get("output") or {}).get("hypotheses") or []
-            if generator.get("status") == "completed" and (found := await self.recorder.improvements.note_addressed(
+            if generator.get("status") == "completed" and (found := await self.runtime.improvements.note_addressed(
                     (generator.get("output") or {}).get("already_addressed"))):  # Kept with what covers them.
                 run["progress"]["already_addressed"] = run["progress"].get("already_addressed", 0) + found
             run["progress"].update(hypotheses=len(hypotheses), generator_run=generator.get("id"),
                                    generator_status=generator.get("status"))
             if generator.get("status") == "completed" and hypotheses:
                 generator["tested"] = False  # Until its tests ran: a paused or cut-off test stage keeps them.
-                await self.recorder.role_runs.record(generator)
+                await self.runtime.role_runs.record(generator)
             state["hypotheses"], state["generator"] = hypotheses, generator
 
         async def simulate():
@@ -353,31 +359,31 @@ class Pipeline:
                 return
             await self._stage("test", hypotheses=len(hypotheses))
             try:
-                report = await test_hypotheses(self.hass, self.entry, self.recorder, hypotheses=hypotheses,
+                report = await test_hypotheses(self.hass, self.entry, self.runtime, hypotheses=hypotheses,
                                                analyses=state["analyses"], skip_goals=set(state["settled"]),
                                                allow_paid_inference=True)
             except Exception:
                 # Tried again next run, but not forever: after MAX_ATTEMPTS failures these ideas are set aside.
                 generator["test_attempts"] = generator.get("test_attempts", 0) + 1
                 generator["tested"] = generator["test_attempts"] >= MAX_ATTEMPTS
-                await self.recorder.role_runs.record(generator)
+                await self.runtime.role_runs.record(generator)
                 raise
             generator["tested"] = True
-            await self.recorder.role_runs.record(generator)
+            await self.runtime.role_runs.record(generator)
             run["progress"].update(tested=report.get("tested", 0))
-            before = {i["id"] for i in self.recorder.improvements.items.values()}
-            await self.recorder.improvements.refresh()
-            run["progress"].update(new_improvements=sum(1 for i in self.recorder.improvements.items.values()
+            before = {i["id"] for i in self.runtime.improvements.items.values()}
+            await self.runtime.improvements.refresh()
+            run["progress"].update(new_improvements=sum(1 for i in self.runtime.improvements.items.values()
                                                         if i["id"] not in before))
 
         async def write():
-            if not (gate("write") and (waiting := self.recorder.improvements.unwritten())):
+            if not (gate("write") and (waiting := self.runtime.improvements.unwritten())):
                 return
             # What the household reads first: the headline and what they get, by the editor; then up for review.
             await self._stage("write", writing=len(waiting))
-            written = await self.recorder.improvements.write_copy(editor_model(self.entry))
+            written = await self.runtime.improvements.write_copy(editor_model(self.entry))
             if self.entry.options.get(CONF_AUTO_ACCEPT):  # The household chose to accept without reviewing.
-                run["progress"]["auto_accepted"] = await self.recorder.improvements.auto_accept(list(written))
+                run["progress"]["auto_accepted"] = await self.runtime.improvements.auto_accept(list(written))
 
         try:
             await self._guarded("analyze", analyze)
@@ -407,25 +413,25 @@ class Pipeline:
     async def _attempt(self, recording_id, **kwargs):
         """One no role can read is skipped for good, with why. One that fails for an unexpected reason is logged
         and tried again next run, up to MAX_ATTEMPTS. The run goes on."""
-        from . import _analyze
+        from .analysis import analyze
         record = {"id": uuid4().hex, "kind": "journey_analyzer", "recording_id": recording_id, "status": "failed",
                   "finished": utcnow().isoformat(), **ids()}
         try:
-            return await _analyze(self.hass, self.entry, self.recorder, recording_id, allow_paid_inference=True,
+            return await analyze(self.hass, self.entry, self.runtime, recording_id, allow_paid_inference=True,
                                   **kwargs)
         except asyncio.CancelledError:
             raise
         except CaseError as err:
-            return await self.recorder.role_runs.record({**record, "id": f"unreadable-{recording_id}",
+            return await self.runtime.role_runs.record({**record, "id": f"unreadable-{recording_id}",
                                                          "answer_status": "unreadable", "error": {"message": str(err)}})
         except Exception as err:
             _LOGGER.exception("Assist Improver couldn't analyse conversation %s", recording_id)
             message = f"{type(err).__name__}: {err}"[:500]
             if self._strikes(recording_id) + 1 >= MAX_ATTEMPTS:
-                return await self.recorder.role_runs.record({
+                return await self.runtime.role_runs.record({
                     **record, "id": f"unreadable-{recording_id}", "answer_status": "unreadable",
                     "error": {"message": f"Set aside after {MAX_ATTEMPTS} failed runs: {message}"}})
-            return await self.recorder.role_runs.record({**record, "answer_status": "error",
+            return await self.runtime.role_runs.record({**record, "answer_status": "error",
                                                          "error": {"message": message}})
 
     def _count(self, result, at, recording_id):
@@ -453,7 +459,7 @@ class Pipeline:
         tag(outcome=status)
         journal("error" if status == "failed" else "info", f"Run {status}" + (f": {error}" if error else ""),
                 timings=self.current["progress"].get("timings"), problems=self.current["progress"].get("problems"))
-        await self.recorder.role_runs.record(self.current)
+        await self.runtime.role_runs.record(self.current)
 
 
 SCHEDULES = {"off": None, "daily": None, "weekly": 6}  # weekly: Sundays (weekday 6), at 03:00.

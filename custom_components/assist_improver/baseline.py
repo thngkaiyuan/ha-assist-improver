@@ -1,7 +1,6 @@
 """The baseline: a recorded conversation replayed through the household's own provider in a sandbox, turn by turn,
 to check it reproduces what happened before a fix is tried (validation.run_baseline drives it). Never a new client;
-preparation is read-only, every model step needs paid-call consent, and nothing samples again to get a convenient
-baseline.
+preparation is read-only, a run needs paid-call consent, and nothing samples again to get a convenient baseline.
 """
 
 import asyncio
@@ -37,6 +36,8 @@ def prepare_plan(case, recording):
     # What a turn's effects are compared with: the real changes HA recorded; for a practice session, what today's
     # engine does with the recorded calls (the practice engine of the recording day may have emulated less).
     expected_effects = "recorded_calls_rerun" if recording.get("practice") else "recorded_changes"
+    # These fields stay as they are, review_between_user_inputs included: the plan's ID is their digest, and a new ID
+    # would run every baseline already paid for again.
     plan = {"case_id": case["id"], "case_revision": case["revision"],
             "recording_digest": case["recording_digest"], "core_version": CORE_VERSION,
             "agent_id": agent_ids.pop(), "provider": deepcopy(provider), "platform": platform,
@@ -96,6 +97,7 @@ def _calls_key(calls):
 
 
 class BaselineTrial:
+    """One replay of a case's turns under its plan; it runs once, and its sandbox closes however it ends."""
     def __init__(self, hass, case, recording, agent):
         self.plan = prepare_plan(case, recording)
         self.turns = verify_case(case, recording)
@@ -105,11 +107,9 @@ class BaselineTrial:
         self.destination_met = None  # Whether the replay without a fix met the goal, once it's reproduced.
         self.agent = clone_provider(agent, self.plan)
         self.log = FrozenTurnLog(hass, case, recording)
-        self.index = 0
         self.status = "prepared"
         self.steps = []
         self.error = None
-        self.reviews = []
 
     async def _expected(self, turn):
         if self.plan.get("expected_effects") != "recorded_calls_rerun":
@@ -125,20 +125,47 @@ class BaselineTrial:
         return self._rerun.get(turn["number"], [])
 
     def export(self):
-        return {"status": self.status, "run_id": self.log.conversation_id,
-                "plan": deepcopy(self.plan), "next_turn": self.turns[self.index]["number"],
-                "steps": deepcopy(self.steps), "reviews": deepcopy(self.reviews),
-                "error": deepcopy(self.error), "attempts": 1, "destination_met": self.destination_met,
-                "usage": self.log.usage_report(),
-                "effect_boundary": self.plan["effect_boundary"]}
+        """The baseline record its case keeps."""
+        return {"status": self.status, "plan": deepcopy(self.plan), "steps": deepcopy(self.steps),
+                "error": deepcopy(self.error), "destination_met": self.destination_met,
+                "usage": self.log.usage_report()}
 
-    async def step(self, *, allow_paid_inference=False, expected_turn):
+    async def run(self, *, allow_paid_inference=False, progress=None):
+        """Replay every turn in order, moving on while the goal's devices get the recorded effects; stop at the first
+        turn that doesn't (not_reproducible), can't be replayed (unsupported) or fails (infrastructure_failure).
+        Reproduced once every turn has, with whether the goal was met. progress(record) is given the record so far
+        before each later turn is paid for."""
         if not allow_paid_inference:
             raise CaseError("Paid inference has not been authorized")
-        turn = self.turns[self.index]
-        if expected_turn != turn["number"] or self.status not in {"prepared", "ready_for_next_turn"}:
-            raise CaseError("Trial is not ready for this turn; refresh its status")
+        if self.status != "prepared":
+            raise CaseError("Baseline already attempted; no automatic resampling")
         self.status = "running"
+        try:
+            for index, turn in enumerate(self.turns):
+                if index:
+                    if progress is not None:
+                        await progress(self.export())
+                    try:
+                        self.log.advance(turn, check_sources=self.plan.get("expected_effects") != "recorded_calls_rerun")
+                    except CaseError as err:
+                        self.status = "unsupported"
+                        self.error = {"type": type(err).__name__, "message": str(err)}
+                        break
+                if not await self._turn(turn):
+                    break
+            else:
+                self.status = "reproduced"
+                world = self.log.replay_api.world
+                self.destination_met = destination_met(self.criteria, world.states, world.transitions)
+        except asyncio.CancelledError:  # A cancelled run still closes its sandbox.
+            self.status = "cancelled"
+            raise
+        finally:
+            await self.log.close()
+        return self.export()
+
+    async def _turn(self, turn):
+        """Replay one turn and keep it as a step; True when the goal's devices got the recorded effects."""
         start = len(self.log.content)
         transition_start = len(self.log.replay_api.world.transitions)
         try:
@@ -153,7 +180,7 @@ class BaselineTrial:
             calls = [c for m in actual for c in m.get("tool_calls", [])]
             # The friction still happens: the goal's devices get the same effects as recorded, however the model
             # phrased its calls. The model may vary elsewhere (another device, a question instead of an action);
-            # those differences are kept as notes, not a reason to stop.
+            # those differences are kept as notes, not a reason to stop. The replies are kept for reading.
             actual_transitions = self.log.replay_api.world.transitions[transition_start:]
             expected = await self._expected(turn)
             actual_by, expected_by = per_entity(actual_transitions), per_entity(expected)
@@ -166,13 +193,9 @@ class BaselineTrial:
                                "output": actual, "original_reply": turn["final_reply"],
                                "ha_effects_match": matches, "same_tool_calls": _calls_key(calls) == _calls_key(turn["calls"]),
                                "differences_elsewhere": elsewhere,
-                               "transitions": deepcopy(actual_transitions), "recorded_transitions": expected,
-                               "semantic_review": "pending"})
-            self.status = "awaiting_review" if matches else "not_reproducible"
-        except asyncio.CancelledError:  # A cancelled run still closes its sandbox.
-            self.status = "cancelled"
-            await self.log.close()
-            raise
+                               "transitions": deepcopy(actual_transitions), "recorded_transitions": expected})
+            if not matches:
+                self.status = "not_reproducible"
         except Exception as err:
             self.status = "unsupported" if isinstance(err, CaseError) else "infrastructure_failure"
             self.error = {"type": type(err).__name__}
@@ -182,57 +205,16 @@ class BaselineTrial:
                                "output": plain([c.as_dict() for c in self.log.content[start:]]),
                                "external_calls": deepcopy(self.log.external_calls),
                                "incomplete": True})
-        if self.steps[-1].get("turn") == turn["number"]:
-            self.steps[-1]["prompt_matches_recording"] = self.log.prompt_matches_recording
-        if self.status not in ("awaiting_review", "ready_for_next_turn"):
-            await self.log.close()
-        return self.export()
-
-    def review(self, *, expected_turn, reproduced, feedback):
-        if self.status != "awaiting_review" or expected_turn != self.turns[self.index]["number"]:
-            raise CaseError("No matching turn is awaiting review")
-        if not feedback.strip():
-            raise CaseError("Record why the response and next original input are or are not compatible")
-        self.reviews.append({"turn": expected_turn, "reproduced": reproduced, "feedback": feedback})
-        self.steps[-1]["semantic_review"] = "accepted" if reproduced else "rejected"
-        if not reproduced:
-            self.status = "not_reproducible"
-        elif self.index == len(self.turns) - 1:
-            self.status = "reproduced"
-            world = self.log.replay_api.world
-            self.destination_met = destination_met(self.criteria, world.states, world.transitions)
-        if self.status in ("not_reproducible", "reproduced"):
-            self.log.hass.async_create_task(self.log.close(), "assist_improver_close_replay_sandbox")
-        else:
-            try:
-                self.log.advance(self.turns[self.index + 1],
-                                 check_sources=self.plan.get("expected_effects") != "recorded_calls_rerun")
-            except CaseError as err:
-                self.status = "unsupported"
-                self.error = {"type": type(err).__name__, "message": str(err)}
-                self.log.hass.async_create_task(self.log.close(), "assist_improver_close_replay_sandbox")
-            else:
-                self.index += 1
-                self.status = "ready_for_next_turn"
-        return self.export()
-
-
-OPEN = ("prepared", "running", "awaiting_review", "ready_for_next_turn")  # A trial review or continue_trial may use.
+        self.steps[-1]["prompt_matches_recording"] = self.log.prompt_matches_recording
+        return self.status == "running"
 
 
 class BaselineManager:
-    """Native admin-action orchestration; review never causes an inference call.
-
-    The trials in progress are held in memory (the provider's history lives only there); a settled one (reproduced,
-    not reproducible, unsupported...) is let go, with its recording and replay state: nothing reads it again."""
+    """Runs a case's baseline, once per plan, and keeps it with the case. A trial (its provider history and sandbox)
+    lives only while it runs: a reload in the middle leaves the attempt interrupted, never repeated."""
     def __init__(self, hass, casebook):
         self.hass = hass
         self.book = casebook
-        self.trials = {}
-
-    def _let_go(self, case_id, trial):
-        if trial.status not in OPEN and self.trials.get(case_id) is trial:
-            del self.trials[case_id]
 
     async def prepare(self, case_id):
         case = self.book.get(case_id)
@@ -241,7 +223,10 @@ class BaselineManager:
         clone_provider(conversation.async_get_agent(self.hass, plan["agent_id"]), plan)
         return {"plan": plan, "paid_inference_performed": False}
 
-    async def start(self, case_id, *, plan_id, allow_paid_inference=False):
+    async def run(self, case_id, *, plan_id, allow_paid_inference=False):
+        """Replay the case's conversation under the prepared plan, kept before any inference and after each turn;
+        returns the case with its settled baseline. A baseline attempted under this plan never runs again; one
+        under an older plan moves to baseline_history."""
         if not allow_paid_inference:
             raise CaseError("Paid inference has not been authorized")
         async with self.book.lock:
@@ -255,60 +240,11 @@ class BaselineManager:
                     raise CaseError("Baseline already attempted; no automatic resampling")
                 # A different plan is a different test (how it's judged changed), not a resample: keep the old one.
                 case["baseline_history"] = [*case.get("baseline_history", []), case["baseline"]]
-                case["baseline"] = {"status": "not_run", "attempts": 0}
             agent = conversation.async_get_agent(self.hass, plan["agent_id"])
             trial = BaselineTrial(self.hass, case, recording, agent)
-            case["baseline"] = {**trial.export(), "status": "running"}
-            await self.book._save(case)  # Persist attempt BEFORE any inference.
-            self.trials[case_id] = trial
-            try:
-                case["baseline"] = await trial.step(allow_paid_inference=True, expected_turn=trial.turns[0]["number"])
+
+            async def keep(record):
+                case["baseline"] = record
                 return await self.book._save(case)
-            finally:
-                self._let_go(case_id, trial)
-
-    async def continue_trial(self, case_id, *, expected_turn, allow_paid_inference=False):
-        if not allow_paid_inference:
-            raise CaseError("Paid inference has not been authorized")
-        async with self.book.lock:
-            case, trial = self._active(case_id)
-            if trial.status != "ready_for_next_turn" or expected_turn != trial.turns[trial.index]["number"]:
-                raise CaseError("No reviewed continuation is ready")
-            case["baseline"] = {**trial.export(), "status": "running"}
-            await self.book._save(case)
-            try:
-                case["baseline"] = await trial.step(allow_paid_inference=True, expected_turn=expected_turn)
-                return await self.book._save(case)
-            finally:
-                self._let_go(case_id, trial)
-
-    async def review(self, case_id, **review):
-        async with self.book.lock:
-            case, trial = self._active(case_id)
-            # Review may advance the in-memory log. If storage fails, a retry
-            # must see the same pending turn, not a half-accepted continuation.
-            checkpoint = (trial.index, trial.status, deepcopy(trial.steps),
-                deepcopy(trial.error), deepcopy(trial.reviews), trial.log)
-            # No live HA objects/native provider history need a deep copy.
-            trial.log = copy(trial.log)
-            trial.log.content = list(trial.log.content)
-            trial.log.replay_api = copy(trial.log.replay_api)
-            trial.log.replay_api.world = deepcopy(trial.log.replay_api.world)
-            try:
-                case["baseline"] = trial.review(**review)
-                saved = await self.book._save(case)
-            except Exception:
-                (trial.index, trial.status, trial.steps, trial.error,
-                    trial.reviews, trial.log) = checkpoint
-                raise
-            self._let_go(case_id, trial)
-            return saved
-
-    def _active(self, case_id):
-        case = self.book.get(case_id)
-        if case_id not in self.trials:
-            raise CaseError("Trial history is not in memory; preserve this attempt rather than silently restart it")
-        trial = self.trials[case_id]
-        if case["revision"] != trial.plan["case_revision"]:
-            raise CaseError("Case feedback changed during this trial; do not continue the old plan")
-        return case, trial
+            await keep({**trial.export(), "status": "running"})  # Persist the attempt BEFORE any inference.
+            return await keep(await trial.run(allow_paid_inference=True, progress=keep))

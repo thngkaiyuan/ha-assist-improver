@@ -128,7 +128,7 @@ class _AiTaskSteps:
 
 class AssistantImproverConfigFlow(_AiTaskSteps, ConfigFlow, domain=DOMAIN):
     VERSION = 1
-    MINOR_VERSION = 2  # migrations.py brings older entries (and their stores) up to it.
+    MINOR_VERSION = 3  # migrations.py brings older entries (and their stores) up to it.
 
     @staticmethod
     @callback

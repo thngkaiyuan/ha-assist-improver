@@ -34,8 +34,9 @@ def _storage(path):
 
 
 async def async_get_config_entry_diagnostics(hass, entry):
-    recorder = entry.runtime_data
-    runs = getattr(recorder.role_runs, "runs", [])
+    runtime = entry.runtime_data
+    recorder = runtime.recorder
+    runs = getattr(runtime.role_runs, "runs", [])
     pipeline_runs = [r for r in runs if r.get("kind") == "pipeline"][-RUNS_SHOWN:]
     calls = defaultdict(lambda: {"calls": 0, "failed": 0, "seconds": 0.0, "slowest": 0.0, "errors": []})
     for run in [r for r in runs if r.get("role") and r.get("started")][-CALLS_SHOWN:]:
@@ -57,12 +58,12 @@ async def async_get_config_entry_diagnostics(hass, entry):
         "recordings": {"by_status": dict(Counter(s.get("status") for s in index)),
                        "by_storage": dict(Counter(s.get("stored", "full") for s in index)),
                        "with_no_turns": sum(1 for s in index if s.get("user_turns") == 0)},
-        "retention": getattr(recorder, "retention", None),
+        "retention": runtime.retention,
         "runs": [{k: r.get(k) for k in ("started", "finished", "status", "trigger", "only", "stage", "progress",
                                          "error")} for r in pipeline_runs],
         "role_calls": dict(calls),
         "sandboxes": dict(STATS),
-        "improvements": dict(Counter(i.get("status") for i in recorder.improvements.items.values())),
+        "improvements": dict(Counter(i.get("status") for i in runtime.improvements.items.values())),
         "household": {"lines": len(knowledge.get("everyone", [])) + sum(len(v) for v in knowledge.get("people", {})
                                                                          .values())},
         "recorder": recorder.status(),

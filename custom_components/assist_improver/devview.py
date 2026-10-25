@@ -18,22 +18,23 @@ from homeassistant.components import websocket_api
 
 from . import trace
 from .const import CONF_DEVELOPER, DOMAIN, VERSION
+from .runtime import loaded
 
 MIN_PREFIX = 4  # Characters an ID prefix needs before lookup tries it.
 JOURNAL_SHOWN = 200  # Journal entries a lookup shows; the Logs tab pages through the rest.
 
 
-def _recorder(hass, connection, msg):
+def _runtime(hass, connection, msg):
     """The loaded improver, or None after sending why not (not loaded, or developer mode off)."""
-    recorder = hass.data.get(DOMAIN)
-    pipeline = getattr(recorder, "pipeline", None)
+    runtime = loaded(hass)
+    pipeline = runtime.pipeline if runtime else None
     if pipeline is None:
         connection.send_error(msg["id"], "not_loaded", "Assist Improver isn't loaded.")
         return None
     if not pipeline.entry.options.get(CONF_DEVELOPER):
         connection.send_error(msg["id"], "developer_mode_off", "Developer mode is off.")
         return None
-    return recorder
+    return runtime
 
 
 def _short(recording_id):
@@ -58,14 +59,14 @@ class _Facts:
     """What the pipeline knows about every recording, gathered in one pass over the run log, the improvements and
     the cases."""
 
-    def __init__(self, recorder):
+    def __init__(self, runtime):
         from .hypotheses import friction_by_goal
-        pipeline, improvements = recorder.pipeline, recorder.improvements
+        pipeline, improvements = runtime.pipeline, runtime.improvements
         self.analysed, self.unreadable, self.tests = pipeline._analyzed(), pipeline._unreadable(), pipeline._tests()
         self.waiting_at = pipeline._at()
         self.settled = improvements.settled_goals()
         self.attempts, self.proposals = defaultdict(list), defaultdict(list)
-        for run in getattr(recorder.role_runs, "runs", []):
+        for run in getattr(runtime.role_runs, "runs", []):
             if run.get("kind") == "journey_analyzer" and run.get("recording_id"):
                 self.attempts[run["recording_id"]].append(run)
             elif run.get("kind") == "hypothesis_generator":
@@ -76,7 +77,7 @@ class _Facts:
             for goal in dict.fromkeys(g.split(":")[0] for g in improvements._covers(item)):
                 self.covering[goal].append(item["id"])
         self.cases = defaultdict(list)
-        for case in recorder.casebook.cases.values():
+        for case in runtime.casebook.cases.values():
             self.cases[case.get("recording_id")].append(case["id"])
         self.friction_by_goal = friction_by_goal
 
@@ -114,14 +115,14 @@ class _Facts:
             return {}
 
 
-def conversation_rows(recorder, sizes=None):
+def conversation_rows(runtime, sizes=None):
     """One row per recording, newest first: {id, short, started, ended, user_turns, status, stored, bytes, practice,
     stage, waiting_at, strikes, goals, friction, improvements, cases, runs}. stage is one of active, empty, waiting,
     held, failing (its last attempt failed; strikes counts the unexpected ones, which set it aside at three),
     set_aside, test, smooth, analysed, duplicate, improvement."""
-    facts, sizes = _Facts(recorder), sizes or {}
+    facts, sizes = _Facts(runtime), sizes or {}
     rows = []
-    for rid, summary in recorder.index.items():
+    for rid, summary in runtime.recorder.index.items():
         analysis = facts.analysed.get(rid) or {}
         short = _short(rid)
         runs = {r.get("run_id") for r in facts.attempts.get(rid, []) if r.get("run_id")}
@@ -129,7 +130,7 @@ def conversation_rows(recorder, sizes=None):
         rows.append({"id": rid, "short": short, "started": summary.get("started"), "ended": summary.get("updated"),
                      "user_turns": summary.get("user_turns"), "status": summary.get("status"),
                      "stored": summary.get("stored", "full"), "bytes": sizes.get(rid),
-                     "practice": bool((recorder.sessions.get(rid) or {}).get("practice")) or None,
+                     "practice": bool((runtime.recorder.sessions.get(rid) or {}).get("practice")) or None,
                      "filed": (summary.get("filed") or {}).get("at"),  # On-demand: when the user filed it.
                      "stage": facts.stage(rid, summary), "waiting_at": facts.waiting_at.get(rid),
                      "strikes": facts.strikes(rid), "goals": len(analysis.get("goals") or []),
@@ -142,30 +143,30 @@ def conversation_rows(recorder, sizes=None):
 
 # Lookup: any ID, or the start of one.
 
-def _candidates(recorder, trace_ids):
+def _candidates(runtime, trace_ids):
     """(kind, id, title) for everything an ID can name."""
-    for rid, summary in recorder.index.items():
+    for rid, summary in runtime.recorder.index.items():
         yield "recording", rid, f"Conversation from {summary.get('started', '?')}"
-    for conversation_id, rid in getattr(recorder, "keys", {}).items():
+    for conversation_id, rid in runtime.recorder.keys.items():
         yield "conversation_id", conversation_id, f"Home Assistant conversation of recording {_short(rid)}"
-    for run in getattr(recorder.role_runs, "runs", []):
-        if run.get("id") and run.get("kind") != "pipeline_state":
+    for run in getattr(runtime.role_runs, "runs", []):
+        if run.get("id"):
             kind = "run" if run.get("kind") == "pipeline" else "role_call"
             yield kind, run["id"], f"{run.get('kind')} {run.get('status')} {run.get('started') or ''}".strip()
-    for item in recorder.improvements.items.values():
+    for item in runtime.improvements.items.values():
         yield "improvement", item["id"], item.get("title", "")
-    for case in recorder.casebook.cases.values():
+    for case in runtime.casebook.cases.values():
         yield "case", case["id"], case.get("title", "")
     for trace_id in trace_ids:
         if trace_id.startswith("day_"):
             yield "trace", trace_id, f"The day's trace {trace_id[4:]}"
 
 
-def resolve(recorder, query, trace_ids=()):
+def resolve(runtime, query, trace_ids=()):
     """[{kind, id, title}] that the query names: an exact ID (or a recording's 8-character short ID) first; else
     every ID it starts, once it has MIN_PREFIX characters."""
     query = (query or "").strip()
-    found = list(_candidates(recorder, trace_ids))
+    found = list(_candidates(runtime, trace_ids))
     exact = [c for c in found if c[1] == query]
     if not exact and len(query) == 8:
         exact = [c for c in found if c[0] == "recording" and c[1][:8] == query]
@@ -212,8 +213,8 @@ def _tokens(run):
     return dict(totals)
 
 
-def recording_timeline(recorder, rid):
-    facts, summary = _Facts(recorder), recorder.index.get(rid, {})
+def recording_timeline(runtime, rid):
+    facts, summary = _Facts(runtime), runtime.recorder.index.get(rid, {})
     short = _short(rid)
     events = [_event(summary.get("started"), "recorded", f"Recording started ({summary.get('user_turns', 0)} user "
                      f"turns so far)", recording=rid)]
@@ -237,24 +238,24 @@ def recording_timeline(recorder, rid):
                              f"Read by the proposer ({run.get('status')})", role_call=run.get("id"),
                              run=run.get("run_id")))
     for case_id in facts.cases.get(rid, []):
-        case = recorder.casebook.cases[case_id]
+        case = runtime.casebook.cases[case_id]
         events.append(_event(case.get("created"), "case", f"Case: {case.get('title', '')}", case=case_id))
     for improvement_id in facts.covering.get(short, []):
-        item = recorder.improvements.items[improvement_id]
-        goals = [g for g in recorder.improvements._covers(item) if g.split(":")[0] == short]
+        item = runtime.improvements.items[improvement_id]
+        goals = [g for g in runtime.improvements._covers(item) if g.split(":")[0] == short]
         events.append(_event(item.get("created"), "improvement", f"Improvement covers goal(s) {', '.join(goals)}: "
                              f"{item.get('title', '')} ({item.get('status')})", improvement=improvement_id))
     return events
 
 
-def run_timeline(recorder, run_id):
-    run = next(r for r in recorder.role_runs.runs if r.get("id") == run_id)
+def run_timeline(runtime, run_id):
+    run = next(r for r in runtime.role_runs.runs if r.get("id") == run_id)
     progress = run.get("progress") or {}
     events = [_event(run.get("started"), "run", f"Run started ({run.get('trigger')}"
                      + (f", only {run['only']}" if run.get("only") else "") + ")", run=run_id)]
     began, ended = run.get("started") or "", run.get("finished") or "9999"
-    for call in recorder.role_runs.runs:
-        if call is run or call.get("kind") in ("pipeline", "pipeline_state"):
+    for call in runtime.role_runs.runs:
+        if call is run or call.get("kind") == "pipeline":
             continue
         mine = call.get("run_id") == run_id if call.get("run_id") else (
             began <= (call.get("started") or call.get("finished") or "") <= ended)
@@ -275,8 +276,8 @@ def run_timeline(recorder, run_id):
     return run, events
 
 
-def improvement_timeline(recorder, improvement_id):
-    item = recorder.improvements.items[improvement_id]
+def improvement_timeline(runtime, improvement_id):
+    item = runtime.improvements.items[improvement_id]
     events = [_event(item.get("created"), "created", f"Proposed: {item.get('title', '')}", improvement=improvement_id)]
     if item.get("copy"):
         events.append(_event(item["copy"].get("at") or item.get("created"), "written",
@@ -295,41 +296,41 @@ def improvement_timeline(recorder, improvement_id):
     return events
 
 
-async def lookup(hass, recorder, query):
+async def lookup(hass, runtime, query):
     """The lookup command's reply: several matches to pick from, or one with its timeline, journal and trace."""
     retained = [t["id"] for t in await trace.traces(hass)]
-    matches = resolve(recorder, query, retained)
+    matches = resolve(runtime, query, retained)
     if len(matches) != 1:
         return {"matches": matches}
     match = matches[0]
     kind, mid = match["kind"], match["id"]
     reply = {"match": match, "timeline": [], "journal": [], "trace_id": None, "record": None}
     if kind == "conversation_id":
-        kind, mid = "recording", recorder.keys[mid]
+        kind, mid = "recording", runtime.recorder.keys[mid]
         reply["match"] = {**match, "recording": mid}
     if kind == "recording":
-        reply["timeline"] = recording_timeline(recorder, mid)
-        reply["record"] = {**recorder.index.get(mid, {})}
+        reply["timeline"] = recording_timeline(runtime, mid)
+        reply["record"] = {**runtime.recorder.index.get(mid, {})}
         reply["journal"] = await trace.find_entries(hass, limit=JOURNAL_SHOWN, recording_id=mid)
     elif kind == "run":
-        run, reply["timeline"] = run_timeline(recorder, mid)
+        run, reply["timeline"] = run_timeline(runtime, mid)
         reply["record"] = {k: run.get(k) for k in ("id", "status", "trigger", "only", "started", "finished",
                                                    "stage", "progress", "error", "trace_id")}
         reply["trace_id"] = run.get("trace_id") or (mid if mid in retained else None)
         reply["journal"] = await trace.find_entries(hass, limit=JOURNAL_SHOWN, run_id=mid)
     elif kind == "role_call":
-        call = next(r for r in recorder.role_runs.runs if r.get("id") == mid)
+        call = next(r for r in runtime.role_runs.runs if r.get("id") == mid)
         reply["record"] = _role_call(call)
         reply["trace_id"] = call.get("trace_id")
         if call.get("run_id"):
-            reply["timeline"] = run_timeline(recorder, call["run_id"])[1]
+            reply["timeline"] = run_timeline(runtime, call["run_id"])[1]
     elif kind == "improvement":
-        reply["timeline"] = improvement_timeline(recorder, mid)
-        item = recorder.improvements.items[mid]
+        reply["timeline"] = improvement_timeline(runtime, mid)
+        item = runtime.improvements.items[mid]
         reply["record"] = {k: item.get(k) for k in ("id", "title", "status", "created")}
         reply["journal"] = await trace.find_entries(hass, limit=JOURNAL_SHOWN, improvement_id=mid)
     elif kind == "case":
-        case = recorder.casebook.cases[mid]
+        case = runtime.casebook.cases[mid]
         reply["record"] = {k: case.get(k) for k in ("id", "title", "recording_id", "turns", "revision")}
         reply["timeline"] = [_event(case.get("created"), "case", f"Case from recording {_short(case.get('recording_id') or '')}",
                                     recording=case.get("recording_id"), case=mid)]
@@ -353,11 +354,11 @@ def _measured(value):
     return size, round((time.perf_counter() - began) * 1000, 1)
 
 
-def _memory(hass, recorder):
+def _memory(hass, runtime):
     from .practice import MODE_KEY
-    parts = {"live recordings": recorder.sessions, "recordings index": recorder.index,
-             "run log": getattr(recorder.role_runs, "runs", []), "improvements": recorder.improvements.items,
-             "cases": recorder.casebook.cases, "candidates": getattr(recorder.candidates, "items", None),
+    parts = {"live recordings": runtime.recorder.sessions, "recordings index": runtime.recorder.index,
+             "run log": getattr(runtime.role_runs, "runs", []), "improvements": runtime.improvements.items,
+             "cases": runtime.casebook.cases, "candidates": getattr(runtime.candidates, "items", None),
              "hot spots": trace.HOT}
     out = {}
     for name, value in parts.items():
@@ -393,9 +394,9 @@ def _tasks():
     return sorted(mine)
 
 
-def _ai_calls(recorder):
+def _ai_calls(runtime):
     by_role = defaultdict(lambda: {"calls": 0, "failed": 0, "seconds": 0.0, "slowest": 0.0, "tokens": Counter()})
-    for run in getattr(recorder.role_runs, "runs", []):
+    for run in getattr(runtime.role_runs, "runs", []):
         role = run.get("role")
         if not role or not run.get("started"):
             continue
@@ -415,23 +416,23 @@ def _max_rss():
     return peak if sys.platform == "darwin" else peak * 1024
 
 
-async def health(hass, recorder):
+async def health(hass, runtime):
     from .diagnostics import _storage
     from .sandbox import STATS
     disk = await hass.async_add_executor_job(_storage, hass.config.path(".storage"))
-    pipeline = recorder.pipeline
+    pipeline = runtime.pipeline
     current = pipeline.current or {}
     return {
         "version": VERSION,
-        "disk": {**disk, "recordings_by_storage": dict(Counter(s.get("stored", "full") for s in recorder.index.values()))},
-        "memory": _memory(hass, recorder),
+        "disk": {**disk, "recordings_by_storage": dict(Counter(s.get("stored", "full") for s in runtime.recorder.index.values()))},
+        "memory": _memory(hass, runtime),
         "now": {"run": {"running": current.get("status") == "running", "stage": current.get("stage"),
                         "id": current.get("id")},
                 "tasks": _tasks(), "sandboxes": {**STATS, "running": STATS.get("started", 0) - STATS.get("stopped", 0)},
-                "pending_writes": recorder.status().get("pending_writes")},
+                "pending_writes": runtime.recorder.status().get("pending_writes")},
         "hot": sorted(({"name": name, **row} for name, row in trace.HOT.items()), key=lambda r: -r["total_ms"]),
-        "ai_calls": _ai_calls(recorder),
-        "retention": getattr(recorder, "retention", None),
+        "ai_calls": _ai_calls(runtime),
+        "retention": runtime.retention,
         "process": {"max_rss_bytes": _max_rss(), "note": "The whole Home Assistant process. For CPU and memory "
                     "profiles, use Home Assistant's Profiler integration."},
     }
@@ -444,10 +445,10 @@ async def health(hass, recorder):
 @websocket_api.async_response
 async def ws_conversations(hass, connection, msg):
     """{"rows": [...]}: every recording, newest first (conversation_rows)."""
-    if (recorder := _recorder(hass, connection, msg)) is None:
+    if (runtime := _runtime(hass, connection, msg)) is None:
         return
     sizes = await hass.async_add_executor_job(_recording_sizes, hass)
-    connection.send_result(msg["id"], {"rows": conversation_rows(recorder, sizes)})
+    connection.send_result(msg["id"], {"rows": conversation_rows(runtime, sizes)})
 
 
 @websocket_api.websocket_command({probatio.Required("type"): f"{DOMAIN}/dev/lookup",
@@ -457,9 +458,9 @@ async def ws_conversations(hass, connection, msg):
 async def ws_lookup(hass, connection, msg):
     """{"matches": [{kind, id, title}]} when the query names none or several; else {"match", "record", "timeline":
     [{at, kind, what, ids}], "journal": [entries], "trace_id"} for the one it names."""
-    if (recorder := _recorder(hass, connection, msg)) is None:
+    if (runtime := _runtime(hass, connection, msg)) is None:
         return
-    connection.send_result(msg["id"], await lookup(hass, recorder, msg["query"]))
+    connection.send_result(msg["id"], await lookup(hass, runtime, msg["query"]))
 
 
 @websocket_api.websocket_command({probatio.Required("type"): f"{DOMAIN}/dev/runs"})
@@ -468,11 +469,11 @@ async def ws_lookup(hass, connection, msg):
 async def ws_runs(hass, connection, msg):
     """{"runs": [{id, started, finished, status, trigger, only, timings, counts, problems, error, trace_id,
     trace_available}]}, newest first."""
-    if (recorder := _recorder(hass, connection, msg)) is None:
+    if (runtime := _runtime(hass, connection, msg)) is None:
         return
     retained = {t["id"] for t in await trace.traces(hass)}
     runs = []
-    for run in getattr(recorder.role_runs, "runs", []):
+    for run in getattr(runtime.role_runs, "runs", []):
         if run.get("kind") != "pipeline":
             continue
         progress = dict(run.get("progress") or {})
@@ -492,7 +493,7 @@ async def ws_runs(hass, connection, msg):
 @websocket_api.async_response
 async def ws_trace(hass, connection, msg):
     """{"trace": {id, kind, started, updated, finished, spans (by start), journal (newest first), open, dropped}}."""
-    if _recorder(hass, connection, msg) is None:
+    if _runtime(hass, connection, msg) is None:
         return
     loaded = await trace.load(hass, msg["trace_id"])
     if loaded is None:
@@ -512,7 +513,7 @@ async def ws_trace(hass, connection, msg):
 @websocket_api.async_response
 async def ws_journal(hass, connection, msg):
     """{"entries": [entry + trace_id], "more": bool}, newest first; page with before = the last entry's at."""
-    if _recorder(hass, connection, msg) is None:
+    if _runtime(hass, connection, msg) is None:
         return
     filters = {k: msg[k] for k in ("level", "text", "before", "run_id", "recording_id", "improvement_id") if msg.get(k)}
     found = await trace.find_entries(hass, limit=msg["limit"] + 1, **filters)
@@ -524,9 +525,9 @@ async def ws_journal(hass, connection, msg):
 @websocket_api.async_response
 async def ws_health(hass, connection, msg):
     """{"version", "disk", "memory", "now", "hot", "ai_calls", "retention", "process"} (health)."""
-    if (recorder := _recorder(hass, connection, msg)) is None:
+    if (runtime := _runtime(hass, connection, msg)) is None:
         return
-    connection.send_result(msg["id"], await health(hass, recorder))
+    connection.send_result(msg["id"], await health(hass, runtime))
 
 
 COMMANDS = (ws_conversations, ws_lookup, ws_runs, ws_trace, ws_journal, ws_health)

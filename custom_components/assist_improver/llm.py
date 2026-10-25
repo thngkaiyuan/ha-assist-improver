@@ -13,6 +13,7 @@ from homeassistant.helpers import llm
 
 from .const import CONF_ON_DEMAND, DOMAIN
 from .reflective import ROLE_ACTIVE
+from .runtime import loaded
 
 
 class FileImprovement(llm.Tool):
@@ -32,10 +33,10 @@ class FileImprovement(llm.Tool):
 
     async def async_call(self, hass, tool_input, llm_context):
         from homeassistant.components.conversation.chat_log import current_chat_log
-        recorder, chat_log = hass.data.get(DOMAIN), current_chat_log.get()
+        runtime, chat_log = loaded(hass), current_chat_log.get()
         user_id = getattr(getattr(llm_context, "context", None), "user_id", None)
-        key = recorder.file(chat_log.conversation_id, tool_input.tool_args.get("what_to_improve"), user_id) \
-            if recorder is not None and chat_log is not None else None
+        key = runtime.recorder.file(chat_log.conversation_id, tool_input.tool_args.get("what_to_improve"), user_id) \
+            if runtime is not None and chat_log is not None else None
         if key is None:
             return {"filed": False, "why": "This conversation isn't being recorded, so it can't be filed."}
         return {"filed": True, "next": "The Assist Improver will study this conversation once it ends."}
@@ -44,8 +45,8 @@ class FileImprovement(llm.Tool):
 @callback
 def async_get_tools(hass, llm_context, api_id):
     """The file_improvement tool, for the Assist API while on-demand improvements are on."""
-    pipeline = getattr(hass.data.get(DOMAIN), "pipeline", None)
-    if api_id != llm.LLM_API_ASSIST or pipeline is None or not pipeline.entry.options.get(CONF_ON_DEMAND):
+    runtime = loaded(hass)
+    if api_id != llm.LLM_API_ASSIST or runtime is None or not runtime.pipeline.entry.options.get(CONF_ON_DEMAND):
         return None
     if ROLE_ACTIVE.get():  # The improver's own AI roles and replays never file anything.
         return None

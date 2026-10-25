@@ -1,0 +1,140 @@
+// A review: the improvement shown the way a code review shows a change. A summary on top, the details folded, and one
+// decision at a time in the footer; after a decision the footer says what happened, with Undo and the next review.
+
+const v = new URL(import.meta.url).search;  // ?v=<version>, passed on to every module this one loads.
+const [{esc, plural}, {STATUS}, common] = await Promise.all([
+  import(`./format.js${v}`), import(`./text.js${v}`), import(`./common.js${v}`)]);
+
+// Home Assistant makes the panel's element again whenever its sidebar title (the count) changes, as it does after a
+// decision. What was open and where the page was scrolled carry over to the new element, so nothing moves.
+export const KEPT = {open: new Set(), page: null, scroll: null};
+
+const NO_NOTE = ["accept", "undo", "was_test"];
+
+const section = (p, key, title, inner, rich = false) =>
+  // rich: the title is already the summary's parts (name, kind, counts), laid out side by side.
+  `<details data-key="${key}" ${p.open.has(key) ? "open" : ""}><summary>${rich ? title : `<span class="name">${title}</span>`}</summary>${inner}</details>`;
+
+function bar(added, removed) {
+  const total = added + removed;
+  if (!total) return "";
+  const a = Math.round((added / total) * 5);
+  return `<span class="bar">${Array.from({length: 5}, (_, n) => `<i class="${n < a ? "a" : "d"}"></i>`).join("")}</span>`;
+}
+
+function diff(rows, change) {
+  if (!rows.length) return `<div class="empty">${change.proposed ? "As proposed; not applied." : "Already in place; nothing changes."}</div>`;
+  const cls = {"+": "add", "-": "del", " ": "", gap: "gap"};
+  return `<table class="diff">${rows.map((r) => r.sign === "gap"
+    ? `<tr class="gap"><td colspan="4">&#8943;</td></tr>`
+    : `<tr class="${cls[r.sign]}"><td class="num">${r.old ?? ""}</td><td class="num">${r.new ?? ""}</td>
+       <td class="sign">${r.sign === " " ? "" : r.sign === "-" ? "&#8722;" : "+"}</td><td class="text">${esc(r.text)}</td></tr>`).join("")}</table>`;
+}
+
+function footer(p, r) {
+  // Right after a decision, the footer says what happened (with Undo) and offers the next review: the page above
+  // stays where it was.
+  if (p.result || r.recent_outcome) {
+    const ok = p.result ? p.resultOk : r.recent_outcome_ok;
+    return `<div class="footer"><div class="footer-inner done-row">
+      <div class="done-msg ${ok ? "ok" : "bad"}"><span class="mark">${ok ? "&#10003;" : "!"}</span><span>${esc(p.result || r.recent_outcome)}${
+        r.choices.some((c) => c.value === "undo") ? ` <button class="link" id="undo-link">Undo</button>` : ""}</span></div>
+      ${r.next_pending ? `<button class="btn" id="next" data-id="${esc(r.next_pending.id)}">Next: ${esc(r.next_pending.title)} &#8594;</button>`
+        : `<button class="link" id="back-list">All caught up · back to the list</button>`}</div></div>`;
+  }
+  if (!r.choices.length) return "";
+  const decision = p.decision || r.choices[0].value;
+  const label = r.choices.find((c) => c.value === decision)?.label || decision;
+  const needsNote = !NO_NOTE.includes(decision);
+  const prompt = {revise: "What should change? (needed for the revision)", needs_improvement: "What could be better? (optional)",
+                  decline: "Why not? (optional; the next run takes it into account)",
+                  fine_as_is: "Anything to add? (optional)"}[decision] || "Add a note (optional)";
+  const menu = p.menuOpen ? `<div class="menu">${r.choices.map((c) =>
+    `<div data-choice="${esc(c.value)}" class="${c.value === decision ? "on" : ""}">${esc(c.label)}</div>`).join("")}</div>` : "";
+  return `${p.menuOpen ? `<div class="backdrop" id="menu-backdrop"></div>` : ""}<div class="footer"><div class="footer-inner">
+      ${needsNote ? `<textarea id="note" placeholder="${esc(prompt)}">${esc(p.note || "")}</textarea>` : ""}
+      <div class="split"><button class="main" id="decide" ${p.busy ? "disabled" : ""}>${esc(p.busy ? "Working…" : label)}</button>
+      <button class="arrow" id="arrow" aria-label="Other decisions" ${p.busy ? "disabled" : ""}>&#9662;</button>${menu}</div>
+    </div></div>`;
+}
+
+export function render(p) {
+  const r = p.review;
+  const outcome = [r.enabled.length && `Enables ${plural(r.enabled.length, "task")}`,
+    r.removed.length && `${plural(r.removed.length, "fewer turn")}`].filter(Boolean).join(" · ");
+  const lines = (cls, sign, items) => `<div class="lines">${items.map((t) =>
+    `<div class="line ${cls}"><span class="sign">${sign}</span><span>${esc(t)}</span></div>`).join("")}</div>`;
+  const files = r.changes.map((c, n) => `<div class="file">${section(p, `file${n}`,
+    `<span class="name">${esc(c.name)}</span><span class="kind ${esc(c.kind)}">${esc(c.kind)}</span>
+     ${c.added ? `<span class="count-add">+${c.added}</span>` : ""}${c.removed ? `<span class="count-del">&#8722;${c.removed}</span>` : ""}
+     ${bar(c.added, c.removed)}`, diff(c.rows, c), true)}</div>`).join("");
+  const tests = r.tests.map((t) => `<li class="${t.improved ? "ok" : "no"}"><span class="mark">${t.improved ? "&#10003;" : "&#8211;"}</span>
+    <span>${esc(t.summary)}</span><span class="result">${esc(t.result || (t.improved ? "improved" : "not improved"))}</span></li>`).join("");
+  const improvedCount = r.tests.filter((t) => t.improved).length;
+  // The summary, always open at the top: what you get (the editor's words), why it's safe (stated by code), and
+  // what was tested. The technical cause is last, for whoever wants it.
+  const summary = `<div class="card summary">
+    ${r.benefit ? `<div class="label">What you get</div><p class="benefit">${esc(r.benefit)}</p>` : ""}
+    <div class="label">Why it's safe</div><ul class="safe">${r.safety.map((f) =>
+      `<li><span class="mark">&#10003;</span><span>${esc(f)}</span></li>`).join("")}</ul>
+    <div class="label">Tested on ${plural(r.tests.length, "conversation")} · ${improvedCount} improved</div><ul class="tests">${tests}</ul>
+    ${r.untested ? `<p class="lead">Expected to help ${plural(r.untested, "more conversation")} too (not tested).</p>` : ""}</div>`;
+  const how = `<div class="details-body"><p>${esc(r.cause)}</p>
+    <div class="note"><span>&#9432;</span><span>Physical positions aren't simulated in the sandbox: a door's motion, for
+    example, is taken as done when its command succeeds.</span></div></div>`;
+  const sections = [
+    r.enabled.length && section(p, "enabled", `Tasks now enabled (${r.enabled.length})`, lines("add", "+", r.enabled)),
+    r.removed.length && section(p, "removed", `Turns no longer needed (${r.removed.length})`, lines("del", "−", r.removed)),
+    section(p, "changes", `Changeset (${r.changes.length})`, `<div class="files">${files}</div>`),
+    section(p, "details", "How it works", how),
+  ].filter(Boolean).join("");
+  const conflicts = r.conflicts.length ? `<div class="conflict"><b>Can't apply it now:</b><br>${r.conflicts.map((c) =>
+    `${esc(c.what)}: ${esc(c.why)}`).join("<br>")}</div>` : "";
+  return {
+    bar: common.toolbar("Improvements", true),
+    page: `<div class="page">
+    <h1>${esc(r.title)} <span class="chip ${esc(r.status)}">${esc(STATUS[r.status] || r.status)}</span></h1>
+    <div class="outcome">${esc(outcome)}</div>
+    ${r.revises ? `<div class="revises">Revised after your note on “${esc(r.revises.title)}”${r.revises.note ? `: “${esc(r.revises.note)}”` : ""}</div>` : ""}
+    ${conflicts}
+    ${summary}<div class="card">${sections}</div></div>`,
+    layer: footer(p, r),
+  };
+}
+
+export function after(p) {
+  // Back to where the page was (for a few seconds after a decision, while the panel may be made again).
+  const kept = KEPT.scroll;
+  if (!kept || kept.page !== KEPT.page || Date.now() > kept.until) return;
+  requestAnimationFrame(() => { p.scroller().scrollTop = kept.top; });
+}
+
+async function decide(p, decision = p.decision || p.review.choices[0].value) {
+  const r = p.review;
+  KEPT.scroll = {page: r.id, top: p.scroller().scrollTop, until: Date.now() + 8000};
+  p.busy = true;
+  p.render();
+  try {
+    const res = await p.ws("decide", {improvement_id: r.id, decision, note: NO_NOTE.includes(decision) ? "" : (p.note || "")});
+    Object.assign(p, {result: res.result, resultOk: res.ok, decision: null, note: ""});
+  } catch (err) {
+    Object.assign(p, {result: err.message || String(err), resultOk: false});
+  }
+  p.busy = false;
+  await p.load();
+}
+
+export const actions = {
+  click: [
+    ["#arrow", (p) => { p.menuOpen = !p.menuOpen; p.render(); }],
+    ["[data-choice]", (p, el) => {
+      p.decision = el.dataset.choice; p.menuOpen = false; p.render();
+      p.root.getElementById("note")?.focus();
+    }],
+    ["#decide", (p) => decide(p)],
+    ["#undo-link", (p) => decide(p, "undo")],
+    ["#next", (p, el) => p.go(el.dataset.id)],
+    ["#back-list", (p) => p.go(null)],
+  ],
+  input: [["#note", (p, el) => { p.note = el.value; }]],
+};

@@ -1,5 +1,5 @@
 """One-time upgrades of what earlier versions left behind, so the rest of the code reads one shape (the config
-entry's minor version 2):
+entry's minor version 3):
 
 - the option tests_per_cycle (its name before 0.17.4) becomes tests_per_goal;
 - the "Practice (simulated home)" assistant 0.6.0 added, and its Assist pipeline, are removed (practice mode replaced
@@ -7,6 +7,9 @@ entry's minor version 2):
 - Repairs items from 0.18 to 0.20 (improvement_*) and up to 0.33 (household_*) are removed;
 - recordings that kept aliases the 0.1.0 way (Home Assistant's raw list, the entity's own name as 0) are rewritten
   the current way (the names, and alias_entries with None for its own name).
+
+Minor version 3 (0.35.0): where each taken-in conversation waits moves from a record in the run log
+(id pipeline-state) to the pipeline's own store.
 """
 
 import logging
@@ -14,11 +17,12 @@ import logging
 from homeassistant.core import callback
 from homeassistant.helpers import entity_registry as er, issue_registry as ir
 from homeassistant.helpers.start import async_at_started
+from homeassistant.helpers.storage import Store
 
-from .const import CONF_TESTS_PER_GOAL, DOMAIN
+from .const import CONF_TESTS_PER_GOAL, DOMAIN, STORAGE_VERSION
 
 _LOGGER = logging.getLogger(__name__)
-MINOR_VERSION = 2
+MINOR_VERSION = 3
 OLD_ISSUES = ("improvement_", "household_")
 
 
@@ -43,7 +47,26 @@ async def async_migrate(hass, entry):
         async_at_started(hass, cleanup)
         hass.config_entries.async_update_entry(entry, options=options, minor_version=2)
         _LOGGER.info("Assist Improver: migrated to 1.2 (%s recordings' aliases rewritten)", rewritten)
+    if entry.minor_version < 3:
+        moved = await _pipeline_state(hass)
+        hass.config_entries.async_update_entry(entry, minor_version=3)
+        _LOGGER.info("Assist Improver: migrated to 1.3 (%s waiting conversations moved)", moved)
     return True
+
+
+async def _pipeline_state(hass):
+    """The run log's pipeline-state record becomes the pipeline's own store; the number of conversations it held."""
+    from .pipeline import STORE
+    runs_store = Store(hass, STORAGE_VERSION, f"{DOMAIN}.role_runs", private=True, atomic_writes=True)
+    saved = await runs_store.async_load()
+    runs = (saved or {}).get("runs", [])
+    state = [run for run in runs if run.get("kind") == "pipeline_state"]
+    if not state:
+        return 0
+    at = state[-1].get("at") or {}
+    await Store(hass, 1, STORE, private=True, atomic_writes=True).async_save({"at": at})
+    await runs_store.async_save({**saved, "runs": [run for run in runs if run.get("kind") != "pipeline_state"]})
+    return len(at)
 
 
 def current_aliases(entity, shown=None):

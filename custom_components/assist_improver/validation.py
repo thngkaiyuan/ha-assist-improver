@@ -22,12 +22,10 @@ from .hypotheses import friction_by_goal
 from .reflective import run_role
 from .settings import role_model
 from .snapshot import live_definitions
-from .themes import create_theme
 from .trace import ids, span, tag
 
 _LOGGER = logging.getLogger(__name__)
 
-BASELINE_REVIEW = "Effects on the home match the recording; the replies are kept for reading."
 CHECK_ROLE = "followup_check"
 CHECK_INSTRUCTIONS = """A conversation with a home assistant was replayed with a change to the assistant. The user's messages after the first were replayed exactly as the user originally sent them, so some may no longer fit. For each follow-up below you see the assistant's reply before it, the user's message, and the assistant's reply after it. Say whether the message still broadly makes sense after the reply before it (fits), with a short reason. A message that answers or reacts to something the assistant didn't say does not fit."""
 CHECK_STRUCTURE = probatio.Schema({probatio.Required("verdicts"): [{
@@ -82,14 +80,7 @@ async def run_baseline(manager, case):
     plan = (await manager.prepare(case["id"]))["plan"]
     if case["baseline"].get("plan", {}).get("id") == plan["id"] and case["baseline"]["status"] != "not_run":
         return case
-    case = await manager.start(case["id"], plan_id=plan["id"], allow_paid_inference=True)
-    while case["baseline"]["status"] == "awaiting_review":
-        turn = case["baseline"]["next_turn"]
-        case = await manager.review(case["id"], expected_turn=turn, reproduced=True, feedback=BASELINE_REVIEW)
-        if case["baseline"]["status"] == "ready_for_next_turn":
-            case = await manager.continue_trial(case["id"], expected_turn=case["baseline"]["next_turn"],
-                                                allow_paid_inference=True)
-    return case
+    return await manager.run(case["id"], plan_id=plan["id"], allow_paid_inference=True)
 
 
 async def check_followups(hass, entity_id, followups):
@@ -103,7 +94,7 @@ async def check_followups(hass, entity_id, followups):
             "all_fit": record["status"] == "completed" and all(v["fits"] for v in verdicts), "usage": record["usage"]}
 
 
-async def test_hypotheses(hass, entry, recorder, *, hypotheses, analyses, per_goal=None, skip_goals=(),
+async def test_hypotheses(hass, entry, runtime, *, hypotheses, analyses, per_goal=None, skip_goals=(),
                           allow_paid_inference=False):
     """Test each hypothesis on every goal instance it names that a replay can judge, most friction first. A goal
     instance is a goal as it came up in one conversation (session and turn): the same goal phrased differently must be
@@ -133,7 +124,7 @@ async def test_hypotheses(hass, entry, recorder, *, hypotheses, analyses, per_go
                 used[goal["goal"]] = used.get(goal["goal"], 0) + 1
                 try:
                     async with span("test.goal", goal=goal["goal"]) as section:
-                        outcome = await _test_one(hass, entry, recorder, hypothesis, goal)
+                        outcome = await _test_one(hass, entry, runtime, hypothesis, goal)
                         section.tag(status=outcome["status"])
                     tests.append({"goal": goal["goal"], "target": deepcopy(goal), **outcome})
                 except CaseError as err:
@@ -146,16 +137,16 @@ async def test_hypotheses(hass, entry, recorder, *, hypotheses, analyses, per_go
         results.append({"title": hypothesis.get("title"), "tests": tests, "not_testable": skipped})
     tested = sum(used.values())
     report = {"results": results, "tests_per_goal": per_goal, "tested": tested, "paid_inference_performed": tested > 0}
-    if getattr(recorder, "role_runs", None) is not None:  # Kept, so a lost page or connection loses nothing.
+    if runtime.role_runs is not None:  # Kept, so a lost page or connection loses nothing.
         from uuid import uuid4
-        await recorder.role_runs.record({"id": uuid4().hex, "kind": "hypothesis_tests", "status": "completed",
+        await runtime.role_runs.record({"id": uuid4().hex, "kind": "hypothesis_tests", "status": "completed",
                                          "started": started, "finished": utcnow().isoformat(), "output": report,
                                          **ids()})
     return report
 
 
-async def _test_one(hass, entry, recorder, hypothesis, found):
-    case = await recorder.casebook.create(
+async def _test_one(hass, entry, runtime, hypothesis, found):
+    case = await runtime.casebook.create(
         found["recording_id"], title=hypothesis.get("title") or found["summary"], first_turn=found["first_turn"],
         last_turn=found["last_turn"], intervention_turns=found["intervention_turns"], goal_unmet=found["unmet"],
         acceptable=found.get("acceptable", ()),
@@ -164,38 +155,27 @@ async def _test_one(hass, entry, recorder, hypothesis, found):
                                               "goal_turn": found["goal_turn"]})
     tag(case_id=case["id"])  # The goal's test, and everything in it from here on.
     async with span("baseline") as section:
-        case = await run_baseline(recorder.baselines, case)
+        case = await run_baseline(runtime.baselines, case)
         section.tag(status=case["baseline"]["status"])
     if case["baseline"]["status"] != "reproduced":
         return {"status": "baseline_" + case["baseline"]["status"], "case_id": case["id"],
                 "baseline": case["baseline"]}
-    recording = await recorder.export(found["recording_id"])
-    cases = {case["id"]: case}
-    theme = create_theme(cases, title=hypothesis.get("title") or found["summary"],
-                         friction=hypothesis.get("cause") or found["summary"],
-                         observations=[{"case_id": case["id"], "role": "friction",
-                                        "rationale": f"Goal at turn {found['goal_turn']}: "
-                                                     f"{len(found['intervention_turns'])} extra turn(s)"
-                                                     + (", and the goal went unmet" if found["unmet"] else "")}],
-                         provenance="Code-built from the generator's hypothesis and the journey analysis")
+    recording = await runtime.recorder.export(found["recording_id"])
     first = recording["turns"][found["first_turn"] - 1]["source"]
     scripts = deepcopy(first["scripts"]) if "scripts" in first else live_definitions(hass)[0]
-    plan = prepare_change_candidate(theme, cases, recording, evaluation_case_id=case["id"], hypothesis=hypothesis,
-                                    scripts=scripts, definition_evidence={
-                                        "provenance": "recorded" if "scripts" in first else "current, when tested",
-                                        "source_sha256": digest(scripts)})
-    candidates = recorder.candidates
+    plan = prepare_change_candidate(case, recording, hypothesis=hypothesis, scripts=scripts, definition_evidence={
+        "provenance": "recorded" if "scripts" in first else "current, when tested", "source_sha256": digest(scripts)})
+    candidates = runtime.candidates
     if (earlier := getattr(candidates, "items", {}).get(plan["id"])) and earlier.get("result"):
         # Already attempted under this plan: its result stands (no resampling).
         return {"status": earlier["status"], "case_id": case["id"], "plan_id": plan["id"], "reused": True,
                 "assessment": earlier["result"].get("assessment"),
                 "followup_check": earlier["result"].get("followup_check"), "turns": earlier["result"].get("turns")}
-    item = await candidates._save({"plan": plan, "status": "running", "evidence": theme["journeys"],
-                                   "result": None, "reviews": [], "application": None})  # Before any inference.
+    item = await candidates._save({"plan": plan, "status": "running", "result": None})  # Before any inference.
     agent = conversation.async_get_agent(hass, plan["baseline_plan"]["agent_id"])
     if agent is None:
         raise CaseError("The assistant this conversation used is no longer set up, so it can't be replayed.")
-    trial = CandidateTrial(hass, plan, cases, recording, agent, evidence_kind="model_counterfactual")
+    trial = CandidateTrial(hass, plan, case, recording, agent, evidence_kind="model_counterfactual")
     async with span("candidate", plan_id=plan["id"]) as section:
         item["result"] = await trial.run(allow_paid_inference=True)
         section.tag(status=item["result"]["status"])

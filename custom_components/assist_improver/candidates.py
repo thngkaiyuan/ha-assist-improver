@@ -6,7 +6,6 @@ runs once: an identical plan reuses its result, never samples again.
 
 from copy import deepcopy
 
-from homeassistant.components import conversation
 from homeassistant.helpers.storage import Store
 
 from .baseline import clone_provider, prepare_plan
@@ -17,68 +16,34 @@ from .changes import setup_from_changes
 from .snapshot import live_definitions
 from .serialization import plain
 from .simulation import UnsupportedSimulation, destination_met as met
-from .themes import create_theme, verify_theme
 from .trace import span
 
 
-def _grounding(theme, cases, recording, evaluation_case_id, hypothesis):
-    """The evaluation case, its turns, its reproduced baseline's plan, and the inputs a candidate replays."""
-    verify_theme(theme, cases)
-    links = {link["case_id"]: link for link in theme["journeys"]}
-    if evaluation_case_id not in links or links[evaluation_case_id]["role"] != "friction":
-        raise CaseError("Choose an intervention journey linked to this shared theme")
-    if not isinstance(hypothesis, str) or not hypothesis.strip():
-        raise CaseError("Candidate needs one coherent hypothesis")
-    case = cases[evaluation_case_id]
+def _grounding(case, recording):
+    """The case's turns, its baseline and the plan it ran under, and the inputs a candidate replays. The baseline
+    must be reproduced under the current plan: every turn of the case kept as a step whose effects matched."""
     turns = verify_case(case, recording)
     baseline_plan = prepare_plan(case, recording)
     baseline = case["baseline"]
+    matched = [s.get("turn") for s in baseline.get("steps", []) if s.get("ha_effects_match")]
     if (baseline["status"] != "reproduced" or baseline.get("plan", {}).get("id") != baseline_plan["id"]
-            or [r.get("turn") for r in baseline.get("reviews", []) if r.get("reproduced")] != case["turns"]):
+            or matched != case["turns"]):
         raise CaseError("Representative baseline must reproduce with current grounding before a candidate trial")
     # This slice supports just the first original input. Later slices can
     # retain longer ordered subsequences, with compatible recorded answers.
     retained = [case["turns"][0]]
     inputs = retained_inputs(case, recording, retained)
-    return case, turns, baseline_plan, baseline, retained, inputs, links
+    return turns, baseline_plan, baseline, retained, inputs
 
 
-def _plan(*, kind, theme, hypothesis, origin, evaluation_case_id, case, turns, baseline, baseline_plan, retained,
-          inputs, links, edits, definitions, definition_evidence, setup, extra_limits=()):
-    plan = {"format": 1, "kind": kind, "theme": deepcopy(theme),
-            "hypothesis": deepcopy(hypothesis), "proposal_origin": origin,
-            "evaluation_case_id": evaluation_case_id, "baseline_digest": digest(baseline),
-            "baseline_plan": baseline_plan, "retained_turns": retained, "user_inputs": inputs,
-            "judge": {"destination": deepcopy(case["destination"]), "original_user_turns": len(turns),
-                      # Whether the conversation without the fix met the goal (its baseline): a fix that meets an
-                      # unmet goal improves it even in as many turns.
-                      "baseline_met": baseline.get("destination_met"),
-                      "acceptable_devices": case.get("acceptable_devices", [])},
-            "edits": edits, "definitions": deepcopy(definitions), "setup": deepcopy(setup),
-            "definition_evidence": deepcopy(definition_evidence),
-            "coverage": [{"case_id": link["case_id"], "role": link["role"],
-                          "evaluation": "selected_counterfactual" if link["case_id"] == evaluation_case_id
-                          else "related_evidence_not_counterfactually_tested"} for link in theme["journeys"]],
-            "counterfactual_allowance_used_by_this_plan": 1,
-            "provider_option_changes": {}, "system_prompt_change": setup["prompt_changed"],
-            "semantic_review": "pending", "regression_review": "pending", "application": "not_implemented",
-            "limits": ["A representative pass does not prove gains for every affected journey",
-                       "Script definitions may be later observations; their provenance is retained",
-                       "HA's own engine runs the scripts in a sandbox; devices are emulated, physical position is not",
-                       "Other scripts and automations use their current definitions unless the recording has them",
-                       "Unmodelled device commands stop evaluation", *extra_limits]}
-    plan["id"] = digest(plan)
-    return plan
-
-
-def prepare_change_candidate(theme, cases, recording, *, evaluation_case_id, hypothesis, scripts,
-                             definition_evidence, origin="hypothesis_generator"):
-    """A generated hypothesis's changes, tested on one case of its theme. scripts: the household's script
-    definitions ({object id: config}) the changes build on."""
+def prepare_change_candidate(case, recording, *, hypothesis, scripts, definition_evidence):
+    """A generated hypothesis's changes, tested on one case (the goal as it came up in one recording). scripts: the
+    household's script definitions ({object id: config}) the changes build on."""
     if not isinstance(hypothesis, dict) or not hypothesis.get("changes"):
         raise CaseError("Candidate needs a hypothesis with changes")
-    case, turns, baseline_plan, baseline, retained, inputs, links = _grounding(
-        theme, cases, recording, evaluation_case_id, hypothesis.get("title", ""))
+    if not isinstance(hypothesis.get("title"), str) or not hypothesis["title"].strip():
+        raise CaseError("Candidate needs one coherent hypothesis")
+    turns, baseline_plan, baseline, retained, inputs = _grounding(case, recording)
     source = turns[0]["source"]
     options = turns[0]["prepared"]["provider_config"][0]["options"]
     user_id = (turns[0]["prepared"].get("context") or {}).get("context", {}).get("user_id")
@@ -89,56 +54,38 @@ def prepare_change_candidate(theme, cases, recording, *, evaluation_case_id, hyp
     touched = {c["entity_id"].split(".", 1)[1] for c in hypothesis["changes"]
                if c["kind"] in ("script", "exposure") and (c.get("entity_id") or "").startswith("script.")}
     definitions = {f"script.{oid}": deepcopy(scripts[oid]) for oid in sorted(touched) if oid in scripts}
-    return _plan(kind="hypothesis_changes", theme=theme, hypothesis=hypothesis, origin=origin,
-                 evaluation_case_id=evaluation_case_id, case=case, turns=turns, baseline=baseline,
-                 baseline_plan=baseline_plan, retained=retained, inputs=inputs, links=links, edits=edits,
-                 definitions=definitions, definition_evidence=definition_evidence, setup=setup,
-                 extra_limits=["Instruction lines are tested through Assist with household knowledge; applying "
-                               "switches the tested assistant to it"] if "household" in setup else [])
+    plan = {"format": 1, "kind": "hypothesis_changes", "hypothesis": deepcopy(hypothesis),
+            "evaluation_case_id": case["id"], "baseline_digest": digest(baseline),
+            "baseline_plan": baseline_plan, "retained_turns": retained, "user_inputs": inputs,
+            "judge": {"destination": deepcopy(case["destination"]), "original_user_turns": len(turns),
+                      # Whether the conversation without the fix met the goal (its baseline): a fix that meets an
+                      # unmet goal improves it even in as many turns.
+                      "baseline_met": baseline.get("destination_met"),
+                      "acceptable_devices": case.get("acceptable_devices", [])},
+            "edits": edits, "definitions": deepcopy(definitions), "setup": deepcopy(setup),
+            "definition_evidence": deepcopy(definition_evidence),
+            # What this test covers: its case, replayed with the change. Each other goal the hypothesis names gets
+            # its own test.
+            "coverage": [{"case_id": case["id"], "role": "friction", "evaluation": "selected_counterfactual"}],
+            "counterfactual_allowance_used_by_this_plan": 1,
+            "provider_option_changes": {}, "system_prompt_change": setup["prompt_changed"],
+            "limits": ["A representative pass does not prove gains for every affected journey",
+                       "Script definitions may be later observations; their provenance is retained",
+                       "HA's own engine runs the scripts in a sandbox; devices are emulated, physical position is not",
+                       "Other scripts and automations use their current definitions unless the recording has them",
+                       "Unmodelled device commands stop evaluation",
+                       *(["Instruction lines are tested through Assist with household knowledge; applying "
+                          "switches the tested assistant to it"] if "household" in setup else [])]}
+    plan["id"] = digest(plan)
+    return plan
 
 
-def prepare_exposure_candidate(theme, cases, recording, *, evaluation_case_id,
-                               hypothesis, entities, definitions, definition_evidence):
-    """A shared solution is scoped by its theme; one case is a bounded test sample."""
-    if not isinstance(hypothesis, str) or not hypothesis.strip():
-        raise CaseError("Candidate needs one coherent hypothesis")
-    case, turns, baseline_plan, baseline, retained, inputs, links = _grounding(
-        theme, cases, recording, evaluation_case_id, hypothesis)
-    if not entities or len(entities) != len(set(entities)):
-        raise CaseError("Choose distinct existing scripts to expose")
-    if (not isinstance(definition_evidence, dict) or not definition_evidence.get("provenance")
-            or not definition_evidence.get("source_sha256")):
-        raise CaseError("Script definitions need attributed evidence, including when read")
-    source = turns[0]["source"]
-    edits = []
-    for entity in sorted(entities):
-        if not entity.startswith("script.") or source["exposure"].get(entity) is not False:
-            raise CaseError("Exposure-only pilot requires an existing, recorded unexposed script")
-        if not isinstance(definitions.get(entity), dict):
-            raise CaseError(f"Script {entity} has no definition")
-        edits.append({"kind": "assist_exposure", "entity_id": entity, "before": False, "after": True})
-    existing_names = {t["name"] for t in turns[0]["prepared"]["tools"]}
-    if existing_names & {e["entity_id"].replace(".", "__", 1) for e in edits}:
-        raise CaseError("Proposed script tool is already in the recorded catalogue")
-    setup = {"exposure": {e["entity_id"]: True for e in edits}, "aliases": {}, "prompt": None, "scripts": {},
-             "prompt_changed": False}
-    return _plan(kind="expose_existing_scripts", theme=theme, hypothesis=hypothesis, origin="manual_pilot_seed",
-                 evaluation_case_id=evaluation_case_id, case=case, turns=turns, baseline=baseline,
-                 baseline_plan=baseline_plan, retained=retained, inputs=inputs, links=links, edits=edits,
-                 definitions=definitions, definition_evidence=definition_evidence, setup=setup)
-
-
-def verify_candidate(plan, cases, recording, scripts=None):
-    if plan.get("kind") == "hypothesis_changes":
-        expected = prepare_change_candidate(plan["theme"], cases, recording,
-            evaluation_case_id=plan["evaluation_case_id"], hypothesis=plan["hypothesis"],
-            scripts=scripts if scripts is not None else {e.split(".", 1)[1]: d for e, d in plan["definitions"].items()},
-            definition_evidence=plan["definition_evidence"], origin=plan["proposal_origin"])
-    else:
-        expected = prepare_exposure_candidate(plan["theme"], cases, recording,
-            evaluation_case_id=plan["evaluation_case_id"], hypothesis=plan["hypothesis"],
-            entities=[e["entity_id"] for e in plan["edits"]], definitions=plan["definitions"],
-            definition_evidence=plan["definition_evidence"])
+def verify_candidate(plan, case, recording, scripts=None):
+    """The plan as its case, recording and baseline make it now; CaseError if anything it was built from changed."""
+    expected = prepare_change_candidate(
+        case, recording, hypothesis=plan["hypothesis"],
+        scripts=scripts if scripts is not None else {e.split(".", 1)[1]: d for e, d in plan["definitions"].items()},
+        definition_evidence=plan["definition_evidence"])
     if plan != expected:
         raise CaseError("Candidate, grounding or baseline changed; prepare and review a new plan")
     return expected
@@ -163,20 +110,18 @@ def judge_effects(plan, world, *, used_user_turns, also_expected=()):
             "baseline_met": plan["judge"].get("baseline_met"),
             "original_user_turns": original, "candidate_user_turns": used_user_turns,
             "command_check_passed": destination_met and (reduced or newly_met) and not unintended,
-            "physical_outcome": "not_verified_by_simulation", "semantic_review": "pending",
-            "regression_review": "pending", "validated_improvement": False}
+            "physical_outcome": "not_verified_by_simulation"}
 
 
 class CandidateTrial:
     """One representative, one exact original input; no retries or live writes."""
-    def __init__(self, hass, plan, cases, recording, agent, *, evidence_kind):
+    def __init__(self, hass, plan, case, recording, agent, *, evidence_kind):
         if evidence_kind not in {"scripted_transport_fixture", "model_counterfactual"}:
             raise CaseError("Distinguish scripted transport tests from actual model decisions")
-        case = cases[plan["evaluation_case_id"]]
         first = verify_case(case, recording)[0]
         scripts = deepcopy(first["source"]["scripts"]) if "scripts" in first["source"] else live_definitions(hass)[0]
         scripts.update({entity.split(".", 1)[1]: deepcopy(d) for entity, d in plan["definitions"].items()})
-        self.plan = deepcopy(verify_candidate(plan, cases, recording, scripts=scripts))
+        self.plan = deepcopy(verify_candidate(plan, case, recording, scripts=scripts))
         self.evidence_kind, self.recording, self.first_turn = evidence_kind, recording, first["number"]
         self.turns, self.turns_run = verify_case(case, recording), []
         # What the conversation changed without the fix (its baseline): commanding those isn't unintended.
@@ -235,9 +180,8 @@ class CandidateTrial:
         return self.export()
 
     def export(self):
-        return {"plan_id": self.plan["id"], "theme_id": self.plan["theme"]["id"],
-                "evaluation_case_id": self.plan["evaluation_case_id"], "status": self.status,
-                "evidence_kind": self.evidence_kind, "run_id": self.log.conversation_id,
+        return {"plan_id": self.plan["id"], "evaluation_case_id": self.plan["evaluation_case_id"],
+                "status": self.status, "evidence_kind": self.evidence_kind, "run_id": self.log.conversation_id,
                 "input": self.turns_run[0]["input"] if self.turns_run else self.log.input.text,
                 "output": plain([c.as_dict() for c in self.log.content[self.start:]]),
                 "turns": deepcopy(self.turns_run),
@@ -248,9 +192,7 @@ class CandidateTrial:
                 "transitions": deepcopy(self.log.replay_api.world.transitions),
                 "external_calls": deepcopy(self.log.external_calls),
                 "usage": self.log.usage_report(), "assessment": deepcopy(self.assessment),
-                "error": deepcopy(self.error), "validated_improvement": False,
-                "coverage": deepcopy(self.plan["coverage"]),
-                "application": "not_implemented", "real_device_actions": 0}
+                "error": deepcopy(self.error), "coverage": deepcopy(self.plan["coverage"]), "real_device_actions": 0}
 
 
 def live_script_definitions(hass, entities):
@@ -262,12 +204,11 @@ def live_script_definitions(hass, entities):
         if script is None or not getattr(script, "raw_config", None):
             raise CaseError(f"Script {entity} has no readable configuration")
         definitions[entity] = deepcopy(dict(script.raw_config))
-    return definitions, {"provenance": "Live script configuration read when the candidate was prepared",
-                         "source_sha256": digest(definitions)}
+    return definitions
 
 
 class CandidateManager:
-    """Prepare, run once, review, and accept by exposure; scripts are never executed."""
+    """The candidates store: each plan's test, kept from before its first inference, so no plan runs twice."""
     def __init__(self, hass, casebook):
         self.hass, self.book = hass, casebook
         self.store = Store(hass, STORAGE_VERSION, f"{DOMAIN}.candidates", private=True, atomic_writes=True)
@@ -291,56 +232,3 @@ class CandidateManager:
         if plan_id not in self.items:
             raise CaseError("Unknown candidate plan ID")
         return deepcopy(self.items[plan_id])
-
-    async def _context(self, theme_evidence, evaluation_case_id):
-        cases = {e["case_id"]: self.book.get(e["case_id"]) for e in theme_evidence}
-        recording = await self.book.recorder.export(cases[evaluation_case_id]["recording_id"])
-        return cases, recording
-
-    async def prepare(self, *, title, friction, evidence, evaluation_case_id, hypothesis, scripts):
-        async with self.book.lock:
-            cases, recording = await self._context(evidence, evaluation_case_id)
-            theme = create_theme(cases, title=title, friction=friction, observations=evidence,
-                                 provenance="Administrator-grounded theme, not automated discovery")
-            definitions, definition_evidence = live_script_definitions(self.hass, scripts)
-            plan = prepare_exposure_candidate(theme, cases, recording, evaluation_case_id=evaluation_case_id,
-                hypothesis=hypothesis, entities=scripts, definitions=definitions,
-                definition_evidence=definition_evidence)
-            if plan["id"] in self.items:
-                return {**self.get(plan["id"]), "paid_inference_performed": False}
-            item = await self._save({"plan": plan, "status": "prepared", "evidence": deepcopy(evidence),
-                                     "result": None, "reviews": [], "application": None})
-            return {**item, "paid_inference_performed": False}
-
-    async def run(self, plan_id, *, allow_paid_inference=False):
-        if not allow_paid_inference:
-            raise CaseError("Paid inference has not been authorized")
-        async with self.book.lock:
-            item = self.get(plan_id)
-            if item["status"] != "prepared":
-                raise CaseError("Candidate was already attempted; no automatic resampling")
-            plan = item["plan"]
-            cases, recording = await self._context(item["evidence"], plan["evaluation_case_id"])
-            definitions, _ = live_script_definitions(self.hass, [e["entity_id"] for e in plan["edits"]])
-            if definitions != plan["definitions"]:
-                raise CaseError("Scripts changed since preparation; prepare and review a new plan")
-            agent = conversation.async_get_agent(self.hass, plan["baseline_plan"]["agent_id"])
-            trial = CandidateTrial(self.hass, plan, cases, recording, agent, evidence_kind="model_counterfactual")
-            await self._save({**item, "status": "running"})  # Persist the attempt BEFORE inference.
-            item["result"] = await trial.run(allow_paid_inference=True)
-            item["status"] = item["result"]["status"]
-            return await self._save(item)
-
-    async def review(self, plan_id, *, destination_reached, no_regressions_expected, feedback):
-        async with self.book.lock:
-            item = self.get(plan_id)
-            if item["status"] != "awaiting_review":
-                raise CaseError("No candidate result is awaiting review")
-            if not feedback.strip():
-                raise CaseError("Record what the reviewer checked")
-            item["reviews"].append({"destination_reached": destination_reached,
-                                    "no_regressions_expected": no_regressions_expected, "feedback": feedback})
-            recommended = destination_reached and no_regressions_expected
-            item["status"] = "recommended" if recommended else "not_recommended"
-            return await self._save(item)
-

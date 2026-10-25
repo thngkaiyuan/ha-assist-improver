@@ -23,6 +23,7 @@ class CaseBook:
         self.cases = saved.get("cases", {}) if saved else {}
         # Opaque provider-native history lives only in the active trial. Never
         # rebuild it from lossy exports or silently repeat a paid conversation.
+        # (awaiting_review and ready_for_next_turn: the pauses between turns earlier versions kept.)
         for case in list(self.cases.values()):
             if case["baseline"]["status"] in {"running", "awaiting_review", "ready_for_next_turn"}:
                 interrupted = deepcopy(case)

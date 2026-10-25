@@ -1,0 +1,95 @@
+// The panel's words: TEXT, and the tables that name a run's stages, the pipeline's steps and each improvement's status.
+
+export const STAGES = [["analyze", "Analyze"], ["propose", "Propose"], ["test", "Simulate"], ["write", "Write up"]];
+// Every label and tooltip the settings view shows, in one place: edit the words here. {name}-style parts are filled
+// in when shown.
+export const TEXT = {
+  steps: {
+    requests: {title: "Your Assist", tip: "Your conversations with Assist, recorded as you use it. They wait here until the next run takes them in. The assistant shown is the one Assist uses by default."},
+    triage: {title: "Triage", tip: "Recommended to use a small model to reduce downstream costs by filtering out conversations that clearly need no improvement."},
+    analyze: {title: "Analyze", tip: "Reads each conversation to identify your intents, and where Assist could've done better."},
+    propose: {title: "Propose", tip: "Propose changes to make your Assist experience smoother."},
+    review: {title: "Review", tip: "Align proposals with the broader view of how Assist is used in your household."},
+    test: {title: "Simulate", tip: "Replay your conversations with proposed fixes in a simulated copy of your home. Nothing in your home moves."},
+    write: {title: "Write up", tip: "Packages technical improvements so they're easy for you to review."},
+    you: {title: "Your review", tip: "Accept, decline, or ask for a revision."},
+    household: {title: "Your household", tip: "Your house, made easier."},
+  },
+  onDemand: {label: "On-demand improvements", tip: ""},  // No bubble yet: its words wait for approval.
+  sandbox: {label: "Sandbox mode", tip: "When turned on, your Assist conversations use a simulated copy of your home, so nothing real changes; the improver learns from them as practice. This applies only to your user.", others: "Also on for {names}."},
+  autoAccept: {label: "Auto-accept low-risk changes",
+               tip: "Automatically accepts Assist Improver's low-risk changes: household knowledge, and new names for devices other than locks, alarms and doors.",
+               confirm: "Auto-accept low-risk changes?",
+               confirmText: "Improvements that only add household knowledge lines or new device names will be applied without your review. Anything that lets Assist control more still waits for you. You'll be notified each time, and can undo.",
+               on: "Turn on"},
+  revise: {label: "Revisions", short: "Revisions"},
+  block: {tip: "Stop this stage.", blocked: "Resume this stage."},
+  badges: {new: "{n} new: the next run takes them in", waiting: "{n} waiting", held: "{n} held while blocked", review: "{n} to review", applied: "{n} applied"},
+  assistant: {tip: "The assistant Assist uses by default", knowsOn: "Household knowledge on: {name} reads the {lines} learned so far. Click to turn off.",
+              knowsOff: "Household knowledge off for {name}. Click to turn it on, so it reads what the household taught it.",
+              none: "Add an assistant in Settings → Voice assistants first.", lines: "{lines} of household knowledge"},
+  simulate: {label: "Your assistant", tip: "A maximum of {n} simulation rounds will be run against your assistant.", perGoal: "simulations per goal",
+             cost: "Each simulation replays one of your conversations with a fix, on your own assistant: {n} per goal costs a maximum of about {n} times those conversations"},
+  passThrough: {label: "Pass through", tip: "No triage model: conversations pass straight on to analysis."},
+  followUpsOff: "Follow-ups aren't checked",
+  models: {large: "Needs judgement: a strong model works best.", small: "A small, quick model is enough.",
+           missing: {label: "Not available", tip: "This AI model is gone from Home Assistant. Choose another."},
+           unavailable: "This AI model is unavailable right now.", none: {label: "Choose…", tip: "This step needs an AI model."},
+           weak: "Not recommended for this step", unknown: "Fit unknown",
+           unknownTip: "Assist Improver can't tell which model this is. A strong model, such as Claude Opus 5.5, works best.",
+           recommended: "Use recommended setup", recommendedBusy: "Setting up…",
+           recommendedTip: "Claude Opus 5.5 for the steps that need judgement, a small model for Triage and Write up. AI Tasks that fit are reused; the rest are added to your AI provider."},
+  schedule: {off: "Only when you run it", daily: "Also every day at 3:00", weekly: "Also every Sunday at 3:00"},
+  runNow: "Run now", runOneStep: "Run one step",
+  failure: {stopped: "Nothing was lost: the next run tries again.",
+            stage: "{steps} couldn't finish this time; the next run tries again.", details: "Details",
+            settings: "Open settings"},
+  confirm: {title: "Run Assist Improver?", step: "Run {step}?", run: "Run", notNow: "Not now",
+            cost: "Runs use your AI models, so they cost money.", waiting: "{items} {are} waiting.", more: "{items} and more are waiting.",
+            nothing: "Nothing is waiting right now.", again: "Nothing new is waiting; this proposes again from what's already analyzed.",
+            blocked: "{steps} {is} blocked.", models: "{steps} can't run: {its} available. Choose another first.",
+            its: "its AI model isn't", their: "their AI models aren't",
+            items: {requests: "{n} new conversation{s}", analyze: "{n} conversation{s} to analyze", propose: "new findings to propose from",
+                    test: "{n} idea{s} to simulate", write: "{n} write-up{s}"},
+            steps: {triage: "Takes in {n} new conversation{s} and triages them.", triageNone: "Nothing is waiting for triage.",
+                    analyze: "Analyzes {n} conversation{s}.", analyzeNone: "Nothing is waiting for analysis.",
+                    propose: "Proposes fixes from what's new.", proposeNone: "Nothing new to propose from.",
+                    test: "Simulates {n} idea{s}.", testNone: "Nothing is waiting to be simulated.",
+                    write: "Writes up {n} improvement{s}.", writeNone: "Nothing is waiting to be written up."}},
+  knowledge: {chip: "{n} learned", chipShort: "{n}", tip: "What your assistants know about your household. Accepted improvements add to it.",
+              title: "Household knowledge", everyone: "Everyone", empty: "Nothing learned yet: accepted improvements add lines here.",
+              search: "Search", none: "Nothing matches.", more: "Read more", less: "Show less", add: "Add a line",
+              addFor: "Add a line just for {name}", placeholder: "One fact or preference, in a sentence", save: "Save", cancel: "Cancel",
+              edit: "Edit", remove: "Delete", confirmRemove: "Delete this line?"},
+  history: {title: "History", more: "Show more", empty: "Nothing yet: runs and your decisions show up here.",
+            run: {done: "Run finished", failed: "Run stopped early", cancelled: "Run cancelled", interrupted: "Run interrupted"},
+            stopped: "Nothing was lost: the next run tries again.", unfinished: "{steps} couldn't finish",
+            setAside: "{n} conversation{s} set aside",
+            failed: "{n} couldn't be analyzed: {why}", addressed: "{n} already addressed by an improvement", posted: "Up for review", decisions: {accept: "Accepted", decline: "Declined", revise: "Asked for a revision",
+            needs_improvement: "Said it needs improvement", fine_as_is: "Said it was fine as it was", was_test: "Marked as a test",
+            undo: "Undid", ignore: "Ignored"}, auto: "Accepted automatically"},
+};
+
+// The settings view draws the pipeline as a track: requests merge onto the improvement loop (analyze, propose, test,
+// write up), a small loop joins the proposer and its reviewer, and you review at the far end; revisions go round
+// again and what you accept peels off to the household. Each AI step names its model; the ones with a gate can be
+// blocked (a run then stops there and what reaches it waits).
+export const STEPS = {
+  requests: {...TEXT.steps.requests, icon: "mdi:comment-processing-outline"},
+  triage: {...TEXT.steps.triage, role: "triage", gate: "triage", icon: "mdi:filter-outline"},
+  analyze: {...TEXT.steps.analyze, role: "analyzer", gate: "analyze", icon: "mdi:text-search"},
+  propose: {...TEXT.steps.propose, role: "generator", gate: "propose", icon: "mdi:lightbulb-on-outline"},
+  review: {...TEXT.steps.review, role: "reviewer", icon: "mdi:scale-balance"},
+  test: {...TEXT.steps.test, gate: "test", icon: "mdi:flask-outline"},
+  write: {...TEXT.steps.write, role: "editor", gate: "write", icon: "mdi:feather"},
+  you: {...TEXT.steps.you, icon: "mdi:account-circle-outline"},
+  household: {...TEXT.steps.household, icon: "mdi:home-heart"},
+};
+export const AT_WORK = {analyze: ["triage", "analyze"], propose: ["propose", "review"], test: ["test"], write: ["write"]};
+export const BACKLOG = {requests: "requests", triage: "triage", analyze: "analyze", propose: "propose", test: "test",
+                        write: "write", you: "review"};
+export const SCHEDULE = Object.entries(TEXT.schedule);
+export const GATE_NAMES = Object.fromEntries(["triage", "analyze", "propose", "test", "write"].map((g) => [g, STEPS[g].title]));
+export const STATUS = {awaiting_review: "To review", needs_attention: "Needs attention", applied: "Applied", undone: "Undone",
+  declined: "Declined", revision_requested: "Revision requested", revised: "Revised", ignored: "Ignored",
+  conflict: "Changed since tested"};
