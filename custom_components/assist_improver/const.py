@@ -2,7 +2,7 @@
 
 DOMAIN = "assist_improver"
 NAME = "Assist Improver"
-VERSION = "0.36.1"
+VERSION = "0.37.0"
 # How replays run and are judged; changing it makes earlier baselines a different test (a new plan), not a resample.
 REPLAY_ENGINE = "2026-10-24.5"  # .2: a fix commanding what the baseline also changed isn't unintended. .3: baselines
 # are judged on the goal's devices. .4: a goal newly met counts, not only fewer turns. .5: controls the user would
@@ -28,9 +28,14 @@ CONF_SCHEDULE = "schedule"
 CONF_PAUSED = "paused_stages"
 # Improvements are accepted (applied) as soon as they're written up, without waiting for the household. Off by default.
 CONF_AUTO_ACCEPT = "auto_accept"
-# On-demand improvements: Assist gets a tool to file a conversation when the user asks ("file an improvement"), and only
-# filed conversations go to the pipeline, each as soon as it ends. Off by default.
+# On-demand improvements, the fast lane: Assist gets a tool to file a conversation when the user asks ("file an
+# improvement"), and a filed conversation (or one sent in from the panel) gets a run of its own as soon as it ends. Full
+# runs still take in every conversation. On for a new entry (config_flow); an older one without it reads as off.
 CONF_ON_DEMAND = "on_demand"
+# Privacy controls: recording on or off for the household (on by default), and the people whose switch is off (an
+# admin sets each; settings.updated keeps the two in step).
+CONF_RECORDING = "recording"
+CONF_OPT_OUT = "recording_opt_out"
 CONF_DEVELOPER = "developer_services"  # Hidden: registers the developer services (__init__.py).
 SAVE_DELAY = 1
 ATTRIBUTES = {

@@ -35,7 +35,8 @@ async def analyze(hass, entry, runtime, recording_id, allow_paid_inference=False
         check = kept or await run_role(
             hass, role=triage.ROLE, entity_id=checker, instructions=triage.INSTRUCTIONS, payload=triage.payload(view),
             structure=triage.STRUCTURE, allow_paid_inference=True)
-        run["triage"] = {k: check.get(k) for k in ("status", "output", "error", "usage", "entity_id")}
+        run["triage"] = {**{k: check.get(k) for k in ("status", "output", "error", "usage", "entity_id")},
+                         **({"kept": True} if kept else {})}  # A kept verdict's tokens were counted once already.
         if check["status"] == "completed" and triage.skips_analysis(check.get("output")):
             run.update(status="completed", output=check["output"], answer_status="triaged_smooth",
                        analysis=triage.smooth_analysis(recording_id, check["output"]))

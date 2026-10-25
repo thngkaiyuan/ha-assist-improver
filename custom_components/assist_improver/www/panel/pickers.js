@@ -3,8 +3,8 @@
 // check; and the assistant Your Assist uses.
 
 const v = new URL(import.meta.url).search;  // ?v=<version>, passed on to every module this one loads.
-const [{esc, plural, fill}, {TEXT, STEPS}, {glyph}, household] = await Promise.all(
-  ["format", "text", "icons", "household"].map((name) => import(`./${name}.js${v}`)));
+const [{esc, plural, fill}, {TEXT, STEPS}, {glyph}, household, {switchRow}] = await Promise.all(
+  ["format", "text", "icons", "household", "common"].map((name) => import(`./${name}.js${v}`)));
 
 export const task = (s, entityId) => s.ai_tasks.find((t) => t.entity_id === entityId);
 
@@ -24,14 +24,24 @@ function options(s, role, roleName) {
       <span class="opt-label">${esc(roleName === "triage" ? TEXT.passThrough.label : "Off")}</span></div></div>` : "");
 }
 
+function privacy(s) {
+  // What's kept: recording for the household, and for each of its people (an admin sets each; they flip together).
+  const P = TEXT.privacy, people = s.recording_people || [];
+  return `<div class="pop-privacy">${switchRow("recording", s.recording !== false, P.recording, P.recordingTip, "pop-toggle")}
+    ${people.length ? `<div class="pop-people" role="group" aria-label="${esc(P.people)}"><div class="pop-sub">${esc(P.people)}</div>${
+      people.map((x, n) => switchRow(`recording-person-${n}`, x.on, x.name, "", "pop-toggle",
+                                     `data-recording-person="${esc(x.user_id)}"`)).join("")}</div>` : ""}</div>`;
+}
+
 const PICKERS = {
-  assist(p) {
+  assist(p, s) {
     const h = p.household || {}, list = h.pipelines || [];
     return `<div class="pop-head"><b>Your Assist</b> uses</div>` + (list.length ? list.map((x) =>
       `<div class="opt" data-prefer="${esc(x.id)}"><div class="opt-main"><span class="check">${x.preferred ? "&#10003;" : ""}</span>
         <span class="opt-label">${esc(x.name)}</span><span class="spacer"></span>${household.knows(p, x, h.lines || 0)}</div></div>`).join("")
       : `<div class="pop-lead">${esc(TEXT.assistant.none)}</div>`) +
-      `<div class="pop-lead pop-foot">${glyph("mdi:book-heart-outline")}<span>${esc(fill(TEXT.assistant.lines, {lines: plural(h.lines || 0, "line")}))}</span></div>`;
+      `<div class="pop-lead pop-foot">${glyph("mdi:book-heart-outline")}<span>${esc(fill(TEXT.assistant.lines, {lines: plural(h.lines || 0, "line")}))}</span></div>` +
+      privacy(s);
   },
   test(p, s) {
     const n = s.tests_per_goal;

@@ -122,7 +122,7 @@ export class PanelApp {
         this.view = "review";
         const fresh = this.review?.id !== id && KEPT.page !== id;
         if (fresh) {  // Another review: none of the last one's choices follow.
-          Object.assign(this, {decision: null, note: "", result: null, menuOpen: false});
+          Object.assign(this, {decision: null, note: "", reason: null, result: null, menuOpen: false});
           const history = this.open.has("history");  // Earlier improvements stay open on the way back.
           this.open.clear();
           if (history) this.open.add("history");
@@ -235,9 +235,12 @@ export class PanelApp {
   }
 
   barHeight() {
-    // The Run bar's height (0 without it), as --bar: what sticks to the bottom of the page sits just above it.
+    // The Run bar's height (0 without it), as --bar: what sticks to the bottom of the page sits just above it. And the
+    // conversations' pinned controls', as --controls: an opened conversation scrolls into view below them.
     const bar = this.root.querySelector(".cs-footer")?.offsetHeight || 0;
     if (bar !== this.bar) this.host.style.setProperty("--bar", `${this.bar = bar}px`);
+    const controls = this.root.querySelector(".cs-controls")?.offsetHeight || 0;
+    if (controls !== this.controls) this.host.style.setProperty("--controls", `${this.controls = controls}px`);
   }
 
   menuButton() {

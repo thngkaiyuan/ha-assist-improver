@@ -60,6 +60,10 @@ export function render(p) {
   };
 }
 
+export function after(p) {
+  conversations.after(p);
+}
+
 async function turnOn(p, target) {
   p.turningOn = target;
   p.render();

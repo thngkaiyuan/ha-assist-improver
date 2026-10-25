@@ -15,8 +15,8 @@ from homeassistant.config_entries import ConfigEntryState
 
 from . import ai_setup
 from .const import (CONF_ACCEPTED_WEAK, CONF_AI_TASK, CONF_AUTO_ACCEPT, CONF_CHECK_AI_TASK, CONF_DEVELOPER,
-                    CONF_ON_DEMAND, CONF_PAUSED, CONF_SCHEDULE, CONF_TESTS_PER_GOAL, CONF_TRIAGE_AI_TASK,
-                    DEFAULT_TESTS_PER_GOAL)
+                    CONF_ON_DEMAND, CONF_OPT_OUT, CONF_PAUSED, CONF_RECORDING, CONF_SCHEDULE, CONF_TESTS_PER_GOAL,
+                    CONF_TRIAGE_AI_TASK, DEFAULT_TESTS_PER_GOAL)
 
 # Large roles need judgement (a strong model); small ones a quick, cheap one.
 ROLES = {
@@ -30,7 +30,8 @@ ROLES = {
 }
 OPTIONAL = {role for role, spec in ROLES.items() if not spec["fallback"]}  # Off while unset.
 LIVE = {spec["key"] for spec in ROLES.values()} | {CONF_AI_TASK, CONF_ACCEPTED_WEAK, CONF_TESTS_PER_GOAL, CONF_SCHEDULE,
-                                                   CONF_PAUSED, CONF_AUTO_ACCEPT, CONF_ON_DEMAND}  # Read when used.
+                                                   CONF_PAUSED, CONF_AUTO_ACCEPT, CONF_ON_DEMAND,
+                                                   CONF_RECORDING, CONF_OPT_OUT}  # Read when used.
 GATES = ("triage", "analyze", "propose", "test", "write")  # Stages that can be paused, in order.
 STAGE_ROLES = {"triage": ("triage",), "analyze": ("analyzer",), "propose": ("generator", "reviewer"),
                "test": ("followup_check",), "write": ("editor",)}  # The roles each stage calls.
@@ -104,11 +105,23 @@ def model_label(hass, entity_id):
     return name or model or entity_id
 
 
+def model_name(hass, entity_id):
+    """The model's full name, as the setup dialog gives it: "Claude Opus 5.5" for a Claude model, else model_label."""
+    label = model_label(hass, entity_id)
+    return f"Claude {label}" if CLAUDE.search(ai_setup.assess(hass, entity_id).get("model") or "") else label
+
+
 def providers(hass):
     """Loaded integrations that can add an AI Task: [{entry_id, title, domain}]."""
     return [{"entry_id": e.entry_id, "title": e.title, "domain": e.domain}
             for e in hass.config_entries.async_entries()
             if getattr(e, "state", None) is ConfigEntryState.LOADED and "ai_task_data" in e.supported_subentry_types]
+
+
+def people(hass):
+    """{user ID: name}: the household's people, as Home Assistant's person entities with a user."""
+    return {state.attributes["user_id"]: state.name for state in hass.states.async_all("person")
+            if state.attributes.get("user_id")}
 
 
 def view(hass, entry, user_id=None):
@@ -128,6 +141,7 @@ def view(hass, entry, user_id=None):
     mode = hass.data.get(MODE_KEY)
     issues = problems(hass, entry)
     users = dict(getattr(mode, "users", {}))
+    recording_on, opted_out = bool(entry.options.get(CONF_RECORDING, True)), set(entry.options.get(CONF_OPT_OUT, []))
     return {"roles": {role: {"entity_id": role_model(entry, role), "size": spec["size"], "optional": role in OPTIONAL,
                              "problem": issues.get(role)} for role, spec in ROLES.items()},
             "ai_tasks": tasks, "providers": providers(hass), "recommended": is_recommended_setup(hass, entry),
@@ -135,13 +149,16 @@ def view(hass, entry, user_id=None):
             "schedule": entry.options.get(CONF_SCHEDULE, "off"), "paused": sorted(paused(entry)),
             "auto_accept": bool(entry.options.get(CONF_AUTO_ACCEPT, False)),
             "on_demand": bool(entry.options.get(CONF_ON_DEMAND, False)),
+            "recording": recording_on, "recording_people": [
+                {"user_id": uid, "name": name, "on": recording_on and uid not in opted_out}
+                for uid, name in sorted(people(hass).items(), key=lambda person: person[1].casefold())],
             "developer": bool(entry.options.get(CONF_DEVELOPER)),
             "practice": {"on": bool(user_id and user_id in users),
                          "others": sorted(name for uid, name in users.items() if uid != user_id)}}
 
 
 def updated(hass, entry, *, role=None, entity_id=None, tests_per_goal=None, schedule=None, stage=None,
-            pause=None, auto_accept=None, on_demand=None, developer_services=None):
+            pause=None, auto_accept=None, on_demand=None, recording=None, person=None, developer_services=None):
     """The entry's options with one setting changed, checked first."""
     options = dict(entry.options)
     if role is not None:
@@ -170,8 +187,21 @@ def updated(hass, entry, *, role=None, entity_id=None, tests_per_goal=None, sche
         options[CONF_PAUSED] = [s for s in GATES if s in stages]
     if auto_accept is not None:
         options[CONF_AUTO_ACCEPT] = bool(auto_accept)
-    if on_demand is not None:  # Only conversations the user files go to the pipeline (Assist's file_improvement).
+    if on_demand is not None:  # The fast lane: one filed or sent in gets a run of its own as it ends.
         options[CONF_ON_DEMAND] = bool(on_demand)
+    if recording is not None:  # Whether new conversations are kept: the household's, or one person's (person).
+        everyone, out = set(people(hass)), set(options.get(CONF_OPT_OUT, []))
+        if person is None:  # The household's switch: every person's goes with it.
+            options[CONF_RECORDING], out = bool(recording), set() if recording else out | everyone
+        elif person not in everyone:
+            raise SettingsError("That person isn't set up in Home Assistant.")
+        elif recording:  # One person on turns the household's on; the others stay as they were (off, if it was).
+            if not options.get(CONF_RECORDING, True):
+                out |= everyone
+            options[CONF_RECORDING], out = True, out - {person}
+        else:
+            out.add(person)
+        options[CONF_OPT_OUT] = sorted(out)
     if developer_services is not None:  # Hidden (no control in the panel): set for debugging and evaluation rounds.
         options[CONF_DEVELOPER] = bool(developer_services)
     return options

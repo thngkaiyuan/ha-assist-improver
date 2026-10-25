@@ -69,10 +69,13 @@ class BriefCache:
         self.store = Store(hass, STORAGE_VERSION, f"{DOMAIN}.session_briefs", private=True, atomic_writes=True)
         self.briefs, self.loaded = {}, False
 
-    async def get(self, recorder, recording_id):
+    async def _load(self):
         if not self.loaded:
             self.briefs = ((await self.store.async_load()) or {}).get("briefs", {})
             self.loaded = True
+
+    async def get(self, recorder, recording_id):
+        await self._load()
         stamp = _stamp(recorder.index.get(recording_id, {}))
         kept = self.briefs.get(recording_id)
         if kept and kept.get("stamp") == stamp:
@@ -86,6 +89,13 @@ class BriefCache:
     async def save(self, recorder):
         self.briefs = {k: v for k, v in self.briefs.items() if k in recorder.index}
         await self.store.async_save({"briefs": self.briefs})
+
+    async def drop(self, recorder, *recording_ids):
+        """Deleted recordings' briefs go from the store too, loaded first if no proposal has read it yet."""
+        await self._load()
+        for recording_id in recording_ids:
+            self.briefs.pop(recording_id, None)
+        await self.save(recorder)
 
 
 def _stamp(summary):

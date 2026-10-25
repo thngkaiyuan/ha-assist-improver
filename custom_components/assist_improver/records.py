@@ -27,6 +27,8 @@ class RecordingSummary(TypedDict, total=False):
     user_turns: int
     stored: str  # packed or compact (retention.py); absent while kept in full.
     filed: Filed
+    hidden: bool  # Out of the conversations list (Archive); kept, analysed and tested all the same.
+    deleting: bool  # Deleted during a run: out of view, and deleted once the run ends (Recorder.forget_later).
 
 
 class Turn(TypedDict, total=False):

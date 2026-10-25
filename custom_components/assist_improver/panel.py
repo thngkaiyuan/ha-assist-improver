@@ -20,7 +20,7 @@ from homeassistant.core import callback
 from .cases import CaseError
 from .changeset import plan_steps
 from .const import DOMAIN, VERSION
-from .improvements import DECISIONS, KINDS, PENDING, benefits, choices, display_title
+from .improvements import DECISIONS, KINDS, PENDING, benefits, choices, display_title, reasons
 from .runtime import loaded
 
 URL_PATH = "assist-improver"  # The panel's address: /assist-improver?id=<improvement>.
@@ -95,6 +95,18 @@ def test_result(test):
     return "improved"
 
 
+def said(test):
+    """A test's conversation as it went (the turns it covers) and its replay with the change, turn by turn, as the home
+    page reads a conversation: what was said, Assist's reply, and the steps that failed in between."""
+    shown = {}
+    for side in ("before", "after"):
+        failed = (test.get("failed_steps") or {}).get(side) or []  # None in tests derived by earlier versions.
+        shown[side] = [{"you": t.get("you") or "", "assist": t.get("assistant") or "",
+                        **({"failed": failed[n]} if n < len(failed) and failed[n] else {})}
+                       for n, t in enumerate(test.get(side) or [])]
+    return shown
+
+
 def safety(item, steps, already):
     """Why it's safe, stated by code from the tests and the changeset (never written by a model)."""
     facts = []
@@ -161,9 +173,11 @@ def review(item, planned=None, names=None):
             "physical": bool(PHYSICAL.search(json.dumps([item.get(k) for k in ("changes", "tests", "cause")],
                                                         default=str))),
             "tests": [{"summary": t["summary"], "improved": t["status"] == "awaiting_review",
-                       "result": test_result(t)} for t in item["tests"]],
+                       "result": test_result(t), **said(t)} for t in item["tests"]],
             "untested": len(item["untested_goals"]),
-            "choices": [{"value": d, "label": DECISIONS[d][1]} for d in choices(item)]}
+            # Each decision open now, with the reasons it can be given with (Decline: not an issue).
+            "choices": [{"value": d, "label": DECISIONS[d][1], **({"reasons": r} if (r := reasons(d)) else {})}
+                        for d in choices(item)]}
 
 
 def outcome_text(item):
@@ -269,7 +283,7 @@ async def ws_get(hass, connection, msg):
 
 @websocket_api.websocket_command({probatio.Required("type"): f"{DOMAIN}/decide",
                                   probatio.Required("improvement_id"): str, probatio.Required("decision"): str,
-                                  probatio.Optional("note", default=""): str})
+                                  probatio.Optional("note", default=""): str, probatio.Optional("reason"): str})
 @websocket_api.require_admin
 @websocket_api.async_response
 async def ws_decide(hass, connection, msg):
@@ -277,7 +291,7 @@ async def ws_decide(hass, connection, msg):
         return
     try:
         item = await runtime.improvements.decide(msg["improvement_id"], msg["decision"], note=msg["note"],
-                                                  user_id=connection.user.id)
+                                                  user_id=connection.user.id, reason=msg.get("reason"))
     except CaseError as err:
         connection.send_error(msg["id"], "decision", str(err))
         return
@@ -400,7 +414,7 @@ def ws_run_status(hass, connection, msg):
 async def ws_run_start(hass, connection, msg):
     """Start a run; the panel asks the user to confirm what it will spend first. picked (the home page's Run): the
     given conversations are sent in first, and the run takes in only conversations sent in."""
-    from .conversations import TAKEN, standing
+    from .conversations import TAKEN, kept, standing
     if (runtime := _runtime(hass, connection, msg)) is None:
         return
     picked, conversations = msg.get("picked", False), msg.get("conversations") or []
@@ -408,7 +422,7 @@ async def ws_run_start(hass, connection, msg):
         connection.send_error(msg["id"], "busy", "A run is already in progress")
         return
     if conversations:
-        if missing := [rid for rid in conversations if rid not in runtime.recorder.index]:
+        if missing := [rid for rid in conversations if not kept(runtime, rid)]:
             connection.send_error(msg["id"], "not_found", f"{len(missing)} of those conversations aren't kept.")
             return
         fresh = [rid for rid in conversations if standing(runtime, rid) not in TAKEN]  # Never one the improver has.
@@ -454,11 +468,13 @@ def ws_settings(hass, connection, msg):
                                   probatio.Optional("tests_per_goal"): int, probatio.Optional("schedule"): str,
                                   probatio.Optional("stage"): str, probatio.Optional("pause"): bool,
                                   probatio.Optional("auto_accept"): bool, probatio.Optional("on_demand"): bool,
+                                  probatio.Optional("recording"): bool, probatio.Optional("person"): str,
                                   probatio.Optional("developer_services"): bool})
 @websocket_api.require_admin
 @callback
 def ws_settings_set(hass, connection, msg):
-    """Change one setting; it applies right away, even during a run."""
+    """Change one setting; it applies right away, even during a run. recording with person (a user ID) is that
+    person's switch; without, the household's."""
     from .settings import SettingsError, updated, view
     if (entry := _entry(hass, connection, msg)) is None:
         return
@@ -466,7 +482,8 @@ def ws_settings_set(hass, connection, msg):
         options = updated(hass, entry, role=msg.get("role"), entity_id=msg.get("entity_id"),
                           tests_per_goal=msg.get("tests_per_goal"), schedule=msg.get("schedule"),
                           stage=msg.get("stage"), pause=msg.get("pause"), auto_accept=msg.get("auto_accept"),
-                          on_demand=msg.get("on_demand"), developer_services=msg.get("developer_services"))
+                          on_demand=msg.get("on_demand"), recording=msg.get("recording"), person=msg.get("person"),
+                          developer_services=msg.get("developer_services"))
     except SettingsError as err:
         connection.send_error(msg["id"], "invalid", str(err))
         return
@@ -571,7 +588,7 @@ async def ws_log(hass, connection, msg):
         if run.get("kind") == "pipeline" and run.get("status") != "running":
             events.append({"at": run.get("finished") or run.get("started"), "kind": "run", "status": run.get("status"),
                            "trigger": run.get("trigger"), "only": run.get("only"), "progress": run.get("progress") or {},
-                           "error": run.get("error")})
+                           "error": run.get("error"), **({"picked": True} if run.get("picked") else {})})
     for item in runtime.improvements.items.values():
         title = display_title(item)
         if item.get("copy"):
@@ -588,17 +605,19 @@ async def ws_log(hass, connection, msg):
                                   probatio.Optional("query"): str,
                                   probatio.Optional("days"): probatio.Any(None, probatio.All(int, probatio.Range(min=1))),
                                   probatio.Optional("order"): probatio.In(["newest", "oldest", "effort"]),
-                                  probatio.Optional("offset", default=0): probatio.All(int, probatio.Range(min=0))})
+                                  probatio.Optional("offset", default=0): probatio.All(int, probatio.Range(min=0)),
+                                  probatio.Optional("hidden", default=False): bool})
 @websocket_api.require_admin
 @websocket_api.async_response
 async def ws_conversations(hass, connection, msg):
-    """A page of the kept conversations, found by what was said and when (conversations.listed)."""
+    """A page of the kept conversations, found by what was said and when (conversations.listed); hidden ones too if
+    asked for."""
     from .conversations import listed
     if (runtime := _runtime(hass, connection, msg)) is None:
         return
     kept = await runtime.transcripts.all()
     connection.send_result(msg["id"], listed(runtime, kept, msg.get("query"), msg.get("days"),
-                                             msg.get("order"), msg.get("offset", 0)))
+                                             msg.get("order"), msg.get("offset", 0), hidden=msg.get("hidden", False)))
 
 
 @websocket_api.websocket_command({probatio.Required("type"): f"{DOMAIN}/conversation",
@@ -607,10 +626,10 @@ async def ws_conversations(hass, connection, msg):
 @websocket_api.async_response
 async def ws_conversation(hass, connection, msg):
     """One conversation to read: what was said, turn by turn, and where it stands."""
-    from .conversations import shown
+    from .conversations import kept, shown
     if (runtime := _runtime(hass, connection, msg)) is None:
         return
-    if msg["recording_id"] not in runtime.recorder.index:
+    if not kept(runtime, msg["recording_id"]):
         connection.send_error(msg["id"], "not_found", "That conversation isn't kept.")
         return
     connection.send_result(msg["id"], shown(runtime, await runtime.transcripts.all(), msg["recording_id"]))
@@ -625,11 +644,11 @@ async def ws_conversation_send(hass, connection, msg):
     """Send a conversation in: filed, as Assist's file_improvement tool does, so the pipeline takes it in (at its
     next run, past the quick check; right away with on-demand improvements on). One it has, or an accepted
     improvement covers, is already in."""
-    from .conversations import TAKEN, standing
+    from .conversations import TAKEN, kept, standing
     if (runtime := _runtime(hass, connection, msg)) is None:
         return
     rid = msg["recording_id"]
-    if rid not in runtime.recorder.index:
+    if not kept(runtime, rid):
         connection.send_error(msg["id"], "not_found", "That conversation isn't kept.")
         return
     if standing(runtime, rid) in TAKEN:
@@ -639,11 +658,81 @@ async def ws_conversation_send(hass, connection, msg):
     connection.send_result(msg["id"], {"status": standing(runtime, rid), "on_demand": runtime.pipeline.on_demand})
 
 
+@websocket_api.websocket_command({probatio.Required("type"): f"{DOMAIN}/conversation/hide",
+                                  probatio.Required("recording_id"): str,
+                                  probatio.Optional("hidden", default=True): bool})
+@websocket_api.require_admin
+@websocket_api.async_response
+async def ws_conversation_hide(hass, connection, msg):
+    """Hide a conversation from the list, or (hidden: false) show it again. It's kept, analysed and tested as before."""
+    from .conversations import kept
+    if (runtime := _runtime(hass, connection, msg)) is None:
+        return
+    if not kept(runtime, msg["recording_id"]):
+        connection.send_error(msg["id"], "not_found", "That conversation isn't kept.")
+        return
+    await runtime.recorder.hide(msg["recording_id"], hidden=msg.get("hidden", True))
+    connection.send_result(msg["id"], {"hidden": msg.get("hidden", True)})
+
+
+@websocket_api.websocket_command({probatio.Required("type"): f"{DOMAIN}/conversation/delete",
+                                  probatio.Required("recording_id"): str})
+@websocket_api.require_admin
+@websocket_api.async_response
+async def ws_conversation_delete(hass, connection, msg):
+    """Delete a conversation for good (Recorder.forget): its recording and what the improver derived from it. During
+    a run it's queued (Recorder.forget_later): gone from view at once, and deleted when the run ends."""
+    from .conversations import kept
+    if (runtime := _runtime(hass, connection, msg)) is None:
+        return
+    if not kept(runtime, msg["recording_id"]):
+        connection.send_error(msg["id"], "not_found", "That conversation isn't kept.")
+        return
+    queued = runtime.pipeline.running
+    await (runtime.recorder.forget_later if queued else runtime.recorder.forget)(msg["recording_id"])
+    connection.send_result(msg["id"], {"deleted": msg["recording_id"], **({"queued": True} if queued else {})})
+
+
+@websocket_api.websocket_command({probatio.Required("type"): f"{DOMAIN}/conversations/hide",
+                                  probatio.Required("recording_ids"): probatio.All([str], probatio.Length(max=5000)),
+                                  probatio.Optional("hidden", default=True): bool})
+@websocket_api.require_admin
+@websocket_api.async_response
+async def ws_conversations_hide(hass, connection, msg):
+    """Archive many conversations at once (the home page's selection), or (hidden: false) unarchive them; those no
+    longer kept are left out. How many changed."""
+    from .conversations import kept
+    if (runtime := _runtime(hass, connection, msg)) is None:
+        return
+    keys = [rid for rid in dict.fromkeys(msg["recording_ids"]) if kept(runtime, rid)]
+    if keys:
+        await runtime.recorder.hide(*keys, hidden=msg.get("hidden", True))
+    connection.send_result(msg["id"], {"changed": len(keys)})
+
+
+@websocket_api.websocket_command({probatio.Required("type"): f"{DOMAIN}/conversations/delete",
+                                  probatio.Required("recording_ids"): probatio.All([str], probatio.Length(max=5000))})
+@websocket_api.require_admin
+@websocket_api.async_response
+async def ws_conversations_delete(hass, connection, msg):
+    """Delete many conversations at once (the home page's selection), as conversation/delete does one: during a run
+    they're queued. Those no longer kept are left out."""
+    from .conversations import kept
+    if (runtime := _runtime(hass, connection, msg)) is None:
+        return
+    keys = [rid for rid in dict.fromkeys(msg["recording_ids"]) if kept(runtime, rid)]
+    queued = runtime.pipeline.running
+    if keys:
+        await (runtime.recorder.forget_later if queued else runtime.recorder.forget)(*keys)
+    connection.send_result(msg["id"], {"deleted": keys, **({"queued": True} if queued else {})})
+
+
 def register_commands(hass):
     for handler in (ws_list, ws_get, ws_decide, ws_household, ws_household_enable, ws_run_status, ws_run_start,
                     ws_run_cancel, ws_settings, ws_settings_set, ws_settings_models, ws_settings_create,
                     ws_settings_recommended, ws_practice, ws_assistant_prefer, ws_log, ws_household_edit,
-                    ws_conversations, ws_conversation, ws_conversation_send):
+                    ws_conversations, ws_conversation, ws_conversation_send, ws_conversation_hide,
+                    ws_conversation_delete, ws_conversations_hide, ws_conversations_delete):
         websocket_api.async_register_command(hass, handler)
     from .devview import COMMANDS  # The developer view's: they answer only in developer mode.
     for handler in COMMANDS:

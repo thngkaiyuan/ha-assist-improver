@@ -24,9 +24,12 @@ never restarted on its own.
 Each run has a trace (trace.py) under the run's id: a span for the run, each stage, each conversation, the
 proposal, each test and each write-up, with the AI calls and their tools inside.
 
-On-demand improvements (a setting, off by default): only the conversations the user filed (Assist's
-file_improvement tool, llm.py) are taken in, each as soon as it ends: a run starts then, or right after the one in
-progress. A filed conversation skips the quick check: the user already said it needs a closer look.
+What a run takes in depends on how it started. A full run (Run now in the settings, or the schedule) takes in every
+finished conversation not analysed yet. A run on picked conversations (the home page's Run) takes in only those sent
+in. On-demand improvements (a setting, on for a new install) add a fast lane: a conversation the user filed (Assist's
+file_improvement tool, llm.py) or sent in from the panel gets a run of its own as soon as it ends, or right after the
+one in progress; that run (trigger "filed") takes in and analyses only conversations sent in, so it stays cheap. A
+conversation sent in skips the quick check, whichever run takes it: the user already said it needs a closer look.
 """
 
 import asyncio
@@ -95,6 +98,8 @@ class Pipeline:
 
     @callback
     def _ran(self, task):
+        # Conversations deleted during the run go now; none of them is taken in again meanwhile (_readable).
+        self.hass.async_create_task(self.recorder.forget_queued(), "assist_improver_forget_queued")
         if self._again and not task.cancelled():
             self._again = False
             self.request()
@@ -129,33 +134,41 @@ class Pipeline:
 
     def _readable(self, rid, runs=None):
         """A conversation with something to analyse: still recorded (the tidy-up deletes empty ones), not one Home
-        Assistant handled itself, with no turns recorded (user_turns 0), and not one a run found malformed."""
+        Assistant handled itself, with no turns recorded (user_turns 0), not one a run found malformed, and not one
+        waiting to be deleted (Recorder.forget_later)."""
         runs = self._runs() if runs is None else runs
         summary = self.recorder.index.get(rid)
-        return summary is not None and summary.get("user_turns") != 0 and rid not in runs.unreadable
+        return (summary is not None and summary.get("user_turns") != 0 and rid not in runs.unreadable
+                and not summary.get("deleting"))
 
-    def to_analyze(self, tests=None, picked=False):
-        """Finished conversations not analysed yet; only those sent in (filed) with on-demand improvements on, or
-        for a run on picked conversations."""
+    def _unanalysed(self, rid, runs):
+        """No analysis yet; or only the quick check's smooth verdict, and the user sent it in since:
+        it gets the full analysis then, once, as that analysis takes the verdict's place."""
+        analysis = runs.analyzed.get(rid)
+        return analysis is None or bool(analysis.get("triaged") and self.filed(rid))
+
+    def to_analyze(self, tests=None, filed_only=False):
+        """Finished conversations not analysed yet: every one, as a full run takes them in; only those sent in (filed)
+        with filed_only, as a run on picked conversations and the fast lane do."""
         runs, tests = self._runs(), self._tests() if tests is None else tests
-        filed_only = picked or self.on_demand
         return sorted(rid for rid, summary in self.recorder.index.items()
-                      if summary.get("status") in CLOSED and rid not in runs.analyzed and rid not in tests
+                      if summary.get("status") in CLOSED and self._unanalysed(rid, runs) and rid not in tests
                       and self._readable(rid, runs) and (not filed_only or summary.get("filed")))
 
     def _at(self):
         """{recording id: the stage it waits at} for conversations a run took in that aren't analysed yet."""
         runs = self._runs()
-        return {rid: stage for rid, stage in self.waiting.items() if rid not in runs.analyzed and self._readable(rid, runs)}
+        return {rid: stage for rid, stage in self.waiting.items()
+                if self._unanalysed(rid, runs) and self._readable(rid, runs)}
 
     async def _save_at(self, at):
         self.waiting = dict(at)
         await self.store.async_save({"at": self.waiting})
 
-    def _new(self):
-        """Finished conversations no run has taken in yet: they wait at the start."""
+    def _new(self, filed_only=False):
+        """Finished conversations no run has taken in yet: they wait at the start (filed_only: as to_analyze)."""
         at = self._at()
-        return [rid for rid in self.to_analyze(picked=bool((self.current or {}).get("picked"))) if rid not in at]
+        return [rid for rid in self.to_analyze(filed_only=filed_only) if rid not in at]
 
     def _last_generator(self):
         return self._runs().generator
@@ -188,7 +201,8 @@ class Pipeline:
 
     def backlog(self, todo=None, tests=None):
         """What waits at each stage: {stage: count}, as the settings view shows it, and how many of those at Propose
-        are revisions. todo, tests: to_analyze() and _tests(), if known."""
+        are revisions. At the start (requests): what a full run takes in (the panel counts a run on picked
+        conversations itself). todo, tests: to_analyze() and _tests(), if known."""
         tests = self._tests() if tests is None else tests
         at = self._at()
         waiting = list(at.values())
@@ -202,11 +216,12 @@ class Pipeline:
                 "household": sum(1 for i in self.runtime.improvements.items.values() if i["status"] == "applied")}
 
     def preview(self):
-        """What Run now will do, in numbers the confirmation shows (no per-call cost accounting: coarse controls)."""
+        """What a full run (Run now) will do, in numbers the confirmation shows (no per-call cost accounting: coarse
+        controls)."""
         options = self.entry.options
         tests = self._tests()
         todo = self.to_analyze(tests)
-        return {"conversations_to_analyze": len(todo), "backlog": self.backlog(todo, tests),
+        return {"conversations_to_analyze": len(todo), "backlog": self.backlog(todo, tests), "which": self._which(todo),
                 "paused": sorted(paused(self.entry)),
                 "conversations_recorded": sum(1 for s in self.recorder.index.values() if s.get("status") in CLOSED),
                 "conversations_analyzed": len(self._runs().analyzed),
@@ -214,7 +229,29 @@ class Pipeline:
                 "tests_per_goal": int(options.get(CONF_TESTS_PER_GOAL, DEFAULT_TESTS_PER_GOAL)),
                 "blocked_models": {stage: titles for stage in GATES  # Each stage, so Run one step can tell too.
                                    for titles in [blocked_stages(self.hass, self.entry, stage).get(stage)] if titles},
-                "running": self.running}
+                "spend": self._spend(), "running": self.running}
+
+    def _which(self, todo, names=3):
+        """What was said first in a few of the new conversations a full run takes in, for its confirmation: those sent
+        in first, then the newest, leaving out hidden ones. Read from the conversations view's kept words, so nothing
+        is opened; none until that view has read them."""
+        kept = getattr(getattr(self.runtime, "transcripts", None), "kept", None) or {}
+        index, at = self.recorder.index, self._at()
+        new = sorted((rid for rid in todo if rid not in at and not index[rid].get("hidden")),
+                     key=lambda rid: index[rid].get("started") or "", reverse=True)
+        new.sort(key=lambda rid: not index[rid].get("filed"))  # Stable: the newest first within each.
+        said = (((kept.get(rid) or {}).get("turns") or [{}])[0].get("you") for rid in new)
+        return [words for words in said if words][:names]
+
+    def _spend(self):
+        """Recent analyses' and quick checks' tokens each, on average, with the model each of those steps runs on now
+        (as Settings names it): what the confirmation's rough estimate goes by. No prices, no spend tracking."""
+        from .settings import model_name
+        runs, out = self._runs(), {}
+        for stage, role in (("analyze", "analyzer"), ("triage", "triage")):
+            if (per := runs.spent[stage].average()) and (entity_id := role_model(self.entry, role)):
+                out[stage] = {"tokens": round(per), "model": model_name(self.hass, entity_id)}
+        return out
 
     @property
     def running(self):
@@ -223,9 +260,10 @@ class Pipeline:
     # Running.
 
     def start(self, *, trigger, force=False, only=None, picked=False):
-        """force: propose again over every analysis even with nothing new (Run anyway). only: run just that stage
-        (the others hold their backlog, as if paused, for this run). picked: a run on the conversations the user
-        picked: it takes in only those sent in, whatever on-demand improvements are set to."""
+        """trigger: manual or scheduled (a full run, unless picked), or filed (the fast lane). force: propose again
+        over every analysis even with nothing new (Run anyway). only: run just that stage (the others hold their
+        backlog, as if paused, for this run). picked: a run on the conversations the user picked: it takes in only
+        those sent in, whatever on-demand improvements are set to."""
         if self.running:
             raise CaseError("A run is already in progress")
         if blocked := blocked_stages(self.hass, self.entry, only):
@@ -308,8 +346,11 @@ class Pipeline:
         async def analyze():
             await self._stage("analyze")
             at = self._at()
+            # The fast lane works only on conversations sent in: others a full run took in wait for the next one.
+            fast = run["trigger"] == "filed"
+            mine = self.filed if fast else (lambda _rid: True)
             if not only or only == "triage":  # A run takes in what waits at the start.
-                new = self._new()
+                new = self._new(filed_only=fast or bool(run.get("picked")))
                 # One the user filed skips the quick check: they already said it needs a closer look.
                 at.update({rid: "analyze" if self.filed(rid) else "triage" for rid in new})
                 run["progress"]["taken_in"] = len(new)
@@ -317,7 +358,7 @@ class Pipeline:
             if sent := [rid for rid, stage in at.items() if stage == "triage" and self.filed(rid)]:
                 at.update(dict.fromkeys(sent, "analyze"))  # Sent in while it waited for the quick check: skips it too.
                 await self._save_at(at)
-            todo = [rid for rid, stage in at.items() if gate(stage)]
+            todo = [rid for rid, stage in at.items() if gate(stage) and mine(rid)]
             run["progress"].update(analyze_total=len(todo), analyzed=0, skipped_as_smooth=0, analyze_failed=0)
             checker, tried = role_model(self.entry, "triage"), set()
             for recording_id in todo:  # Triage first: a quick check, or pass through without a triage model.
@@ -331,7 +372,8 @@ class Pipeline:
                 self._count(result, at, recording_id)
                 await self._save_at(at); await self._stage("analyze")
             if gate("analyze"):
-                for recording_id in [rid for rid, stage in at.items() if stage == "analyze" and rid not in tried]:
+                for recording_id in [rid for rid, stage in at.items() if stage == "analyze" and rid not in tried
+                                     and mine(rid)]:
                     result = await self._analyze(recording_id, full=True)  # It passed triage already.
                     self._count(result, at, recording_id)
                     await self._save_at(at); await self._stage("analyze")

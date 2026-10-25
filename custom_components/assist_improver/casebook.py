@@ -97,6 +97,14 @@ class CaseBook:
             # Preserve trial status/attempts as well as its prior audit trail.
             return await self._save(old)
 
+    async def drop(self, case_ids):
+        """Forget cases (a deleted conversation's), with their baselines."""
+        async with self.lock:
+            updated = {k: v for k, v in self.cases.items() if k not in case_ids}
+            if len(updated) < len(self.cases):
+                await self.store.async_save({"cases": updated})
+                self.cases = updated
+
     async def audit(self, case_id):
         async with self.lock:
             case = self.get(case_id)

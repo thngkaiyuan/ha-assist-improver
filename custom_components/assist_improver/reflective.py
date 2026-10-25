@@ -6,7 +6,7 @@ Usage is what the provider reports through HA's conversation trace, if any.
 """
 
 import asyncio
-from collections import Counter
+from collections import Counter, deque
 from contextlib import contextmanager
 from contextvars import ContextVar
 from copy import deepcopy
@@ -99,11 +99,31 @@ def tokens(stats):
     return total
 
 
+RECENT = 50  # Analyses (and quick checks) the run confirmation's rough token estimate goes by.
+
+
+class Recent:
+    """The last few values added, with their sum: an average kept as they come, without a scan."""
+
+    def __init__(self, size=RECENT):
+        self.values, self.total = deque(maxlen=size), 0
+
+    def add(self, value):
+        if len(self.values) == self.values.maxlen:
+            self.total -= self.values[0]
+        self.values.append(value)
+        self.total += value
+
+    def average(self):
+        return self.total / len(self.values) if self.values else None
+
+
 class RunIndex:
     """What the pipeline reads from the run log, gathered in one pass: each recording's latest accepted analysis, the
     recordings no role can read, unexpected failures, each recording's latest held quick-check verdict, records by id
-    (the pipeline's state), and the last completed proposal with the analyses since. Kept current as records are
-    added; taking out one an answer rests on (rare: a record replaced by one with its id) means building it again."""
+    (the pipeline's state), the last completed proposal with the analyses since, and the tokens recent analyses and
+    quick checks used. Kept current as records are added; taking out one an answer rests on (rare: a record replaced
+    by one with its id) means building it again."""
 
     def __init__(self, runs=()):
         self.analyzed = {}  # {recording id: its latest accepted analysis}, in the order each was first analysed.
@@ -114,6 +134,8 @@ class RunIndex:
         self.repeated = set()  # Ids more than one record has (only an old log's): replacing those rebuilds.
         self.generator = (-1, None)  # The last completed proposal, with its position in the log.
         self.since = []  # [(recording id, analysis)]: accepted analyses after it, in order.
+        # Provider-reported tokens (input plus output) each recent analysis and quick check used: a rough guide only.
+        self.spent = {"analyze": Recent(), "triage": Recent()}
         self.size = 0
         for run in runs:
             self.add(run)
@@ -121,6 +143,11 @@ class RunIndex:
     @staticmethod
     def _analysis(run):
         return run.get("kind") == "journey_analyzer" and run.get("status") == "completed" and bool(run.get("analysis"))
+
+    @staticmethod
+    def _tokens(usage):
+        spent = tokens([e for e in (usage or {}).get("events") or [] if isinstance(e, dict)])  # Only what reads as counts.
+        return spent.get("input_tokens", 0) + spent.get("output_tokens", 0)
 
     @staticmethod
     def _verdict(run):
@@ -141,8 +168,14 @@ class RunIndex:
             if self._analysis(run):
                 self.analyzed[rid] = run["analysis"]
                 self.since.append((rid, run["analysis"]))
+                if run.get("answer_status") != "triaged_smooth" and (used := self._tokens(run.get("usage"))):
+                    self.spent["analyze"].add(used)
             elif self._verdict(run):
                 self.held[rid] = run
+            check = run.get("triage") or {}  # A verdict kept from an earlier check cost nothing this time.
+            if ((self._analysis(run) or self._verdict(run)) and check.get("status") == "completed"
+                    and not check.get("kept") and (used := self._tokens(check.get("usage")))):
+                self.spent["triage"].add(used)
             if run.get("answer_status") == "unreadable":
                 self.unreadable[rid] += 1
             elif run.get("answer_status") == "error":
@@ -254,6 +287,18 @@ class RoleRuns:
             self._indexed = self.runs
             await self._save()
         return deepcopy(kept)
+
+    async def drop(self, recording_ids):
+        """Forget deleted conversations' records (their analyses, verdicts and attempts); how many went."""
+        async with self.lock:
+            kept = [(r, f) for r, f in zip(self.runs, self._frozen_runs()) if r.get("recording_id") not in recording_ids]
+            dropped = len(self.runs) - len(kept)
+            if dropped:
+                self.runs = self._json_for = [r for r, _ in kept]
+                self._json = [f for _, f in kept]
+                self._index, self._indexed = RunIndex(self.runs), self.runs
+                await self._save()
+        return dropped
 
     async def prune(self, recordings, now=None):
         """The daily tidy-up (retention.prune_runs); returns what it did."""

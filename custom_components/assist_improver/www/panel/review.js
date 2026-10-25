@@ -2,14 +2,14 @@
 // decision at a time in the footer; after a decision the footer says what happened, with Undo and the next review.
 
 const v = new URL(import.meta.url).search;  // ?v=<version>, passed on to every module this one loads.
-const [{esc, plural}, {STATUS}, common] = await Promise.all([
-  import(`./format.js${v}`), import(`./text.js${v}`), import(`./common.js${v}`)]);
+const [{esc, plural}, {STATUS, TEXT}, common, {dialog}] = await Promise.all([
+  import(`./format.js${v}`), import(`./text.js${v}`), import(`./common.js${v}`), import(`./conversations.js${v}`)]);
 
 // Home Assistant makes the panel's element again whenever its sidebar title (the count) changes, as it does after a
 // decision. What was open and where the page was scrolled carry over to the new element, so nothing moves.
 export const KEPT = {open: new Set(), page: null, scroll: null};
 
-const NO_NOTE = ["accept", "undo", "was_test"];
+const NO_NOTE = ["accept", "undo"];
 
 const section = (p, key, title, inner, rich = false) =>
   // rich: the title is already the summary's parts (name, kind, counts), laid out side by side.
@@ -38,6 +38,32 @@ function diff(rows, change) {
        <td class="sign">${r.sign === " " ? "" : r.sign === "-" ? "&#8722;" : "+"}</td><td class="text">${esc(r.text)}</td></tr>`).join("")}</table>`;
 }
 
+function replay(t) {
+  // What a test replayed: the conversation with the change, then as it went (the turns the test covers), read as the
+  // home page reads a conversation; side by side where there's room, as it went on the left.
+  const R = TEXT.review, before = t.before || [], after = t.after || [];
+  const side = (cls, title, turns, empty) => `<div class="rp-side ${cls}"><div class="rp-head">${esc(title)}</div>${
+    turns.length ? dialog(turns) : `<p class="rp-empty">${esc(empty)}</p>`}</div>`;
+  // Without its recording (tidied away since), only the replay.
+  return `<div class="rp${before.length ? " two" : ""}">${side("rp-after", R.after, after, R.stopped)}${
+    before.length ? side("rp-before", R.before, before) : ""}</div>`;
+}
+
+function test(p, t, n) {
+  // A test's row: what it tested and what it showed; opened, its replay.
+  const row = `<span class="mark">${t.improved ? "&#10003;" : "&#8211;"}</span><span>${esc(t.summary)}</span>
+    <span class="result">${esc(t.result || (t.improved ? "improved" : "not improved"))}</span>`;
+  const key = `test${n}`;
+  return `<li class="${t.improved ? "ok" : "no"}">${t.before?.length || t.after?.length
+    ? `<details data-key="${key}" ${p.open.has(key) ? "open" : ""}><summary class="row">${row}</summary>${replay(t)}</details>`
+    : `<div class="row">${row}</div>`}</li>`;
+}
+
+function reasonsFor(r, decision) {
+  // The reasons a decision can be given with (Decline: not an issue), those the panel has words for.
+  return (r.choices.find((c) => c.value === decision)?.reasons || []).filter((key) => TEXT.review.reasons[key]);
+}
+
 function footer(p, r) {
   // Right after a decision, the footer says what happened (with Undo) and offers the next review: the page above
   // stays where it was.
@@ -52,16 +78,20 @@ function footer(p, r) {
         : `<button class="link" id="back-list">All caught up · back to the list</button>`}</div></div>`;
   }
   if (!r.choices.length) return "";
-  const decision = p.decision || r.choices[0].value;
+  const decision = p.decision || r.choices[0].value, R = TEXT.review;
   const label = r.choices.find((c) => c.value === decision)?.label || decision;
   const needsNote = !NO_NOTE.includes(decision);
-  const prompt = {revise: "What should change? (needed for the revision)", needs_improvement: "What could be better? (optional)",
-                  decline: "Why not? (optional; the next run takes it into account)",
-                  fine_as_is: "Anything to add? (optional)"}[decision] || "Add a note (optional)";
+  // Each reason this decision can be given with, a box to tick (ticked, the note asks only for anything to add).
+  const offered = reasonsFor(r, decision), reason = offered.includes(p.reason) ? p.reason : null;
+  const reasons = offered.map((key) => `<label class="reason"><input type="checkbox" data-reason="${esc(key)}"
+      ${key === reason ? "checked" : ""}><span><span class="reason-label">${esc(R.reasons[key].label)}</span>
+      <span class="reason-hint">${esc(R.reasons[key].hint)}</span></span></label>`).join("");
+  const prompt = reason ? R.reasons[reason].note : {revise: "What should change? (needed for the revision)",
+                  decline: "Why not? (optional)"}[decision] || "Add a note (optional)";
   const menu = p.menuOpen ? `<div class="menu">${r.choices.map((c) =>
     `<div data-choice="${esc(c.value)}" class="${c.value === decision ? "on" : ""}">${esc(c.label)}</div>`).join("")}</div>` : "";
   return `${p.menuOpen ? `<div class="backdrop" id="menu-backdrop"></div>` : ""}<div class="footer"><div class="footer-inner">
-      ${needsNote ? `<textarea id="note" placeholder="${esc(prompt)}">${esc(p.note || "")}</textarea>` : ""}
+      ${reasons}${needsNote ? `<textarea id="note" placeholder="${esc(prompt)}">${esc(p.note || "")}</textarea>` : ""}
       <div class="split"><button class="main" id="decide" ${p.busy ? "disabled" : ""}>${esc(p.busy ? "Working…" : label)}</button>
       <button class="arrow" id="arrow" aria-label="Other decisions" ${p.busy ? "disabled" : ""}>&#9662;</button>${menu}</div>
     </div></div>`;
@@ -77,11 +107,10 @@ export function render(p) {
     `<span class="name">${esc(c.name)}</span><span class="kind ${esc(c.kind)}">${esc(c.kind)}</span>
      ${c.added ? `<span class="count-add">+${c.added}</span>` : ""}${c.removed ? `<span class="count-del">&#8722;${c.removed}</span>` : ""}
      ${bar(c.added, c.removed)}`, diff(c.rows, c), true)}</div>`).join("");
-  const tests = r.tests.map((t) => `<li class="${t.improved ? "ok" : "no"}"><span class="mark">${t.improved ? "&#10003;" : "&#8211;"}</span>
-    <span>${esc(t.summary)}</span><span class="result">${esc(t.result || (t.improved ? "improved" : "not improved"))}</span></li>`).join("");
+  const tests = r.tests.map((t, n) => test(p, t, n)).join("");
   const improvedCount = r.tests.filter((t) => t.improved).length;
   // The summary, always open at the top: what you get (the editor's words), why it's safe (stated by code), and
-  // what was tested. The technical cause is last, for whoever wants it.
+  // what was tested, each test opening to its replay. The technical cause is last, for whoever wants it.
   const summary = `<div class="card summary">
     ${r.benefit ? `<div class="label">What you get</div><p class="benefit">${esc(r.benefit)}</p>` : ""}
     <div class="label">Why it's safe</div><ul class="safe">${r.safety.map((f) =>
@@ -124,8 +153,10 @@ async function decide(p, decision = p.decision || p.review.choices[0].value) {
   p.busy = true;
   p.render();
   try {
-    const res = await p.ws("decide", {improvement_id: r.id, decision, note: NO_NOTE.includes(decision) ? "" : (p.note || "")});
-    Object.assign(p, {result: res.result, resultOk: res.ok, decision: null, note: ""});
+    const reason = reasonsFor(r, decision).includes(p.reason) ? p.reason : null;  // Ticked for this decision.
+    const res = await p.ws("decide", {improvement_id: r.id, decision, note: NO_NOTE.includes(decision) ? "" : (p.note || ""),
+                                      ...(reason ? {reason} : {})});
+    Object.assign(p, {result: res.result, resultOk: res.ok, decision: null, note: "", reason: null});
   } catch (err) {
     Object.assign(p, {result: err.message || String(err), resultOk: false});
   }
@@ -147,4 +178,5 @@ export const actions = {
     ["#back-list", (p) => p.go(null)],
   ],
   input: [["#note", (p, el) => { p.note = el.value; }]],
+  change: [["[data-reason]", (p, el) => { p.reason = el.checked ? el.dataset.reason : null; p.render(); }]],
 };

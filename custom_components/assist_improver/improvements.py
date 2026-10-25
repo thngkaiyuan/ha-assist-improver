@@ -13,7 +13,7 @@ from homeassistant.components import persistent_notification
 from homeassistant.helpers.storage import Store
 from homeassistant.util.dt import utcnow
 
-from .cases import CaseError, digest, recording_turns
+from .cases import CaseError, digest, recording_turns, replayed, transcript
 from .changeset import Changesets, Conflict, plan_steps, read, undo_steps
 from .const import DOMAIN, STORAGE_VERSION, VERSION
 from .records import Improvement
@@ -49,12 +49,17 @@ OUTCOME_NOTIFICATION = f"{DOMAIN}_changes"
 DECISIONS = {  # Decision: (status, label).
     "accept": ("applied", "Accept changes"),
     "revise": ("revision_requested", "Ask for a revision"),
-    "needs_improvement": ("revision_requested", "The change needs improvement"),
     "decline": ("declined", "Decline"),
+    "undo": ("undone", "Undo changes"),
+    # No longer offered, but kept: the household chose them from the review's earlier menu of six.
+    "needs_improvement": ("revision_requested", "The change needs improvement"),
     "fine_as_is": ("declined", "Things were fine as they were"),
     "was_test": ("ignored", "That conversation was a test"),
-    "undo": ("undone", "Undo changes"),
 }
+# A reason given with a decision, and the decision it's recorded as. Declined as not an issue (it went fine, or the
+# household was only trying Assist out): the trouble the improver saw wasn't real, so it's recorded as fine as it was,
+# which the proposer and reviewer are told, and its goals stay settled.
+REASONS = {("decline", "not_an_issue"): "fine_as_is"}
 
 
 def choices(item):
@@ -63,7 +68,12 @@ def choices(item):
         return ["undo"]
     if item["status"] in ("undone", "conflict", "declined", "revision_requested", "ignored", "revised"):
         return ["accept"] if item["status"] == "undone" else []
-    return ["accept", "revise", "needs_improvement", "decline", "fine_as_is", "was_test"]
+    return ["accept", "revise", "decline"]
+
+
+def reasons(decision):
+    """The reasons that can be given with a decision."""
+    return [reason for (given, reason) in REASONS if given == decision]
 
 
 def _turns(recording):
@@ -384,7 +394,10 @@ class Improvements:
                 "goal_newly_met": assessment.get("goal_newly_met"), "baseline_met": assessment.get("baseline_met"),
                 "followups_fit": (result.get("followup_check") or {}).get("all_fit"),
                 "before": _conversation(recording, first, last),
-                "after": [{"you": t["input"], "assistant": t["reply"]} for t in result.get("turns", [])]}, source
+                "after": [{"you": t["input"], "assistant": t["reply"]} for t in result.get("turns", [])],
+                # The steps that failed in each turn of those (cases.step), for the review to show where they happened.
+                "failed_steps": {"before": [t.get("failed", []) for t in transcript(recording)[first - 1:last]],
+                                 "after": [t.get("failed", []) for t in replayed(result.get("turns", []))]}}, source
 
     @staticmethod
     def _untested(hypothesis, tests):
@@ -414,16 +427,21 @@ class Improvements:
             self.hass, f"{titles}\n\nReview {these} in [Assist Improver](/{URL_PATH}).",
             title=f"{count} Improvement{'s' if count > 1 else ''} identified", notification_id=NOTIFICATION)
 
-    async def decide(self, improvement_id, decision, *, note="", user_id=None):
-        """Record a decision and act on it, one at a time per improvement (the second waits, then sees the first's
-        result). Returns the improvement, with `outcome` saying what happened."""
+    async def decide(self, improvement_id, decision, *, note="", user_id=None, reason=None):
+        """Record a decision (with its reason, if one is given: REASONS) and act on it, one at a time per improvement
+        (the second waits, then sees the first's result). Returns the improvement, with `outcome` saying what
+        happened."""
         async with self._locks.setdefault(improvement_id, asyncio.Lock()):
-            return await self._decide(improvement_id, decision, note=note, user_id=user_id)
+            return await self._decide(improvement_id, decision, note=note, user_id=user_id, reason=reason)
 
-    async def _decide(self, improvement_id, decision, *, note="", user_id=None):
+    async def _decide(self, improvement_id, decision, *, note="", user_id=None, reason=None):
         item = self.get(improvement_id)
         if decision not in choices(item):
             raise CaseError("That decision isn't open for this improvement now")
+        if reason is not None:
+            if (decision, reason) not in REASONS:
+                raise CaseError("That reason doesn't go with this decision")
+            decision = REASONS[(decision, reason)]
         if decision == "revise" and not note.strip():
             raise CaseError("Say what to change in the note")
         record = {"decision": decision, "note": note.strip(), "by": user_id, "at": utcnow().isoformat()}

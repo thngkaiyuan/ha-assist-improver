@@ -83,6 +83,11 @@ class Recorder:
         self.on_filed_closed = None  # Called with a filed recording's ID once it ends (on-demand: the pipeline runs).
         self.answering = {}  # Recording ID -> the subentry of the assistant answering it, once it has.
         self.brief_cache = None  # Each recording's brief (sessions.BriefCache), loaded when a proposal first needs it.
+        self.on_forgotten = None  # Awaited with a forgotten recording's ID: what was derived from it goes too.
+        # Privacy controls (settings): whether new conversations are kept, and whether a person's switch is off.
+        self.recording_on = lambda: True
+        self.opted_out = lambda user_id: False
+        self.ignored = set()  # Conversations not kept (a person whose switch is off): never recorded again.
 
     def store(self, key):
         # Serializes in an executor: flush hands it a copy the event loop doesn't change (_frozen).
@@ -245,6 +250,8 @@ class Recorder:
         # The improver's own replays and AI-role calls are never household sessions.
         if not self.running or conversation_id.startswith("improver-replay-") or ROLE_ACTIVE.get():
             return
+        if conversation_id in self.ignored or (conversation_id not in self.keys and not self.recording_on()):
+            return  # Recording is off (new conversations aren't kept), or the speaker's switch is.
         try:
             self.capture(conversation_id, str(kind), data)
         except Exception as err:
@@ -311,6 +318,11 @@ class Recorder:
                         custom_serializer=api.custom_serializer, openapi_version="3.1.0"))})
             if session["turns"]:
                 session["turns"][-1]["prepared"] = metadata
+            user_id = getattr(getattr(api.llm_context, "context", None), "user_id", None)
+            if user_id and self.opted_out(user_id):  # Known once Assist prepares its first answer: forgotten now.
+                self.ignored.add(conversation_id)
+                self.hass.async_create_task(self.forget(key), "assist_improver_forget")
+                return
         if "chat_log" in data:
             session["chat_log"] = plain(data["chat_log"])
         if kind == "deleted":
@@ -319,7 +331,8 @@ class Recorder:
                     user_turns=len(session["turns"]))
         self.index[key] = {"id": key, "started": session["started"], "updated": now,
                            "status": session["status"], "user_turns": len(session["turns"]),
-                           **({"filed": session["filed"]} if session.get("filed") else {})}
+                           **({"filed": session["filed"]} if session.get("filed") else {}),
+                           **{flag: True for flag in ("hidden", "deleting") if (self.index.get(key) or {}).get(flag)}}
         self.schedule(key, soon=turn_added)
         if kind == "deleted":
             self._closed(key)
@@ -422,6 +435,84 @@ class Recorder:
             await self.store(key).async_remove()
             self.index.pop(key, None)
             await self.index_store.async_save({"sessions": deepcopy(self.index)})
+
+    def _conversations(self, keys):
+        """The Assist conversation IDs of these recordings, while this run of Home Assistant knows them."""
+        return {cid for cid, key in self.keys.items() if key in keys}
+
+    async def hide(self, *keys, hidden=True):
+        """Take kept conversations out of the conversations list, or put them back; the index is saved once. Nothing
+        else changes: they're kept, analysed, tested and replayed as before."""
+        for key in keys:
+            if hidden:
+                self.index[key]["hidden"] = True
+            else:
+                self.index[key].pop("hidden", None)
+        await self.save_index()
+        journal("info", f"{len(keys)} conversation(s) {'hidden' if hidden else 'unhidden'}", recording_ids=list(keys))
+
+    async def forget_later(self, *keys):
+        """Delete conversations once the run in progress ends (Pipeline._ran: forget_queued), or at the next start:
+        out of view at once, and not taken in or recorded any further meanwhile."""
+        self.ignored |= self._conversations(set(keys))
+        for key in keys:
+            self.index[key]["deleting"] = True
+        await self.save_index()
+        journal("info", f"{len(keys)} conversation(s) queued for deletion: a run is in progress", recording_ids=list(keys))
+
+    async def forget_queued(self):
+        """Delete the conversations queued for deletion (forget_later), together; if that fails, one by one, so one
+        that can't be is put back in the list, and the household told. The IDs deleted."""
+        from homeassistant.components import persistent_notification
+        queued = [k for k, s in self.index.items() if s.get("deleting")]
+        if not queued:
+            return []
+        try:
+            await self.forget(*queued)
+            return queued
+        except Exception as err:  # noqa: BLE001 - then one by one: each that fails is put back; the others still go.
+            _LOGGER.warning("Deleting %d queued conversations together failed (%s); one by one", len(queued),
+                            type(err).__name__)
+        done, failed = [], []
+        for key in [k for k in queued if k in self.index]:
+            try:
+                await self.forget(key)
+                done.append(key)
+            except Exception as err:  # noqa: BLE001
+                _LOGGER.error("A conversation queued for deletion couldn't be deleted (%s)", type(err).__name__)
+                journal("error", f"Conversation not deleted: {type(err).__name__}", recording_id=key)
+                if key in self.index:
+                    self.index[key].pop("deleting", None)
+                    failed.append(key)
+        if failed:
+            await self.save_index()
+            persistent_notification.async_create(
+                self.hass, "A conversation couldn't be deleted, so it's back in your list. Try deleting it again.",
+                title="Assist Improver", notification_id=f"{DOMAIN}_not_deleted")
+        return done
+
+    async def forget(self, *keys):
+        """Conversations the household doesn't want kept: their recordings, and what the improver derived from them
+        (their run-log records, their briefs, and what on_forgotten drops), go for good, each store written once
+        however many go. Improvements already built from them stay. One still going isn't recorded again."""
+        gone = set(keys)
+        self.ignored |= self._conversations(gone)
+        async with self.lock:  # After a save in progress, and with nothing left to save, so none lands after this.
+            for key in gone:
+                for kept in (self.sessions, self.logs, self.saved, self.answering):
+                    kept.pop(key, None)
+                self.dirty.discard(key)
+                self.urgent.discard(key)
+                await self.store(key).async_remove()
+                self.index.pop(key, None)
+            await self.index_store.async_save({"sessions": deepcopy(self.index)})
+        if self.on_forgotten is not None:
+            await self.on_forgotten(gone)
+        if self.brief_cache is None:  # No proposal has read the briefs since Home Assistant started.
+            from .sessions import BriefCache
+            self.brief_cache = BriefCache(self.hass)
+        await self.brief_cache.drop(self, *gone)
+        journal("info", f"{len(gone)} recording(s) deleted at the household's request", recording_ids=sorted(gone))
 
     def status(self):
         return {"recording": self.running, "sessions": len(self.index),

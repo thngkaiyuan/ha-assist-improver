@@ -11,7 +11,8 @@ from homeassistant.helpers.start import async_at_started
 from homeassistant.helpers.service import async_register_admin_service
 
 from . import ai_setup, analysis, household, panel, practice, proposal, retention, settings, trace, triage
-from .const import CONF_ACCEPTED_WEAK, CONF_AI_TASK, CONF_DEVELOPER, CONF_SCHEDULE, DOMAIN
+from .const import (CONF_ACCEPTED_WEAK, CONF_AI_TASK, CONF_DEVELOPER, CONF_OPT_OUT, CONF_RECORDING, CONF_SCHEDULE,
+                    DOMAIN)
 from .casebook import CaseBook
 from .baseline import BaselineManager
 from .candidates import CandidateManager
@@ -64,7 +65,10 @@ async def tidy(hass, runtime):
             referenced = {c.get("recording_id") for c in runtime.casebook.cases.values()}
             for item in improvements.items.values():
                 referenced |= {g.split(":")[0] for g in improvements._covers(item)}
-            referenced |= set(pipeline.to_analyze()) | set(pipeline._at())
+            # Waiting for analysis: with on-demand improvements on, only those sent in (the fast lane's); the rest are
+            # kept in full for 30 days, then condensed like any other (as the README says), schedule or not. A full run
+            # still analyses a condensed one; it just can't replay it as a test.
+            referenced |= set(pipeline.to_analyze(filed_only=pipeline.on_demand)) | set(pipeline._at())
             named = {rid: {e for g in analysis.get("goals", []) for e in [g.get("entity_id"),
                                                                          *(g.get("entity_ids") or [])] if e}
                      for rid, analysis in pipeline._analyzed().items()}
@@ -115,6 +119,22 @@ async def async_setup_entry(hass, entry):
         recorder.on_filed_closed = pipeline.request  # On-demand: a filed conversation runs once it ends.
         from .conversations import Transcripts
         runtime.transcripts = Transcripts(hass, recorder)
+        async def forgotten(keys):
+            # What was derived from deleted conversations goes with them: their run-log records, their words, and
+            # their cases and the tests on them, except those an improvement shows as its tests.
+            await runtime.role_runs.drop(keys)
+            await runtime.transcripts.all()  # Drops what's no longer in the index.
+            shown = [t for item in runtime.improvements.items.values() for t in item.get("tests", [])]
+            cases = {cid for cid, case in runtime.casebook.cases.items() if case.get("recording_id") in keys}
+            plans = {pid for pid, c in runtime.candidates.items.items() if c["plan"].get("evaluation_case_id") in cases}
+            await runtime.candidates.drop(plans - {t.get("plan_id") for t in shown})
+            await runtime.casebook.drop(cases - {t.get("case_id") for t in shown})
+        recorder.on_forgotten = forgotten
+        # Deleted during a run that a restart cut off: they go now.
+        hass.async_create_task(recorder.forget_queued(), "assist_improver_forget_queued")
+        # Privacy controls, read live from the settings.
+        recorder.recording_on = lambda: entry.options.get(CONF_RECORDING, True)
+        recorder.opted_out = lambda user_id: user_id in entry.options.get(CONF_OPT_OUT, [])
     except Exception:
         await recorder.stop()
         await trace.async_unload()
@@ -142,7 +162,7 @@ async def async_setup_entry(hass, entry):
 
     @callback
     def filed_waiting(_hass):  # On-demand: conversations filed before a restart run once HA has started.
-        if pipeline.on_demand and pipeline.to_analyze():
+        if pipeline.on_demand and pipeline.to_analyze(filed_only=True):
             pipeline.request()
 
     entry.async_on_unload(async_at_started(hass, filed_waiting))

@@ -60,23 +60,21 @@ function head(p, s) {
   const running = p.run?.run?.status === "running";
   const backlog = p.run?.preview?.backlog || {};
   const last = esc(common.lastRun(p.run?.run) || "No runs yet");
+  const runWords = common.runLabel(common.allConversations(backlog, new Set(s.paused)));  // A full run: on all of them.
+  const waits = (gate) => gate === "triage" ? (backlog.requests || 0) + (backlog.triage || 0) : backlog[gate] || 0;  // Triage takes in the new ones.
   const when = SCHEDULE.find(([value]) => value === s.schedule) || SCHEDULE[0];
   const menu = p.runMenu ? `<div class="menu">${SCHEDULE.map(([value, label]) =>
     `<div data-schedule="${value}" class="row-ic ${s.schedule === value ? "on" : ""}">${value === "off" ? `<span class="ic-space"></span>` : svg("clock")}<span class="lbl">${label}</span>${
       s.schedule === value ? `<span class="count">&#10003;</span>` : ""}</div>`).join("")}
     <div class="group">${esc(TEXT.runOneStep)}</div>${Object.entries(GATE_NAMES).map(([gate, name]) =>
-      `<div data-only="${gate}" class="row-ic">${svg("play")}<span class="lbl">${name}</span>${backlog[gate] ? `<span class="count">${backlog[gate]}</span>` : ""}</div>`).join("")}</div>` : "";
+      `<div data-only="${gate}" class="row-ic">${svg("play")}<span class="lbl">${name}</span>${waits(gate) ? `<span class="count">${waits(gate)}</span>` : ""}</div>`).join("")}</div>` : "";
   const run = running
-    ? `<button class="btn ghost" id="cancel-run" data-tip="Running: ${esc((STAGES.find(([k]) => k === p.run.run.stage) || [])[1] || "")}"
+    ? `<button class="btn ghost" id="cancel-run" data-tip="${esc(common.runTitle(p.run.run))} · ${esc((STAGES.find(([k]) => k === p.run.run.stage) || [])[1] || "")}"
         ${p.cancelling ? "disabled" : ""}>${p.cancelling ? "Cancelling…" : "Cancel run"}</button>`
-    : `<div class="split down"><button class="main" id="run-now" data-tip="${last}">${svg("play")}${esc(TEXT.runNow)}</button>
+    : `<div class="split down"><button class="main" id="run-now" data-tip="${last}">${svg("play")}${esc(runWords)}</button>
        <button class="arrow" id="run-menu" aria-label="When it runs, or run one step" data-tip="${esc(when[1])}">${s.schedule === "off" ? "&#9662;" : svg("clock")}</button>${menu}</div>`;
   const sandboxTip = TEXT.sandbox.tip + (s.practice.others.length ? " " + fill(TEXT.sandbox.others, {names: s.practice.others.join(", ")}) : "");
-  const toggle = (id, on) => customElements.get("ha-switch")
-    ? `<ha-switch id="${id}" ${on ? "checked" : ""}></ha-switch>`
-    : `<button class="toggle ${on ? "on" : ""}" id="${id}" role="switch" aria-checked="${on}"></button>`;
-  const row = (id, on, text, tip) => `<div class="toggle-row"><label class="practice">${toggle(id, on)}${esc(text)}</label>
-    ${tip ? `<span class="info-tip" data-tip="${esc(tip)}" tabindex="0" aria-label="About ${esc(text)}">${svg("info")}</span>` : ""}</div>`;
+  const row = common.switchRow;
   return `<div class="flow-head"><div class="toggles">${row("on-demand", s.on_demand, TEXT.onDemand.label, TEXT.onDemand.tip)}
     ${row("practice", s.practice.on, TEXT.sandbox.label, sandboxTip)}
     ${row("auto-accept", s.auto_accept, TEXT.autoAccept.label, TEXT.autoAccept.tip)}</div>
@@ -95,7 +93,8 @@ function history(p) {
     const failed = x.analyze_failed && fill(H.failed, {n: x.analyze_failed, s: x.analyze_failed === 1 ? "" : "s", why: x.problem || ""});
     const unfinished = (x.problems || []).length && fill(H.unfinished, {steps: listed(x.problems.map((y) => GATE_NAMES[y.stage] || y.stage))});
     const aside = x.unreadable && fill(H.setAside, {n: x.unreadable, s: x.unreadable === 1 ? "" : "s"});
-    return [`${H.run[e.status] || "Run"}${e.only ? ` · ${GATE_NAMES[e.only]} only` : ""}${e.trigger === "scheduled" ? " · scheduled" : ""}`,
+    const which = H.triggers[e.picked ? "picked" : e.trigger];  // A full run from here says nothing more.
+    return [`${H.run[e.status] || "Run"}${e.only ? ` · ${GATE_NAMES[e.only]} only` : ""}${which ? ` · ${which}` : ""}`,
             e.error ? (/ can't run: /.test(e.error) ? e.error : H.stopped) : [...parts, failed, unfinished, aside].filter(Boolean).join(" · ")];
   };
   const rows = shown.map((e) => {
@@ -171,6 +170,7 @@ export function after(p) {
 // Each switch: whether it's on, and what flipping it does.
 const SWITCHES = {
   "on-demand": [(s) => s.on_demand, (p) => p.saveSetting({on_demand: !p.settings.on_demand})],
+  recording: [(s) => s.recording !== false, (p) => p.saveSetting({recording: p.settings.recording === false})],
   "auto-accept": [(s) => s.auto_accept, (p) => {
     if (p.settings.auto_accept) return p.saveSetting({auto_accept: false});
     p.asking = "auto-accept";  // Turning it on says what it will change first.
@@ -181,6 +181,15 @@ const SWITCHES = {
     p.render();
   }],
 };
+
+function personSwitched(p, el, ev) {
+  // One person's recording switch (Your Assist), shown as it's stored until the save comes back.
+  const person = (p.settings.recording_people || []).find((x) => x.user_id === el.dataset.recordingPerson);
+  ev.preventDefault();
+  if (!person) return;
+  if (el.tagName === "HA-SWITCH") el.checked = person.on;
+  p.saveSetting({recording: !person.on, person: person.user_id});
+}
 
 function switched(p, el, ev) {
   // A switch shows the setting until it's saved: a save that fails, or a confirmation turned down, leaves it as it was.
@@ -193,6 +202,7 @@ function switched(p, el, ev) {
 export const actions = {
   click: [
     ...Object.keys(SWITCHES).map((id) => [`button#${id}`, switched]),
+    ["button[data-recording-person]", personSwitched],
     ["#ask-ok", (p) => { p.asking = null; p.saveSetting({auto_accept: true}); }],
     [".ask-cancel", (p) => { p.asking = null; p.render(); }],
     ["#run-menu", (p) => { p.runMenu = !p.runMenu; p.render(); }],
@@ -202,5 +212,5 @@ export const actions = {
     ["#history-more", (p) => { p.historyAll = true; p.render(); }],
     ["[data-open]", (p, el) => p.go(el.dataset.open)],
   ],
-  change: Object.keys(SWITCHES).map((id) => [`ha-switch#${id}`, switched]),
+  change: [...Object.keys(SWITCHES).map((id) => [`ha-switch#${id}`, switched]), ["ha-switch[data-recording-person]", personSwitched]],
 };

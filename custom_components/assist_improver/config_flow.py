@@ -4,8 +4,9 @@ Setup (and the Repairs fix) choose the AI Task entity the improver's own roles
 call. One list offers a new recommended entry (created through the provider's
 own flow) and the household's existing AI Tasks; a weak choice is confirmed.
 First setup also gives Triage and Write up a small model: an AI Task that has
-one, or a new one beside a new recommended entry. Every other setting lives in
-the panel; Configure links there.
+one, or a new one beside a new recommended entry, and turns on-demand improvements
+on (an older entry without that setting keeps it off). Every other setting lives
+in the panel; Configure links there.
 """
 
 import probatio
@@ -14,7 +15,7 @@ from homeassistant.core import callback
 from homeassistant.helpers.selector import SelectOptionDict, SelectSelector, SelectSelectorConfig, SelectSelectorMode
 
 from . import ai_setup, settings
-from .const import CONF_ACCEPTED_WEAK, CONF_AI_TASK, DOMAIN, NAME
+from .const import CONF_ACCEPTED_WEAK, CONF_AI_TASK, CONF_ON_DEMAND, DOMAIN, NAME
 
 CREATE = "create"  # List values "create:<config entry>:<recommended|default>" add a new AI Task.
 USE_ANYWAY = "use_anyway"
@@ -146,7 +147,7 @@ class AssistantImproverConfigFlow(_AiTaskSteps, ConfigFlow, domain=DOMAIN):
         return await self.async_step_user()
 
     def _finish(self, choice):
-        return self.async_create_entry(title=NAME, data={}, options=self._options({}, choice))
+        return self.async_create_entry(title=NAME, data={}, options=self._options({CONF_ON_DEMAND: True}, choice))
 
 
 class AssistantImproverOptionsFlow(OptionsFlow):

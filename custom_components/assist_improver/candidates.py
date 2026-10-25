@@ -229,6 +229,13 @@ class CandidateManager:
         self.items = updated
         return deepcopy(item)
 
+    async def drop(self, plan_ids):
+        """Forget changes' tests (those on a deleted conversation's cases)."""
+        updated = {k: v for k, v in self.items.items() if k not in plan_ids}
+        if len(updated) < len(self.items):
+            await self.store.async_save({"candidates": updated})
+            self.items = updated
+
     def get(self, plan_id):
         if plan_id not in self.items:
             raise CaseError("Unknown candidate plan ID")

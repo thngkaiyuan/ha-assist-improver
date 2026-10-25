@@ -87,8 +87,19 @@ export const STYLE = `
   .details-body p { margin: 0 0 14px; }
   .label { font-size: 12px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase;
     color: var(--secondary-text-color); margin: 0 0 6px; }
-  .tests { list-style: none; margin: 0 0 14px; padding: 0; }
-  .tests li { display: flex; align-items: baseline; gap: 8px; padding: 3px 0; }
+  .tests { list-style: none; margin: 0 0 14px; padding: 0; container-type: inline-size; }
+  .tests .row { display: flex; align-items: baseline; gap: 8px; padding: 3px 0; }
+  .tests div.row::before { content: ""; width: 12px; flex: none; }  /* In line with the rows that open. */
+  .tests details { border-top: none; }
+  /* A test opened: its replay with the change, then its conversation as it went; side by side where there's room, as
+     it went on the left. */
+  .rp { display: grid; gap: 18px 24px; padding: 10px 0 16px; }
+  @container (min-width: 620px) { .rp.two { grid-template-columns: 1fr 1fr; } .rp.two .rp-before { grid-area: 1 / 1; }
+    .rp.two .rp-after { grid-area: 1 / 2; } }
+  .rp-side { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+  .rp-head { font-size: 13px; font-weight: 600; color: var(--secondary-text-color); padding-bottom: 6px;
+    border-bottom: 1px solid var(--divider-color); }
+  .rp-empty { margin: 0; font-size: 14px; color: var(--secondary-text-color); }
   .tests .mark { width: 16px; font-weight: 700; } .tests .ok .mark { color: var(--add-fg); }
   .tests .no .mark { color: var(--secondary-text-color); }
   .tests .result { font-size: 12px; padding: 0 8px; border-radius: 10px; white-space: nowrap; }
@@ -101,6 +112,10 @@ export const STYLE = `
   .footer { position: sticky; bottom: 0; z-index: 11; background: var(--card-background-color);
     border-top: 1px solid var(--divider-color); padding: 12px 16px; }
   .footer-inner { max-width: 960px; margin: 0 auto; display: flex; flex-direction: column; gap: 8px; align-items: flex-end; }
+  .reason { align-self: stretch; display: flex; align-items: flex-start; gap: 10px; font-size: 14px; line-height: 1.4;
+    cursor: pointer; }
+  .reason input { width: 18px; height: 18px; flex: none; margin: 1px 0 0; accent-color: var(--primary-color); cursor: pointer; }
+  .reason-label { font-weight: 500; } .reason-hint { color: var(--secondary-text-color); }
   textarea { width: 100%; box-sizing: border-box; min-height: 64px; padding: 8px; border-radius: 8px; font: inherit;
     border: 1px solid var(--divider-color); background: var(--primary-background-color); color: var(--primary-text-color); }
   .split { position: relative; display: inline-flex; }
@@ -122,7 +137,14 @@ export const STYLE = `
     background: var(--primary-color); color: var(--text-primary-color, white); white-space: nowrap; }
   .btn.ghost { background: transparent; color: var(--primary-color); border: 1px solid var(--divider-color); }
   .btn:disabled { opacity: .6; cursor: default; }
-  .btn.play { display: inline-flex; align-items: center; gap: 6px; padding: 8px 16px 8px 13px; }
+  .btn.play { display: inline-flex; align-items: center; justify-content: center; gap: 6px; padding: 8px 16px 8px 13px; }
+  /* A quiet secondary action, and a destructive one kept quieter than the main action (tinted, not filled): outlined
+     inside, so they line up with the filled ones; the red text leans toward the theme's text colour to read in both. */
+  .btn.quiet { background: var(--secondary-background-color); color: var(--primary-text-color); box-shadow: inset 0 0 0 1px var(--divider-color); }
+  .btn.quiet:hover:not(:disabled) { background: color-mix(in srgb, var(--primary-text-color) 8%, var(--secondary-background-color)); }
+  .btn.soft-danger { background: var(--del-bg); color: color-mix(in srgb, var(--del-fg) 75%, var(--primary-text-color));
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--del-fg) 45%, transparent); }
+  .btn.soft-danger:hover:not(:disabled) { background: color-mix(in srgb, var(--del-fg) 22%, transparent); }
   .stepper { display: flex; gap: 6px; margin: 12px 0 4px; }
   .step { flex: 1; text-align: center; font-size: 12px; color: var(--secondary-text-color); }
   .step .bar { height: 4px; border-radius: 2px; background: var(--divider-color); margin-bottom: 6px; }
@@ -182,6 +204,9 @@ export const STYLE = `
   .flow-head { align-items: flex-start; } .toggles { display: flex; flex-direction: column; gap: 10px; }
   .toggle-row { display: flex; align-items: center; gap: 4px; }
   .flow-head .info-tip { margin-left: 2px; } .flow-head .info-tip .ic { width: 15px; height: 15px; }
+  /* On a phone the run control gets a row of its own, above the switches, so its words fit on one line. */
+  @media (max-width: 600px) { .flow-head { flex-direction: column-reverse; align-items: stretch; }
+    .flow-head .spacer { display: none; } .flow-head > :last-child { align-self: flex-end; } }
   .glyph.in-chip { --mdc-icon-size: 14px; width: 14px; height: 14px; margin-right: 4px; vertical-align: -2px; }
   .history { margin-top: 12px; } .history .h-title { font-size: 14px; font-weight: 500; padding: 12px 16px 4px; }
   .h-row { display: flex; align-items: center; gap: 10px; padding: 8px 16px; font-size: 13.5px; }
@@ -207,7 +232,12 @@ export const STYLE = `
   .cs-all input, .cs-pick input { width: 18px; height: 18px; accent-color: var(--primary-color); cursor: pointer; margin: 0; }
   /* Clipped, not hidden: an opened conversation's send row can stick to the bottom of the page (above the Run bar). */
   .cs-list { overflow: clip; }
-  .cs-row { border-bottom: 1px solid var(--divider-color); scroll-margin-bottom: calc(var(--bar, 0px) + 8px); }
+  .cs-row { border-bottom: 1px solid var(--divider-color); scroll-margin-bottom: calc(var(--bar, 0px) + 8px);
+    scroll-margin-top: calc(var(--controls, 0px) + 8px); }
+  /* Search, the day filter, the sort and Select all stay on top while the list scrolls. */
+  .cs-controls { position: sticky; top: 0; z-index: 3; margin: 0 -8px 10px; padding: 8px 8px 0; border-radius: 12px;
+    background: var(--card-background-color); box-shadow: 0 1px 0 var(--divider-color); }
+  .cs-controls .cs-all { margin-bottom: 8px; }
   .cs-row:last-child { border-bottom: none; }
   .cs-row.picked { background: color-mix(in srgb, var(--primary-color) 7%, transparent); }
   .cs-line { display: flex; align-items: stretch; }
@@ -221,11 +251,14 @@ export const STYLE = `
   .cs-reply { font-size: 13px; color: var(--secondary-text-color); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .cs-close { font-size: 13px; color: var(--secondary-text-color); margin: 0 0 8px; }
   .cs-last { font-size: 13px; color: var(--secondary-text-color); margin: -6px 0 12px; }
-  .chip.cs-sent { border-color: var(--primary-color); color: var(--primary-color); }
-  .chip.cs-in { border-color: var(--add-fg); color: var(--add-fg); }
+  .chip.cs-sent, .chip.cs-queued, .chip.cs-working { border-color: var(--primary-color); color: var(--primary-color); }
+  .chip.cs-fine { border-color: var(--add-fg); color: var(--add-fg); }
+  button.chip.cs-review { align-self: center; flex: none; margin-right: 16px; font: inherit; font-size: 12px; cursor: pointer;
+    border-color: var(--primary-color); background: color-mix(in srgb, var(--primary-color) 14%, transparent); color: var(--primary-color); }
+  button.chip.cs-review:hover { background: color-mix(in srgb, var(--primary-color) 24%, transparent); }
   .chip.cs-improved { border-color: var(--add-fg); background: var(--add-bg); color: var(--add-fg); }
   .cs-text mark, .cs-turn mark, .cs-sub mark { background: color-mix(in srgb, var(--primary-color) 22%, transparent); color: inherit; border-radius: 2px; }
-  .cs-read { padding: 6px 16px 16px 48px; display: flex; flex-direction: column; gap: 18px; }
+  .cs-read { padding: 6px 16px 16px 48px; display: flex; flex-flow: row wrap; gap: 18px 8px; }
   .cs-turn { display: flex; flex-direction: column; gap: 8px; font-size: 14px; line-height: 1.5; }
   .cs-msg { display: flex; flex-direction: column; gap: 3px; max-width: min(68ch, 88%); }
   .cs-you { align-self: flex-end; align-items: flex-end; } .cs-assist { align-self: flex-start; }
@@ -247,10 +280,25 @@ export const STYLE = `
   .cs-row.picked .cs-send { background: linear-gradient(color-mix(in srgb, var(--primary-color) 7%, transparent),
     color-mix(in srgb, var(--primary-color) 7%, transparent)), var(--card-background-color); }
   .cs-done { font-size: 13px; color: var(--add-fg); }
+  /* The note and Send stay in view (sticky); Archive and Delete share their line where the note still has room, or
+     wrap below it. */
+  .cs-read > * { flex: 1 1 100%; min-width: 0; } .cs-read > .cs-send { flex: 1 1 520px; }
+  .cs-read > .cs-tidy { flex: 0 1 auto; margin-left: auto; } .cs-read > .cs-confirm { flex: 1 1 100%; }
+  .cs-tidy { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px; margin-top: 4px; padding: 8px 0; }
+  .cs-confirm { gap: 8px 12px; } .cs-confirm span { flex: 1 1 240px; font-size: 13px; line-height: 1.45; }
+  .cs-archived .cs-text { opacity: .6; }
+  .cs-all.cs-show-archived { margin: 12px 0 0 16px; color: var(--secondary-text-color); }
   .cs-more { margin: 10px 0 0; } .cs-empty { color: var(--secondary-text-color); }
   .cs-footer .footer-inner { flex-direction: row; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 8px 16px; }
-  .cs-footer .cs-what { margin-right: auto; font-weight: 500; }
-  @media (max-width: 600px) { .cs-read { padding-left: 16px; } }
+  .cs-ask { flex: 1 1 100%; display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px 12px; }
+  .cs-ask span { flex: 1 1 220px; font-size: 14px; line-height: 1.45; }
+  @media (max-width: 600px) { .cs-footer #cs-run { flex: 1 1 100%; } .cs-footer .btn { flex: 1 1 auto; } }
+  @media (max-width: 600px) { .cs-read { padding-left: 16px; } .cs-read > .cs-tidy { flex-basis: 100%; margin-top: -14px; }
+    .cs-send .btn, .cs-tidy .btn { flex: 1 1 auto; } }
+  .pop-privacy { border-top: 1px solid var(--divider-color); margin-top: 6px; padding-top: 6px; }
+  .pop-toggle { padding: 6px 14px; }
+  .pop-sub { padding: 6px 14px 0 28px; font-size: 12.5px; color: var(--secondary-text-color); }
+  .pop-people .pop-toggle { padding-left: 28px; }
   .modal { position: fixed; z-index: 21; left: 50%; top: 50%; transform: translate(-50%, -50%); width: min(560px, calc(100vw - 32px));
     max-height: min(80vh, 720px); display: flex; flex-direction: column; box-sizing: border-box; border-radius: 16px;
     background: var(--card-background-color); color: var(--primary-text-color); box-shadow: 0 16px 48px rgba(0, 0, 0, .35); }
@@ -265,6 +313,11 @@ export const STYLE = `
   .confirm-modal { width: min(480px, calc(100vw - 32px)); } .confirm-modal .modal-head .ic { width: 18px; height: 18px; color: var(--primary-color); }
   .modal-body.confirm { padding: 14px 20px 18px; border-top: none; margin-top: 0; line-height: 1.55; }
   .modal-body.confirm p { margin: 0 0 8px; } .modal-body.confirm .c-what { font-size: 15px; margin-bottom: 12px; }
+  .modal-body.confirm .c-which { font-size: 15px; margin-bottom: 10px; overflow-wrap: anywhere; }
+  .modal-body.confirm .c-also { margin-bottom: 12px; }
+  /* The rough estimate: a short list under the cost line, each model's figure on a line of its own. */
+  .modal-body.confirm .c-cost p { margin: 0 0 4px; } .modal-body.confirm .c-cost p:last-child { margin: 4px 0 0; }
+  .modal-body.confirm .c-spend { margin: 0; padding-left: 18px; color: var(--primary-text-color); line-height: 1.5; }
   .modal-body.confirm .actions { margin-top: 16px; }
   .kn-section ul { list-style: none; margin: 0; padding: 0 20px; }
   .kn-group { display: flex; justify-content: space-between; padding: 14px 20px 6px; font-size: 12px; font-weight: 500;
@@ -287,7 +340,7 @@ export const STYLE = `
   @media (max-width: 600px) { .modal { top: auto; bottom: 0; transform: translateX(-50%); width: 100vw; max-height: 88vh;
     border-radius: 16px 16px 0 0; } }
   .split.down { z-index: 11; }
-  .split.down .menu { top: 44px; bottom: auto; z-index: 12; min-width: 250px; }
+  .split.down .menu { top: 44px; bottom: auto; z-index: 12; min-width: 250px; width: max-content; max-width: calc(100vw - 32px); }
   .menu .group { padding: 8px 14px 4px; font-size: 12px; color: var(--secondary-text-color); cursor: default;
     border-top: 1px solid var(--divider-color); } .menu .group:hover { background: none; }
   .menu .row-ic { display: flex; align-items: center; gap: 10px; } .menu .ic-space { width: 17px; flex: none; } .menu .row-ic .ic { width: 17px; height: 17px; color: var(--secondary-text-color); }

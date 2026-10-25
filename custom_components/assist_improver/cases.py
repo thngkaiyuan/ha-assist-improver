@@ -79,6 +79,13 @@ def transcript(recording):
                      for t in recording.get("turns", [])]
 
 
+def replayed(turns):
+    """A replay's turns (a candidate's: each turn's input and what Assist added to the conversation for it), read as
+    transcript reads a recording."""
+    return transcript({"chat_log": {"content": [item for t in turns for item in
+                                                [{"role": "user", "content": t["input"]}, *(t.get("output") or [])]]}})
+
+
 def failed_calls(recording):
     """How many of Assist's tool calls failed (Home Assistant answered with an error): a sign the user didn't get
     what they asked for."""

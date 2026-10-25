@@ -25,7 +25,8 @@ async def propose(hass, entry, runtime, service, analyses, hypothesis=None, seed
     # Every other recording too, analysed or not: a rule is tested where it would apply, sessions without friction
     # included. Each comes as a brief; a full recording is loaded only when a tool or a check opens it.
     analyses, given = list(analyses), {a["recording_id"] for a in analyses}
-    others = [rid for rid in sorted(set(recorder.index) - given) if recorder.index[rid].get("user_turns") != 0]
+    others = [rid for rid in sorted(set(recorder.index) - given)
+              if recorder.index[rid].get("user_turns") != 0 and not recorder.index[rid].get("deleting")]
     briefs, household, assistant = await catalog(recorder, [a["recording_id"] for a in analyses] + others)
     readable = {b["recording_id"] for b in briefs}
     if household is None:
