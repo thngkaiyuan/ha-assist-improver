@@ -23,6 +23,7 @@ export function state(p) {
   return p.cv || (p.cv = {query: "", days: "", order: null, rows: null, total: 0, waiting: [], counts: {},
                           opened: null, shown: null, note: "", sent: {}, picked: new Set(), byHand: new Set(),
                           known: new Map(), every: [], error: null, showArchived: false, archivedCount: 0,
+                          only: null, byStatus: {}, statusMenu: false,
                           runnable() { return runnable(this); }});
 }
 
@@ -52,12 +53,13 @@ async function list(p, cv, more, draw = true) {
   try {
     const found = await p.ws("conversations", {query: cv.query || undefined, days: cv.days ? Number(cv.days) : undefined,
                                                order: cv.order || undefined, offset: more ? cv.rows.length : 0,
-                                               hidden: cv.showArchived || undefined});
+                                               hidden: cv.showArchived || undefined, statuses: cv.only ? [...cv.only] : undefined});
     if (seq !== cv.seq) return;  // A newer search took over.
     Object.assign(cv, {rows: more ? [...cv.rows, ...found.conversations] : found.conversations, total: found.total,
                        waiting: found.waiting || [], counts: found.counts || {}, close: !!found.close, closest: !!found.closest,
                        queued: found.queued || {ids: [], sent: 0}, archivedCount: found.hidden || 0,
-                       every: (found.every || []).map((r) => r.id), onDemand: found.on_demand, error: null});
+                       every: (found.every || []).map((r) => r.id), byStatus: found.by_status || {}, onDemand: found.on_demand,
+                       error: null});
     for (const r of found.every || []) cv.known.set(r.id, {status: r.status, hidden: r.hidden});
     // The opened one stands where its row now does (a run may have taken it in since it was opened).
     const row = cv.shown && !cv.shown.error && cv.rows.find((r) => r.id === cv.opened);
@@ -310,7 +312,7 @@ export function section(p) {
   const all = cv.every.length && cv.every.every((id) => cv.picked.has(id)), some = !all && cv.picked.size > 0;
   const selectAll = cv.every.length > 1 ? `<label class="cs-all"><input type="checkbox" id="cs-all" ${all ? "checked" : ""}
       ${some ? "data-mixed" : ""}>${esc(fill(C.selectAll, {n: cv.every.length}))}</label>` : "";
-  const nothingYet = !cv.query && !cv.days && !cv.total && !cv.archivedCount;
+  const nothingYet = !cv.query && !cv.days && !cv.only && !cv.total && !cv.archivedCount;
   const rows = cv.error ? `<div class="conflict">${esc(cv.error)}</div>`
     : cv.rows.length ? (cv.close ? `<p class="cs-close">${esc(C.close)}</p>` : "") + `<div class="card cs-list">${cv.rows.map((row) => rowHtml(p, cv, row)).join("")}</div>`
       + (cv.rows.length < cv.total ? `<button class="link cs-more" id="cs-more">${esc(C.more)}</button>` : "")
@@ -325,13 +327,37 @@ export function section(p) {
       ${nothingYet ? "" : `<div class="cs-controls"><div class="cs-bar"><span class="cs-find"><input type="search" id="cs-search" placeholder="${esc(C.search)}"
         aria-label="${esc(C.search)}" value="${esc(cv.query)}">${cv.query ? `<button class="cs-clear-search" id="cs-search-clear"
         type="button" aria-label="${esc(C.clearSearch)}" title="${esc(C.clearSearch)}">&#10005;</button>` : ""}</span>
-        ${seg(DAYS, cv.days, "days")}${seg(ORDERS.map((o) => [o, o]), cv.order || (cv.closest ? null : "newest"), "order")}</div>${selectAll}</div>`}${rows}${archived}</section>`;
+        <span class="cs-filters">${seg(DAYS, cv.days, "days")}${statusFilter(cv)}</span>${
+          seg(ORDERS.map((o) => [o, o]), cv.order || (cv.closest ? null : "newest"), "order")}</div>${selectAll}</div>`}${rows}${archived}</section>`;
+}
+
+// The Status filter's choices, in the order a conversation moves through them.
+const STATUSES = ["waiting", "sent", "active", "smooth", "queued", "fine", "working", "review", "declined", "improved", "test",
+                  "unreadable"];
+// The standings to choose from: those some conversation matching the rest has, and any chosen.
+const choosable = (cv) => STATUSES.filter((s) => cv.byStatus[s] || cv.only?.has(s));
+
+function statusFilter(cv) {
+  // Status ▾: All, and a checkbox for each standing to choose from, with how many stand so (only: those chosen, or
+  // null for all). Its label says what's shown when it isn't everything: the one standing's name, or how many.
+  const C = TEXT.conversations, only = cv.only;
+  const label = !only ? C.statusAll : only.size === 1 ? C.status[[...only][0]] : fill(C.statusSome, {n: only.size});
+  const box = (attr, on, text, n, mixed) => `<label class="cs-status-opt"><input type="checkbox" ${attr} ${on ? "checked" : ""}
+      ${mixed ? "data-mixed" : ""}><span class="cs-status-name">${esc(text)}</span>${n == null ? "" : `<span class="cs-status-n">${n}</span>`}</label>`;
+  const menu = cv.statusMenu ? `<div class="backdrop" id="cs-status-backdrop"></div><div class="cs-status-menu" role="group" aria-label="${esc(C.statusAll)}">
+      ${box('id="cs-status-all"', !only, C.all, null, only && only.size > 0)}
+      ${choosable(cv).map((s) => box(`data-cs-status="${s}"`, !only || only.has(s), C.status[s], cv.byStatus[s] || 0)).join("")}</div>` : "";
+  return `<span class="cs-status"><button class="cs-status-btn ${only ? "on" : ""}" id="cs-status" aria-haspopup="true"
+      aria-expanded="${!!cv.statusMenu}">${esc(label)}<span aria-hidden="true">&#9662;</span></button>${menu}</span>`;
 }
 
 export function after(p) {
-  // A mixed Select all (some picked, not all): a checkbox's indeterminate state is a property, set once it's drawn.
-  const all = p.root.getElementById("cs-all");
-  if (all) all.indeterminate = all.hasAttribute("data-mixed");
+  // A mixed Select all (some picked, not all), or a mixed All among the statuses: a checkbox's indeterminate state is
+  // a property, set once it's drawn.
+  for (const id of ["cs-all", "cs-status-all"]) {
+    const box = p.root.getElementById(id);
+    if (box) box.indeterminate = box.hasAttribute("data-mixed");
+  }
 }
 
 function runButton(p, preview, running) {
@@ -403,6 +429,8 @@ export const actions = {
   click: [
     ["[data-cs]", (p, el) => open(p, p.cv, el.dataset.cs)],
     ["[data-cs-review]", (p, el) => p.go(el.dataset.csReview)],
+    ["#cs-status", (p) => { p.cv.statusMenu = !p.cv.statusMenu; p.render(); }],
+    ["#cs-status-backdrop", (p) => { p.cv.statusMenu = false; p.render(); }],
     ["[data-days]", (p, el) => refilter(p, {days: el.dataset.days})],
     ["[data-order]", (p, el) => refilter(p, {order: el.dataset.order})],
     ["#cs-more", (p) => list(p, p.cv, true)],
@@ -441,6 +469,13 @@ export const actions = {
       else unpick(p.cv, [...p.cv.picked]);
       p.render();
     }],
+    ["[data-cs-status]", (p, el) => {
+      // One standing in or out; all of them chosen is no filter at all.
+      const all = choosable(p.cv), only = new Set(p.cv.only || all);
+      el.checked ? only.add(el.dataset.csStatus) : only.delete(el.dataset.csStatus);
+      refilter(p, {only: all.every((s) => only.has(s)) ? null : only});
+    }],
+    ["#cs-status-all", (p, el) => refilter(p, {only: el.checked ? null : new Set()})],
     ["#cs-archived", (p, el) => {
       // Archived ones out of view again: none of them stays picked.
       if (!el.checked) unpick(p.cv, [...p.cv.picked].filter((id) => p.cv.known.get(id)?.hidden));

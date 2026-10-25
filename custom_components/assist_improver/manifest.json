@@ -14,7 +14,7 @@
   "iot_class": "calculated",
   "issue_tracker": "https://github.com/thngkaiyuan/ha-assist-improver/issues",
   "requirements": [],
-  "version": "0.37.2",
+  "version": "0.37.3",
   "after_dependencies": [
     "anthropic",
     "assist_pipeline",

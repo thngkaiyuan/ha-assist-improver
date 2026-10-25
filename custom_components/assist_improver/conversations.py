@@ -249,7 +249,8 @@ def snippet(turns, words):
     return None
 
 
-def listed(runtime, kept, query=None, days=None, order=None, offset=0, limit=PAGE, plain=False, hidden=False):
+def listed(runtime, kept, query=None, days=None, order=None, offset=0, limit=PAGE, plain=False, hidden=False,
+           statuses=None):
     """A page of conversations: those with something said, started within the days, and matching the words: when
     (a day, a part of the day, a time), and every other word, in any order, in what the user said or Assist replied
     (any case); if none has them all, those with the most of them (close: true). With a time said, the closest to it
@@ -259,8 +260,10 @@ def listed(runtime, kept, query=None, days=None, order=None, offset=0, limit=PAG
     when; if none fits the when, the words are all looked for as said ("weather morning"). Sorted (ORDERS), with how
     many match, the IDs of those among them that can be sent in (to pick them all), and how many of all the
     conversations stand where. Hidden ones (Hide) are left out of the list, and not counted as waiting, unless asked
-    for (hidden); how many are hidden is said. every: each one that matches, past this page too, with where it stands
-    and whether it's archived (the home page's selection: Select all, and what its actions apply to)."""
+    for (hidden); how many are hidden is said. statuses: only those standing so (all of them when None); by_status:
+    how many of those matching the rest stand each way, for choosing (only the standings some have). every: each one
+    that matches, past this page too, with where it stands and whether it's archived (the home page's selection:
+    Select all, and what its actions apply to)."""
     pipeline, index = runtime.pipeline, runtime.recorder.index
     at, tests, fixed, known = pipeline._at(), pipeline._tests(), improved(runtime), decided(runtime)
     since = (utcnow() - timedelta(days=days)).isoformat() if days else None
@@ -300,10 +303,13 @@ def listed(runtime, kept, query=None, days=None, order=None, offset=0, limit=PAG
                       "hidden": bool(summary.get("hidden")),
                       **({"review": review(known, rid)} if status == "review" else {})})
     if at_time and not found:
-        return listed(runtime, kept, query, days, order, offset, limit, plain=True, hidden=hidden)
+        return listed(runtime, kept, query, days, order, offset, limit, plain=True, hidden=hidden, statuses=statuses)
     close = bool(words) and not any(r["matched"] == len(words) for r in found)
     if words and not close:
         found = [r for r in found if r["matched"] == len(words)]
+    by_status = {status: n for status in STANDINGS if (n := sum(1 for r in found if r["status"] == status))}
+    if statuses is not None:
+        found = [r for r in found if r["status"] in statuses]
     found.sort(key=ORDERS[order or "newest"], reverse=order != "oldest")
     closest = bool(offs) and order is None
     if closest:  # A time said and no order chosen: the closest to it first.
@@ -318,7 +324,7 @@ def listed(runtime, kept, query=None, days=None, order=None, offset=0, limit=PAG
                                            "sent": sum(1 for rid in queued if pipeline.filed(rid))},
             "waiting": [r["id"] for r in found if r["status"] == "waiting"], "on_demand": pipeline.on_demand,
             "every": [{"id": r["id"], "status": r["status"], "hidden": r["hidden"]} for r in found],
-            "hidden": out_of_view}
+            "hidden": out_of_view, "by_status": by_status}
 
 
 def kept(runtime, rid):

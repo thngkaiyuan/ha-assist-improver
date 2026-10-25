@@ -606,18 +606,20 @@ async def ws_log(hass, connection, msg):
                                   probatio.Optional("days"): probatio.Any(None, probatio.All(int, probatio.Range(min=1))),
                                   probatio.Optional("order"): probatio.In(["newest", "oldest", "effort"]),
                                   probatio.Optional("offset", default=0): probatio.All(int, probatio.Range(min=0)),
-                                  probatio.Optional("hidden", default=False): bool})
+                                  probatio.Optional("hidden", default=False): bool,
+                                  probatio.Optional("statuses"): [str]})
 @websocket_api.require_admin
 @websocket_api.async_response
 async def ws_conversations(hass, connection, msg):
     """A page of the kept conversations, found by what was said and when (conversations.listed); hidden ones too if
-    asked for."""
+    asked for, and only those standing as asked (statuses)."""
     from .conversations import listed
     if (runtime := _runtime(hass, connection, msg)) is None:
         return
     kept = await runtime.transcripts.all()
-    connection.send_result(msg["id"], listed(runtime, kept, msg.get("query"), msg.get("days"),
-                                             msg.get("order"), msg.get("offset", 0), hidden=msg.get("hidden", False)))
+    connection.send_result(msg["id"], listed(runtime, kept, msg.get("query"), msg.get("days"), msg.get("order"),
+                                             msg.get("offset", 0), hidden=msg.get("hidden", False),
+                                             statuses=msg.get("statuses")))
 
 
 @websocket_api.websocket_command({probatio.Required("type"): f"{DOMAIN}/conversation",

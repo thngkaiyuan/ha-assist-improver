@@ -225,6 +225,23 @@ export const STYLE = `
   .cs-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 10px; }
   .cs-find { position: relative; display: flex; flex: 1 1 220px; min-width: 0; }
   .cs-find input { padding-right: 34px; } #cs-search::-webkit-search-cancel-button { display: none; }
+  /* The day filter and the Status filter, side by side; Status opens a menu of checkboxes, each with how many. */
+  .cs-filters { display: inline-flex; align-items: center; gap: 8px; flex: none; }
+  .cs-status { position: relative; flex: none; }
+  .cs-status-btn { display: inline-flex; align-items: center; gap: 4px; font: inherit; font-size: 13px; padding: 7px 12px;
+    border-radius: 18px; border: 1px solid var(--divider-color); background: none; color: var(--primary-text-color);
+    cursor: pointer; white-space: nowrap; }
+  .cs-status-btn.on { border-color: var(--primary-color); color: var(--primary-color); }
+  .cs-status-menu { position: absolute; right: 0; top: calc(100% + 6px); z-index: 12; min-width: 230px; max-height: 60vh;
+    overflow: auto; padding: 6px 0; box-sizing: border-box; border-radius: 12px; border: 1px solid var(--divider-color);
+    background: var(--card-background-color); box-shadow: 0 8px 24px rgba(0, 0, 0, .3); }
+  .cs-status-opt { display: flex; align-items: center; gap: 10px; padding: 8px 14px; font-size: 14px; cursor: pointer; }
+  .cs-status-opt:hover { background: var(--secondary-background-color); }
+  .cs-bar .cs-status-opt input { flex: none; width: 18px; height: 18px; margin: 0; padding: 0; accent-color: var(--primary-color);
+    cursor: pointer; }
+  .cs-controls:has(.cs-status-menu) { z-index: 12; }  /* Its menu open: over the list and the Run bar. */
+  .cs-status-name { flex: 1; } .cs-status-n { color: var(--secondary-text-color); font-size: 13px; }
+  @media (max-width: 600px) { .cs-filters { display: flex; width: 100%; } .cs-filters .seg { flex: 1 1 auto; width: auto; } }
   .cs-clear-search { position: absolute; right: 4px; top: 50%; transform: translateY(-50%); width: 28px; height: 28px;
     border: none; border-radius: 14px; background: none; color: var(--secondary-text-color); font-size: 15px; cursor: pointer; }
   .cs-clear-search:hover { background: var(--secondary-background-color); }

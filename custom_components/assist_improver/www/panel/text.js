@@ -36,6 +36,8 @@ export const TEXT = {
                            fine: "No trouble found", working: "Looking for a fix", review: "Up for review", declined: "Declined",
                            improved: "Improved", test: "Marked as a test", unreadable: "Couldn't be read"},
                   smoothTip: "Nothing to improve, at a quick look. Send it in for a full analysis.",
+                  // The Status filter's button: everything, or what it shows (one status's name, or how many).
+                  statusAll: "Status", statusSome: "Status: {n}",
                   more: "Show more", none: "No conversations match.", nothing: "(nothing said)",
                   close: "No conversation has all those words. The closest:",
                   empty: "Use Assist as usual: your conversations show up here, ready to send in."},
