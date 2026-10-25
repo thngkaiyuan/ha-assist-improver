@@ -192,8 +192,9 @@ class Pipeline:
         tests = self._tests() if tests is None else tests
         at = self._at()
         waiting = list(at.values())
+        sent = sum(1 for rid, stage in at.items() if stage == "triage" and self.filed(rid))  # They skip the quick check.
         return {"requests": sum(1 for rid in (self.to_analyze(tests) if todo is None else todo) if rid not in at),
-                "triage": waiting.count("triage"), "analyze": waiting.count("analyze"),
+                "triage": waiting.count("triage") - sent, "analyze": waiting.count("analyze") + sent,
                 "propose": self._to_propose(tests), "revisions": self._revisions(),
                 "test": len(self._untested(copy=False)[0]),
                 "write": len(self.runtime.improvements.unwritten()),
@@ -313,13 +314,16 @@ class Pipeline:
                 at.update({rid: "analyze" if self.filed(rid) else "triage" for rid in new})
                 run["progress"]["taken_in"] = len(new)
                 await self._save_at(at)
+            if sent := [rid for rid, stage in at.items() if stage == "triage" and self.filed(rid)]:
+                at.update(dict.fromkeys(sent, "analyze"))  # Sent in while it waited for the quick check: skips it too.
+                await self._save_at(at)
             todo = [rid for rid, stage in at.items() if gate(stage)]
             run["progress"].update(analyze_total=len(todo), analyzed=0, skipped_as_smooth=0, analyze_failed=0)
             checker, tried = role_model(self.entry, "triage"), set()
             for recording_id in todo:  # Triage first: a quick check, or pass through without a triage model.
                 if at.get(recording_id) != "triage":
                     continue
-                if not checker:
+                if not checker or self.filed(recording_id):  # Sent in since the run began: no quick check either.
                     at[recording_id] = "analyze"
                     continue
                 result = await self._analyze(recording_id, triage_only=not gate("analyze"))

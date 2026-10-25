@@ -225,9 +225,23 @@ export const STYLE = `
   .chip.cs-in { border-color: var(--add-fg); color: var(--add-fg); }
   .chip.cs-improved { border-color: var(--add-fg); background: var(--add-bg); color: var(--add-fg); }
   .cs-text mark, .cs-turn mark, .cs-sub mark { background: color-mix(in srgb, var(--primary-color) 22%, transparent); color: inherit; border-radius: 2px; }
-  .cs-read { padding: 4px 16px 14px 48px; display: flex; flex-direction: column; gap: 10px; }
-  .cs-turn { display: flex; flex-direction: column; gap: 4px; font-size: 14px; line-height: 1.45; white-space: pre-line; }
-  .cs-turn b { font-weight: 600; margin-right: 4px; } .cs-assist { color: var(--secondary-text-color); }
+  .cs-read { padding: 6px 16px 16px 48px; display: flex; flex-direction: column; gap: 18px; }
+  .cs-turn { display: flex; flex-direction: column; gap: 8px; font-size: 14px; line-height: 1.5; }
+  .cs-msg { display: flex; flex-direction: column; gap: 3px; max-width: min(68ch, 88%); }
+  .cs-you { align-self: flex-end; align-items: flex-end; } .cs-assist { align-self: flex-start; }
+  .cs-who { font-size: 12px; font-weight: 500; color: var(--secondary-text-color); padding: 0 6px; }
+  .cs-says { padding: 8px 12px; border-radius: 14px; color: var(--primary-text-color); overflow-wrap: anywhere; }
+  .cs-you .cs-says { background: color-mix(in srgb, var(--primary-color) 18%, var(--card-background-color));
+    border-bottom-right-radius: 4px; }
+  .cs-assist .cs-says { background: var(--secondary-background-color); border-bottom-left-radius: 4px; }
+  .cs-says p { margin: 0; } .cs-says p + p { margin-top: 8px; }
+  .cs-step { align-self: flex-start; display: flex; gap: 10px; max-width: min(68ch, 88%); box-sizing: border-box;
+    padding: 8px 12px; border-radius: 10px; font-size: 13px; line-height: 1.45;
+    background: color-mix(in srgb, var(--warn-fg) 10%, transparent); border: 1px solid color-mix(in srgb, var(--warn-fg) 35%, transparent); }
+  .cs-step-mark { flex: none; width: 18px; height: 18px; border-radius: 9px; background: var(--warn-fg);
+    color: var(--card-background-color); font-weight: 700; font-size: 12px; display: flex; align-items: center; justify-content: center; }
+  .cs-step-label { font-weight: 600; color: var(--warn-fg); } .cs-step-what { overflow-wrap: anywhere; }
+  .cs-step-error { display: block; margin-top: 2px; color: var(--secondary-text-color); overflow-wrap: anywhere; }
   .cs-send { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 4px; padding: 8px 0;
     position: sticky; bottom: var(--bar, 0px); background: var(--card-background-color); }
   .cs-row.picked .cs-send { background: linear-gradient(color-mix(in srgb, var(--primary-color) 7%, transparent),

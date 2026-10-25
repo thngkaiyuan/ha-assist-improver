@@ -24,7 +24,7 @@ export const TEXT = {
                   pick: "Pick for the next run", pickOne: "Pick “{said}”", selectAll: "Select all {n} not sent in",
                   ready: "{n} ready for the next run", clearSearch: "Clear search", revisions: "{n} revision{s} you asked for",
                   improverWaiting: "The improver has work waiting",
-                  run: "Run", clear: "Clear picks", failedStep: "failed step",
+                  run: "Run", clear: "Clear picks", failedStep: "failed step", failedStepLabel: "Failed step:",
                   you: "You", assist: "Assist", send: "Send this one in", sending: "Sending…",
                   note: "What should have happened? (optional)", yourNote: "Your note:",
                   sentNow: "Sent in. The improver is looking at it now.", sentLater: "Sent in. It goes in with your next run.",

@@ -24,6 +24,7 @@ from .sessions import short
 WORDS = 1000  # Characters kept of each message.
 SAID = 160  # Characters of the first thing said, for the list.
 PAGE = 30  # Conversations a page lists.
+SHAPE = 2  # What a kept transcript holds: 2 has each turn's failed steps.
 
 
 class Transcripts:
@@ -40,7 +41,9 @@ class Transcripts:
         """Every kept conversation's words; read from the recording only where it changed since (or is new)."""
         async with self.lock:
             if self.kept is None:
-                self.kept = ((await self.store.async_load()) or {}).get("transcripts", {})
+                stored = (await self.store.async_load()) or {}
+                # Kept in an older shape (before the failed steps): read again from the recordings.
+                self.kept = stored.get("transcripts", {}) if stored.get("shape") == SHAPE else {}
             index, changed = self.recorder.index, False
             for rid in [rid for rid in self.kept if rid not in index]:  # The tidy-up deleted it.
                 del self.kept[rid]
@@ -55,10 +58,11 @@ class Transcripts:
                 except (ValueError, KeyError, TypeError):  # Unreadable or gone: listed without its words.
                     continue
                 self.kept[rid] = {"updated": summary.get("updated"), "failed": failed,
-                                  "turns": [{k: (t[k] or "")[:WORDS] for k in ("you", "assist")} for t in turns]}
+                                  "turns": [{**{k: (t[k] or "")[:WORDS] for k in ("you", "assist")},
+                                             **({"failed": t["failed"]} if t.get("failed") else {})} for t in turns]}
                 changed = True
             if changed:
-                self.store.async_delay_save(lambda: {"transcripts": self.kept}, 5)
+                self.store.async_delay_save(lambda: {"transcripts": self.kept, "shape": SHAPE}, 5)
             return self.kept
 
 
@@ -73,14 +77,15 @@ TAKEN = ("in", "improved")  # Standings the improver has or is done with: never 
 
 def standing(runtime, rid, at=None, tests=None, fixed=None):
     """Where a conversation stands: active (still going), sent (in, at the next run), in (the pipeline has it, or
-    is done with it), improved (an improvement for it was accepted), or waiting (it can be sent in)."""
+    is done with it), improved (an improvement for it was accepted), or waiting (it can be sent in: one a run took in
+    that still waits for the quick check can too, and then skips it)."""
     pipeline, summary = runtime.pipeline, runtime.recorder.index.get(rid) or {}
     runs = pipeline._runs()
     at = pipeline._at() if at is None else at
     tests = pipeline._tests() if tests is None else tests
     if short(rid) in (improved(runtime) if fixed is None else fixed):
         return "improved"
-    if rid in at or rid in runs.analyzed or rid in runs.unreadable or rid in tests:
+    if (rid in at and at[rid] != "triage") or rid in runs.analyzed or rid in runs.unreadable or rid in tests:
         return "in"
     if summary.get("filed"):
         return "sent"
@@ -249,8 +254,12 @@ def listed(runtime, kept, query=None, days=None, order=None, offset=0, limit=PAG
         found.sort(key=lambda r: offs[r["id"]])
     if close:  # The most words matched first, each group in the chosen order.
         found.sort(key=lambda r: r["matched"], reverse=True)
+    # Those a run took in that wait for the quick check: sent in or picked, they skip it, so the confirmation
+    # counts them once.
+    queued = [rid for rid, stage in at.items() if stage == "triage"]
     return {"conversations": found[offset:offset + limit], "total": len(found), "counts": counts, "close": close,
-            "closest": closest,
+            "closest": closest, "queued": {"ids": [rid for rid in queued if not pipeline.filed(rid)],
+                                           "sent": sum(1 for rid in queued if pipeline.filed(rid))},
             "waiting": [r["id"] for r in found if r["status"] == "waiting"], "on_demand": pipeline.on_demand}
 
 

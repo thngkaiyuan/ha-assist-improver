@@ -293,9 +293,15 @@ class Improvement(TypedDict, total=False):
     revised_by: str
 
 
+class FailedStep(TypedDict, total=False):
+    step: str  # What Assist tried, in plain words, and on what.
+    error: str  # Home Assistant's error.
+
+
 class Said(TypedDict, total=False):
     you: str  # What the user said.
     assist: str  # Assist's last reply to it.
+    failed: list[FailedStep]  # The steps that failed in between, where any did.
 
 
 class Transcript(TypedDict, total=False):

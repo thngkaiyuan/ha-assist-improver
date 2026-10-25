@@ -3,6 +3,7 @@
 from copy import deepcopy
 from hashlib import sha256
 import json
+import re
 
 import homeassistant.const as ha_const
 
@@ -34,15 +35,46 @@ def _content(recording, replay):
     return rebuilt
 
 
+# Assist's steps (its tool calls) in plain words; others are named from their own name ("HassLawnMowerDock": "Lawn
+# mower dock").
+STEPS = {"HassTurnOn": "Turn on", "HassTurnOff": "Turn off", "HassToggle": "Toggle", "HassLightSet": "Set light",
+         "HassSetPosition": "Set position", "HassStopMoving": "Stop", "HassClimateSetTemperature": "Set temperature",
+         "HassFanSetSpeed": "Set fan speed", "HassMediaPause": "Pause", "HassMediaUnpause": "Resume",
+         "HassMediaNext": "Next track", "HassMediaPrevious": "Previous track", "HassSetVolume": "Set volume",
+         "HassVacuumStart": "Start vacuum", "HassVacuumReturnToBase": "Send vacuum home",
+         "HassVacuumCleanArea": "Vacuum an area", "HassBroadcast": "Broadcast", "HassGetState": "Check",
+         "GetLiveContext": "Look up devices", "HassListAddItem": "Add to list", "HassStartTimer": "Start timer"}
+
+
+def step(call, result):
+    """A failed step in plain words: what Assist tried, on what (name, area, floor, domain, as it asked), and Home
+    Assistant's error."""
+    space, _, name = (call.get("tool_name") or result.get("tool_name") or "").rpartition("__")
+    what = (f"Run script {name.replace('_', ' ')}" if space == "script" else STEPS.get(name)
+            or " ".join(re.findall(r"[A-Z][a-z]*|[a-z]+|\d+", name.removeprefix("Hass")) or [name]).capitalize())
+    args, error = call.get("tool_args") or {}, result["tool_result"]
+    on = [", ".join(map(str, v)) if isinstance(v, list) else str(v)
+          for v in (args.get(k) for k in ("name", "area", "floor")) if v]
+    on += [", ".join(d.replace("_", " ") for d in (domain if isinstance(domain, list) else [domain]))
+           for domain in [args.get("domain")] if domain]  # "media_player": media player.
+    return {"step": " · ".join([what, *on]), "error": str(error.get("error_text") or error.get("error"))[:300]}
+
+
 def transcript(recording):
-    """What was said, turn by turn: the user's words and Assist's last reply to them ("" when there was none). Any
-    recording can be read this way, also one no replay could use."""
-    turns = []
+    """What was said, turn by turn: the user's words, Assist's last reply to them ("" when there was none), and the
+    steps that failed in between (failed, where any did). Any recording can be read this way, also one no replay
+    could use."""
+    turns, calls = [], {}
     for item in _content(recording, False):
         if item["role"] == "user":
             turns.append({"you": (item.get("content") or "").strip(), "assist": ""})
         elif turns and item["role"] == "assistant" and item.get("content") and not item.get("tool_calls"):
             turns[-1]["assist"] = item["content"].strip()
+        elif item["role"] == "assistant":
+            calls.update({call.get("id"): call for call in item.get("tool_calls") or []})
+        elif (turns and item["role"] == "tool_result" and isinstance(item.get("tool_result"), dict)
+              and "error" in item["tool_result"]):
+            turns[-1].setdefault("failed", []).append(step(calls.get(item.get("tool_call_id")) or {}, item))
     return turns or [{"you": ((t.get("user") or {}).get("content") or "").strip(), "assist": ""}
                      for t in recording.get("turns", [])]
 

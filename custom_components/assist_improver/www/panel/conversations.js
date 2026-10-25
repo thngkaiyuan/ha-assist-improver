@@ -32,6 +32,7 @@ async function list(p, cv, more, draw = true) {
     if (seq !== cv.seq) return;  // A newer search took over.
     Object.assign(cv, {rows: more ? [...cv.rows, ...found.conversations] : found.conversations, total: found.total,
                        waiting: found.waiting || [], counts: found.counts || {}, close: !!found.close, closest: !!found.closest,
+                       queued: found.queued || {ids: [], sent: 0},
                        onDemand: found.on_demand, error: null});
     for (const row of cv.rows) if (row.status !== "waiting") cv.picked.delete(row.id);  // Sent in or taken in since.
     // The opened one stands where its row now does (a run may have taken it in since it was opened).
@@ -76,6 +77,10 @@ async function send(p, cv, id) {
     if (cv.shown?.id === id) Object.assign(cv.shown, {status: result.status, note: cv.note || null});
     cv.picked.delete(id);
     cv.waiting = cv.waiting.filter((w) => w !== id);
+    if (cv.queued?.ids.includes(id)) cv.queued = {ids: cv.queued.ids.filter((q) => q !== id), sent: cv.queued.sent + 1};
+    // What a run would take now, for the Run bar and its confirmation; or the run it started, followed as it goes.
+    p.setRun?.(await p.ws("run").catch(() => p.run));
+    p.poll?.();
     cv.counts = {...cv.counts, waiting: Math.max(0, (cv.counts.waiting || 1) - 1), sent: (cv.counts.sent || 0) + 1};
   } catch (err) {
     cv.sent[id] = {text: errText(err), error: true};
@@ -93,9 +98,12 @@ export function picking(p) {
 
 export function runPreview(p, preview) {
   // The confirmation's numbers for a Run on picked conversations: what it takes in is the picked and sent-in ones,
-  // said as one, as the Run bar does.
-  const {picked, sent} = picking(p);
-  return {...preview, backlog: {...(preview.backlog || {}), requests: picked + sent, sent: 0}};
+  // said as one, as the Run bar does. Those among them waiting for the quick check are counted once: picked ones
+  // wait at Triage, those sent in earlier at Analyze (they skip the quick check).
+  const {picked, sent} = picking(p), cv = state(p), queued = cv.queued || {ids: [], sent: 0}, b = preview.backlog || {};
+  const pickedQueued = [...cv.picked].filter((id) => queued.ids.includes(id)).length;
+  return {...preview, backlog: {...b, requests: picked + sent, sent: 0, triage: Math.max(0, (b.triage || 0) - pickedQueued),
+                                analyze: Math.max(0, (b.analyze || 0) - queued.sent)}};
 }
 
 // Drawing.
@@ -120,12 +128,24 @@ function badge(row) {
   return row.status === "waiting" ? "" : `<span class="chip cs-${row.status}">${esc(C.status[row.status])}</span>`;
 }
 
+function paragraphs(text, query) {
+  // Each paragraph on its own, line breaks kept, with the words searched for marked.
+  return text.split(/\n\s*\n/).map((part) => `<p>${marked(part.trim(), query).replace(/\n/g, "<br>")}</p>`).join("");
+}
+
 function reading(p, cv, row) {
+  // The conversation as Assist's own dialog shows it: what you said on the right, Assist's replies on the left, and
+  // between them, any step that failed: what Assist tried, and Home Assistant's error.
   const C = TEXT.conversations, shown = cv.shown;
   if (!shown) return `<div class="cs-read">${common.loadingRow()}</div>`;
   if (shown.error) return `<div class="cs-read"><div class="conflict">${esc(shown.error)}</div></div>`;
-  const turns = shown.turns.map((t) => `<div class="cs-turn"><div class="cs-you"><b>${esc(C.you)}</b> ${marked(t.you, cv.query)}</div>
-      ${t.assist ? `<div class="cs-assist"><b>${esc(C.assist)}</b> ${marked(t.assist, cv.query)}</div>` : ""}</div>`).join("");
+  const message = (who, cls, text) => `<div class="cs-msg ${cls}"><div class="cs-who">${esc(who)}</div>
+      <div class="cs-says">${paragraphs(text, cv.query)}</div></div>`;
+  const failed = (f) => `<div class="cs-step" role="note"><span class="cs-step-mark" aria-hidden="true">!</span>
+      <span><span class="cs-step-what"><span class="cs-step-label">${esc(C.failedStepLabel)}</span> ${esc(f.step)}</span>
+      <span class="cs-step-error">${esc(f.error)}</span></span></div>`;
+  const turns = shown.turns.map((t) => `<div class="cs-turn">${message(C.you, "cs-you", t.you)}${(t.failed || []).map(failed).join("")}
+      ${t.assist ? message(C.assist, "cs-assist", t.assist) : ""}</div>`).join("");
   // What sending it in did: while it's sent in (not once the improver has taken it), or what went wrong.
   const sent = cv.sent[row.id] && (cv.sent[row.id].error || shown.status === "sent") ? cv.sent[row.id] : null;
   const action = sendable(shown.status)
