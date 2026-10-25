@@ -364,6 +364,10 @@ class Pipeline:
             todo = [rid for rid, stage in at.items() if gate(stage) and mine(rid)]
             run["progress"].update(analyze_total=len(todo), analyzed=0, skipped_as_smooth=0, analyze_failed=0)
             checker, tried = role_model(self.entry, "triage"), set()
+            # Which half of the stage is at work, for the panel: the quick check (each one it passes is analysed in
+            # the same call), then analysis alone.
+            if checker and any(at.get(rid) == "triage" and not self.filed(rid) for rid in todo):
+                run["progress"]["phase"] = "triage"
             for recording_id in todo:  # Triage first: a quick check, or pass through without a triage model.
                 if at.get(recording_id) != "triage":
                     continue
@@ -375,6 +379,8 @@ class Pipeline:
                 self._count(result, at, recording_id)
                 await self._save_at(at); await self._stage("analyze")
             if gate("analyze"):
+                run["progress"]["phase"] = "analyze"
+                await self._stage("analyze")
                 for recording_id in [rid for rid, stage in at.items() if stage == "analyze" and rid not in tried
                                      and mine(rid)]:
                     result = await self._analyze(recording_id, full=True)  # It passed triage already.

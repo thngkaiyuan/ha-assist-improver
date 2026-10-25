@@ -45,9 +45,14 @@ async def propose(hass, entry, runtime, service, analyses, hypothesis=None, seed
            "sessions": sorted(sessions.analyses), **trace.ids()}
     await runtime.role_runs.record(run)  # Persist the attempt BEFORE any inference.
     if generating:
-        result, submit, ask, reviewer_run, seeded_reviews = await hypotheses.run_generator(
-            hass, sessions, entity_id, [(s["name"], s["hypothesis"]) for s in seeded or []],
-            reviewer_entity_id=role_model(entry, "reviewer"))
+        try:
+            result, submit, ask, reviewer_run, seeded_reviews = await hypotheses.run_generator(
+                hass, sessions, entity_id, [(s["name"], s["hypothesis"]) for s in seeded or []],
+                reviewer_entity_id=role_model(entry, "reviewer"))
+        except Exception as err:  # The run reports it; its record says it ended, not running till a restart.
+            run.update(status="failed", error={"message": f"{type(err).__name__}: {err}"[:500]})
+            await runtime.role_runs.record(run)
+            raise
         run["reviews"], run["seeded_reviews"] = ask.reviews, seeded_reviews
         run["reviewer_run"] = {k: reviewer_run.get(k) for k in ("status", "error", "usage", "output")}
     else:

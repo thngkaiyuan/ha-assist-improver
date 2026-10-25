@@ -254,9 +254,11 @@ export const STYLE = `
   .cs-row { border-bottom: 1px solid var(--divider-color); scroll-margin-bottom: calc(var(--bar, 0px) + 8px);
     scroll-margin-top: calc(var(--controls, 0px) + 8px); }
   /* Search, the day filter, the sort and Select all stay on top while the list scrolls. */
-  .cs-controls { position: sticky; top: 0; z-index: 3; margin: 0 -8px 10px; padding: 8px 8px 0; border-radius: 12px;
+  /* Even padding all round: the bar's own margin would slip out of the box when Select all isn't there. */
+  .cs-controls { position: sticky; top: 0; z-index: 3; margin: 0 -8px 10px; padding: 8px; border-radius: 12px;
     background: var(--card-background-color); box-shadow: 0 1px 0 var(--divider-color); }
-  .cs-controls .cs-all { margin-bottom: 8px; }
+  .cs-controls .cs-bar { margin-bottom: 0; }
+  .cs-controls .cs-all { display: flex; width: fit-content; margin: 12px 0 0 16px; }  /* A block: no line box under it. */
   .cs-row:last-child { border-bottom: none; }
   .cs-row.picked { background: color-mix(in srgb, var(--primary-color) 7%, transparent); }
   .cs-line { display: flex; align-items: stretch; }

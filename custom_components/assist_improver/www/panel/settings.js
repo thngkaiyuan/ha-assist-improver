@@ -13,7 +13,9 @@ function step(p, id, L, s) {
   const station = STEPS[id], box = L.at[id], run = p.run?.run, preview = p.run?.preview || {};
   const backlog = preview.backlog || {}, paused = new Set(s.paused);
   const isPaused = station.gate && paused.has(station.gate);
-  const atWork = run?.status === "running" && (AT_WORK[run.stage] || []).includes(id);
+  // At work: the run's stage; within analysis, only the half it's in (the quick check, then analysis alone).
+  const working = run?.stage === "analyze" && run.progress?.phase === "analyze" ? ["analyze"] : AT_WORK[run?.stage] || [];
+  const atWork = run?.status === "running" && working.includes(id);
   const n = backlog[BACKLOG[id]] || 0;
   let badge = "";
   if (n && id !== "household") {

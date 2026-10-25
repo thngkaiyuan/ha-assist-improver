@@ -63,6 +63,15 @@ def _context(turn):
     return llm.LLMContext(**{**ctx, "context": Context(**identity)})
 
 
+def _tools_api(turn):
+    """The API whose tools a recorded turn used: the household's API has Assist's own tools, so Assist's stand in for
+    it (the evidence sandbox carries no household knowledge, and needs none to try a tool)."""
+    from .household import API_ID
+    api_id = turn["prepared"].get("api_id") or "assist"
+    ids = list(dict.fromkeys("assist" if a == API_ID else a for a in ([api_id] if isinstance(api_id, str) else api_id)))
+    return ids[0] if len(ids) == 1 else ids
+
+
 async def _start(recording, turn, definitions, setup=None):
     """A sandbox seeded as the home at this turn, with a hypothesis's setup (exposure, aliases, scripts) on top."""
     source = turn["source"]
@@ -150,8 +159,7 @@ async def _replay(recording, definitions, setup=None):
                 continue
 
             async def run(hass, calls=calls, context=context, turn=turn):
-                api = await llm.async_get_api(hass, turn["prepared"].get("api_id") or "assist",
-                                              sandbox_context(hass, context))
+                api = await llm.async_get_api(hass, _tools_api(turn), sandbox_context(hass, context))
                 return [(turn["number"], c["tool_name"], c["tool_args"], await _call(hass, api, c["tool_name"],
                                                                                   c["tool_args"])) for c in calls]
             out += await sandbox.run(run)
@@ -391,8 +399,7 @@ async def probe_capabilities(recording, entity_ids, definitions):
     try:
         async def probe(hass):
             from homeassistant.components.homeassistant.exposed_entities import async_should_expose
-            api = await llm.async_get_api(hass, turns[0]["prepared"].get("api_id") or "assist",
-                                          sandbox_context(hass, context))
+            api = await llm.async_get_api(hass, _tools_api(turns[0]), sandbox_context(hass, context))
             out, commands = {}, hass.data[SANDBOX_KEY].commands
             for entity_id in entity_ids:
                 state = hass.states.get(entity_id)
