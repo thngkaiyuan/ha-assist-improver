@@ -94,15 +94,19 @@ function history(p) {
     const unfinished = (x.problems || []).length && fill(H.unfinished, {steps: listed(x.problems.map((y) => GATE_NAMES[y.stage] || y.stage))});
     const aside = x.unreadable && fill(H.setAside, {n: x.unreadable, s: x.unreadable === 1 ? "" : "s"});
     const which = H.triggers[e.picked ? "picked" : e.trigger];  // A full run from here says nothing more.
+    // What went wrong, for a bug report: the error, or each step that couldn't finish (no longer on the home page).
+    const lines = e.error && !/ can't run: /.test(e.error) ? [e.error]
+      : (x.problems || []).map((y) => `${GATE_NAMES[y.stage] || y.stage}: ${y.error}`);
     return [`${H.run[e.status] || "Run"}${e.only ? ` · ${GATE_NAMES[e.only]} only` : ""}${which ? ` · ${which}` : ""}`,
-            e.error ? (/ can't run: /.test(e.error) ? e.error : H.stopped) : [...parts, failed, unfinished, aside].filter(Boolean).join(" · ")];
+            e.error ? (/ can't run: /.test(e.error) ? e.error : H.stopped) : [...parts, failed, unfinished, aside].filter(Boolean).join(" · "),
+            lines.length ? common.details(p, `history:${e.at}`, lines) : ""];
   };
   const rows = shown.map((e) => {
-    const [title, sub] = e.kind === "run" ? runText(e) : e.kind === "posted" ? [H.posted, e.title]
+    const [title, sub, more = ""] = e.kind === "run" ? runText(e) : e.kind === "posted" ? [H.posted, e.title]
       : [e.auto ? H.auto : H.decisions[e.decision] || e.decision, e.title + (e.by && !e.auto ? ` · ${e.by}` : "")];
     const glyphName = e.kind === "decision" ? icon[e.decision] || "mdi:account-check-outline" : icon[e.kind];
     return `<div class="h-row ${e.id ? "h-link" : ""}" ${e.id ? `data-open="${esc(e.id)}"` : ""}>${glyph(glyphName)}
-      <div class="h-text"><div>${esc(title)}</div>${sub ? `<div class="h-sub">${esc(sub)}</div>` : ""}</div>
+      <div class="h-text"><div>${esc(title)}</div>${sub ? `<div class="h-sub">${esc(sub)}</div>` : ""}${more}</div>
       <span class="h-when">${esc(ago(e.at))}</span></div>`;
   }).join("");
   return `<div class="card history"><div class="h-title">${esc(H.title)}</div>${rows || `<div class="h-empty">${esc(H.empty)}</div>`}

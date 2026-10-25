@@ -212,6 +212,8 @@ export const STYLE = `
   .h-row { display: flex; align-items: center; gap: 10px; padding: 8px 16px; font-size: 13.5px; }
   .h-row .glyph { --mdc-icon-size: 18px; width: 18px; height: 18px; } .h-row .h-text { flex: 1; min-width: 0; line-height: 1.35; }
   .h-row .h-sub { color: var(--secondary-text-color); font-size: 12.5px; }
+  .h-details summary { cursor: pointer; color: var(--primary-color); font-size: 12.5px; margin-top: 2px; }
+  .h-details code { display: block; margin-top: 4px; font-size: 12px; white-space: pre-wrap; word-break: break-word; color: var(--secondary-text-color); }
   .h-row .h-when { color: var(--secondary-text-color); font-size: 12.5px; white-space: nowrap; }
   .h-row.h-link { cursor: pointer; } .h-row.h-link:hover { background: var(--secondary-background-color); }
   .h-more { padding: 6px 16px 12px; } .h-empty { padding: 4px 16px 14px; color: var(--secondary-text-color); font-size: 13px; }

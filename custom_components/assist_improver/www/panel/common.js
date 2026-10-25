@@ -63,21 +63,17 @@ export function lastRun(run, count = true) {
 }
 
 export function failure(p, run) {
-  // What went wrong in the last run, in a line, with what happens next. A step whose model is missing names the
-  // step and opens the settings; a step that couldn't finish is named, and the next run tries it again; the
-  // technical details are folded away, for a bug report (and stay open, once opened, while that run is shown).
-  const F = TEXT.failure, problems = run?.progress?.problems || [], key = `problem:${run?.id}`;
-  const details = (lines) => `<details data-key="${esc(key)}" ${p.open.has(key) ? "open" : ""}><summary>${esc(F.details)}</summary><code>${
+  // What went wrong in the last run, on the home page only when the household must act: a step whose model
+  // can't run names the step and opens the settings. What the next run tries again by itself stays in the
+  // settings' History, with its details.
+  if (run?.status !== "failed" || !/ can't run: /.test(run.error || "")) return "";
+  return `<div class="notice">${esc(run.error)} <button class="link go-settings">${esc(TEXT.failure.settings)}</button></div>`;
+}
+
+export function details(p, key, lines) {
+  // A run's technical details, folded away for a bug report (and kept open, once opened, while it's shown).
+  return `<details class="h-details" data-key="${esc(key)}" ${p.open.has(key) ? "open" : ""}><summary>${esc(TEXT.failure.details)}</summary><code>${
     lines.map(esc).join("\n")}</code></details>`;
-  if (run?.status === "failed" && run.error) {
-    if (/ can't run: /.test(run.error)) {
-      return `<div class="notice">${esc(run.error)} <button class="link go-settings">${esc(F.settings)}</button></div>`;
-    }
-    return `<div class="notice">${esc(F.stopped)} ${details([run.error])}</div>`;
-  }
-  if (!problems.length) return "";
-  const names = problems.map((p) => GATE_NAMES[p.stage] || p.stage);
-  return `<div class="notice">${esc(fill(F.stage, {steps: listed(names)}))} ${details(problems.map((p, i) => `${names[i]}: ${p.error}`))}</div>`;
 }
 
 export function askAutoAccept() {

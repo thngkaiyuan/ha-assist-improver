@@ -78,9 +78,7 @@ export const TEXT = {
   schedule: {off: "Only when you run it", daily: "Every day at 3:00, on new conversations",
              weekly: "Every Sunday at 3:00, on new conversations"},
   runNow: "Run now", runAll: "Run on {n} new conversations", runOne: "Run on 1 new conversation", runOneStep: "Run one step",
-  failure: {stopped: "Nothing was lost: the next run tries again.",
-            stage: "{steps} couldn't finish this time; the next run tries again.", details: "Details",
-            settings: "Open settings"},
+  failure: {details: "Details", settings: "Open settings"},  // The home page's notice only when the household must act.
   confirm: {title: "Run Assist Improver?", all: "Run on {n} new conversations?", one: "Run on 1 new conversation?",
             on: "Run on {n} new conversation{s}?", step: "Run {step}?", run: "Run", notNow: "Not now",
             // A run with conversations names which, by their first words: up to three, then how many more; and any
