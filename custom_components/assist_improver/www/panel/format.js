@@ -21,6 +21,21 @@ export const ago = (iso) => {
   return new Date(iso).toLocaleDateString(undefined, {month: "short", day: "numeric"});
 };
 
+// When something happened, with the time of day: "Today, 8:14 PM", "Yesterday, 7:02 AM", "Tue, 8:14 PM" this week,
+// else "Tue, Oct 22, 8:14 PM" (the year too when it isn't this one), in the browser's own words for them.
+export const when = (iso) => {
+  if (!iso) return "";
+  const date = new Date(iso), now = new Date();
+  const time = date.toLocaleTimeString(undefined, {hour: "numeric", minute: "2-digit"});
+  const day = (d) => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+  const days = Math.round((day(now) - day(date)) / 86400000);
+  const relative = new Intl.RelativeTimeFormat(undefined, {numeric: "auto"});
+  if (days === 0 || days === 1) return `${relative.format(-days, "day").replace(/^./, (c) => c.toUpperCase())}, ${time}`;
+  const options = days < 7 ? {weekday: "short"} : {weekday: "short", month: "short", day: "numeric",
+                                                    ...(date.getFullYear() !== now.getFullYear() ? {year: "numeric"} : {})};
+  return `${date.toLocaleDateString(undefined, options)}, ${time}`;
+};
+
 // A class name from untrusted text (a log level, a span's status).
 export const cls = (s) => String(s ?? "").replace(/[^A-Za-z0-9_-]/g, "");
 

@@ -293,6 +293,18 @@ class Improvement(TypedDict, total=False):
     revised_by: str
 
 
+class Said(TypedDict, total=False):
+    you: str  # What the user said.
+    assist: str  # Assist's last reply to it.
+
+
+class Transcript(TypedDict, total=False):
+    """What a kept conversation said (conversations.Transcripts), as of its recording's last change."""
+    updated: str | None
+    turns: list[Said]
+    failed: int  # Assist's tool calls that failed in it.
+
+
 class Waiting(TypedDict, total=False):
     """Where the pipeline's taken-in conversations wait (Pipeline.store)."""
     at: dict[str, str]  # Recording ID: triage or analyze.

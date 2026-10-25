@@ -113,6 +113,8 @@ async def async_setup_entry(hass, entry):
         pipeline.current = next((dict(r) for r in reversed(runtime.role_runs.runs) if r.get("kind") == "pipeline"),
                                 None)
         recorder.on_filed_closed = pipeline.request  # On-demand: a filed conversation runs once it ends.
+        from .conversations import Transcripts
+        runtime.transcripts = Transcripts(hass, recorder)
     except Exception:
         await recorder.stop()
         await trace.async_unload()

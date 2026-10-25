@@ -134,12 +134,14 @@ class Pipeline:
         summary = self.recorder.index.get(rid)
         return summary is not None and summary.get("user_turns") != 0 and rid not in runs.unreadable
 
-    def to_analyze(self, tests=None):
+    def to_analyze(self, tests=None, picked=False):
+        """Finished conversations not analysed yet; only those sent in (filed) with on-demand improvements on, or
+        for a run on picked conversations."""
         runs, tests = self._runs(), self._tests() if tests is None else tests
-        on_demand = self.on_demand  # Then only what the user filed.
+        filed_only = picked or self.on_demand
         return sorted(rid for rid, summary in self.recorder.index.items()
                       if summary.get("status") in CLOSED and rid not in runs.analyzed and rid not in tests
-                      and self._readable(rid, runs) and (not on_demand or summary.get("filed")))
+                      and self._readable(rid, runs) and (not filed_only or summary.get("filed")))
 
     def _at(self):
         """{recording id: the stage it waits at} for conversations a run took in that aren't analysed yet."""
@@ -153,7 +155,7 @@ class Pipeline:
     def _new(self):
         """Finished conversations no run has taken in yet: they wait at the start."""
         at = self._at()
-        return [rid for rid in self.to_analyze() if rid not in at]
+        return [rid for rid in self.to_analyze(picked=bool((self.current or {}).get("picked"))) if rid not in at]
 
     def _last_generator(self):
         return self._runs().generator
@@ -178,17 +180,22 @@ class Pipeline:
                     count += any(f"{short(rid)}:{turn}" not in settled for turn in friction_by_goal(analysis))
                 except (KeyError, TypeError):
                     count += bool(analysis.get("goals"))
-        return count + sum(1 for i in self.runtime.improvements.items.values() if i["status"] == "revision_requested")
+        return count + self._revisions()
+
+    def _revisions(self):
+        """Improvements the household asked to revise: they wait at Propose."""
+        return sum(1 for i in self.runtime.improvements.items.values() if i["status"] == "revision_requested")
 
     def backlog(self, todo=None, tests=None):
-        """What waits at each stage: {stage: count}, as the settings view shows it. todo, tests: to_analyze() and
-        _tests(), if known."""
+        """What waits at each stage: {stage: count}, as the settings view shows it, and how many of those at Propose
+        are revisions. todo, tests: to_analyze() and _tests(), if known."""
         tests = self._tests() if tests is None else tests
         at = self._at()
         waiting = list(at.values())
         return {"requests": sum(1 for rid in (self.to_analyze(tests) if todo is None else todo) if rid not in at),
                 "triage": waiting.count("triage"), "analyze": waiting.count("analyze"),
-                "propose": self._to_propose(tests), "test": len(self._untested(copy=False)[0]),
+                "propose": self._to_propose(tests), "revisions": self._revisions(),
+                "test": len(self._untested(copy=False)[0]),
                 "write": len(self.runtime.improvements.unwritten()),
                 "review": len(self.runtime.improvements.pending()),
                 "household": sum(1 for i in self.runtime.improvements.items.values() if i["status"] == "applied")}
@@ -214,9 +221,10 @@ class Pipeline:
 
     # Running.
 
-    def start(self, *, trigger, force=False, only=None):
+    def start(self, *, trigger, force=False, only=None, picked=False):
         """force: propose again over every analysis even with nothing new (Run anyway). only: run just that stage
-        (the others hold their backlog, as if paused, for this run)."""
+        (the others hold their backlog, as if paused, for this run). picked: a run on the conversations the user
+        picked: it takes in only those sent in, whatever on-demand improvements are set to."""
         if self.running:
             raise CaseError("A run is already in progress")
         if blocked := blocked_stages(self.hass, self.entry, only):
@@ -234,7 +242,7 @@ class Pipeline:
         run_id = uuid4().hex
         self.current = {"id": run_id, "kind": "pipeline", "trigger": trigger, "status": "running",
                         "started": utcnow().isoformat(), "stage": STAGES[0], "progress": {}, "error": None,
-                        "force": force, "only": only, "trace_id": run_id}
+                        "force": force, "only": only, "trace_id": run_id, **({"picked": True} if picked else {})}
         self._task = self.hass.async_create_background_task(self._run(), "assist_improver_pipeline", eager_start=False)
         self._task.add_done_callback(self._ran)
         return deepcopy(self.current)

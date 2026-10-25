@@ -5,9 +5,9 @@ const v = new URL(import.meta.url).search;  // ?v=<version>, passed on to every 
 const [{esc, plural, fill, listed, ago, devUrl, SETTINGS_URL}, {TEXT, STAGES, GATE_NAMES}, {svg}] = await Promise.all([
   import(`./format.js${v}`), import(`./text.js${v}`), import(`./icons.js${v}`)]);
 
-export const toolbar = (title, back, end = "") => `<div class="toolbar">${back ? `<a id="back" style="color:inherit">&#8592;</a>`
-  : `<span id="menu" class="menu-slot" data-keep></span>`}
-      <span>${esc(title)}</span>${end}</div>`;
+export const toolbar = (title, back, end = "") => `<div class="toolbar">${back
+  ? `<button id="back" class="tb-back" type="button"><span aria-hidden="true">&#8592;</span><span>${esc(title)}</span></button>`
+  : `<span id="menu" class="menu-slot" data-keep></span><span>${esc(title)}</span>`}${end}</div>`;
 
 export const devLink = () =>
   `<button class="tb-btn tb-text" id="open-developer" title="Developer view" aria-label="Developer view">${svg("code")}Developer</button>`;
@@ -26,7 +26,7 @@ export function progress(run, cancelling) {
   const at = STAGES.findIndex(([key]) => key === run.stage);
   const detail = {
     analyze: p.analyze_total != null ? `Analyzing conversations: ${p.analyzed || 0} of ${p.analyze_total}` +
-      (p.skipped_as_smooth ? ` (${p.skipped_as_smooth} went smoothly, skipped)` : "") : "Finding conversations to analyze…",
+      (p.skipped_as_smooth ? ` (${p.skipped_as_smooth} went smoothly, skipped).` : ".") : "Finding conversations to analyze…",
     propose: `Proposing fixes from ${plural(p.sessions || 0, "conversation")}, with a reviewer checking each…`,
     test: `Testing ${plural(p.hypotheses || 0, "fix")} in a sandboxed copy of your home…`,
     write: `Writing up ${plural(p.writing || 0, "improvement")}…`}[run.stage];
@@ -37,12 +37,13 @@ export function progress(run, cancelling) {
         `<div class="step ${n < at ? "done" : n === at ? "now" : ""}"><div class="bar"></div>${label}</div>`).join("")}</div></div>`;
 }
 
-export function lastRun(run) {
+export function lastRun(run, count = true) {
+  // How the last run went and when, with what it found (left out with count false: home, once all of it is reviewed).
   if (!run) return "";
   const p = run.progress || {};
   const what = {done: "Last run", failed: "Last run stopped early", cancelled: "Last run cancelled",
                 interrupted: "Last run was interrupted"}[run.status] || "Last run";
-  const found = p.new_improvements != null ? ` · ${plural(p.new_improvements, "new improvement")}` : "";
+  const found = count && p.new_improvements != null ? ` · ${plural(p.new_improvements, "new improvement")}` : "";
   return `${what} ${ago(run.finished || run.started)}${found}`;
 }
 
@@ -84,11 +85,16 @@ export function confirm(p, preview) {
     const n = only === "triage" ? (b.requests || 0) + (b.triage || 0) : b[only] || 0;
     sentence = count(n, C.steps[n ? only : `${only}None`]);
   } else {
-    const order = [["requests", "triage"], ["analyze", "analyze"], ["propose", "propose"], ["test", "test"], ["write", "write"]];
-    const items = order.filter(([key, gate]) => b[key] && !(key !== "requests" && blocked.has(gate)))
-      .map(([key]) => key === "propose" ? C.items.propose : count(b[key], C.items[key]));
+    // The revisions asked for come next to what was picked; the proposer's count holds them too, so its findings are
+    // named only when there's more to propose from than the revisions.
+    const order = [["requests", "triage"], ["revisions", "propose"], ["sent", "triage"], ["triage", "triage"], ["analyze", "analyze"],
+                   ["propose", "propose"], ["test", "test"], ["write", "write"]];
+    const n = (key) => key === "propose" ? (b.propose || 0) - (b.revisions || 0) : b[key] || 0;
+    const items = order.filter(([key, gate]) => n(key) > 0 && !(!["requests", "sent"].includes(key) && blocked.has(gate)))
+      .map(([key]) => key === "propose" ? C.items.propose : count(b[key], key === "requests" && p.picking ? C.items.picked : C.items[key]));
     const shown = items.slice(0, 2).join(" and ");
-    sentence = !items.length ? (p.force ? C.again : C.nothing)
+    sentence = p.picking && items.length ? fill(C.pickedRun, {items: items.length > 2 ? fill(C.andMore, {items: items.slice(0, 2).join(", ")}) : shown})
+      : !items.length ? (p.force ? C.again : C.nothing)
       : items.length > 2 ? fill(C.more, {items: items.slice(0, 2).join(", ")})
       : fill(C.waiting, {items: shown, are: items.length === 1 && /^1 /.test(items[0]) ? "is" : "are"});
   }
@@ -112,12 +118,17 @@ async function startRun(p) {
   p.starting = true;
   p.render();
   try {
-    await p.ws("run/start", {confirmed: true, force: !!p.force, ...(p.only ? {only: p.only} : {})});
+    // A Run on the home page takes the picked conversations in with it, and only conversations sent in.
+    await p.ws("run/start", {confirmed: true, force: !!p.force, ...(p.only ? {only: p.only} : {}),
+                             ...(p.picking ? {picked: true, conversations: [...(p.cv?.picked || [])]} : {})});
+    if (p.picking) p.cv.picked.clear();
+    p.host.scrollIntoView?.({block: "start", behavior: "smooth"});  // Up to the run's progress.
   } catch (err) {
     alert(err.message || String(err));
   }
   p.starting = false;
   p.confirming = false;
+  p.picking = false;
   await p.load();
 }
 
@@ -133,7 +144,7 @@ async function cancelRun(p) {
   setTimeout(() => p.load(), 800);  // Long enough for the run to stop; sooner than the next refresh.
 }
 
-const ask = (p, force) => { p.confirming = true; p.force = force; p.only = null; p.render(); };
+const ask = (p, force) => { p.confirming = true; p.force = force; p.only = null; p.picking = false; p.render(); };
 
 export const actions = {
   click: [
@@ -142,7 +153,7 @@ export const actions = {
     ["#open-developer", (p) => p.nav(devUrl("find"))],
     ["#run-now", (p) => ask(p, false)],
     ["#run-anyway", (p) => ask(p, true)],
-    ["#cancel-confirm, #cancel-confirm-2, #confirm-shade", (p) => { p.confirming = false; p.render(); }],
+    ["#cancel-confirm, #cancel-confirm-2, #confirm-shade", (p) => { p.confirming = false; p.picking = false; p.render(); }],
     ["#start-run", (p) => startRun(p)],
     ["#cancel-run", (p) => cancelRun(p)],
     ["#menu-backdrop", (p) => { p.menuOpen = false; p.runMenu = false; p.render(); }],

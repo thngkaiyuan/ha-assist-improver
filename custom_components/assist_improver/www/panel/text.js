@@ -16,6 +16,22 @@ export const TEXT = {
     household: {title: "Your household", tip: "Your house, made easier."},
   },
   onDemand: {label: "On-demand improvements", tip: ""},  // No bubble yet: its words wait for approval.
+  // Your conversations, on the home page: find them, read them, send them in.
+  conversations: {title: "Your conversations", search: "Search what was said, or when", all: "All", today: "Today", week: "7 days",
+                  month: "30 days", newest: "Newest", effort: "Most back-and-forth", oldest: "Oldest",
+                  lead: "Pick the ones that didn't go the way you wanted, and run: the improver finds what went wrong and tests fixes.",
+                  leadOnDemand: "Pick the ones that didn't go the way you wanted, and run. Only conversations you send in, or file with Assist, go to the improver.",
+                  pick: "Pick for the next run", pickOne: "Pick “{said}”", selectAll: "Select all {n} not sent in",
+                  ready: "{n} ready for the next run", clearSearch: "Clear search", revisions: "{n} revision{s} you asked for",
+                  improverWaiting: "The improver has work waiting",
+                  run: "Run", clear: "Clear picks", failedStep: "failed step",
+                  you: "You", assist: "Assist", send: "Send this one in", sending: "Sending…",
+                  note: "What should have happened? (optional)", yourNote: "Your note:",
+                  sentNow: "Sent in. The improver is looking at it now.", sentLater: "Sent in. It goes in with your next run.",
+                  status: {active: "Still going", sent: "Sent in", in: "With the improver", improved: "Improved"},
+                  more: "Show more", none: "No conversations match.", nothing: "(nothing said)",
+                  close: "No conversation has all those words. The closest:",
+                  empty: "Use Assist as usual: your conversations show up here, ready to send in."},
   sandbox: {label: "Sandbox mode", tip: "When turned on, your Assist conversations use a simulated copy of your home, so nothing real changes; the improver learns from them as practice. This applies only to your user.", others: "Also on for {names}."},
   autoAccept: {label: "Auto-accept low-risk changes",
                tip: "Automatically accepts Assist Improver's low-risk changes: household knowledge, and new names for devices other than locks, alarms and doors.",
@@ -49,7 +65,9 @@ export const TEXT = {
             nothing: "Nothing is waiting right now.", again: "Nothing new is waiting; this proposes again from what's already analyzed.",
             blocked: "{steps} {is} blocked.", models: "{steps} can't run: {its} available. Choose another first.",
             its: "its AI model isn't", their: "their AI models aren't",
-            items: {requests: "{n} new conversation{s}", analyze: "{n} conversation{s} to analyze", propose: "new findings to propose from",
+            pickedRun: "Runs on {items}.", andMore: "{items} and more",
+            items: {requests: "{n} new conversation{s}", picked: "the {n} conversation{s} ready for the next run", sent: "{n} conversation{s} sent in",
+                    revisions: "{n} revision{s} you asked for", triage: "{n} conversation{s} to triage", analyze: "{n} conversation{s} to analyze", propose: "new findings to propose from",
                     test: "{n} idea{s} to simulate", write: "{n} write-up{s}"},
             steps: {triage: "Takes in {n} new conversation{s} and triages them.", triageNone: "Nothing is waiting for triage.",
                     analyze: "Analyzes {n} conversation{s}.", analyzeNone: "Nothing is waiting for analysis.",
@@ -91,5 +109,5 @@ export const BACKLOG = {requests: "requests", triage: "triage", analyze: "analyz
 export const SCHEDULE = Object.entries(TEXT.schedule);
 export const GATE_NAMES = Object.fromEntries(["triage", "analyze", "propose", "test", "write"].map((g) => [g, STEPS[g].title]));
 export const STATUS = {awaiting_review: "To review", needs_attention: "Needs attention", applied: "Applied", undone: "Undone",
-  declined: "Declined", revision_requested: "Revision requested", revised: "Revised", ignored: "Ignored",
+  declined: "Declined", revision_requested: "Revision requested", revised: "Replaced by a revision", ignored: "Ignored",
   conflict: "Changed since tested"};

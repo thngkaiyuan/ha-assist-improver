@@ -19,14 +19,19 @@ export const STYLE = `
   @keyframes appear { from { opacity: 0; } }
   .toolbar { display: flex; align-items: center; gap: 8px; height: 56px; padding: 0 12px; font-size: 20px;
     background: var(--app-header-background-color, var(--primary-color)); color: var(--app-header-text-color, white); }
+  .tb-back { display: inline-flex; align-items: center; gap: 8px; border: none; background: none; color: inherit;
+    font: inherit; padding: 6px 8px; margin-left: -8px; border-radius: 8px; cursor: pointer; }
+  .tb-back:hover { background: rgba(127, 127, 127, 0.15); }
   .page { max-width: 960px; margin: 0 auto; padding: 16px 16px 24px; }
   a { color: var(--primary-color); text-decoration: none; cursor: pointer; }
   .card { background: var(--card-background-color); border: 1px solid var(--divider-color); border-radius: 12px;
     overflow: hidden; margin-bottom: 12px; }
   .item { display: flex; align-items: center; gap: 12px; padding: 14px 16px; border-bottom: 1px solid var(--divider-color); cursor: pointer; }
+  button.item { width: 100%; border-width: 0 0 1px; border-style: solid; background: none; font: inherit; color: inherit; text-align: left; }
   .item:last-child { border-bottom: none; }
   .item:hover { background: var(--secondary-background-color); }
   .item .title { flex: 1; }
+  .item .tag { border: 1px solid var(--divider-color); background: none; margin-left: 4px; vertical-align: 1px; }
   .chip { font-size: 12px; padding: 2px 8px; border-radius: 10px; border: 1px solid var(--divider-color); color: var(--secondary-text-color); white-space: nowrap; }
   .chip.pending, .chip.awaiting_review { border-color: var(--primary-color); color: var(--primary-color); }
   .chip.applied { border-color: var(--add-fg); color: var(--add-fg); }
@@ -141,7 +146,7 @@ export const STYLE = `
   .notice details { display: inline; } .notice summary { display: inline; cursor: pointer; color: var(--primary-color); }
   .notice code { display: block; margin-top: 6px; font-size: 12px; white-space: pre-wrap; word-break: break-word; }
   .lead { color: var(--secondary-text-color); line-height: 1.5; margin: 0 0 12px; }
-  .gains { color: var(--add-fg); font-size: 13px; font-weight: 500; }
+  .gains { display: block; color: var(--add-fg); font-size: 13px; font-weight: 500; }
   .run-line { display: flex; align-items: center; justify-content: space-between; gap: 8px;
     color: var(--secondary-text-color); font-size: 13px; margin: -4px 4px 16px; }
   .link { border: none; background: none; color: var(--primary-color); font: inherit; font-weight: 500; cursor: pointer; padding: 4px 0; }
@@ -186,6 +191,52 @@ export const STYLE = `
   .h-row.h-link { cursor: pointer; } .h-row.h-link:hover { background: var(--secondary-background-color); }
   .h-more { padding: 6px 16px 12px; } .h-empty { padding: 4px 16px 14px; color: var(--secondary-text-color); font-size: 13px; }
   .modal-shade { position: fixed; inset: 0; z-index: 20; background: rgba(0, 0, 0, .45); }
+  /* Your conversations, on the home page. */
+  .cs { margin-top: 20px; }
+  .cs-title { font-size: 18px; font-weight: 500; margin: 0 0 4px; }
+  .cs-lead { color: var(--secondary-text-color); font-size: 14px; line-height: 1.5; margin: 0 0 12px; }
+  .cs-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 10px; }
+  .cs-find { position: relative; display: flex; flex: 1 1 220px; min-width: 0; }
+  .cs-find input { padding-right: 34px; } #cs-search::-webkit-search-cancel-button { display: none; }
+  .cs-clear-search { position: absolute; right: 4px; top: 50%; transform: translateY(-50%); width: 28px; height: 28px;
+    border: none; border-radius: 14px; background: none; color: var(--secondary-text-color); font-size: 15px; cursor: pointer; }
+  .cs-clear-search:hover { background: var(--secondary-background-color); }
+  .cs-bar input, .cs-note { flex: 1 1 220px; min-width: 0; font: inherit; font-size: 14px; padding: 8px 12px; border-radius: 8px;
+    box-sizing: border-box; color: var(--primary-text-color); border: 1px solid var(--divider-color); background: var(--card-background-color); }
+  .cs-all { display: inline-flex; align-items: center; gap: 10px; margin: 2px 0 10px 16px; font-size: 14px; cursor: pointer; }
+  .cs-all input, .cs-pick input { width: 18px; height: 18px; accent-color: var(--primary-color); cursor: pointer; margin: 0; }
+  /* Clipped, not hidden: an opened conversation's send row can stick to the bottom of the page (above the Run bar). */
+  .cs-list { overflow: clip; }
+  .cs-row { border-bottom: 1px solid var(--divider-color); scroll-margin-bottom: calc(var(--bar, 0px) + 8px); }
+  .cs-row:last-child { border-bottom: none; }
+  .cs-row.picked { background: color-mix(in srgb, var(--primary-color) 7%, transparent); }
+  .cs-line { display: flex; align-items: stretch; }
+  .cs-pick { flex: none; display: flex; align-items: center; justify-content: center; width: 48px; cursor: pointer; }
+  .cs-head { flex: 1; min-width: 0; display: flex; align-items: center; gap: 12px; padding: 12px 16px 12px 0; border: none;
+    background: none; font: inherit; color: inherit; text-align: left; cursor: pointer; }
+  .cs-line:hover .cs-head, .cs-row.open .cs-head { color: inherit; } .cs-line:hover { background: var(--secondary-background-color); }
+  .cs-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+  .cs-said { font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .cs-sub { font-size: 13px; color: var(--secondary-text-color); } .cs-failed { color: var(--warn-fg); }
+  .cs-reply { font-size: 13px; color: var(--secondary-text-color); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .cs-close { font-size: 13px; color: var(--secondary-text-color); margin: 0 0 8px; }
+  .cs-last { font-size: 13px; color: var(--secondary-text-color); margin: -6px 0 12px; }
+  .chip.cs-sent { border-color: var(--primary-color); color: var(--primary-color); }
+  .chip.cs-in { border-color: var(--add-fg); color: var(--add-fg); }
+  .chip.cs-improved { border-color: var(--add-fg); background: var(--add-bg); color: var(--add-fg); }
+  .cs-text mark, .cs-turn mark, .cs-sub mark { background: color-mix(in srgb, var(--primary-color) 22%, transparent); color: inherit; border-radius: 2px; }
+  .cs-read { padding: 4px 16px 14px 48px; display: flex; flex-direction: column; gap: 10px; }
+  .cs-turn { display: flex; flex-direction: column; gap: 4px; font-size: 14px; line-height: 1.45; white-space: pre-line; }
+  .cs-turn b { font-weight: 600; margin-right: 4px; } .cs-assist { color: var(--secondary-text-color); }
+  .cs-send { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 4px; padding: 8px 0;
+    position: sticky; bottom: var(--bar, 0px); background: var(--card-background-color); }
+  .cs-row.picked .cs-send { background: linear-gradient(color-mix(in srgb, var(--primary-color) 7%, transparent),
+    color-mix(in srgb, var(--primary-color) 7%, transparent)), var(--card-background-color); }
+  .cs-done { font-size: 13px; color: var(--add-fg); }
+  .cs-more { margin: 10px 0 0; } .cs-empty { color: var(--secondary-text-color); }
+  .cs-footer .footer-inner { flex-direction: row; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 8px 16px; }
+  .cs-footer .cs-what { margin-right: auto; font-weight: 500; }
+  @media (max-width: 600px) { .cs-read { padding-left: 16px; } }
   .modal { position: fixed; z-index: 21; left: 50%; top: 50%; transform: translate(-50%, -50%); width: min(560px, calc(100vw - 32px));
     max-height: min(80vh, 720px); display: flex; flex-direction: column; box-sizing: border-box; border-radius: 16px;
     background: var(--card-background-color); color: var(--primary-text-color); box-shadow: 0 16px 48px rgba(0, 0, 0, .35); }
@@ -360,6 +411,7 @@ export const STYLE = `
   /* The developer view: dense and technical; wide tables scroll inside their card, never the page. */
   .tb-btn + .tb-btn { margin-left: 0; }
   .tb-btn.tb-text { font-size: 14px; padding: 6px 10px; } .tb-btn.tb-text svg { width: 18px; height: 18px; }
+  @media (max-width: 500px) { .tb-btn.tb-text { font-size: 0; gap: 0; padding: 6px; } .tb-btn.tb-text svg { width: 22px; height: 22px; } }
   .dv { --mono: var(--code-font-family, ui-monospace, Menlo, monospace); --dv-blue: #3d8bd9; --dv-purple: #9a6dd7;
     --dv-amber: #c9861a; --dv-teal: #1f9e9a; --dv-grey: #8a8f98; font-size: 14px; }
   .dv-tabs { display: flex; gap: 2px; overflow-x: auto; scrollbar-width: none; margin: -4px 0 12px;

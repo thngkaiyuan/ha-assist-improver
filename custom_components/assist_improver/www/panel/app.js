@@ -5,14 +5,14 @@
 // shadow root, and find their action by what the event reached (each module's `actions`).
 
 const v = new URL(import.meta.url).search;  // ?v=<version>, passed on to every module this one loads.
-const [{morph}, {STYLE}, {reviewUrl}, common, home, review, settings, pickers, household, developer] = await Promise.all(
-  ["morph", "style", "format", "common", "home", "review", "settings", "pickers", "household", "developer"]
-    .map((name) => import(`./${name}.js${v}`)));
+const [{morph}, {STYLE}, {reviewUrl}, common, home, review, settings, pickers, household, developer, conversations] =
+  await Promise.all(["morph", "style", "format", "common", "home", "review", "settings", "pickers", "household", "developer",
+                     "conversations"].map((name) => import(`./${name}.js${v}`)));
 
 const {KEPT} = review;
 const REGIONS = {bar: "bar", main: "page", layer: "layer"};  // Each region's element, and the part of a view it shows.
 const ACTIONS = {};  // An event's type → [selector, action] pairs, from every module.
-for (const module of [common, home, review, settings, pickers, household, developer]) {
+for (const module of [common, home, review, settings, pickers, household, developer, conversations]) {
   for (const [type, list] of Object.entries(module.actions)) (ACTIONS[type] ||= []).push(...list);
 }
 const TIPS = [["pointerover", true], ["pointerout", false], ["focusin", true], ["focusout", false]];
@@ -39,10 +39,13 @@ export class PanelApp {
     this.onLocation = () => this.load();
     this.onKey = (ev) => {
       if (ev.key !== "Escape" || !(this.pop || this.runMenu || this.confirming || this.asking || this.menuOpen)) return;
-      Object.assign(this, {pop: null, runMenu: false, confirming: false, asking: null, menuOpen: false});
+      Object.assign(this, {pop: null, runMenu: false, confirming: false, picking: false, asking: null, menuOpen: false});
       this.render();
     };
-    this.resize = new ResizeObserver(() => { if (this.view === "settings") settings.relayout(this); });  // Vertical when narrow.
+    this.resize = new ResizeObserver(() => {
+      if (this.view === "settings") settings.relayout(this);  // Vertical when narrow.
+      this.barHeight();  // The Run bar may wrap onto another line.
+    });
   }
 
   connect() {
@@ -117,21 +120,28 @@ export class PanelApp {
         this.poll();
       } else if (id) {
         this.view = "review";
-        if (this.review?.id !== id && KEPT.page !== id) {  // Another review: none of the last one's choices follow.
+        const fresh = this.review?.id !== id && KEPT.page !== id;
+        if (fresh) {  // Another review: none of the last one's choices follow.
           Object.assign(this, {decision: null, note: "", result: null, menuOpen: false});
+          const history = this.open.has("history");  // Earlier improvements stay open on the way back.
           this.open.clear();
+          if (history) this.open.add("history");
         }
         KEPT.page = id;
         const found = await this.ws("improvement", {improvement_id: id});
         if (!current()) return;
+        if (fresh) for (const key of review.opened(found)) this.open.add(key);
         Object.assign(this, {review: found, list: null});
+        if (fresh) this.scroller().scrollTop = 0;  // Another review starts at its top (the same one stays put).
       } else {
         // The settings only say whether developer mode is on (the Developer link); home works without them.
+        const fromReview = this.view === "review";
         const [found, known, run, options] = await Promise.all([this.ws("improvements"), this.ws("household"), this.ws("run"),
-                                                                this.ws("settings").catch(() => null)]);
+                                                                this.ws("settings").catch(() => null), conversations.load(this)]);
         if (!current()) return;
         Object.assign(this, {list: found.improvements, household: known, developer: !!options?.developer, review: null,
                              view: "home", pop: null});
+        if (fromReview) this.scroller().scrollTop = 0;  // Back from a review: home starts at its top.
         this.setRun(run);
         KEPT.page = null;
         this.poll();
@@ -216,8 +226,18 @@ export class PanelApp {
       morph(this.root.getElementById(id), html);
     }
     this.menuButton();
+    this.barHeight();
+    const confirming = !!this.root.querySelector(".confirm-modal");  // A run's confirmation, just shown: Enter runs it.
+    if (confirming && !this.confirmShown) this.root.getElementById("start-run")?.focus();
+    this.confirmShown = confirming;
     view.after?.(this);
     if (this.tipAnchor && !this.tipAnchor.isConnected) this.root.getElementById("tip").hidden = true;  // Its control is gone.
+  }
+
+  barHeight() {
+    // The Run bar's height (0 without it), as --bar: what sticks to the bottom of the page sits just above it.
+    const bar = this.root.querySelector(".cs-footer")?.offsetHeight || 0;
+    if (bar !== this.bar) this.host.style.setProperty("--bar", `${this.bar = bar}px`);
   }
 
   menuButton() {

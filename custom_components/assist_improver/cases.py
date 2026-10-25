@@ -34,6 +34,26 @@ def _content(recording, replay):
     return rebuilt
 
 
+def transcript(recording):
+    """What was said, turn by turn: the user's words and Assist's last reply to them ("" when there was none). Any
+    recording can be read this way, also one no replay could use."""
+    turns = []
+    for item in _content(recording, False):
+        if item["role"] == "user":
+            turns.append({"you": (item.get("content") or "").strip(), "assist": ""})
+        elif turns and item["role"] == "assistant" and item.get("content") and not item.get("tool_calls"):
+            turns[-1]["assist"] = item["content"].strip()
+    return turns or [{"you": ((t.get("user") or {}).get("content") or "").strip(), "assist": ""}
+                     for t in recording.get("turns", [])]
+
+
+def failed_calls(recording):
+    """How many of Assist's tool calls failed (Home Assistant answered with an error): a sign the user didn't get
+    what they asked for."""
+    return sum(1 for item in _content(recording, False)
+               if item["role"] == "tool_result" and isinstance(item.get("tool_result"), dict) and "error" in item["tool_result"])
+
+
 def recording_turns(recording, replay=True):
     """Join final ChatLog to source snapshots without inferring user intent.
 

@@ -12,6 +12,7 @@ if TYPE_CHECKING:
     from .baseline import BaselineManager
     from .candidates import CandidateManager
     from .casebook import CaseBook
+    from .conversations import Transcripts
     from .improvements import Improvements
     from .pipeline import Pipeline
     from .recorder import Recorder
@@ -29,6 +30,7 @@ class RuntimeData:
     pipeline: Pipeline | None = None  # Set once the rest has started.
     panel: bool = False  # Whether this entry registered the panel.
     retention: dict | None = None  # What the last tidy-up did.
+    transcripts: Transcripts | None = None  # What each kept conversation said, for the conversations view.
 
 
 def loaded(hass) -> RuntimeData | None:

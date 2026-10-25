@@ -341,6 +341,31 @@ class Recorder:
             self._closed(key)
         return key
 
+    async def file_kept(self, keys, note=None, user_id=None, notify=True):
+        """Mark kept conversations for improvement (the conversations view: the user sends them in), as file() does
+        for one going on now; on disk too for those no longer in memory. notify: tell the pipeline of each that has
+        ended (on-demand improvements run then); off when a run follows anyway. The recording IDs marked."""
+        filed = {"at": utcnow().isoformat(), **({"note": note.strip()[:500]} if note and note.strip() else {}),
+                 **({"by": user_id} if user_id else {})}
+        marked = [key for key in dict.fromkeys(keys) if key in self.index]
+        for key in marked:
+            self.index[key]["filed"] = dict(filed)
+            if (session := self.sessions.get(key)) is not None:
+                session["filed"] = dict(filed)
+                self.schedule(key, soon=True)
+            else:
+                async with self.lock:
+                    if (stored := await self.store(key).async_load()) is not None:
+                        await self.store(key).async_save({**stored, "filed": dict(filed)})
+        if marked:
+            await self.save_index()
+            journal("info", f"{len(marked)} conversation(s) sent in for improvement", recording_ids=marked,
+                    note=filed.get("note"))
+        for key in marked if notify else ():
+            if self.index[key].get("status") != "active":
+                self._closed(key)
+        return marked
+
     def _closed(self, key):
         """A recording ended: a filed one goes to the pipeline (on_filed_closed)."""
         if (self.index.get(key) or {}).get("filed") and self.on_filed_closed is not None:

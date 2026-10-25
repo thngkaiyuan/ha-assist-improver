@@ -9,6 +9,8 @@ address, so the notification links straight to it; settings are at
 """
 
 import difflib
+import json
+import re
 from pathlib import Path
 
 import probatio
@@ -25,6 +27,10 @@ URL_PATH = "assist-improver"  # The panel's address: /assist-improver?id=<improv
 STATIC = f"/{DOMAIN}_static"
 CONTEXT = 2  # Unchanged lines shown around each change.
 PANEL_KEY = f"{DOMAIN}_panel"  # Set while the panel is registered.
+# A door or valve: a cover or valve, or anything named after a door, gate, garage or valve (as a switch that runs a
+# garage door).
+PHYSICAL = re.compile(r"\b(?:cover|valve)\.\w+"  # Covers and valves, and what drives a door or valve:
+                      r"|\b(?:switch|script|button)\.(?:\w+_)?(?:doors?|gates?|garage|valves?)(?:_\w+)?\b")
 
 
 def review_url(improvement_id):
@@ -151,6 +157,9 @@ def review(item, planned=None, names=None):
             "safety": safety(item, steps, already), "status": item["status"], "enabled": enabled,
             "recent_outcome": recent, "recent_outcome_ok": recent_ok, "revises": item.get("revises"),
             "removed": removed, "conflicts": conflicts, "changes": changes, "cause": item["cause"],
+            # A door's or valve's motion isn't simulated: said where the improvement involves one.
+            "physical": bool(PHYSICAL.search(json.dumps([item.get(k) for k in ("changes", "tests", "cause")],
+                                                        default=str))),
             "tests": [{"summary": t["summary"], "improved": t["status"] == "awaiting_review",
                        "result": test_result(t)} for t in item["tests"]],
             "untested": len(item["untested_goals"]),
@@ -162,10 +171,17 @@ def outcome_text(item):
     outcome = item["outcome"]
     status = outcome["status"]
     if status == "recorded":
+        decision = (item.get("decisions") or [{}])[-1].get("decision")
+        if decision in ("revise", "needs_improvement"):
+            return "Thanks. Your next run proposes a revised version."
+        if decision in ("decline", "fine_as_is"):
+            return "Thanks. The improver won't propose this again."
         return "Thanks, your decision is recorded."
     if status == "done":
-        return ("Applied. Assist uses it from your next request; no script was run."
-                if item["status"] == "applied" else "Undone: what was there before is back.") + (
+        script = any(c.get("kind") == "script" for c in item.get("changes") or [])
+        applied = ("Applied. Assist uses it from your next request; no script was run." if script
+                   else "Applied. Assist uses it from your next request.")
+        return (applied if item["status"] == "applied" else "Undone: what was there before is back.") + (
             " Left as you changed it: " + "; ".join(l["what"] for l in outcome["left"]) if outcome.get("left") else "")
     if status == "conflict":
         return "Nothing was changed: " + "; ".join(f"{c['what']}: {c['why']}" for c in outcome["conflicts"])
@@ -220,7 +236,8 @@ def ws_list(hass, connection, msg):
     items = runtime.improvements.listed()
     connection.send_result(msg["id"], {"improvements": [
         {"id": i["id"], "title": display_title(i), "status": i["status"], "pending": i["status"] in PENDING,
-         "enabled": len(benefits(i)[0]), "removed": len(benefits(i)[1])} for i in items]})
+         "enabled": len(benefits(i)[0]), "removed": len(benefits(i)[1]), "revision": bool(i.get("revises"))}
+        for i in items]})
 
 
 @websocket_api.websocket_command({probatio.Required("type"): f"{DOMAIN}/improvement",
@@ -375,15 +392,30 @@ def ws_run_status(hass, connection, msg):
 
 @websocket_api.websocket_command({probatio.Required("type"): f"{DOMAIN}/run/start",
                                   probatio.Required("confirmed"): True, probatio.Optional("force", default=False): bool,
-                                  probatio.Optional("only"): probatio.In(("triage", "analyze", "propose", "test", "write"))})
+                                  probatio.Optional("only"): probatio.In(("triage", "analyze", "propose", "test", "write")),
+                                  probatio.Optional("picked", default=False): bool,
+                                  probatio.Optional("conversations", default=[]): probatio.All([str], probatio.Length(max=1000))})
 @websocket_api.require_admin
-@callback
-def ws_run_start(hass, connection, msg):
-    """Start a run; the panel asks the user to confirm what it will spend first."""
+@websocket_api.async_response
+async def ws_run_start(hass, connection, msg):
+    """Start a run; the panel asks the user to confirm what it will spend first. picked (the home page's Run): the
+    given conversations are sent in first, and the run takes in only conversations sent in."""
+    from .conversations import TAKEN, standing
     if (runtime := _runtime(hass, connection, msg)) is None:
         return
+    picked, conversations = msg.get("picked", False), msg.get("conversations") or []
+    if runtime.pipeline.running:
+        connection.send_error(msg["id"], "busy", "A run is already in progress")
+        return
+    if conversations:
+        if missing := [rid for rid in conversations if rid not in runtime.recorder.index]:
+            connection.send_error(msg["id"], "not_found", f"{len(missing)} of those conversations aren't kept.")
+            return
+        fresh = [rid for rid in conversations if standing(runtime, rid) not in TAKEN]  # Never one the improver has.
+        await runtime.recorder.file_kept(fresh, user_id=connection.user.id, notify=False)
     try:
-        run = runtime.pipeline.start(trigger="manual", force=msg["force"], only=msg.get("only"))
+        run = runtime.pipeline.start(trigger="manual", force=msg.get("force", False), only=msg.get("only"),
+                                     picked=picked or bool(conversations))
     except CaseError as err:
         connection.send_error(msg["id"], "busy", str(err))
         return
@@ -552,10 +584,66 @@ async def ws_log(hass, connection, msg):
     connection.send_result(msg["id"], {"events": events[:100]})
 
 
+@websocket_api.websocket_command({probatio.Required("type"): f"{DOMAIN}/conversations",
+                                  probatio.Optional("query"): str,
+                                  probatio.Optional("days"): probatio.Any(None, probatio.All(int, probatio.Range(min=1))),
+                                  probatio.Optional("order"): probatio.In(["newest", "oldest", "effort"]),
+                                  probatio.Optional("offset", default=0): probatio.All(int, probatio.Range(min=0))})
+@websocket_api.require_admin
+@websocket_api.async_response
+async def ws_conversations(hass, connection, msg):
+    """A page of the kept conversations, found by what was said and when (conversations.listed)."""
+    from .conversations import listed
+    if (runtime := _runtime(hass, connection, msg)) is None:
+        return
+    kept = await runtime.transcripts.all()
+    connection.send_result(msg["id"], listed(runtime, kept, msg.get("query"), msg.get("days"),
+                                             msg.get("order"), msg.get("offset", 0)))
+
+
+@websocket_api.websocket_command({probatio.Required("type"): f"{DOMAIN}/conversation",
+                                  probatio.Required("recording_id"): str})
+@websocket_api.require_admin
+@websocket_api.async_response
+async def ws_conversation(hass, connection, msg):
+    """One conversation to read: what was said, turn by turn, and where it stands."""
+    from .conversations import shown
+    if (runtime := _runtime(hass, connection, msg)) is None:
+        return
+    if msg["recording_id"] not in runtime.recorder.index:
+        connection.send_error(msg["id"], "not_found", "That conversation isn't kept.")
+        return
+    connection.send_result(msg["id"], shown(runtime, await runtime.transcripts.all(), msg["recording_id"]))
+
+
+@websocket_api.websocket_command({probatio.Required("type"): f"{DOMAIN}/conversation/send",
+                                  probatio.Required("recording_id"): str,
+                                  probatio.Optional("note", default=""): probatio.All(str, probatio.Length(max=500))})
+@websocket_api.require_admin
+@websocket_api.async_response
+async def ws_conversation_send(hass, connection, msg):
+    """Send a conversation in: filed, as Assist's file_improvement tool does, so the pipeline takes it in (at its
+    next run, past the quick check; right away with on-demand improvements on). One it has, or an accepted
+    improvement covers, is already in."""
+    from .conversations import TAKEN, standing
+    if (runtime := _runtime(hass, connection, msg)) is None:
+        return
+    rid = msg["recording_id"]
+    if rid not in runtime.recorder.index:
+        connection.send_error(msg["id"], "not_found", "That conversation isn't kept.")
+        return
+    if standing(runtime, rid) in TAKEN:
+        connection.send_error(msg["id"], "already_in", "The improver already has that conversation.")
+        return
+    await runtime.recorder.file_kept([rid], msg.get("note", ""), connection.user.id)
+    connection.send_result(msg["id"], {"status": standing(runtime, rid), "on_demand": runtime.pipeline.on_demand})
+
+
 def register_commands(hass):
     for handler in (ws_list, ws_get, ws_decide, ws_household, ws_household_enable, ws_run_status, ws_run_start,
                     ws_run_cancel, ws_settings, ws_settings_set, ws_settings_models, ws_settings_create,
-                    ws_settings_recommended, ws_practice, ws_assistant_prefer, ws_log, ws_household_edit):
+                    ws_settings_recommended, ws_practice, ws_assistant_prefer, ws_log, ws_household_edit,
+                    ws_conversations, ws_conversation, ws_conversation_send):
         websocket_api.async_register_command(hass, handler)
     from .devview import COMMANDS  # The developer view's: they answer only in developer mode.
     for handler in COMMANDS:

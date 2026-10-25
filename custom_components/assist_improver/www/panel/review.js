@@ -15,6 +15,13 @@ const section = (p, key, title, inner, rich = false) =>
   // rich: the title is already the summary's parts (name, kind, counts), laid out side by side.
   `<details data-key="${key}" ${p.open.has(key) ? "open" : ""}><summary>${rich ? title : `<span class="name">${title}</span>`}</summary>${inner}</details>`;
 
+const SHORT = 40;  // Diff rows a file can have and still show open at first.
+
+export function opened(r) {
+  // What a review shows open at first: what changes, and each file short enough to read at a glance.
+  return ["changes", ...r.changes.flatMap((c, n) => c.rows.length && c.rows.length <= SHORT ? [`file${n}`] : [])];
+}
+
 function bar(added, removed) {
   const total = added + removed;
   if (!total) return "";
@@ -36,9 +43,11 @@ function footer(p, r) {
   // stays where it was.
   if (p.result || r.recent_outcome) {
     const ok = p.result ? p.resultOk : r.recent_outcome_ok;
+    const again = r.choices.find((c) => c.value === "accept");  // Undone: it can be accepted again from here.
     return `<div class="footer"><div class="footer-inner done-row">
       <div class="done-msg ${ok ? "ok" : "bad"}"><span class="mark">${ok ? "&#10003;" : "!"}</span><span>${esc(p.result || r.recent_outcome)}${
-        r.choices.some((c) => c.value === "undo") ? ` <button class="link" id="undo-link">Undo</button>` : ""}</span></div>
+        r.choices.some((c) => c.value === "undo") ? ` <button class="link" id="undo-link">Undo</button>`
+          : again ? ` <button class="link" id="accept-again">${esc(again.label)}</button>` : ""}</span></div>
       ${r.next_pending ? `<button class="btn" id="next" data-id="${esc(r.next_pending.id)}">Next: ${esc(r.next_pending.title)} &#8594;</button>`
         : `<button class="link" id="back-list">All caught up · back to the list</button>`}</div></div>`;
   }
@@ -60,7 +69,7 @@ function footer(p, r) {
 
 export function render(p) {
   const r = p.review;
-  const outcome = [r.enabled.length && `Enables ${plural(r.enabled.length, "task")}`,
+  const outcome = [r.enabled.length && `${plural(r.enabled.length, "new thing")} Assist can do`,
     r.removed.length && `${plural(r.removed.length, "fewer turn")}`].filter(Boolean).join(" · ");
   const lines = (cls, sign, items) => `<div class="lines">${items.map((t) =>
     `<div class="line ${cls}"><span class="sign">${sign}</span><span>${esc(t)}</span></div>`).join("")}</div>`;
@@ -80,13 +89,13 @@ export function render(p) {
     <div class="label">Tested on ${plural(r.tests.length, "conversation")} · ${improvedCount} improved</div><ul class="tests">${tests}</ul>
     ${r.untested ? `<p class="lead">Expected to help ${plural(r.untested, "more conversation")} too (not tested).</p>` : ""}</div>`;
   const how = `<div class="details-body"><p>${esc(r.cause)}</p>
-    <div class="note"><span>&#9432;</span><span>Physical positions aren't simulated in the sandbox: a door's motion, for
-    example, is taken as done when its command succeeds.</span></div></div>`;
+    ${r.physical ? `<div class="note"><span>&#9432;</span><span>Physical positions aren't simulated in the sandbox: a door's motion, for
+    example, is taken as done when its command succeeds.</span></div>` : ""}</div>`;
   const sections = [
-    r.enabled.length && section(p, "enabled", `Tasks now enabled (${r.enabled.length})`, lines("add", "+", r.enabled)),
+    r.enabled.length && section(p, "enabled", `New things Assist can do (${r.enabled.length})`, lines("add", "+", r.enabled)),
     r.removed.length && section(p, "removed", `Turns no longer needed (${r.removed.length})`, lines("del", "−", r.removed)),
-    section(p, "changes", `Changeset (${r.changes.length})`, `<div class="files">${files}</div>`),
-    section(p, "details", "How it works", how),
+    section(p, "changes", `What changes (${r.changes.length})`, `<div class="files">${files}</div>`),
+    section(p, "details", "What went wrong", how),
   ].filter(Boolean).join("");
   const conflicts = r.conflicts.length ? `<div class="conflict"><b>Can't apply it now:</b><br>${r.conflicts.map((c) =>
     `${esc(c.what)}: ${esc(c.why)}`).join("<br>")}</div>` : "";
@@ -133,6 +142,7 @@ export const actions = {
     }],
     ["#decide", (p) => decide(p)],
     ["#undo-link", (p) => decide(p, "undo")],
+    ["#accept-again", (p) => decide(p, "accept")],
     ["#next", (p, el) => p.go(el.dataset.id)],
     ["#back-list", (p) => p.go(null)],
   ],
