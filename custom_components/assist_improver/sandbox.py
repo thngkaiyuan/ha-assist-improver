@@ -6,6 +6,11 @@ integrations (intents, the Assist API, scripts, automations) over a copy of
 the home; only the commands to devices are emulated (devices.py). It has no
 network listener and no device integrations, so nothing in it can reach a real
 device. It lives only as long as one replay.
+
+What it shares with the real instance is the process, and it leaves nothing of itself there: HA's frame helper goes
+back to the real instance before the sandbox's start first awaits; its log records are kept out of HA's log by a
+filter that comes off with the last sandbox; its entries in HA's memo caches go when it stops (a single-entry memo
+it took over is recomputed for the real instance on its next call); and the time zone is its own config's only.
 """
 
 import asyncio
@@ -293,6 +298,7 @@ class Sandbox:
         from homeassistant.core import HomeAssistant
         from homeassistant.helpers import frame
         from homeassistant.setup import async_setup_component
+        from homeassistant.util.async_ import create_eager_task
         hass = self.hass = HomeAssistant(self._dir.name)  # This thread's instance only.
         hass.data[SANDBOX_KEY] = self
         # The sandbox's own config only: HA's async_set_time_zone also sets the process-wide default time zone, which
@@ -306,11 +312,15 @@ class Sandbox:
         while real is not None and SANDBOX_KEY in real.data:  # Another sandbox is starting: the one it gives back.
             real = real.data[SANDBOX_KEY].frame_real
         self.frame_real = real
+        # HA's own start (registries, triggers, ...) first points the process-wide frame helper at this instance, in
+        # its synchronous part. Started eagerly, that part has run when the task is made: the helper goes back to the
+        # real instance then, before the start's first await, instead of for the whole start.
         try:
-            if not await bootstrap.async_load_base_functionality(hass):  # HA's own start: registries, triggers, ...
-                raise RuntimeError("The sandbox could not load Home Assistant's base functionality")
+            load = create_eager_task(bootstrap.async_load_base_functionality(hass))
         finally:
-            frame._hass.hass = real  # HA's frame helper is process-wide; it stays with the real instance.
+            frame._hass.hass = real
+        if not await load:
+            raise RuntimeError("The sandbox could not load Home Assistant's base functionality")
         # Intents register a web view; the sandbox has no web server, so their views go nowhere.
         hass.http = _NoWebServer()
         hass.config.components.add("http")
