@@ -113,21 +113,22 @@ class _AiTaskSteps:
             self._small, _ = await settings.small_ai_task(self.hass, created_on)
 
     async def async_step_confirm(self, user_input=None):
-        assessment = ai_setup.assess(self.hass, self._choice)
-        if user_input is not None:
-            if user_input.get(USE_ANYWAY):
-                self._accepted = True
-                return self._finish(self._choice)
-            return await self._back()
-        return self.async_show_form(
-            step_id="confirm", data_schema=probatio.Schema({probatio.Required(USE_ANYWAY, default=False): bool}),
-            description_placeholders=self._placeholders({
-                "entity": self._choice or "none",
-                "warnings": "\n".join(f"- {w}" for w in assessment["warnings"])}))
+        """A weak choice: why, in a line or two, then two choices: use it anyway, or choose another."""
+        warnings = ai_setup.assess(self.hass, self._choice)["warnings"]
+        return self.async_show_menu(step_id="confirm", menu_options=[USE_ANYWAY, "choose_again"],
+                                    description_placeholders={"warnings": "\n\n".join(warnings)})
+
+    async def async_step_use_anyway(self, user_input=None):
+        self._accepted = True
+        return self._finish(self._choice)
+
+    async def async_step_choose_again(self, user_input=None):
+        return await self._back()
 
 
 class AssistantImproverConfigFlow(_AiTaskSteps, ConfigFlow, domain=DOMAIN):
     VERSION = 1
+    MINOR_VERSION = 2  # migrations.py brings older entries (and their stores) up to it.
 
     @staticmethod
     @callback

@@ -11,6 +11,7 @@ are switched back to Assist with the lines written into their own instructions,
 so nothing learned is lost (see async_remove).
 """
 
+import re
 from copy import deepcopy
 
 from homeassistant.helpers import llm
@@ -26,9 +27,15 @@ HEADING = "Household knowledge (facts and preferences the household has confirme
 
 
 def normalized(knowledge):
+    """The knowledge as every reader takes it: each line on one line (a line typed over several is joined), and no
+    person without lines."""
     knowledge = deepcopy(knowledge or EMPTY)
-    return {"everyone": list(knowledge.get("everyone") or []),
-            "people": {k: list(v) for k, v in (knowledge.get("people") or {}).items() if v}}
+    return {"everyone": [_one_line(line) for line in knowledge.get("everyone") or []],
+            "people": {k: [_one_line(line) for line in v] for k, v in (knowledge.get("people") or {}).items() if v}}
+
+
+def _one_line(line):
+    return " ".join(str(line).split())
 
 
 def render(knowledge, user_id=None):
@@ -112,7 +119,6 @@ class Household:
     async def save(self, knowledge):
         self.knowledge = normalized(knowledge)
         await self.store.async_save(self.knowledge)
-        update_issues(self.hass)
 
 
 async def async_setup(hass):
@@ -172,39 +178,70 @@ def assistants_using(hass):
     return out
 
 
+def literal(line):
+    """A line as plain text in a template: one that looks like template code ({{, {%, {#) is kept from running,
+    even one that itself says {% endraw %} (written out as a string, outside the raw block)."""
+    if not any(m in line for m in ("{{", "{%", "{#")):
+        return line
+    body = ENDRAW.sub(lambda m: "{% endraw %}{{ '" + m.group(0) + "' }}{% raw %}", line)
+    return f"{{% raw %}}{body}{{% endraw %}}"
+
+
+ENDRAW = re.compile(r"\{%-?\s*endraw\s*-?%\}")
+
+
+def person_block(user_id, lines):
+    """One person's lines in an assistant's own instructions, read only when that person is speaking."""
+    return (f"{{% if llm_context.context and llm_context.context.user_id == '{user_id}' %}}\n"
+            + "\n".join(literal(line) for line in lines) + "\n{% endif %}")
+
+
+def without_lines(prompt, knowledge):
+    """An assistant's instructions without the household's lines, as uninstalling wrote them there (everyone's lines,
+    and each person's block): an assistant that reads the household knowledge again (after a reinstall) shouldn't
+    read them twice."""
+    if not prompt:
+        return prompt
+    knowledge = normalized(knowledge)
+    text = prompt
+    for user_id, mine in knowledge["people"].items():
+        text = text.replace(person_block(user_id, mine), "")
+    everyone = set(knowledge["everyone"]) | {literal(line) for line in knowledge["everyone"]}
+    kept = [line for line in text.split("\n") if line.strip() not in everyone]
+    cleaned = "\n".join(kept)
+    return prompt if cleaned == prompt else cleaned.rstrip("\n")
+
+
+async def use_household(hass, target):
+    """Switch one assistant ("entry/subentry") from Assist to the household API, taking out of its instructions any
+    lines the household knowledge already gives it. False when it's gone or doesn't use Assist."""
+    from .changeset import read, write
+    apis = await read(hass, "assistant_api", target)
+    if apis is None or (API_ID not in apis and llm.LLM_API_ASSIST not in apis):
+        return False
+    if API_ID not in apis:
+        household = hass.data.get(KEY)
+        prompt = await read(hass, "prompt", target)
+        if (cleaned := without_lines(prompt, household.knowledge if household else EMPTY)) != prompt:
+            await write(hass, "prompt", target, cleaned)
+        await write(hass, "assistant_api", target,
+                    list(dict.fromkeys(API_ID if a == llm.LLM_API_ASSIST else a for a in apis)))
+    return True
+
+
 async def async_remove(hass):
     """Uninstalling: each assistant on the household API goes back to Assist, with the household's lines written
     into its own instructions (everyone's lines, then each person's in their block), so nothing learned is lost."""
     household = hass.data.get(KEY)
-    knowledge = household.knowledge if household else normalized(await Household(hass).store.async_load())
+    knowledge = normalized(household.knowledge if household else await Household(hass).store.async_load())
     for entry, sub in assistants_using(hass):
-        apis = [llm.LLM_API_ASSIST if a == API_ID else a for a in sub.data.get("llm_hass_api") or []]
+        stored = sub.data.get("llm_hass_api") or []
+        apis = [llm.LLM_API_ASSIST if a == API_ID else a for a in ([stored] if isinstance(stored, str) else stored)]
         prompt = sub.data.get("prompt") or ""
-        lines = "\n".join(knowledge["everyone"])
+        lines = "\n".join(literal(line) for line in knowledge["everyone"])
         for user_id, mine in knowledge["people"].items():
-            lines += (f"\n{{% if llm_context.context and llm_context.context.user_id == '{user_id}' %}}\n"
-                      + "\n".join(mine) + "\n{% endif %}")
+            lines += "\n" + person_block(user_id, mine)
         hass.config_entries.async_update_subentry(
             entry, sub, data={**sub.data, "llm_hass_api": list(dict.fromkeys(apis)),
                               "prompt": (prompt.rstrip("\n") + "\n" + lines.strip("\n") + "\n") if lines.strip() else prompt})
 
-
-ISSUE_PREFIX = "household_"  # One Repairs item per assistant that controls the home but doesn't read the knowledge.
-
-
-def update_issues(hass):
-    """Repairs lists each assistant that controls the home without reading the household knowledge (only once the
-    knowledge has lines: before that there is nothing to miss). Fixing one switches it (repairs.py)."""
-    from homeassistant.helpers import issue_registry as ir
-    household = hass.data.get(KEY)
-    knowledge = normalized(household.knowledge if household else None)
-    has_lines = bool(knowledge["everyone"] or any(knowledge["people"].values()))
-    wanted = {f"{ISSUE_PREFIX}{sub.subentry_id}": (entry, sub) for entry, sub, using in assistants(hass)
-              if has_lines and not using}
-    for (domain, issue_id) in list(ir.async_get(hass).issues):
-        if domain == DOMAIN and issue_id.startswith(ISSUE_PREFIX) and issue_id not in wanted:
-            ir.async_delete_issue(hass, DOMAIN, issue_id)
-    for issue_id, (entry, sub) in wanted.items():
-        ir.async_create_issue(hass, DOMAIN, issue_id, is_fixable=True, severity=ir.IssueSeverity.WARNING,
-                              translation_key="household_assistant", translation_placeholders={"assistant": sub.title},
-                              data={"target": f"{entry.entry_id}/{sub.subentry_id}", "assistant": sub.title})

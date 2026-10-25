@@ -192,20 +192,16 @@ async def plan_steps(hass, proposal):
                 conflicts += [{"kind": "household", "target": "household", "what": "Household knowledge", "why": p}
                               for p in problems]
             else:
+                if household.API_ID not in apis:  # Switching: lines its instructions already hold move out of them.
+                    prompt = household.without_lines(prompt, knowledge)
                 add("household", "household", live, knowledge, _ANY, "Household knowledge")
                 if prompt != live_prompt:
                     add("prompt", target, live_prompt, prompt, _ANY, f"{title}'s instructions")
-                # Every assistant that controls the home reads it: the one tested, and any other still on plain Assist.
-                switches = {target: (title, apis)}
-                for entry, sub, using in household.assistants(hass):
-                    if not using:
-                        switches.setdefault(f"{entry.entry_id}/{sub.subentry_id}", (sub.title, None))
-                for where, (name, current) in switches.items():
-                    current = current if current is not None else await read(hass, "assistant_api", where)
-                    if household.API_ID not in current:
-                        add("assistant_api", where, current,
-                            [household.API_ID if a == llm_assist() else a for a in current], _ANY,
-                            f"{name}: use {household.API_NAME}")
+                # Only the assistant it was tested on is switched: every other one opts in from the panel, so no
+                # assistant depends on this integration without the household choosing it.
+                if household.API_ID not in apis:
+                    add("assistant_api", target, apis, [household.API_ID if a == llm_assist() else a for a in apis],
+                        _ANY, f"{title}: use {household.API_NAME}")
     steps.sort(key=lambda s: ORDER.index(s["kind"]))
     return steps, already, conflicts
 

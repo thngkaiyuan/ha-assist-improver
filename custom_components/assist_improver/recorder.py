@@ -1,4 +1,11 @@
-"""Passive ChatLog recorder. No inference client or device-action path."""
+"""Passive ChatLog recorder. No inference client or device-action path.
+
+Each recording's start, close and storage changes go in today's trace (trace.py); snapshots, packing and saves are
+timed there too.
+
+A recording keeps the state changes some reader uses (digest.worth_keeping). An active one is saved when a turn is
+added, when it closes, and otherwise at most every SAVE_EVERY seconds, so a crash loses at most those seconds; saves
+serialize off the event loop."""
 
 import asyncio
 from copy import deepcopy
@@ -14,12 +21,36 @@ from homeassistant.core import callback
 from homeassistant.helpers.storage import Store
 from homeassistant.util.dt import utcnow
 
+from .retention import CLOSED, pack, unpack
 from .const import DOMAIN, SAVE_DELAY, STORAGE_VERSION, VERSION
+from .digest import flap, worth_keeping
 from .reflective import ROLE_ACTIVE
 from .serialization import plain
 from .snapshot import provider_config, snapshot, state_record
+from .trace import journal, span, timed
 
 _LOGGER = logging.getLogger(__name__)
+SAVE_EVERY = 15  # Seconds an active recording's changes may wait to be saved, unless a turn was added or it closed.
+
+
+def _frozen(session):
+    """The recording as it is now, for a save that serializes in another thread: a copy of each list and dict the
+    recorder adds to or sets keys in later; their entries are shared, since nothing changes an entry once recorded."""
+    def copied(mapping):
+        return {k: list(v) if isinstance(v, list) else v for k, v in mapping.items()}
+    out = copied(session)
+    out["turns"] = [copied(turn) for turn in session.get("turns", [])]
+    if isinstance(session.get("practice"), dict):
+        out["practice"] = copied(session["practice"])
+    return out
+
+
+def _requests(session):
+    """The context IDs of the conversation's requests so far, which the changes Assist makes for them carry."""
+    found = {(((t.get("prepared") or {}).get("context") or {}).get("context") or {}).get("id")
+             for t in session["turns"]}
+    found.discard(None)
+    return found
 
 
 class Recorder:
@@ -31,15 +62,20 @@ class Recorder:
         self.keys = {}
         self.logs = {}
         self.dirty = set()
+        self.urgent = set()  # Unsaved recordings with a turn added: saved at the next tick, not within SAVE_EVERY.
+        self.saved = {}  # Loop time of each live recording's last save.
         self.unsubscribers = []
         self.timer = None
         self.lock = asyncio.Lock()
         self.last_error = None
         self.capture_error = None
         self.running = False
+        self.on_filed_closed = None  # Called with a filed recording's ID once it ends (on-demand: the pipeline runs).
 
     def store(self, key):
-        return Store(self.hass, STORAGE_VERSION, f"{DOMAIN}.session_{key}", private=True, atomic_writes=True)
+        # Serializes in an executor: flush hands it a copy the event loop doesn't change (_frozen).
+        return Store(self.hass, STORAGE_VERSION, f"{DOMAIN}.session_{key}", private=True, atomic_writes=True,
+                     serialize_in_event_loop=False)
 
     async def start(self):
         saved = await self.index_store.async_load()
@@ -48,6 +84,8 @@ class Recorder:
             if summary["status"] == "active":
                 # A clean shutdown or interrupted process can split a journey.
                 summary["status"] = "interrupted"
+                journal("info", "Recording closed: interrupted by a restart", recording_id=key,
+                        user_turns=summary.get("user_turns"))
                 data = await self.store(key).async_load()
                 if data:
                     data["status"] = "interrupted"
@@ -68,15 +106,39 @@ class Recorder:
         self.hass.async_create_task(self.stop(), "assist_improver_stop")
 
     @callback
-    def schedule(self, key):
+    def schedule(self, key, soon=False):
+        """Mark a recording unsaved; soon (a turn was added) saves it at the next tick."""
         self.dirty.add(key)
-        if self.timer is None:
-            self.timer = self.hass.loop.call_later(SAVE_DELAY, self.flush_later)
+        if soon:
+            self.urgent.add(key)
+        self.arm()
+
+    def due(self, key, now):
+        """Whether an unsaved recording is saved at this tick: a turn was added, it closed, it was never saved, or its
+        last save is SAVE_EVERY seconds old."""
+        return (key in self.urgent or key not in self.saved or self.sessions[key]["status"] != "active"
+                or now - self.saved[key] >= SAVE_EVERY)
+
+    @callback
+    def arm(self):
+        """Wake for the next save due (SAVE_DELAY after a change at the soonest), and every SAVE_DELAY while a chat
+        log is watched (observe_logs)."""
+        now = self.hass.loop.time()
+        times = [now if key not in self.sessions or self.due(key, now) else self.saved[key] + SAVE_EVERY
+                 for key in self.dirty] + ([now] if self.logs else [])
+        if not times:
+            return
+        when = max(min(times), now + SAVE_DELAY)
+        if self.timer is not None:
+            if self.timer.when() <= when:
+                return
+            self.timer.cancel()
+        self.timer = self.hass.loop.call_at(when, self.flush_later)
 
     @callback
     def flush_later(self):
         self.timer = None
-        self.hass.async_create_task(self.flush(), "assist_improver_save")
+        self.hass.async_create_task(self.flush(due_only=True), "assist_improver_save")
 
     def observe_logs(self):
         # HA omits some final assistant notifications. Retain only active logs
@@ -102,30 +164,56 @@ class Recorder:
                 session["status"] = "capture_timed_out"
                 session["limitations"].append("No conversation activity for 15 minutes; cleanup not observed")
                 self.index[key]["status"] = session["status"]
+                journal("info", "Recording closed: no activity for 15 minutes", recording_id=key,
+                        user_turns=len(session["turns"]))
                 self.dirty.add(key)
+                self._closed(key)
 
-    async def flush(self):
+    async def flush(self, due_only=False):
+        """Save the unsaved recordings: all of them, or (due_only: the timer's ticks) those due a save."""
         async with self.lock:
             self.observe_logs()
-            keys, self.dirty = self.dirty, set()
+            now = self.hass.loop.time()
+            self.dirty &= self.sessions.keys()
+            keys = {key for key in self.dirty if not due_only or self.due(key, now)}
+            urgent = keys & self.urgent
+            self.dirty -= keys
+            self.urgent -= keys
             try:
-                for key in keys:
-                    await self.store(key).async_save(deepcopy(self.sessions[key]))
                 if keys:
-                    await self.index_store.async_save({"sessions": deepcopy(self.index)})
+                    async with span("recorder.flush"):
+                        await self.save(keys, now)
                 self.last_error = self.capture_error
-                for key in keys:
-                    if key not in self.dirty and self.sessions[key]["status"] != "active":
-                        self.sessions.pop(key)
-                        self.logs.pop(key, None)
             except Exception as err:
                 self.dirty |= keys
+                self.urgent |= urgent
                 self.last_error = type(err).__name__
                 _LOGGER.error("Recording persistence failed (%s); evidence remains pending", type(err).__name__)
                 # Retry on next event or shutdown; do not silently discard.
             finally:
-                if self.running and self.logs and self.timer is None:
-                    self.timer = self.hass.loop.call_later(SAVE_DELAY, self.flush_later)
+                if self.running:
+                    self.arm()
+
+    async def save(self, keys, now):
+        for key in keys:  # A closed recording is stored packed (retention.py); readers get it unpacked.
+            async with span("recorder.pack", recording_id=key):
+                stored = _frozen(self.sessions[key])
+                if stored.get("status") in CLOSED:  # Packing copies the whole recording: done off the event loop.
+                    stored = await self.hass.async_add_executor_job(pack, stored)
+            async with timed("store.recordings"):
+                await self.store(key).async_save(stored)
+            self.saved[key] = now
+            if stored.get("packed") and key in self.index:
+                if self.index[key].get("stored") != "packed":
+                    journal("info", "Recording packed", recording_id=key)
+                self.index[key]["stored"] = "packed"
+        async with timed("store.recordings_index"):
+            await self.index_store.async_save({"sessions": deepcopy(self.index)})
+        for key in keys:
+            if key not in self.dirty and self.sessions[key]["status"] != "active":
+                self.sessions.pop(key)
+                self.logs.pop(key, None)
+                self.saved.pop(key, None)
 
     async def stop(self):
         self.running = False
@@ -171,12 +259,17 @@ class Recorder:
             }
             if kind != "created":
                 self.sessions[key]["limitations"].append("recording_started_mid_session")
+            journal("info", "Recording started", recording_id=key, conversation_id=conversation_id,
+                    mid_session=kind != "created")
         session = self.sessions[key]
         session["last_activity"] = now
         session["events"].append({"at": now, "type": kind, "data": plain(data)})
         content = data.get("content", {})
-        if kind == "content_added" and content.get("role") == "user":
-            session["turns"].append({"user": plain(content), "source": snapshot(self.hass)})
+        turn_added = kind == "content_added" and content.get("role") == "user"
+        if turn_added:
+            with span("recorder.snapshot", recording_id=key):  # The whole home, on the event loop: watched.
+                source = snapshot(self.hass)
+            session["turns"].append({"user": plain(content), "source": source})
         active = current_chat_log.get()
         if active and active.conversation_id == conversation_id and kind == "updated":
             self.logs[key] = active
@@ -202,9 +295,36 @@ class Recorder:
             session["chat_log"] = plain(data["chat_log"])
         if kind == "deleted":
             session["status"] = "session_expired"
+            journal("info", "Recording closed: the conversation ended", recording_id=key,
+                    user_turns=len(session["turns"]))
         self.index[key] = {"id": key, "started": session["started"], "updated": now,
-                           "status": session["status"], "user_turns": len(session["turns"])}
-        self.schedule(key)
+                           "status": session["status"], "user_turns": len(session["turns"]),
+                           **({"filed": session["filed"]} if session.get("filed") else {})}
+        self.schedule(key, soon=turn_added)
+        if kind == "deleted":
+            self._closed(key)
+
+    def file(self, conversation_id, note=None, user_id=None):
+        """Mark a conversation for improvement (on-demand improvements: Assist's file_improvement tool, when the user
+        asks): the pipeline takes it in once it ends. Its recording ID, or None if it isn't being recorded."""
+        key = self.keys.get(conversation_id)
+        session = self.sessions.get(key)
+        if session is None:
+            return None
+        session["filed"] = {"at": utcnow().isoformat(), **({"note": note.strip()[:500]} if note and note.strip() else {}),
+                            **({"by": user_id} if user_id else {})}
+        if key in self.index:
+            self.index[key]["filed"] = session["filed"]
+        self.schedule(key, soon=True)
+        journal("info", "Conversation filed for improvement", recording_id=key, note=session["filed"].get("note"))
+        if session["status"] != "active":
+            self._closed(key)
+        return key
+
+    def _closed(self, key):
+        """A recording ended: a filed one goes to the pipeline (on_filed_closed)."""
+        if (self.index.get(key) or {}).get("filed") and self.on_filed_closed is not None:
+            self.on_filed_closed(key)
 
     def practice(self, conversation_id):
         """The practice part of a session's recording, created on first use; None if not recorded."""
@@ -218,24 +338,46 @@ class Recorder:
     def on_state(self, event):
         if not self.running:
             return
+        # A practice recording's readers read its simulated changes; its real ones are someone else's.
+        watching = [s for s in self.sessions.values() if s["status"] == "active" and "practice" not in s]
+        if not watching:
+            return
         change = {"at": plain(event.time_fired), "entity_id": event.data["entity_id"],
                   "old": state_record(event.data.get("old_state")),
                   "new": state_record(event.data.get("new_state"))}
-        for key, session in self.sessions.items():
-            if session["status"] == "active":
+        for session in watching:
+            if worth_keeping(change, _requests(session)):
                 session["state_changes"].append(change)
-                self.schedule(key)
+            elif flap(change):  # The digest says how many there were.
+                session["flaps_not_kept"] = session.get("flaps_not_kept", 0) + 1
+            else:
+                continue
+            self.schedule(session["id"])
 
     async def export(self, key):
         if key not in self.index:
             raise ValueError("Unknown recording ID")
-        await self.flush()
+        await self.flush(due_only=True)  # Samples the chat logs; a live recording is read from memory.
         data = self.sessions.get(key) or await self.store(key).async_load()
         if data is None:
             raise ValueError("Recording is unavailable")
-        return deepcopy(data)
+        return unpack(deepcopy(data))
+
+    async def save_index(self):
+        await self.index_store.async_save({"sessions": deepcopy(self.index)})
+
+    async def delete(self, key):
+        """Remove a recording and its index entry for good."""
+        async with self.lock:  # After a save in progress, and with nothing left to save, so none lands after this.
+            self.sessions.pop(key, None)
+            self.logs.pop(key, None)
+            self.saved.pop(key, None)
+            self.dirty.discard(key)
+            self.urgent.discard(key)
+            await self.store(key).async_remove()
+            self.index.pop(key, None)
+            await self.index_store.async_save({"sessions": deepcopy(self.index)})
 
     def status(self):
         return {"recording": self.running, "sessions": len(self.index),
-                "pending_writes": len(self.dirty), "last_error": self.last_error,
-                "coverage": "common ChatLog only; native intents/provider-native history are not replay-ready"}
+                "pending_writes": len(self.dirty), "last_error": self.last_error}

@@ -112,10 +112,17 @@ def _fan(service, state, attrs, data):
         return state, attrs
     elif service not in ("turn_on", "set_percentage", "set_preset_mode"):
         return None
-    return ("off" if attrs.get("percentage") == 0 else "on"), attrs
+    # A fan at 0% is off; turned on without a speed, it comes on (at its last speed, as HA's fans report).
+    stopped = attrs.get("percentage") == 0 and (service != "turn_on" or "percentage" in data)
+    return ("off" if stopped and service != "set_preset_mode" else "on"), attrs
 
 
 def _cover_like(service, state, attrs, data, position_key):
+    if "tilt" in service:  # The slats only: the cover stays where it is.
+        tilt = {"open_cover_tilt": 100, "close_cover_tilt": 0}.get(service, data.get("tilt_position"))
+        if tilt is not None and not service.startswith("stop"):
+            attrs["current_tilt_position"] = int(tilt)
+        return state, attrs
     if service.startswith("open"):
         if position_key in attrs:
             attrs[position_key] = 100
@@ -136,7 +143,9 @@ def effect(domain, service, state, data):
     """The device's new (state, attributes) after a command, or None if it isn't modelled."""
     attrs = dict(state.attributes)
     if service == "toggle":
-        service = "turn_on" if state.state in TOGGLE_OFF else "turn_off"
+        # HA's media players turn on only from off or standby, and every other player turns off.
+        off = ("off", "standby", "unknown", "unavailable") if domain == "media_player" else TOGGLE_OFF
+        service = "turn_on" if state.state in off else "turn_off"
     if domain == "light" and service in ("turn_on", "turn_off"):
         if service == "turn_off" and state.state == "off":
             return "off", attrs  # Already off: nothing changes.
@@ -166,6 +175,8 @@ def effect(domain, service, state, data):
         for key in ("humidity", "temperature", "mode", "operation_mode"):
             if key in data:
                 attrs[key] = data[key]
+        if domain == "water_heater" and service == "set_operation_mode" and "operation_mode" in data:
+            return data["operation_mode"], attrs  # A water heater's state is its operation mode.
         return state.state, attrs
     if domain in ON_OFF and service in ("turn_on", "turn_off"):
         return ("on" if service == "turn_on" else "off"), attrs

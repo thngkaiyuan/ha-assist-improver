@@ -13,9 +13,11 @@ import re
 
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.helpers import entity_registry as er
+from homeassistant.helpers.storage import Store
 
 RECOMMENDED = {"chat_model": "claude-opus-5-5", "max_tokens": 16000, "thinking_effort": "high"}
 RECOMMENDED_NAME = "Assist Improver"
+CREATED_KEY = "assist_improver.created"  # The AI Tasks the improver set up in providers, removed when uninstalled.
 RECOMMENDED_MODEL = re.compile(r"claude-opus-5[.-]5")
 MIN_MAX_TOKENS = 8000
 WEAK_EFFORTS = {"low"}
@@ -175,6 +177,7 @@ async def create_ai_task(hass, config_entry_id, kind, model=None, name=None):
     entry = hass.config_entries.async_get_entry(config_entry_id)
     created = [sid for sid, sub in entry.subentries.items()
                if sub.subentry_type == "ai_task_data" and sid not in before]
+    await remember_created(hass, config_entry_id, created)
     registry = er.async_get(hass)
     for _ in range(20):  # The provider reloads to add the entity; give it a moment.
         for item in er.async_entries_for_config_entry(registry, config_entry_id):
@@ -182,3 +185,31 @@ async def create_ai_task(hass, config_entry_id, kind, model=None, name=None):
                 return item.entity_id, None
         await asyncio.sleep(0.5)
     return None, "The entry was created, but its AI Task entity has not appeared yet; choose it after a moment"
+
+
+def _created(hass):
+    return Store(hass, 1, CREATED_KEY, private=True, atomic_writes=True)
+
+
+async def remember_created(hass, entry_id, subentry_ids):
+    """Keep which AI Tasks the improver set up, so uninstalling removes them (and only them)."""
+    store = _created(hass)
+    saved = (await store.async_load()) or {"ai_tasks": []}
+    known = {(t["entry_id"], t["subentry_id"]) for t in saved["ai_tasks"]}
+    saved["ai_tasks"] += [{"entry_id": entry_id, "subentry_id": sid} for sid in subentry_ids if (entry_id, sid) not in known]
+    await store.async_save(saved)
+
+
+async def remove_created(hass):
+    """Uninstalling: the AI Tasks the improver set up go too: those it kept a record of, and those named as it names
+    them (set up before it kept one). Returns how many it removed."""
+    saved = (await _created(hass).async_load()) or {}
+    recorded = {(t["entry_id"], t["subentry_id"]) for t in saved.get("ai_tasks", [])}
+    removed = 0
+    for entry in hass.config_entries.async_entries():
+        for subentry_id, sub in list(entry.subentries.items()):
+            if sub.subentry_type == "ai_task_data" and (
+                    (entry.entry_id, subentry_id) in recorded or (sub.title or "").startswith(RECOMMENDED_NAME)):
+                hass.config_entries.async_remove_subentry(entry, subentry_id)
+                removed += 1
+    return removed

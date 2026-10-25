@@ -1,10 +1,10 @@
-"""Bounded baseline trials through the existing HA provider, never a new client.
-
-Preparation is read-only. Every model step requires explicit paid-call consent.
-The pilot pauses for a semantic review between original user inputs; it never
-invents an answer or samples again to obtain a convenient baseline.
+"""The baseline: a recorded conversation replayed through the household's own provider in a sandbox, turn by turn,
+to check it reproduces what happened before a fix is tried (validation.run_baseline drives it). Never a new client;
+preparation is read-only, every model step needs paid-call consent, and nothing samples again to get a convenient
+baseline.
 """
 
+import asyncio
 from collections import Counter
 from copy import copy, deepcopy
 from dataclasses import is_dataclass, replace
@@ -18,6 +18,7 @@ from .const import REPLAY_ENGINE, TESTED_PROVIDERS
 from .replay import FrozenTurnLog
 from .serialization import plain
 from .simulation import audit_recorded_case, destination_met, per_entity, recorded_transitions
+from .trace import span
 
 
 def prepare_plan(case, recording):
@@ -62,6 +63,8 @@ def clone_provider(agent, plan):
     (plan["provider_tested"]); a provider that caches options outside its subentry may not see a candidate's change.
     """
     provider = plan["provider"]
+    if agent is None:  # Removed, or its provider isn't loaded.
+        raise CaseError("The assistant this conversation used is no longer set up, so it can't be replayed.")
     if (agent.entry.entry_id != provider["config_entry_id"]
             or agent.subentry.subentry_id != provider["subentry_id"]):
         raise CaseError("Selected HA agent does not match the recorded provider entry")
@@ -139,7 +142,8 @@ class BaselineTrial:
         start = len(self.log.content)
         transition_start = len(self.log.replay_api.world.transitions)
         try:
-            await self.agent._async_handle_message(self.log.input, self.log)
+            async with span("replay.turn", replay="baseline", turn=turn["number"]):
+                await self.agent._async_handle_message(self.log.input, self.log)
             new_content = self.log.content[start:]
             if (not new_content or self.log.unresponded_tool_results
                     or new_content[-1].role != "assistant" or not new_content[-1].content
@@ -165,6 +169,10 @@ class BaselineTrial:
                                "transitions": deepcopy(actual_transitions), "recorded_transitions": expected,
                                "semantic_review": "pending"})
             self.status = "awaiting_review" if matches else "not_reproducible"
+        except asyncio.CancelledError:  # A cancelled run still closes its sandbox.
+            self.status = "cancelled"
+            await self.log.close()
+            raise
         except Exception as err:
             self.status = "unsupported" if isinstance(err, CaseError) else "infrastructure_failure"
             self.error = {"type": type(err).__name__}
@@ -209,12 +217,22 @@ class BaselineTrial:
         return self.export()
 
 
+OPEN = ("prepared", "running", "awaiting_review", "ready_for_next_turn")  # A trial review or continue_trial may use.
+
+
 class BaselineManager:
-    """Native admin-action orchestration; review never causes an inference call."""
+    """Native admin-action orchestration; review never causes an inference call.
+
+    The trials in progress are held in memory (the provider's history lives only there); a settled one (reproduced,
+    not reproducible, unsupported...) is let go, with its recording and replay state: nothing reads it again."""
     def __init__(self, hass, casebook):
         self.hass = hass
         self.book = casebook
         self.trials = {}
+
+    def _let_go(self, case_id, trial):
+        if trial.status not in OPEN and self.trials.get(case_id) is trial:
+            del self.trials[case_id]
 
     async def prepare(self, case_id):
         case = self.book.get(case_id)
@@ -243,8 +261,11 @@ class BaselineManager:
             case["baseline"] = {**trial.export(), "status": "running"}
             await self.book._save(case)  # Persist attempt BEFORE any inference.
             self.trials[case_id] = trial
-            case["baseline"] = await trial.step(allow_paid_inference=True, expected_turn=trial.turns[0]["number"])
-            return await self.book._save(case)
+            try:
+                case["baseline"] = await trial.step(allow_paid_inference=True, expected_turn=trial.turns[0]["number"])
+                return await self.book._save(case)
+            finally:
+                self._let_go(case_id, trial)
 
     async def continue_trial(self, case_id, *, expected_turn, allow_paid_inference=False):
         if not allow_paid_inference:
@@ -255,8 +276,11 @@ class BaselineManager:
                 raise CaseError("No reviewed continuation is ready")
             case["baseline"] = {**trial.export(), "status": "running"}
             await self.book._save(case)
-            case["baseline"] = await trial.step(allow_paid_inference=True, expected_turn=expected_turn)
-            return await self.book._save(case)
+            try:
+                case["baseline"] = await trial.step(allow_paid_inference=True, expected_turn=expected_turn)
+                return await self.book._save(case)
+            finally:
+                self._let_go(case_id, trial)
 
     async def review(self, case_id, **review):
         async with self.book.lock:
@@ -272,11 +296,13 @@ class BaselineManager:
             trial.log.replay_api.world = deepcopy(trial.log.replay_api.world)
             try:
                 case["baseline"] = trial.review(**review)
-                return await self.book._save(case)
+                saved = await self.book._save(case)
             except Exception:
                 (trial.index, trial.status, trial.steps, trial.error,
                     trial.reviews, trial.log) = checkpoint
                 raise
+            self._let_go(case_id, trial)
+            return saved
 
     def _active(self, case_id):
         case = self.book.get(case_id)

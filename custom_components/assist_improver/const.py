@@ -1,8 +1,8 @@
-"""Recording, case-audit and bounded replay pilot constants."""
+"""Constants and setting keys."""
 
 DOMAIN = "assist_improver"
 NAME = "Assist Improver"
-VERSION = "0.33.0"
+VERSION = "0.34.0"
 # How replays run and are judged; changing it makes earlier baselines a different test (a new plan), not a resample.
 REPLAY_ENGINE = "2026-10-24.5"  # .2: a fix commanding what the baseline also changed isn't unintended. .3: baselines
 # are judged on the goal's devices. .4: a goal newly met counts, not only fewer turns. .5: controls the user would
@@ -28,6 +28,10 @@ CONF_SCHEDULE = "schedule"
 CONF_PAUSED = "paused_stages"
 # Improvements are accepted (applied) as soon as they're written up, without waiting for the household. Off by default.
 CONF_AUTO_ACCEPT = "auto_accept"
+# On-demand improvements: Assist gets a tool to file a conversation when the user asks ("file an improvement"), and only
+# filed conversations go to the pipeline, each as soon as it ends. Off by default.
+CONF_ON_DEMAND = "on_demand"
+CONF_DEVELOPER = "developer_services"  # Hidden: registers the developer services (__init__.py).
 SAVE_DELAY = 1
 ATTRIBUTES = {
     "friendly_name", "supported_features", "device_class", "unit_of_measurement",

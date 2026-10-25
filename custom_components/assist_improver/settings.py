@@ -14,8 +14,9 @@ import re
 from homeassistant.config_entries import ConfigEntryState
 
 from . import ai_setup
-from .const import (CONF_ACCEPTED_WEAK, CONF_AI_TASK, CONF_AUTO_ACCEPT, CONF_CHECK_AI_TASK, CONF_PAUSED, CONF_SCHEDULE,
-                    CONF_TESTS_PER_GOAL, CONF_TRIAGE_AI_TASK, DEFAULT_TESTS_PER_GOAL)
+from .const import (CONF_ACCEPTED_WEAK, CONF_AI_TASK, CONF_AUTO_ACCEPT, CONF_CHECK_AI_TASK, CONF_DEVELOPER,
+                    CONF_ON_DEMAND, CONF_PAUSED, CONF_SCHEDULE, CONF_TESTS_PER_GOAL, CONF_TRIAGE_AI_TASK,
+                    DEFAULT_TESTS_PER_GOAL)
 
 # Large roles need judgement (a strong model); small ones a quick, cheap one.
 ROLES = {
@@ -29,7 +30,7 @@ ROLES = {
 }
 OPTIONAL = {role for role, spec in ROLES.items() if not spec["fallback"]}  # Off while unset.
 LIVE = {spec["key"] for spec in ROLES.values()} | {CONF_AI_TASK, CONF_ACCEPTED_WEAK, CONF_TESTS_PER_GOAL, CONF_SCHEDULE,
-                                                   CONF_PAUSED, CONF_AUTO_ACCEPT}  # Read when used.
+                                                   CONF_PAUSED, CONF_AUTO_ACCEPT, CONF_ON_DEMAND}  # Read when used.
 GATES = ("triage", "analyze", "propose", "test", "write")  # Stages that can be paused, in order.
 STAGE_ROLES = {"triage": ("triage",), "analyze": ("analyzer",), "propose": ("generator", "reviewer"),
                "test": ("followup_check",), "write": ("editor",)}  # The roles each stage calls.
@@ -130,16 +131,17 @@ def view(hass, entry, user_id=None):
     return {"roles": {role: {"entity_id": role_model(entry, role), "size": spec["size"], "optional": role in OPTIONAL,
                              "problem": issues.get(role)} for role, spec in ROLES.items()},
             "ai_tasks": tasks, "providers": providers(hass), "recommended": is_recommended_setup(hass, entry),
-            "tests_per_goal": int(entry.options.get(CONF_TESTS_PER_GOAL, entry.options.get(
-                "tests_per_cycle", DEFAULT_TESTS_PER_GOAL))),
+            "tests_per_goal": int(entry.options.get(CONF_TESTS_PER_GOAL, DEFAULT_TESTS_PER_GOAL)),
             "schedule": entry.options.get(CONF_SCHEDULE, "off"), "paused": sorted(paused(entry)),
             "auto_accept": bool(entry.options.get(CONF_AUTO_ACCEPT, False)),
+            "on_demand": bool(entry.options.get(CONF_ON_DEMAND, False)),
+            "developer": bool(entry.options.get(CONF_DEVELOPER)),
             "practice": {"on": bool(user_id and user_id in users),
                          "others": sorted(name for uid, name in users.items() if uid != user_id)}}
 
 
 def updated(hass, entry, *, role=None, entity_id=None, tests_per_goal=None, schedule=None, stage=None,
-            pause=None, auto_accept=None):
+            pause=None, auto_accept=None, on_demand=None, developer_services=None):
     """The entry's options with one setting changed, checked first."""
     options = dict(entry.options)
     if role is not None:
@@ -168,6 +170,10 @@ def updated(hass, entry, *, role=None, entity_id=None, tests_per_goal=None, sche
         options[CONF_PAUSED] = [s for s in GATES if s in stages]
     if auto_accept is not None:
         options[CONF_AUTO_ACCEPT] = bool(auto_accept)
+    if on_demand is not None:  # Only conversations the user files go to the pipeline (Assist's file_improvement).
+        options[CONF_ON_DEMAND] = bool(on_demand)
+    if developer_services is not None:  # Hidden (no control in the panel): set for debugging and evaluation rounds.
+        options[CONF_DEVELOPER] = bool(developer_services)
     return options
 
 

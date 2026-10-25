@@ -22,6 +22,7 @@ from .sandbox import Sandbox, observe, seed, seed_options, snapshot, system_prom
 from .snapshot import live_definitions
 from .serialization import plain
 from .simulation import UnsupportedSimulation, recorded_transitions
+from .trace import span, tag
 
 
 
@@ -33,9 +34,11 @@ class SandboxTool(llm.Tool):
         self.integration = getattr(tool, "integration", None)
         self.home = home
 
+    @span("replay.tool")
     async def async_call(self, hass, tool_input, llm_context):
         home = self.home
         before = len(home.sandbox.unsimulated)
+        tag(tool=tool_input.tool_name)
         try:
             result = await home.sandbox.run(lambda sandbox_hass: home.ha_api.async_call_tool(tool_input))
         except HomeAssistantError:
@@ -88,7 +91,7 @@ class SandboxHome(llm.API):
         if self.sandbox is not None:
             return
         source, prepared = self.first_turn["source"], self.first_turn["prepared"]
-        # As recorded; recordings from before 0.16.2 didn't keep them, so those use today's.
+        # As recorded; a recording made before definitions were kept replays with today's (nothing else to use).
         recorded = "scripts" in source
         scripts = self.scripts if self.scripts is not None else (source["scripts"] if recorded else None)
         automations = self.automations if self.automations is not None else source.get("automations")
@@ -103,9 +106,11 @@ class SandboxHome(llm.API):
             user_name = getattr(user, "name", None)
         self.sandbox = await Sandbox.start(source.get("time_zone") or self.hass.config.time_zone)
         try:
-            await self.sandbox.run(lambda hass: seed(
-                hass, source, user_name=user_name, **seed_options(self.first_turn), scripts=scripts, automations=automations, exposure_changes=self.exposure_changes,
-                alias_changes=self.alias_changes, alias_removals=self.alias_removals))
+            async with span("sandbox.seed"):
+                await self.sandbox.run(lambda hass: seed(
+                    hass, source, user_name=user_name, **seed_options(self.first_turn), scripts=scripts,
+                    automations=automations, exposure_changes=self.exposure_changes,
+                    alias_changes=self.alias_changes, alias_removals=self.alias_removals))
         except Exception as err:
             await self.stop()
             raise UnsupportedSimulation(f"The sandbox could not be seeded as the recorded home: {err}") from err

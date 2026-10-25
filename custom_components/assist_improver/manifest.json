@@ -11,12 +11,19 @@
   ],
   "documentation": "https://github.com/thngkaiyuan/ha-assist-improver",
   "integration_type": "service",
-  "iot_class": "local_push",
+  "iot_class": "calculated",
   "issue_tracker": "https://github.com/thngkaiyuan/ha-assist-improver/issues",
   "requirements": [],
-  "version": "0.33.0",
+  "version": "0.34.0",
   "after_dependencies": [
+    "anthropic",
+    "assist_pipeline",
     "frontend",
-    "http"
-  ]
+    "http",
+    "intent",
+    "open_router",
+    "repairs",
+    "script"
+  ],
+  "single_config_entry": true
 }

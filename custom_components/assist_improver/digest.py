@@ -24,6 +24,41 @@ OP_ATTRIBUTES = ("hvac_modes", "fan_modes", "preset_modes", "swing_modes", "effe
                  "supported_color_modes", "source_list")
 
 
+def _states(change):
+    return (change.get("old") or {}).get("state"), (change.get("new") or {}).get("state")
+
+
+def background(change):
+    """Whether a recorded state change is background, which the readers listing what changed skip: a noise domain's,
+    an availability flap (to or from unavailable), or a write that changed neither the state nor a recorded attribute
+    (friendly_name aside)."""
+    old, new = change.get("old") or {}, change.get("new") or {}
+    if change["entity_id"].split(".", 1)[0] in NOISE_DOMAINS or "unavailable" in (old.get("state"), new.get("state")):
+        return True
+    if old.get("state") != new.get("state"):
+        return False
+    before, after = old.get("attributes") or {}, new.get("attributes") or {}
+    return all(before.get(k) == after.get(k) for k in before.keys() | after.keys() if k != "friendly_name")
+
+
+def flap(change):
+    """An availability flap the digest counts: a device (not background telemetry) going to or from unavailable."""
+    old, new = _states(change)
+    return old != new and "unavailable" in (old, new) and change["entity_id"].split(".", 1)[0] not in NOISE_DOMAINS
+
+
+def caused(change, requests=()):
+    """Whether a person or Assist caused a change: its context has a user or a parent (what retention.involved
+    counts), or is one of the conversation's requests (requests: their context IDs, which simulation matches)."""
+    context = (change.get("new") or {}).get("context") or {}
+    return bool(context.get("user_id") or context.get("parent_id") or (context.get("id") and context["id"] in requests))
+
+
+def worth_keeping(change, requests=()):
+    """Whether the recorder keeps a state change: one some reader uses, so background only when someone caused it."""
+    return caused(change, requests) or not background(change)
+
+
 def _text(value):
     return value if isinstance(value, str) else json.dumps(value, ensure_ascii=False, default=str)
 
@@ -111,20 +146,18 @@ def build_digest(recording):
                           **({"handled_by": "Home Assistant itself, without the AI model"}
                              if turn["handled_locally"] else {})})
 
-    changes, flaps = {}, 0
     # Practice changes a simulated home; its real state changes belong to someone else.
     practice = recording.get("practice")
+    # The recorder counts the flaps it didn't keep (worth_keeping).
+    changes, flaps = {}, 0 if practice else recording.get("flaps_not_kept", 0)
     for change in practice["simulated_changes"] if practice else recording.get("state_changes", []):
-        entity_id = change["entity_id"]
-        old = (change.get("old") or {}).get("state")
-        new = (change.get("new") or {}).get("state")
-        if entity_id.split(".", 1)[0] in NOISE_DOMAINS or old == new:
+        old, new = _states(change)
+        if background(change) or old == new:
+            if flap(change):
+                flaps += 1
             continue
-        if "unavailable" in (old, new):
-            flaps += 1
-            continue
-        changes.setdefault(entity_id, []).append({"at": change["at"], "during_turn": turn_of(change["at"]),
-                                                  "old": old, "new": new})
+        changes.setdefault(change["entity_id"], []).append({"at": change["at"], "during_turn": turn_of(change["at"]),
+                                                            "old": old, "new": new})
 
     known = set(first.get("states", {})) | set(first.get("entities", {}))
     relevant = sorted((mentioned & known) | set(changes))

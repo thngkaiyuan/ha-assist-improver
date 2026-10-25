@@ -9,6 +9,7 @@ replayed follow-up still fits the replies around it.
 """
 
 from copy import deepcopy
+import logging
 
 from homeassistant.components import conversation
 import probatio
@@ -22,6 +23,9 @@ from .reflective import run_role
 from .settings import role_model
 from .snapshot import live_definitions
 from .themes import create_theme
+from .trace import ids, span, tag
+
+_LOGGER = logging.getLogger(__name__)
 
 BASELINE_REVIEW = "Effects on the home match the recording; the replies are kept for reading."
 CHECK_ROLE = "followup_check"
@@ -72,12 +76,6 @@ def targets(hypothesis, analyses):
     return sorted(found, key=lambda f: -f["friction"]), skipped
 
 
-def target(hypothesis, analyses):
-    """The testable goal with the most friction, or None with why."""
-    found, skipped = targets(hypothesis, analyses)
-    return (found[0], None) if found else (None, skipped[0] if skipped else "No goal can be judged.")
-
-
 async def run_baseline(manager, case):
     """Replay the recorded conversation; reproduced when every turn's effects match the recording. A baseline
     settled under the current plan is reused; one settled under an older plan is run again under the new one."""
@@ -115,35 +113,44 @@ async def test_hypotheses(hass, entry, recorder, *, hypotheses, analyses, per_go
         raise CaseError("Paid inference has not been authorized")
     from homeassistant.util.dt import utcnow
     started = utcnow().isoformat()
-    per_goal = int(per_goal or entry.options.get(CONF_TESTS_PER_GOAL, entry.options.get(
-        "tests_per_cycle", DEFAULT_TESTS_PER_GOAL)))  # tests_per_cycle: the setting's name before 0.17.4.
+    per_goal = int(per_goal or entry.options.get(CONF_TESTS_PER_GOAL, DEFAULT_TESTS_PER_GOAL))
     by_session = {a["recording_id"][:8]: a for a in analyses}
     planned = [(h, *targets(h, by_session)) for h in hypotheses]
     planned.sort(key=lambda p: -sum(f["friction"] for f in p[1]))
     results, used = [], {}
     for hypothesis, found, skipped in planned:
         tests = []
-        for goal in found:
-            if goal["goal"] in skip_goals:  # Already has an improvement (waiting, applied or decided).
-                tests.append({"goal": goal["goal"], "status": "not_tested", "why": "This goal already has an improvement."})
-                continue
-            if used.get(goal["goal"], 0) >= per_goal:
-                tests.append({"goal": goal["goal"], "status": "not_tested",
-                              "why": f"This goal's {per_goal} tests are used this cycle."})
-                continue
-            used[goal["goal"]] = used.get(goal["goal"], 0) + 1
-            try:
-                tests.append({"goal": goal["goal"], "target": deepcopy(goal),
-                              **await _test_one(hass, entry, recorder, hypothesis, goal)})
-            except CaseError as err:
-                tests.append({"goal": goal["goal"], "status": "unsupported", "why": str(err)})
+        async with span("test.hypothesis", hypothesis=hypothesis.get("title"), goals=len(found)):
+            for goal in found:
+                if goal["goal"] in skip_goals:  # Already has an improvement (waiting, applied or decided).
+                    tests.append({"goal": goal["goal"], "status": "not_tested",
+                                  "why": "This goal already has an improvement."})
+                    continue
+                if used.get(goal["goal"], 0) >= per_goal:
+                    tests.append({"goal": goal["goal"], "status": "not_tested",
+                                  "why": f"This goal's {per_goal} tests are used this cycle."})
+                    continue
+                used[goal["goal"]] = used.get(goal["goal"], 0) + 1
+                try:
+                    async with span("test.goal", goal=goal["goal"]) as section:
+                        outcome = await _test_one(hass, entry, recorder, hypothesis, goal)
+                        section.tag(status=outcome["status"])
+                    tests.append({"goal": goal["goal"], "target": deepcopy(goal), **outcome})
+                except CaseError as err:
+                    tests.append({"goal": goal["goal"], "status": "unsupported", "why": str(err)})
+                except Exception as err:  # Unexpected: this goal's test fails (logged); the other tests go on.
+                    _LOGGER.exception("Assist Improver: testing %r on %s failed", hypothesis.get("title"),
+                                      goal["goal"])
+                    tests.append({"goal": goal["goal"], "status": "failed",
+                                  "why": f"{type(err).__name__}: {err}"[:300]})
         results.append({"title": hypothesis.get("title"), "tests": tests, "not_testable": skipped})
     tested = sum(used.values())
     report = {"results": results, "tests_per_goal": per_goal, "tested": tested, "paid_inference_performed": tested > 0}
     if getattr(recorder, "role_runs", None) is not None:  # Kept, so a lost page or connection loses nothing.
         from uuid import uuid4
         await recorder.role_runs.record({"id": uuid4().hex, "kind": "hypothesis_tests", "status": "completed",
-                                         "started": started, "finished": utcnow().isoformat(), "output": report})
+                                         "started": started, "finished": utcnow().isoformat(), "output": report,
+                                         **ids()})
     return report
 
 
@@ -155,7 +162,10 @@ async def _test_one(hass, entry, recorder, hypothesis, found):
         destination=found["summary"],
         criteria=found["criteria"], evidence={"kind": "journey_analysis", "session": found["session"],
                                               "goal_turn": found["goal_turn"]})
-    case = await run_baseline(recorder.baselines, case)
+    tag(case_id=case["id"])  # The goal's test, and everything in it from here on.
+    async with span("baseline") as section:
+        case = await run_baseline(recorder.baselines, case)
+        section.tag(status=case["baseline"]["status"])
     if case["baseline"]["status"] != "reproduced":
         return {"status": "baseline_" + case["baseline"]["status"], "case_id": case["id"],
                 "baseline": case["baseline"]}
@@ -183,8 +193,12 @@ async def _test_one(hass, entry, recorder, hypothesis, found):
     item = await candidates._save({"plan": plan, "status": "running", "evidence": theme["journeys"],
                                    "result": None, "reviews": [], "application": None})  # Before any inference.
     agent = conversation.async_get_agent(hass, plan["baseline_plan"]["agent_id"])
+    if agent is None:
+        raise CaseError("The assistant this conversation used is no longer set up, so it can't be replayed.")
     trial = CandidateTrial(hass, plan, cases, recording, agent, evidence_kind="model_counterfactual")
-    item["result"] = await trial.run(allow_paid_inference=True)
+    async with span("candidate", plan_id=plan["id"]) as section:
+        item["result"] = await trial.run(allow_paid_inference=True)
+        section.tag(status=item["result"]["status"])
     item["result"]["followup_check"] = await check_followups(hass, role_model(entry, "followup_check"),
                                                              item["result"].get("followups"))
     item["status"] = item["result"]["status"]

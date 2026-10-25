@@ -200,15 +200,23 @@ def _change_text(change, assistant):
     return kind
 
 
-def _improvements(hass):
-    return hass.data[DOMAIN].improvements
+def _recorder(hass, connection, msg, needs="improvements"):
+    """The loaded improver, or None after answering that it isn't loaded, as devview.py does: the panel can stay open
+    after the integration unloads. needs: the part the command uses (improvements, or the pipeline)."""
+    recorder = hass.data.get(DOMAIN)
+    if getattr(recorder, needs, None) is None:
+        connection.send_error(msg["id"], "not_loaded", "Assist Improver isn't loaded.")
+        return None
+    return recorder
 
 
 @websocket_api.websocket_command({probatio.Required("type"): f"{DOMAIN}/improvements"})
 @websocket_api.require_admin
 @callback
 def ws_list(hass, connection, msg):
-    items = _improvements(hass).listed()
+    if (recorder := _recorder(hass, connection, msg)) is None:
+        return
+    items = recorder.improvements.listed()
     connection.send_result(msg["id"], {"improvements": [
         {"id": i["id"], "title": display_title(i), "status": i["status"], "pending": i["status"] in PENDING,
          "enabled": len(benefits(i)[0]), "removed": len(benefits(i)[1])} for i in items]})
@@ -219,8 +227,11 @@ def ws_list(hass, connection, msg):
 @websocket_api.require_admin
 @websocket_api.async_response
 async def ws_get(hass, connection, msg):
+    if (recorder := _recorder(hass, connection, msg)) is None:
+        return
+    improvements = recorder.improvements  # Kept: the integration may unload while this waits.
     try:
-        item = _improvements(hass).get(msg["improvement_id"])
+        item = improvements.get(msg["improvement_id"])
     except CaseError as err:
         connection.send_error(msg["id"], "not_found", str(err))
         return
@@ -233,7 +244,7 @@ async def ws_get(hass, connection, msg):
                 names[user_id] = getattr(user, "name", None) or user_id
     result = review(item, planned, names)
     if item["status"] not in PENDING:  # Decided: the next one waiting is one click away.
-        nxt = next((i for i in _improvements(hass).pending() if i["id"] != item["id"]), None)
+        nxt = next((i for i in improvements.pending() if i["id"] != item["id"]), None)
         result["next_pending"] = {"id": nxt["id"], "title": display_title(nxt)} if nxt else None
     connection.send_result(msg["id"], result)
 
@@ -244,9 +255,11 @@ async def ws_get(hass, connection, msg):
 @websocket_api.require_admin
 @websocket_api.async_response
 async def ws_decide(hass, connection, msg):
+    if (recorder := _recorder(hass, connection, msg)) is None:
+        return
     try:
-        item = await _improvements(hass).decide(msg["improvement_id"], msg["decision"], note=msg["note"],
-                                                user_id=connection.user.id)
+        item = await recorder.improvements.decide(msg["improvement_id"], msg["decision"], note=msg["note"],
+                                                  user_id=connection.user.id)
     except CaseError as err:
         connection.send_error(msg["id"], "decision", str(err))
         return
@@ -259,8 +272,7 @@ async def ws_decide(hass, connection, msg):
 @websocket_api.async_response
 async def ws_household(hass, connection, msg):
     """The household knowledge (everyone's lines, then each person's), and which assistants read it."""
-    from .household import KEY, assistants, normalized, pipelines, update_issues
-    update_issues(hass)  # Repairs follows what the panel shows.
+    from .household import KEY, assistants, normalized, pipelines
     knowledge = normalized(getattr(hass.data.get(KEY), "knowledge", None))
     lines = len(knowledge["everyone"]) + sum(len(v) for v in knowledge["people"].values())
     people = []
@@ -289,9 +301,11 @@ async def ws_household_enable(hass, connection, msg):
         connection.send_error(msg["id"], "not_found", "That assistant doesn't control Home Assistant through Assist.")
         return
     on = msg.get("on", True)
-    old, new = ("assist", API_ID) if on else (API_ID, "assist")
-    if old in current:
-        await write(hass, "assistant_api", msg["target"], list(dict.fromkeys(new if a == old else a for a in current)))
+    if on:
+        from .household import use_household
+        await use_household(hass, msg["target"])
+    elif API_ID in current:
+        await write(hass, "assistant_api", msg["target"], list(dict.fromkeys("assist" if a == API_ID else a for a in current)))
     connection.send_result(msg["id"], {"using": on})
 
 
@@ -309,6 +323,11 @@ async def ws_household_edit(hass, connection, msg):
         connection.send_error(msg["id"], "not_ready", "Household knowledge isn't loaded yet.")
         return
     knowledge = normalized(household.knowledge)
+    # A new line needs a person HA knows; lines of someone since removed can still be changed or deleted.
+    if msg["scope"] != "everyone" and msg["scope"] not in knowledge["people"] \
+            and await hass.auth.async_get_user(msg["scope"]) is None:
+        connection.send_error(msg["id"], "unknown_person", "That person isn't set up in Home Assistant.")
+        return
     lines = knowledge["everyone"] if msg["scope"] == "everyone" else knowledge["people"].setdefault(msg["scope"], [])
     text, index = (msg.get("text") or "").strip(), msg.get("index")
     if msg["action"] in ("update", "delete") and not (isinstance(index, int) and 0 <= index < len(lines)
@@ -348,7 +367,9 @@ def ws_assistant_prefer(hass, connection, msg):
 @callback
 def ws_run_status(hass, connection, msg):
     """The run in progress (or the last one), and what Run now would do."""
-    connection.send_result(msg["id"], hass.data[DOMAIN].pipeline.status())
+    if (recorder := _recorder(hass, connection, msg, "pipeline")) is None:
+        return
+    connection.send_result(msg["id"], recorder.pipeline.status())
 
 
 @websocket_api.websocket_command({probatio.Required("type"): f"{DOMAIN}/run/start",
@@ -358,8 +379,10 @@ def ws_run_status(hass, connection, msg):
 @callback
 def ws_run_start(hass, connection, msg):
     """Start a run; the panel asks the user to confirm what it will spend first."""
+    if (recorder := _recorder(hass, connection, msg, "pipeline")) is None:
+        return
     try:
-        run = hass.data[DOMAIN].pipeline.start(trigger="manual", force=msg["force"], only=msg.get("only"))
+        run = recorder.pipeline.start(trigger="manual", force=msg["force"], only=msg.get("only"))
     except CaseError as err:
         connection.send_error(msg["id"], "busy", str(err))
         return
@@ -370,12 +393,16 @@ def ws_run_start(hass, connection, msg):
 @websocket_api.require_admin
 @websocket_api.async_response
 async def ws_run_cancel(hass, connection, msg):
-    await hass.data[DOMAIN].pipeline.cancel()
+    if (recorder := _recorder(hass, connection, msg, "pipeline")) is None:
+        return
+    await recorder.pipeline.cancel()
     connection.send_result(msg["id"], {"cancelled": True})
 
 
-def _entry(hass):
-    return hass.data[DOMAIN].pipeline.entry
+def _entry(hass, connection, msg):
+    """The improver's config entry, or None after answering that it isn't loaded."""
+    recorder = _recorder(hass, connection, msg, "pipeline")
+    return recorder.pipeline.entry if recorder else None
 
 
 @websocket_api.websocket_command({probatio.Required("type"): f"{DOMAIN}/settings"})
@@ -384,24 +411,29 @@ def _entry(hass):
 def ws_settings(hass, connection, msg):
     """The settings view: each AI role's model, the AI Tasks to choose from, and the other settings."""
     from .settings import view
-    connection.send_result(msg["id"], view(hass, _entry(hass), connection.user.id))
+    if (entry := _entry(hass, connection, msg)) is None:
+        return
+    connection.send_result(msg["id"], view(hass, entry, connection.user.id))
 
 
 @websocket_api.websocket_command({probatio.Required("type"): f"{DOMAIN}/settings/set",
                                   probatio.Optional("role"): str, probatio.Optional("entity_id"): probatio.Any(str, None),
                                   probatio.Optional("tests_per_goal"): int, probatio.Optional("schedule"): str,
                                   probatio.Optional("stage"): str, probatio.Optional("pause"): bool,
-                                  probatio.Optional("auto_accept"): bool})
+                                  probatio.Optional("auto_accept"): bool, probatio.Optional("on_demand"): bool,
+                                  probatio.Optional("developer_services"): bool})
 @websocket_api.require_admin
 @callback
 def ws_settings_set(hass, connection, msg):
     """Change one setting; it applies right away, even during a run."""
     from .settings import SettingsError, updated, view
-    entry = _entry(hass)
+    if (entry := _entry(hass, connection, msg)) is None:
+        return
     try:
         options = updated(hass, entry, role=msg.get("role"), entity_id=msg.get("entity_id"),
                           tests_per_goal=msg.get("tests_per_goal"), schedule=msg.get("schedule"),
-                          stage=msg.get("stage"), pause=msg.get("pause"), auto_accept=msg.get("auto_accept"))
+                          stage=msg.get("stage"), pause=msg.get("pause"), auto_accept=msg.get("auto_accept"),
+                          on_demand=msg.get("on_demand"), developer_services=msg.get("developer_services"))
     except SettingsError as err:
         connection.send_error(msg["id"], "invalid", str(err))
         return
@@ -430,12 +462,16 @@ async def ws_settings_models(hass, connection, msg):
 async def ws_settings_create(hass, connection, msg):
     """Add an AI Task through the provider's own flow, with the chosen model, and use it for one role."""
     from .ai_setup import create_ai_task
-    from .settings import SettingsError, updated, view
+    from .settings import ROLES, SettingsError, updated, view
+    if (entry := _entry(hass, connection, msg)) is None:  # Before adding anything at the provider.
+        return
+    if msg["role"] not in ROLES:  # Checked first, so nothing is added at the provider for nothing.
+        connection.send_error(msg["id"], "invalid", f"Unknown role {msg['role']}")
+        return
     entity_id, reason = await create_ai_task(hass, msg["entry_id"], "chosen", model=msg["model"], name=msg.get("name"))
     if entity_id is None:
         connection.send_error(msg["id"], "create_failed", reason)
         return
-    entry = _entry(hass)
     try:
         hass.config_entries.async_update_entry(entry, options=updated(hass, entry, role=msg["role"],
                                                                       entity_id=entity_id))
@@ -452,7 +488,8 @@ async def ws_settings_recommended(hass, connection, msg):
     """The recommended setup for every step: AI Tasks that fit are reused, the rest added through the provider's own
     flow. The view comes back with notes on anything that couldn't be done."""
     from .settings import SettingsError, recommended_options, view
-    entry = _entry(hass)
+    if (entry := _entry(hass, connection, msg)) is None:
+        return
     try:
         options, notes = await recommended_options(hass, entry)
     except SettingsError as err:
@@ -469,12 +506,17 @@ async def ws_practice(hass, connection, msg):
     """Practice mode for whoever is signed in (as the switch does): on or off."""
     from .practice import MODE_KEY
     from .settings import view
-    mode, user = hass.data[MODE_KEY], connection.user
+    if (entry := _entry(hass, connection, msg)) is None:
+        return
+    if (mode := hass.data.get(MODE_KEY)) is None:
+        connection.send_error(msg["id"], "not_loaded", "Assist Improver isn't loaded.")
+        return
+    user = connection.user
     if msg["on"]:
         await mode.async_turn_on(user.id, user.name or "someone")
     else:
         await mode.async_turn_off(user.id)
-    connection.send_result(msg["id"], view(hass, _entry(hass), user.id))
+    connection.send_result(msg["id"], view(hass, entry, user.id))
 
 
 @websocket_api.websocket_command({probatio.Required("type"): f"{DOMAIN}/log"})
@@ -482,7 +524,8 @@ async def ws_practice(hass, connection, msg):
 @websocket_api.async_response
 async def ws_log(hass, connection, msg):
     """What the improver did, newest first: runs, improvements going up for review, and decisions on them."""
-    recorder = hass.data[DOMAIN]
+    if (recorder := _recorder(hass, connection, msg)) is None:
+        return
     names = {}
 
     async def name(user_id):
@@ -512,6 +555,9 @@ def register_commands(hass):
     for handler in (ws_list, ws_get, ws_decide, ws_household, ws_household_enable, ws_run_status, ws_run_start,
                     ws_run_cancel, ws_settings, ws_settings_set, ws_settings_models, ws_settings_create,
                     ws_settings_recommended, ws_practice, ws_assistant_prefer, ws_log, ws_household_edit):
+        websocket_api.async_register_command(hass, handler)
+    from .devview import COMMANDS  # The developer view's: they answer only in developer mode.
+    for handler in COMMANDS:
         websocket_api.async_register_command(hass, handler)
 
 

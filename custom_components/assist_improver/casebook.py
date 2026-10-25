@@ -1,4 +1,5 @@
-"""HA-local case records and nonblocking feedback; no inference or application."""
+"""Cases: one goal as it came up in one recording (its turns, destination and criteria), kept for its baseline and
+its tests; no inference and no change to the home."""
 
 import asyncio
 from copy import deepcopy
@@ -53,7 +54,8 @@ class CaseBook:
         async with self.lock:
             if case["id"] in self.cases:
                 existing = self.get(case["id"])  # Repeated import cannot overwrite feedback.
-                upgrade = {k: case[k] for k in ("goal_unmet", "acceptable_devices")  # Cases from before 0.17.10.
+                # A case built before a field existed takes it from this fresh build; nothing it had is replaced.
+                upgrade = {k: case[k] for k in ("goal_unmet", "acceptable_devices")
                            if case[k] and not existing.get(k)}
                 return await self._save({**existing, **upgrade}) if upgrade else existing
             return await self._save(case)

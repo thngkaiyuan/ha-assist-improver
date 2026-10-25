@@ -1,14 +1,12 @@
-"""First thematic candidate: expose existing scripts, replay one representative.
-
-Admin actions prepare a plan, run it once with explicit paid-call consent, record
-a review, and on acceptance change Assist exposure only. Hypotheses are seeded by
-an administrator; nothing generates them with a model yet.
+"""Testing a fix: a hypothesis's changes as a candidate plan (script definitions, exposure, aliases, instruction
+lines), checked against its case and recording, then the conversation replayed in a sandbox with the household's own
+assistant and the change, the user's messages in order, until the goal is met (validation.py drives it). Each plan
+runs once: an identical plan reuses its result, never samples again.
 """
 
 from copy import deepcopy
 
 from homeassistant.components import conversation
-from homeassistant.components.homeassistant.exposed_entities import async_expose_entity, async_should_expose
 from homeassistant.helpers.storage import Store
 
 from .baseline import clone_provider, prepare_plan
@@ -20,6 +18,7 @@ from .snapshot import live_definitions
 from .serialization import plain
 from .simulation import UnsupportedSimulation, destination_met as met
 from .themes import create_theme, verify_theme
+from .trace import span
 
 
 def _grounding(theme, cases, recording, evaluation_case_id, hypothesis):
@@ -213,7 +212,8 @@ class CandidateTrial:
                 if index:
                     self.log.continue_with(turn)
                 start = len(self.log.content)
-                await self.agent._async_handle_message(self.log.input, self.log)
+                async with span("replay.turn", replay="candidate", turn=turn["number"]):
+                    await self.agent._async_handle_message(self.log.input, self.log)
                 output = self.log.content[start:]
                 if (not output or self.log.unresponded_tool_results or output[-1].role != "assistant"
                         or not output[-1].content or output[-1].tool_calls):
@@ -344,27 +344,3 @@ class CandidateManager:
             item["status"] = "recommended" if recommended else "not_recommended"
             return await self._save(item)
 
-    async def apply(self, plan_id, *, accepted_by):
-        """Three-way exposure merge: proposal base, proposal, current HA setting."""
-        async with self.book.lock:
-            item = self.get(plan_id)
-            if item["status"] != "recommended":
-                raise CaseError("Only a reviewed, recommended candidate can be accepted")
-            outcomes = []
-            for edit in item["plan"]["edits"]:
-                current = async_should_expose(self.hass, "conversation", edit["entity_id"])
-                if current == edit["after"]:
-                    outcome = "already_present"
-                elif current == edit["before"]:
-                    async_expose_entity(self.hass, "conversation", edit["entity_id"], edit["after"])
-                    applied = async_should_expose(self.hass, "conversation", edit["entity_id"])
-                    outcome = "applied" if applied == edit["after"] else "failed"
-                else:
-                    outcome = "conflict"
-                outcomes.append({**edit, "outcome": outcome})
-            complete = all(o["outcome"] in {"applied", "already_present"} for o in outcomes)
-            item["application"] = {"accepted_by": accepted_by, "edits": outcomes,
-                                   "status": "applied" if complete else "partial_or_conflicted",
-                                   "scripts_executed": 0}
-            item["status"] = "applied" if complete else "application_incomplete"
-            return await self._save(item)

@@ -1,0 +1,13 @@
+{
+  "entity": {
+    "switch": {
+      "sandbox_mode": {
+        "default": "mdi:school-outline",
+        "state": {
+          "on": "mdi:school",
+          "off": "mdi:school-outline"
+        }
+      }
+    }
+  }
+}

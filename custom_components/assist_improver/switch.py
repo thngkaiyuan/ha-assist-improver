@@ -19,14 +19,15 @@ def _notification_id(user_id):
 
 
 class PracticeModeSwitch(SwitchEntity):
-    """On for whoever turned it on: their Assist conversations use a simulated home. Others are unaffected."""
+    """On for whoever turned it on: their Assist conversations use a simulated home. Others are unaffected.
 
-    _attr_has_entity_name = False
-    _attr_name = "Sandbox mode"
-    _attr_icon = "mdi:school-outline"
+    Named and drawn as Home Assistant does it: the name from strings.json, the icons (on and off) from icons.json."""
+
+    _attr_has_entity_name = True
+    _attr_translation_key = "sandbox_mode"
 
     def __init__(self, entry):
-        self._attr_unique_id = f"{entry.entry_id}-practice-mode"
+        self._attr_unique_id = f"{entry.entry_id}-practice-mode"  # Unchanged, so installs keep their entity ID.
         # A service device gives Assist Improver a page where the switch shows as a toggle.
         self._attr_device_info = DeviceInfo(identifiers={(DOMAIN, entry.entry_id)}, name=NAME,
                                             entry_type=DeviceEntryType.SERVICE, sw_version=VERSION)
@@ -64,7 +65,7 @@ class PracticeModeSwitch(SwitchEntity):
     def _user_id(self):
         user_id = self._context.user_id if self._context else None
         if not user_id:
-            raise HomeAssistantError("Sandbox mode is per person: turn it on while signed in to Home Assistant.")
+            raise HomeAssistantError(translation_domain=DOMAIN, translation_key="sandbox_needs_person")
         return user_id
 
     async def async_turn_on(self, **kwargs):

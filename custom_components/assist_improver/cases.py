@@ -44,6 +44,8 @@ def recording_turns(recording, replay=True):
         raise CaseError("Unsupported recording format")
     if recording.get("status") not in {"session_expired", "interrupted", "capture_timed_out"}:
         raise CaseError("Recording is still active")
+    if replay and recording.get("compact"):  # Its home snapshot keeps only the devices it involved (retention.py).
+        raise CaseError("This conversation was compacted to save space, so it can't be replayed")
     exchanges = []
     for item in _content(recording, replay):
         if item["role"] == "user":
@@ -93,6 +95,15 @@ def recording_turns(recording, replay=True):
                 if change["at"] < exchange["source"]["at"] and change["entity_id"] in states and change.get("new"):
                     states[change["entity_id"]] = deepcopy(change["new"])
     return exchanges
+
+
+def replayable_turns(recording):
+    """The recording's turns as a replay reads them, or [] when it can't be replayed (a turn Home Assistant handled
+    itself, without the AI model): there's nothing to run, so no facts from it."""
+    try:
+        return recording_turns(recording)
+    except CaseError:
+        return []
 
 
 def validate_criteria(criteria, source):

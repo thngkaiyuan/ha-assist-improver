@@ -10,13 +10,22 @@ device. It lives only as long as one replay.
 
 import asyncio
 from contextlib import suppress
+import functools
+import gc
+import logging
+import sys
 import tempfile
 import threading
-from types import SimpleNamespace
+import time
+from types import ModuleType, SimpleNamespace
 
 from homeassistant.core import callback
+from homeassistant.util import dt as dt_util
 
 from . import devices
+from .trace import span
+
+_LOGGER = logging.getLogger(__name__)
 
 SANDBOX_KEY = "assist_improver_sandbox"
 RUNNING = set()  # Sandboxes not yet stopped; stop_all() ends them when the improver unloads.
@@ -45,24 +54,73 @@ DEVICE_SERVICES = {
 
 
 def _forget(hass):
-    """Drop what the sandbox left in Python's process-wide caches, so nothing outlives it.
+    """Drop the sandbox's entries from Home Assistant's process-wide caches, so nothing outlives it; the real
+    instance's entries stay.
 
-    HA memoises many helpers per instance (registries, translations, template helpers); any instance that ran
-    leaves entries there. Found through Python's reference tracking, so HA's list of such helpers isn't
-    hard-coded here.
+    HA memoises helpers per instance (registries, translations, template helpers), and any instance that ran leaves
+    entries there. Only those caches are looked at, so this takes as long as the sandbox's own entries, not as long as
+    the process is big. It runs on the sandbox's thread once its loop has closed, never on HA's loop. The instance's
+    own reference cycles go with Python's garbage collector in its normal course: a forced collection would walk
+    the whole process.
     """
-    import functools
-    import gc
     from homeassistant.helpers.template import states
-    for cache in (states.CACHED_TEMPLATE_LRU, states.CACHED_TEMPLATE_NO_COLLECT_LRU):
-        for key in [k for k, v in cache.items() if getattr(v, "_hass", None) is hass]:
-            del cache[key]
-    keys = [r for r in gc.get_referrers(hass) if isinstance(r, tuple)]
-    holders = [r for r in gc.get_referrers(*keys) if isinstance(r, dict)] if keys else []
-    for owner in gc.get_referrers(*holders) if holders else []:
-        if isinstance(owner, functools._lru_cache_wrapper):
-            owner.cache_clear()
-    gc.collect()
+    for cache in (states.CACHED_TEMPLATE_LRU, states.CACHED_TEMPLATE_NO_COLLECT_LRU):  # Keyed by state, per instance.
+        for key, value in cache.items():
+            if getattr(value, "_hass", None) is hass:
+                cache.pop(key, None)
+    for cache in _instance_caches():
+        _drop(cache, hass)
+
+
+_INSTANCE_CACHES = {}  # Module name -> (its namespace's size when looked at, its lru_caches that take an instance).
+_INSTANCE_CACHES_LOCK = threading.Lock()
+
+
+def _instance_caches():
+    """HA's memoised helpers keyed by an instance: module-level lru_caches whose function takes `hass` (HA's
+    singletons, template helpers, ...). Found in the loaded modules, so HA's list of them isn't hard-coded here.
+    A module is looked at again only when its namespace changed size (imported since, or still importing then)."""
+    with _INSTANCE_CACHES_LOCK:
+        for name, module in list(sys.modules.items()):
+            if not isinstance(module, ModuleType):
+                continue
+            namespace = module.__dict__
+            if (seen := _INSTANCE_CACHES.get(name)) is None or seen[0] != len(namespace):
+                _INSTANCE_CACHES[name] = (len(namespace), [
+                    value for value in list(namespace.values())
+                    if isinstance(value, functools._lru_cache_wrapper) and _takes_hass(value)])
+        return list({id(cache): cache for _, caches in _INSTANCE_CACHES.values() for cache in caches}.values())
+
+
+def _takes_hass(cache):
+    function = cache
+    for _ in range(5):  # The wrapped functions, as functools.wraps chains them.
+        if (function := getattr(function, "__wrapped__", None)) is None:
+            return False
+        code = getattr(function, "__code__", None)
+        if code is not None and "hass" in code.co_varnames[:code.co_argcount + code.co_kwonlyargcount]:
+            return True
+    return False
+
+
+def _drop(cache, hass):
+    """Remove an instance's entries from one lru_cache. An unbounded one (functools.cache) loses just those
+    entries; a bounded one (HA's singletons keep a single entry) is cleared only when it holds the instance."""
+    if not cache.cache_info().currsize:
+        return
+
+    def mine(key):  # The cache's key: its call's arguments.
+        return type(key) is tuple and any(part is hass for part in key)
+    held = gc.get_referents(cache)  # The cache's own parts: its table and, when bounded, its keys and results.
+    if cache.cache_parameters()["maxsize"] is None:
+        tables = [part for part in held if type(part) is dict and part is not cache.__dict__]
+        if len(tables) == 1:
+            for key in [key for key in list(tables[0]) if mine(key)]:
+                tables[0].pop(key, None)
+            return
+        held = [key for table in tables for key in list(table)]
+    if any(mine(key) for key in held):
+        cache.cache_clear()
 
 
 class _SandboxLogs:
@@ -71,7 +129,7 @@ class _SandboxLogs:
     def filter(self, record):
         if record.threadName != THREAD_NAME:
             return True
-        for sandbox in list(RUNNING):
+        for sandbox in list(_LOGGING):
             if sandbox.thread is not None and sandbox.thread.ident == record.thread:
                 if len(sandbox.log) < SANDBOX_LOG_LIMIT:
                     sandbox.log.append(f"{record.levelname} {record.name}: {record.getMessage()}"[:500])
@@ -80,13 +138,36 @@ class _SandboxLogs:
 
 
 _LOG_FILTER = _SandboxLogs()
+_LOGGING = set()  # Sandboxes whose thread hasn't ended: what they log is kept out of HA's log.
+_FILTERED = []  # Root handlers the filter was put on; it comes off them when the last sandbox thread ends.
 
 
-def _keep_logs_in_sandboxes():
-    import logging
+def _keep_logs_in_sandboxes(sandbox):
+    """On HA's loop, as a sandbox starts: its thread's records are kept from HA's log handlers."""
+    _LOGGING.add(sandbox)
     for handler in logging.getLogger().handlers:
         if _LOG_FILTER not in handler.filters:
             handler.addFilter(_LOG_FILTER)
+            _FILTERED.append(handler)
+
+
+def _thread_ended(sandbox):
+    """On HA's loop, once a sandbox's thread has ended: after the last one, nothing of the sandboxes stays on HA's
+    log handlers."""
+    _LOGGING.discard(sandbox)
+    if not _LOGGING:
+        for handler in _FILTERED:
+            handler.removeFilter(_LOG_FILTER)
+        _FILTERED.clear()
+
+
+STATS = {"started": 0, "start_seconds": 0.0, "slowest_start": 0.0, "stopped": 0, "stop_seconds": 0.0,
+         "slowest_stop": 0.0, "teardown_seconds": 0.0, "slowest_teardown": 0.0}  # Diagnostics: where time goes.
+
+
+def _timed(kind, seconds):
+    STATS[f"{kind}_seconds"] = round(STATS[f"{kind}_seconds"] + seconds, 3)
+    STATS[f"slowest_{kind}"] = round(max(STATS[f"slowest_{kind}"], seconds), 3)
 
 
 async def stop_all():
@@ -114,45 +195,59 @@ class Sandbox:
         self.log = []  # What HA logged inside the sandbox; kept here, out of the real instance's log.
         self.device_ids = {}  # Recorded device ID -> its ID in the sandbox.
         self._dir = None  # Made and removed on the sandbox's own thread, never blocking HA's loop.
+        self.teardown_seconds = 0.0  # Dropping its entries from HA's process-wide caches, on its own thread.
+        self.frame_real = None  # The instance HA's frame helper had before this sandbox started: the real one.
 
     @classmethod
+    @span("sandbox.start")
     async def start(cls, time_zone):
+        began = time.monotonic()
         sandbox = cls(time_zone)
         ready = asyncio.get_running_loop().create_future()
         outer = asyncio.get_running_loop()
 
         def run():
             from homeassistant import runner
-            sandbox._dir = tempfile.TemporaryDirectory(prefix="assist-improver-sandbox-")
-            loop = sandbox.loop = runner.create_event_loop()  # HA's own loop, with its executor.
-            asyncio.set_event_loop(loop)
             try:
+                sandbox._dir = tempfile.TemporaryDirectory(prefix="assist-improver-sandbox-")
+                loop = sandbox.loop = runner.create_event_loop()  # HA's own loop, with its executor.
+                asyncio.set_event_loop(loop)
                 try:
-                    loop.run_until_complete(sandbox._setup())
-                except BaseException as err:  # noqa: BLE001 - reported to the caller, which stops the replay.
-                    outer.call_soon_threadsafe(ready.set_exception, err)
-                    return
-                outer.call_soon_threadsafe(ready.set_result, None)
-                loop.run_forever()
-            finally:  # As HA's runner ends a loop: cancel tasks, then shut its threads down.
-                try:
-                    runner._cancel_all_tasks_with_timeout(loop, runner.TASK_CANCELATION_TIMEOUT)
-                    loop.run_until_complete(loop.shutdown_asyncgens())
-                    loop.run_until_complete(loop.shutdown_default_executor())
-                finally:
-                    asyncio.set_event_loop(None)
-                    loop.close()
-                    sandbox._dir.cleanup()
+                    try:
+                        loop.run_until_complete(sandbox._setup())
+                    except BaseException as err:  # noqa: BLE001 - reported to the caller, which stops the replay.
+                        outer.call_soon_threadsafe(ready.set_exception, err)
+                        return
+                    outer.call_soon_threadsafe(ready.set_result, None)
+                    loop.run_forever()
+                finally:  # As HA's runner ends a loop: cancel tasks, then shut its threads down.
+                    try:
+                        runner._cancel_all_tasks_with_timeout(loop, runner.TASK_CANCELATION_TIMEOUT)
+                        loop.run_until_complete(loop.shutdown_asyncgens())
+                        loop.run_until_complete(loop.shutdown_default_executor())
+                    finally:
+                        asyncio.set_event_loop(None)
+                        loop.close()
+                        sandbox._dir.cleanup()
+            finally:
+                sandbox._end(outer)
 
-        _keep_logs_in_sandboxes()
+        _keep_logs_in_sandboxes(sandbox)
         sandbox.thread = threading.Thread(target=run, name=THREAD_NAME, daemon=True)
         sandbox.thread.start()
         RUNNING.add(sandbox)
         try:
             await ready
         except BaseException:
-            await sandbox.stop()
+            if ready.cancelled():  # The caller gave up while it started.
+                await sandbox.stop()
+            else:  # It failed to start: its thread ends its loop and tears down by itself.
+                RUNNING.discard(sandbox)
+                await asyncio.get_running_loop().run_in_executor(None, sandbox.thread.join, 30)
             raise
+        STATS["started"] += 1
+        _timed("start", time.monotonic() - began)
+        _LOGGER.debug("Replay sandbox started in %.2f s", time.monotonic() - began)
         return sandbox
 
     async def run(self, fn, *args):
@@ -163,12 +258,35 @@ class Sandbox:
         RUNNING.discard(self)
         if self.loop is None or self.loop.is_closed():
             return
-        with suppress(Exception):
-            await self.run(lambda hass: hass.async_stop(force=True))
-        self.loop.call_soon_threadsafe(self.loop.stop)
-        await asyncio.get_running_loop().run_in_executor(None, self.thread.join, 30)
-        _forget(self.hass)
-        self.hass = None
+        async with span("sandbox.stop"):
+            with suppress(Exception):
+                await self.run(lambda hass: hass.async_stop(force=True))
+            began = time.monotonic()
+            self.loop.call_soon_threadsafe(self.loop.stop)
+            # Its thread ends its loop, then drops its cache entries (_end); HA's loop only waits.
+            async with span("sandbox.teardown"):
+                await asyncio.get_running_loop().run_in_executor(None, self.thread.join, 30)
+            _timed("teardown", self.teardown_seconds)
+            self.hass = None
+            STATS["stopped"] += 1
+            _timed("stop", time.monotonic() - began)
+        _LOGGER.debug("Replay sandbox stopped in %.2f s (dropping its cache entries %.3f s, on its own thread)",
+                      time.monotonic() - began, self.teardown_seconds)
+
+    def _end(self, outer):
+        """Last on the sandbox's thread, its loop closed (also after a failed start): drop its entries from HA's
+        process-wide caches, then tell HA's loop the thread is done."""
+        from homeassistant.helpers import frame
+        try:
+            if self.hass is not None:
+                began = time.monotonic()
+                if frame._hass.hass is self.hass:  # Ended inside HA's start, before giving the frame helper back.
+                    frame._hass.hass = self.frame_real
+                _forget(self.hass)
+                self.teardown_seconds = time.monotonic() - began
+        finally:
+            with suppress(RuntimeError):  # HA's loop has closed: there's nothing left to tell.
+                outer.call_soon_threadsafe(_thread_ended, self)
 
     async def _setup(self):
         from homeassistant import bootstrap, config_entries, loader
@@ -177,10 +295,17 @@ class Sandbox:
         from homeassistant.setup import async_setup_component
         hass = self.hass = HomeAssistant(self._dir.name)  # This thread's instance only.
         hass.data[SANDBOX_KEY] = self
-        await hass.config.async_set_time_zone(self.time_zone)
+        # The sandbox's own config only: HA's async_set_time_zone also sets the process-wide default time zone, which
+        # would carry over to the real instance. The recording is from the same home, so the default is its zone.
+        if await dt_util.async_get_time_zone(self.time_zone) is None:
+            raise ValueError(f"Received invalid time zone {self.time_zone}")
+        hass.config.time_zone = self.time_zone
         loader.async_setup(hass)
         hass.config_entries = config_entries.ConfigEntries(hass, {})
         real = frame._hass.hass
+        while real is not None and SANDBOX_KEY in real.data:  # Another sandbox is starting: the one it gives back.
+            real = real.data[SANDBOX_KEY].frame_real
+        self.frame_real = real
         try:
             if not await bootstrap.async_load_base_functionality(hass):  # HA's own start: registries, triggers, ...
                 raise RuntimeError("The sandbox could not load Home Assistant's base functionality")
@@ -246,7 +371,7 @@ async def seed(hass, source, *, user_name=None, integrations=(), timer_device=No
     from homeassistant.components.homeassistant.exposed_entities import async_expose_entity
     from homeassistant.components.intent import async_register_timer_handler
     from homeassistant.core import CoreState
-    from homeassistant.helpers import area_registry as ar, device_registry as dr, entity_registry as er
+    from homeassistant.helpers import area_registry as ar, entity_registry as er
     from homeassistant.setup import async_setup_component
     hass.config.location_name = source.get("home_name") or hass.config.location_name
     # HA's chat log names the signed-in person; the sandbox has no accounts, only the recorded person.
@@ -305,11 +430,8 @@ async def seed(hass, source, *, user_name=None, integrations=(), timer_device=No
 
 
 def _aliases(entry):
-    """The names as resolved when recorded; 0.1.0 recordings kept HA's raw list, its computed name as a 0."""
-    from homeassistant.helpers import entity_registry as er
-    if "alias_entries" in entry:
-        return list(entry.get("aliases") or [])
-    return [a if isinstance(a, str) else er.COMPUTED_NAME for a in entry.get("aliases") or [0]]  # Its own name.
+    """The names as resolved when recorded."""
+    return list(entry.get("aliases") or [])
 
 
 def _seed_devices(hass, recorded, areas):

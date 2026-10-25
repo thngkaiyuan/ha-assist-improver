@@ -4,8 +4,10 @@ All of it runs in sandboxes seeded from recorded sessions; no model is called an
 
 - implementation: HA loads the hypothesis's scripts, each runs from the state its goals started in, and the goal's
   devices are compared with the goal; a new alias is matched by HA's own name matching.
-- resolution signals: every session's recorded HA tool calls are replayed without and with the change, and the calls
-  HA now resolves differently are listed. They are signals to weigh, not regressions: a change that folds several
+- resolution signals: the recorded HA tool calls of every session the change could affect (sessions.applies: its calls
+  or requests touch the change's devices, their names or areas, or what Assist can see) are replayed without and with
+  the change, and the calls HA now resolves differently are listed. A session none of whose calls touch any of that
+  resolves exactly as before, so it isn't replayed; how many weren't, and why, is said. They are signals to weigh, not regressions: a change that folds several
   flows into one more general script makes the old calls resolve differently while the new script covers them.
 - capabilities: each of HA's Assist tools is tried on each device, and what HA carries out is what Assist can do.
 """
@@ -18,7 +20,7 @@ from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import llm
 
 from .analyzer import top_level
-from .cases import CaseError, recording_turns
+from .cases import CaseError, recording_turns, replayable_turns
 from .changes import setup_from_changes
 from .sandbox import SANDBOX_KEY, Sandbox, observe, sandbox_context, seed, seed_options
 from .simulation import recorded_transitions
@@ -117,7 +119,7 @@ async def recorded_call_effects(recording, definitions):
 
 
 async def _replay(recording, definitions, setup=None):
-    turns = recording_turns(recording)
+    turns = replayable_turns(recording)
     if not turns or (context := _context(turns[0])) is None:
         return None
     sandbox = await _start(recording, turns[0], definitions, setup)
@@ -172,9 +174,20 @@ class Evidence:
         except CaseError as err:
             return {"problems": [str(err)]}
         implementation = await self.implementation(hypothesis, setup)
-        signals = await self.resolution_signals(setup) if (setup["exposure"] or setup["aliases"] or setup["scripts"]) \
-            else {"note": "Only instruction lines change: HA resolves devices as before; their effect needs a replay "
-                          "with the model."}
+        if setup["exposure"] or setup["aliases"] or setup["scripts"]:
+            from .sessions import applies, footprint
+            fp = footprint(hypothesis.get("changes") or [], self.sessions.household)
+            replayable = {s for s, b in self.sessions.briefs.items() if b["replayable"]}
+            affected = {s for s in replayable if applies(self.sessions.briefs[s], fp)}
+            signals = await self.resolution_signals(setup, affected)
+            if replayable - affected:
+                signals["not_replayed"] = {
+                    "count": len(replayable - affected),
+                    "why": "None of their recorded calls or requests touch the change's devices, their names or "
+                           "areas, or what Assist can see, so they resolve as before."}
+        else:
+            signals = {"note": "Only instruction lines change: HA resolves devices as before; their effect needs a "
+                               "replay with the model."}
         return {"implementation": implementation, "resolution_signals": signals}
 
     async def implementation(self, hypothesis, setup):
@@ -182,11 +195,11 @@ class Evidence:
         facts = []
         for ref in hypothesis.get("goals") or []:
             session, turn_no = ref["session"][:8], ref["goal_turn"]
-            analysis, view = self.sessions.analyses.get(session), self.sessions.views.get(session)
-            if analysis is None:
+            analysis, view = self.sessions.analyses.get(session), await self.sessions.load(session)
+            if analysis is None or view is None:
                 continue
-            turns = recording_turns(view.recording)
-            if not 1 <= turn_no <= len(turns):
+            turns = replayable_turns(view.recording)
+            if not 1 <= turn_no <= len(turns):  # Not there, or a conversation that can't be replayed.
                 continue
             targets = goal_targets(analysis, turn_no)
             # New and edited scripts, and existing ones the change exposes: what Assist would now run.
@@ -274,13 +287,17 @@ class Evidence:
         return {"alias_for": entity_id, "matches": matched,
                 "ambiguous": [a for a, found in matched.items() if len(found) > 1]}
 
-    async def resolution_signals(self, setup):
-        """The recorded calls HA now resolves differently, across all sessions, with the change applied: signals for
-        the roles to weigh, not regressions in themselves."""
+    async def resolution_signals(self, setup, sessions=None):
+        """The recorded calls HA now resolves differently with the change applied, across the given sessions (all
+        by default): signals for the roles to weigh, not regressions in themselves."""
         gate = asyncio.Semaphore(CONCURRENT)
+        chosen = sorted(self.sessions.briefs if sessions is None else sessions)
 
-        async def one(session, view):
+        async def one(session):
             async with gate:
+                view = await self.sessions.load(session)
+                if view is None:
+                    return session, None, None
                 async with self._lock:
                     cached = session in self._baselines
                 if not cached:
@@ -289,8 +306,7 @@ class Evidence:
                         self._baselines[session] = before
                 after = await replay_calls(view.recording, self.definitions, setup)
                 return session, self._baselines[session], after
-        results = await asyncio.gather(*(one(s, v) for s, v in sorted(self.sessions.views.items())),
-                                       return_exceptions=True)
+        results = await asyncio.gather(*(one(s) for s in chosen), return_exceptions=True)
         changed, skipped = [], []
         for item in results:
             if isinstance(item, BaseException):
@@ -344,7 +360,7 @@ def _sample(schema):
 async def capabilities(recording, entity_ids, definitions):
     """What Assist can do with each device: each Assist tool tried on it by name in a sandbox, and what HA did."""
     import probatio
-    turns = recording_turns(recording)
+    turns = replayable_turns(recording)
     if not turns or (context := _context(turns[0])) is None:
         return {}
     sandbox = await _start(recording, turns[0], definitions)

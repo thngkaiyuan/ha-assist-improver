@@ -12,7 +12,8 @@ import probatio
 from homeassistant.helpers import llm
 
 from .cases import recording_turns
-from .digest import ACTION_DOMAINS, NOISE_DOMAINS, _clip, _entity_card, _naming, _text, build_digest
+from .digest import ACTION_DOMAINS, NOISE_DOMAINS, _clip, _entity_card, _naming, _text, background, build_digest
+from .trace import traced_tool
 
 API_ID = "assist_improver_session"
 MAX_MATCHES = 25
@@ -48,14 +49,12 @@ class SessionView:
         """Real (or practice-simulated) changes by entity: turn, old and new state, changed attributes, and who."""
         out = {}
         for change in raw:
-            entity_id, old, new = change["entity_id"], change.get("old") or {}, change.get("new") or {}
-            if entity_id.split(".", 1)[0] in NOISE_DOMAINS or "unavailable" in (old.get("state"), new.get("state")):
+            if background(change):  # The rule the recorder keeps changes by (digest.worth_keeping).
                 continue
+            entity_id, old, new = change["entity_id"], change.get("old") or {}, change.get("new") or {}
             before, after = old.get("attributes") or {}, new.get("attributes") or {}
             attributes = {k: [before.get(k), after.get(k)] for k in sorted(set(before) | set(after))
                           if before.get(k) != after.get(k) and k != "friendly_name"}
-            if old.get("state") == new.get("state") and not attributes:
-                continue
             turn = self._turn_of(change["at"])
             entry = {"at": change["at"], "during_turn": turn, "old": old.get("state"), "new": new.get("state"),
                      "by": self._who(entity_id, turn, new.get("context") or {})}
@@ -431,11 +430,13 @@ class ReadImprovement(_SessionTool):
 
 
 class SessionAPI(llm.API):
-    """The tools for one recording (or a given list of tools), handed to the AI Task for one role call."""
+    """The tools for one recording (or a given list of tools), handed to the AI Task for one role call. Each call
+    of a tool gets a span in the current trace (trace.py)."""
 
     def __init__(self, hass, view=None, extra_tools=(), tools=None):
         super().__init__(hass=hass, id=API_ID, name="Recorded session")
-        self.tools = list(tools) if tools is not None else [tool(view) for tool in TOOLS] + list(extra_tools)
+        tools = list(tools) if tools is not None else [tool(view) for tool in TOOLS] + list(extra_tools)
+        self.tools = [traced_tool(tool) for tool in tools]
 
     async def async_get_api_instance(self, llm_context):
         return llm.APIInstance(api=self, api_prompt="", llm_context=llm_context, tools=self.tools)
