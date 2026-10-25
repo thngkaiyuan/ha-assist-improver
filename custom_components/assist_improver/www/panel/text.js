@@ -27,12 +27,12 @@ export const TEXT = {
                   archiveMany: "Archive ({n})", unarchiveMany: "Unarchive ({n})", deleteMany: "Delete ({n})",
                   deleteAsk: "Delete {n} conversation{s} from Assist Improver? The improver can no longer check changes against {them}.",
                   clearSearch: "Clear search",
-                  runOn: "Run on {n} conversation{s}", runWaiting: "Run what's waiting", failedStep: "failed step", failedStepLabel: "Failed step:",
+                  runOn: "Run on {n} new conversation{s}", runWaiting: "Run what's waiting", failedStep: "failed step", failedStepLabel: "Failed step:",
                   you: "You", assist: "Assist", send: "Send this one in", sending: "Sending…",
                   note: "What should have happened? (optional)", yourNote: "Your note:",
                   sentNow: "Sent in. The improver is looking at it now.", sentLater: "Sent in. It goes in with your next run.",
                   // Where each stands; past the quick check, the stage a run took it to (conversations.stage).
-                  status: {active: "Still going", sent: "Sent in", smooth: "Looked smooth", queued: "To analyze",
+                  status: {waiting: "New", active: "Still going", sent: "Sent in", smooth: "Looked smooth", queued: "To analyze",
                            fine: "No trouble found", working: "Looking for a fix", review: "Up for review", declined: "Declined",
                            improved: "Improved", test: "Marked as a test", unreadable: "Couldn't be read"},
                   smoothTip: "Nothing to improve, at a quick look. Send it in for a full analysis.",
@@ -50,7 +50,7 @@ export const TEXT = {
             // An opened conversation on the home page: archive it (out of the list, kept for the improver), or delete it.
             archive: "Archive this conversation", unarchive: "Unarchive", showArchived: "Show archived ({n})",
             delete: "Delete from Assist Improver", cancel: "Cancel",
-            confirmDelete: "Delete this conversation from Assist Improver? The improver can no longer check changes against it."},
+            more: "More actions", confirmDelete: "Delete this conversation from Assist Improver? The improver can no longer check changes against it."},
   sandbox: {label: "Sandbox mode", tip: "When turned on, your Assist conversations use a simulated copy of your home, so nothing real changes; the improver learns from them as practice. This applies only to your user.", others: "Also on for {names}."},
   autoAccept: {label: "Auto-accept low-risk changes",
                tip: "Automatically accepts Assist Improver's low-risk changes: household knowledge, and new names for devices other than locks, alarms and doors.",
@@ -82,7 +82,7 @@ export const TEXT = {
             stage: "{steps} couldn't finish this time; the next run tries again.", details: "Details",
             settings: "Open settings"},
   confirm: {title: "Run Assist Improver?", all: "Run on {n} new conversations?", one: "Run on 1 new conversation?",
-            on: "Run on {n} conversation{s}?", step: "Run {step}?", run: "Run", notNow: "Not now",
+            on: "Run on {n} new conversation{s}?", step: "Run {step}?", run: "Run", notNow: "Not now",
             // A run with conversations names which, by their first words: up to three, then how many more; and any
             // other work it does, in the items' words.
             quoted: "“{said}”", which: "{names} and {n} more", also: "Also: {items}",

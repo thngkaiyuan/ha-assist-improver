@@ -251,8 +251,7 @@ export const STYLE = `
   .cs-reply { font-size: 13px; color: var(--secondary-text-color); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .cs-close { font-size: 13px; color: var(--secondary-text-color); margin: 0 0 8px; }
   .cs-last { font-size: 13px; color: var(--secondary-text-color); margin: -6px 0 12px; }
-  .chip.cs-sent, .chip.cs-queued, .chip.cs-working { border-color: var(--primary-color); color: var(--primary-color); }
-  .chip.cs-fine { border-color: var(--add-fg); color: var(--add-fg); }
+  .chip.cs-waiting, .chip.cs-sent, .chip.cs-queued, .chip.cs-working { border-color: var(--primary-color); color: var(--primary-color); }
   button.chip.cs-review { align-self: center; flex: none; margin-right: 16px; font: inherit; font-size: 12px; cursor: pointer;
     border-color: var(--primary-color); background: color-mix(in srgb, var(--primary-color) 14%, transparent); color: var(--primary-color); }
   button.chip.cs-review:hover { background: color-mix(in srgb, var(--primary-color) 24%, transparent); }
@@ -280,10 +279,18 @@ export const STYLE = `
   .cs-row.picked .cs-send { background: linear-gradient(color-mix(in srgb, var(--primary-color) 7%, transparent),
     color-mix(in srgb, var(--primary-color) 7%, transparent)), var(--card-background-color); }
   .cs-done { font-size: 13px; color: var(--add-fg); }
-  /* The note and Send stay in view (sticky); Archive and Delete share their line where the note still has room, or
-     wrap below it. */
-  .cs-read > * { flex: 1 1 100%; min-width: 0; } .cs-read > .cs-send { flex: 1 1 520px; }
-  .cs-read > .cs-tidy { flex: 0 1 auto; margin-left: auto; } .cs-read > .cs-confirm { flex: 1 1 100%; }
+  /* The note, Send and the ⋮ stay in view (sticky); Archive and Delete open from the ⋮, upwards. */
+  .cs-read > * { flex: 1 1 100%; min-width: 0; } .cs-read > .cs-confirm { flex: 1 1 100%; }
+  .cs-actions { position: relative; flex: none; display: inline-flex; }
+  .cs-dots { width: 40px; height: 40px; border-radius: 20px; border: 1px solid var(--divider-color); background: none;
+    color: var(--secondary-text-color); cursor: pointer; display: inline-flex; align-items: center; justify-content: center; }
+  .cs-dots:hover, .cs-dots[aria-expanded="true"] { background: var(--secondary-background-color); color: var(--primary-text-color); }
+  .cs-dots .ic { width: 20px; height: 20px; }
+  .cs-menu { bottom: 46px; right: 0; z-index: 12; min-width: 250px; width: max-content; max-width: calc(100vw - 48px); }
+  .cs-menu button { display: flex; align-items: center; gap: 10px; width: 100%; padding: 10px 14px; border: none;
+    background: none; font: inherit; color: var(--primary-text-color); text-align: left; cursor: pointer; }
+  .cs-menu button:hover { background: var(--secondary-background-color); } .cs-menu button .ic { width: 18px; height: 18px; }
+  .cs-menu button.danger { color: var(--del-fg); }
   .cs-tidy { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px; margin-top: 4px; padding: 8px 0; }
   .cs-confirm { gap: 8px 12px; } .cs-confirm span { flex: 1 1 240px; font-size: 13px; line-height: 1.45; }
   .cs-archived .cs-text { opacity: .6; }
@@ -293,8 +300,7 @@ export const STYLE = `
   .cs-ask { flex: 1 1 100%; display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px 12px; }
   .cs-ask span { flex: 1 1 220px; font-size: 14px; line-height: 1.45; }
   @media (max-width: 600px) { .cs-footer #cs-run { flex: 1 1 100%; } .cs-footer .btn { flex: 1 1 auto; } }
-  @media (max-width: 600px) { .cs-read { padding-left: 16px; } .cs-read > .cs-tidy { flex-basis: 100%; margin-top: -14px; }
-    .cs-send .btn, .cs-tidy .btn { flex: 1 1 auto; } }
+  @media (max-width: 600px) { .cs-read { padding-left: 16px; } .cs-send .btn, .cs-confirm .btn { flex: 1 1 auto; } }
   .pop-privacy { border-top: 1px solid var(--divider-color); margin-top: 6px; padding-top: 6px; }
   .pop-toggle { padding: 6px 14px; }
   .pop-sub { padding: 6px 14px 0 28px; font-size: 12.5px; color: var(--secondary-text-color); }

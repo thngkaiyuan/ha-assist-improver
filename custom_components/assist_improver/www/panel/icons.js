@@ -12,7 +12,8 @@ const ICON = {play: "M8 5.14v13.72L19 12z",
               send: "M2 21 23 12 2 3v7l15 2-15 2z",  // mdi:send
               archive: "M20 21H4V10h2v9h12v-9h2zM3 3h18v6H3zm6.5 8h5c.28 0 .5.22.5.5V13H9v-1.5c0-.28.22-.5.5-.5M5 5v2h14V5z",  // mdi:archive-outline
               unarchive: "M20 21H4V10h2v9h12v-9h2zM3 3h18v6H3zm2 2v2h14V5zm7 5.5 4 4h-2.5V18h-3v-3.5H8z",  // mdi:archive-arrow-up-outline
-              trash: "M6 19a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V7H6zM8 9h8v10H8zm7.5-5-1-1h-5l-1 1H5v2h14V4z"};  // mdi:delete-outline
+              trash: "M6 19a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V7H6zM8 9h8v10H8zm7.5-5-1-1h-5l-1 1H5v2h14V4z",  // mdi:delete-outline
+              dots: "M12 16a2 2 0 1 1 0 4 2 2 0 0 1 0-4m0-6a2 2 0 1 1 0 4 2 2 0 0 1 0-4m0-6a2 2 0 1 1 0 4 2 2 0 0 1 0-4"};  // mdi:dots-vertical
 
 export const svg = (name, cls = "") => `<svg class="ic ${cls}" viewBox="0 0 24 24" aria-hidden="true"><path d="${ICON[name]}"/></svg>`;
 

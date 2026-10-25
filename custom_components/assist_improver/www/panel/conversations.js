@@ -218,7 +218,7 @@ function badge(row) {
   // Where it stands; one up for review is its own button beside the row (reviewLink), so it can open that review.
   const C = TEXT.conversations;
   const tip = row.status === "smooth" ? ` title="${esc(C.smoothTip)}"` : "";
-  return row.status === "waiting" || (row.status === "review" && row.review) ? ""
+  return row.status === "review" && row.review ? ""
     : `<span class="chip cs-${row.status}"${tip}>${esc(C.status[row.status] || row.status)}</span>`;
 }
 
@@ -253,29 +253,36 @@ function reading(p, cv, row) {
   // What sending it in did: while it's sent in (not once the improver has taken it), or what went wrong.
   const sent = cv.sent[row.id] && (cv.sent[row.id].error || shown.status === "sent") ? cv.sent[row.id] : null;
   // Sending it in starts a run for it (on demand), so it looks like Run: the note and the button stay in view while
-  // it's read; Archive and Delete sit beside them, or below on a phone.
+  // it's read. Archive and Delete wait behind the ⋮ beside it, so the row stays calm.
   const send = sendable(shown.status)
     ? `<div class="cs-send"><input class="cs-note" id="cs-note" maxlength="500" placeholder="${esc(C.note)}" value="${esc(cv.note)}">
         <button class="btn play" id="cs-send" data-id="${esc(row.id)}" ${cv.sending ? "disabled" : ""}>${svg("send")}${
-          esc(cv.sending === row.id ? C.sending : C.send)}</button></div>` : "";
+          esc(cv.sending === row.id ? C.sending : C.send)}</button>${dots(cv, row, shown)}</div>` : "";
   const note = !send && shown.note ? `<div class="cs-sub">${esc(C.yourNote)} ${esc(shown.note)}</div>` : "";
   const error = cv.tidyError?.id === row.id ? `<div class="conflict" role="status">${esc(cv.tidyError.text)}</div>` : "";
-  return `<div class="cs-read">${turns}${note}${send}${tidy(cv, row, shown)}${
+  const alone = !send && cv.deleting !== row.id ? `<div class="cs-tidy">${dots(cv, row, shown)}</div>` : "";
+  return `<div class="cs-read">${turns}${note}${send}${alone}${confirm(cv, row)}${
     sent ? `<div class="${sent.error ? "conflict" : "cs-done"}" role="status">${esc(sent.text)}</div>` : ""}${error}</div>`;
 }
 
-function tidy(cv, row, shown) {
-  // Archive (it stays kept for the improver), or Delete from Assist Improver, after asking.
+function dots(cv, row, shown) {
+  // The ⋮ beside Send: Archive (it stays kept for the improver), or Delete from Assist Improver, after asking.
+  const P = TEXT.privacy, busy = cv.tidying ? "disabled" : "", id = esc(row.id), open = cv.menu === row.id;
+  const menu = open ? `<div class="backdrop" id="cs-menu-close"></div><div class="menu cs-menu" role="menu">${shown.hidden
+      ? `<button role="menuitem" id="cs-unarchive" data-id="${id}" ${busy}>${svg("unarchive")}${esc(P.unarchive)}</button>`
+      : `<button role="menuitem" id="cs-archive" data-id="${id}" ${busy}>${svg("archive")}${esc(P.archive)}</button>`}
+      <button role="menuitem" class="danger" id="cs-delete-ask" data-id="${id}" ${busy}>${svg("trash")}${esc(P.delete)}</button></div>` : "";
+  return `<span class="cs-actions"><button class="cs-dots" id="cs-actions" aria-haspopup="menu" aria-expanded="${open}"
+      aria-label="${esc(P.more)}" title="${esc(P.more)}">${svg("dots")}</button>${menu}</span>`;
+}
+
+function confirm(cv, row) {
+  // Delete from Assist Improver, asking first.
   const P = TEXT.privacy, busy = cv.tidying ? "disabled" : "", id = esc(row.id);
-  if (cv.deleting === row.id) {
-    return `<div class="cs-tidy cs-confirm" role="group" aria-label="${esc(P.delete)}"><span>${esc(P.confirmDelete)}</span>
+  if (cv.deleting !== row.id) return "";
+  return `<div class="cs-tidy cs-confirm" role="group" aria-label="${esc(P.delete)}"><span>${esc(P.confirmDelete)}</span>
       <button class="link" id="cs-delete-cancel">${esc(P.cancel)}</button>
       <button class="btn play soft-danger" id="cs-delete" data-id="${id}" ${busy}>${svg("trash")}${esc(P.delete)}</button></div>`;
-  }
-  return `<div class="cs-tidy">${shown.hidden
-      ? `<button class="btn play quiet" id="cs-unarchive" data-id="${id}" ${busy}>${svg("unarchive")}${esc(P.unarchive)}</button>`
-      : `<button class="btn play quiet" id="cs-archive" data-id="${id}" ${busy}>${svg("archive")}${esc(P.archive)}</button>`}
-    <button class="btn play soft-danger" id="cs-delete-ask" data-id="${id}" ${busy}>${svg("trash")}${esc(P.delete)}</button></div>`;
 }
 
 function rowHtml(p, cv, row) {
@@ -408,9 +415,11 @@ export const actions = {
       p.root.getElementById("cs-search")?.focus();
     }],
     ["#cs-send", (p, el) => send(p, p.cv, el.dataset.id)],
-    ["#cs-archive", (p, el) => archive(p, p.cv, el.dataset.id, true)],
-    ["#cs-unarchive", (p, el) => archive(p, p.cv, el.dataset.id, false)],
-    ["#cs-delete-ask", (p, el) => { Object.assign(p.cv, {deleting: el.dataset.id, tidyError: null}); p.render(); }],
+    ["#cs-actions", (p) => { p.cv.menu = p.cv.menu === p.cv.opened ? null : p.cv.opened; p.render(); }],
+    ["#cs-menu-close", (p) => { p.cv.menu = null; p.render(); }],
+    ["#cs-archive", (p, el) => { p.cv.menu = null; archive(p, p.cv, el.dataset.id, true); }],
+    ["#cs-unarchive", (p, el) => { p.cv.menu = null; archive(p, p.cv, el.dataset.id, false); }],
+    ["#cs-delete-ask", (p, el) => { Object.assign(p.cv, {menu: null, deleting: el.dataset.id, tidyError: null}); p.render(); }],
     ["#cs-delete-cancel", (p) => { p.cv.deleting = null; p.render(); }],
     ["#cs-many-archive", (p) => { const ids = chosen(p.cv).archive; bulk(p, p.cv, ids, "conversations/hide", {recording_ids: ids, hidden: true}); }],
     ["#cs-many-unarchive", (p) => { const ids = chosen(p.cv).unarchive; bulk(p, p.cv, ids, "conversations/hide", {recording_ids: ids, hidden: false}); }],
