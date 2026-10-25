@@ -181,19 +181,15 @@ export function picking(p) {
 }
 
 export function runPreview(p, preview) {
-  // The confirmation's numbers for a Run on picked conversations: what it takes in is the picked and sent-in ones,
-  // said as one, as the Run bar does. Those among them waiting for the quick check are counted once: picked ones
-  // wait at Triage, those sent in earlier at Analyze (they skip the quick check). which: what was said first in
-  // those it runs on, as listed: the picked ones, then those sent in, then those an earlier run took in that wait
-  // for the quick check (the confirmation names a few; one not in the list is counted in its "and N more").
-  const {picked, sent} = picking(p), cv = state(p), queued = cv.queued || {ids: [], sent: 0}, b = preview.backlog || {};
-  const runs = new Set(runnable(cv)), pickedQueued = [...runs].filter((id) => queued.ids.includes(id)).length;
-  const rows = cv.rows || [], triaging = !(preview.paused || []).includes("triage");
-  const going = [...rows.filter((r) => runs.has(r.id)), ...rows.filter((r) => r.status === "sent"),
-                 ...rows.filter((r) => triaging && queued.ids.includes(r.id) && !runs.has(r.id))];
+  // The numbers for a Run on picked conversations: it takes the picked ones and those sent in (at the start, or
+  // waiting at a step; the preview counts those), said as one; those an earlier run took in that weren't picked or
+  // sent in stay for the next full run. which: what was said first in them, as listed: the picked ones, then those
+  // sent in (the confirmation names a few; one not in the list is counted in its "and N more").
+  const {picked} = picking(p), cv = state(p), b = preview.backlog || {};
+  const runs = new Set(runnable(cv)), rows = cv.rows || [];
+  const going = [...rows.filter((r) => runs.has(r.id)), ...rows.filter((r) => r.status === "sent")];
   return {...preview, which: going.map((r) => r.said || TEXT.conversations.nothing),
-          backlog: {...b, requests: picked + sent, triage: Math.max(0, (b.triage || 0) - pickedQueued),
-                    analyze: Math.max(0, (b.analyze || 0) - queued.sent)}};
+          backlog: {...b, requests: picked + (b.sent || 0), triage: 0, analyze: 0}};
 }
 
 // Drawing.
@@ -361,15 +357,15 @@ export function after(p) {
 }
 
 function runButton(p, preview, running) {
-  // Run, naming how many conversations it runs on (those selected that can still be sent in, those sent in earlier,
-  // and those waiting at a step); what it does, step by step, is in its confirmation. With no conversation but other
-  // work waiting (a revision, a write-up), Run says so. "" with nothing to run (or only at a blocked step), or while
-  // a run goes.
+  // Run, naming how many conversations it runs on (it means what it says): with some selected, those that can
+  // still be sent in and those sent in earlier; with none, a full run on every new one, as Settings' Run. With no
+  // conversation but other work waiting (a revision, a write-up), Run says so. "" with nothing to run (or only at a
+  // blocked step), or while a run goes.
   if (running || !preview) return "";
-  const C = TEXT.conversations, {picked, sent} = picking(p);
-  const taken = runPreview(p, preview).backlog, blocked = new Set(preview.paused || []);
-  if (!picked && !sent && !common.waiting(taken, blocked).length) return "";
+  const C = TEXT.conversations, {picked} = picking(p), blocked = new Set(preview.paused || []);
+  const taken = (picked ? runPreview(p, preview) : preview).backlog || {};
   const n = common.allConversations(taken, blocked);
+  if (!n && !common.waiting(taken, blocked).length) return "";
   return `<button class="btn play" id="cs-run">${svg("play")}${esc(n ? fill(C.runOn, {n, s: n === 1 ? "" : "s"}) : C.runWaiting)}</button>`;
 }
 
@@ -455,7 +451,8 @@ export const actions = {
     ["#cs-many-cancel", (p) => { p.cv.asking = false; p.render(); }],
     ["#cs-many-delete", (p) => { const ids = chosen(p.cv).delete; bulk(p, p.cv, ids, "conversations/delete", {recording_ids: ids}); }],
     ["#cs-delete", (p, el) => remove(p, p.cv, el.dataset.id)],
-    ["#cs-run", (p) => { p.picking = true; p.only = null; p.force = false; p.confirming = true; p.render(); }],
+    // With some selected, a run on those; with none, a full run, as Settings' Run.
+    ["#cs-run", (p) => { p.picking = picking(p).picked > 0; p.only = null; p.force = false; p.confirming = true; p.render(); }],
   ],
   change: [
     ["[data-cs-pick]", (p, el) => {

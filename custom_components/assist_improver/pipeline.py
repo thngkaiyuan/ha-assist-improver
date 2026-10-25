@@ -24,9 +24,10 @@ never restarted on its own.
 Each run has a trace (trace.py) under the run's id: a span for the run, each stage, each conversation, the
 proposal, each test and each write-up, with the AI calls and their tools inside.
 
-What a run takes in depends on how it started. A full run (Run now in the settings, or the schedule) takes in every
-finished conversation not analysed yet. A run on picked conversations (the home page's Run) takes in only those sent
-in. On-demand improvements (a setting, on for a new install) add a fast lane: a conversation the user filed (Assist's
+What a run takes in depends on how it started. A full run (Run in the settings, the home page's Run with nothing
+picked, or the schedule) takes in every finished conversation not analysed yet. A run on picked conversations (the
+home page's Run with some picked: they're filed as it starts) takes in and works on only those sent in; others an
+earlier run took in wait for the next full run. On-demand improvements (a setting, on for a new install) add a fast lane: a conversation the user filed (Assist's
 file_improvement tool, llm.py) or sent in from the panel gets a run of its own as soon as it ends, or right after the
 one in progress; that run (trigger "filed") takes in and analyses only conversations sent in, so it stays cheap. A
 conversation sent in skips the quick check, whichever run takes it: the user already said it needs a closer look.
@@ -201,13 +202,14 @@ class Pipeline:
 
     def backlog(self, todo=None, tests=None):
         """What waits at each stage: {stage: count}, as the settings view shows it, and how many of those at Propose
-        are revisions. At the start (requests): what a full run takes in (the panel counts a run on picked
-        conversations itself). todo, tests: to_analyze() and _tests(), if known."""
+        are revisions. At the start (requests): what a full run takes in. sent: those sent in that a run on picked
+        conversations works on besides the picked ones (at the start or at a step; the panel adds the picks). todo,
+        tests: to_analyze() and _tests(), if known."""
         tests = self._tests() if tests is None else tests
-        at = self._at()
+        at, todo = self._at(), self.to_analyze(tests) if todo is None else todo
         waiting = list(at.values())
         sent = sum(1 for rid, stage in at.items() if stage == "triage" and self.filed(rid))  # They skip the quick check.
-        return {"requests": sum(1 for rid in (self.to_analyze(tests) if todo is None else todo) if rid not in at),
+        return {"requests": sum(1 for rid in todo if rid not in at), "sent": sum(1 for rid in todo if self.filed(rid)),
                 "triage": waiting.count("triage") - sent, "analyze": waiting.count("analyze") + sent,
                 "propose": self._to_propose(tests), "revisions": self._revisions(),
                 "test": len(self._untested(copy=False)[0]),
@@ -263,7 +265,7 @@ class Pipeline:
         """trigger: manual or scheduled (a full run, unless picked), or filed (the fast lane). force: propose again
         over every analysis even with nothing new (Run anyway). only: run just that stage (the others hold their
         backlog, as if paused, for this run). picked: a run on the conversations the user picked: it takes in only
-        those sent in, whatever on-demand improvements are set to."""
+        those sent in (and works only on those), whatever on-demand improvements are set to."""
         if self.running:
             raise CaseError("A run is already in progress")
         if blocked := blocked_stages(self.hass, self.entry, only):
@@ -346,11 +348,12 @@ class Pipeline:
         async def analyze():
             await self._stage("analyze")
             at = self._at()
-            # The fast lane works only on conversations sent in: others a full run took in wait for the next one.
-            fast = run["trigger"] == "filed"
-            mine = self.filed if fast else (lambda _rid: True)
+            # The fast lane, and a run on picked conversations (filed as it starts), work only on those sent in:
+            # others a full run took in wait for the next one.
+            sent_only = run["trigger"] == "filed" or bool(run.get("picked"))
+            mine = self.filed if sent_only else (lambda _rid: True)
             if not only or only == "triage":  # A run takes in what waits at the start.
-                new = self._new(filed_only=fast or bool(run.get("picked")))
+                new = self._new(filed_only=sent_only)
                 # One the user filed skips the quick check: they already said it needs a closer look.
                 at.update({rid: "analyze" if self.filed(rid) else "triage" for rid in new})
                 run["progress"]["taken_in"] = len(new)
