@@ -3,35 +3,50 @@
 The model sees the recorded prompt. Its tools are the ones HA builds in the
 sandbox (sandbox.py) from the recorded setup, and each call runs there: HA's own
 intents, scripts and automations act on the sandbox's copy of the home, and
-only device commands are emulated. No provider client or model-run service is
-created here; offline tests pass this log to HA's existing conversation adapter
-with a scripted transport.
+only device commands are emulated. The sandbox runs in the replay worker's
+process (worker.py); the chat log and the household's assistant stay here. No
+provider client or model-run service is created here; offline tests pass this
+log to HA's existing conversation adapter with a scripted transport.
 """
 
 from copy import deepcopy
 from types import SimpleNamespace
 from uuid import uuid4
 
+import probatio
 from homeassistant.components import conversation
 from homeassistant.core import Context
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import llm
 
 from .cases import CaseError, recording_turns, verify_case
-from .sandbox import Sandbox, observe, seed, seed_options, snapshot, system_prompt
+from .sandbox import seed_options
 from .snapshot import live_definitions
 from .serialization import plain
 from .simulation import UnsupportedSimulation, recorded_transitions
 from .trace import span, tag
+from .worker import RemoteSandbox, context_data
 
+
+class Precomputed:
+    """A tool's parameters as the JSON schema HA's serializer gave in the sandbox; providers read it back unchanged
+    through the replay's serializer."""
+
+    def __init__(self, schema):
+        self.schema = schema
+
+
+def serializer(value):
+    return value.schema if isinstance(value, Precomputed) else llm.selector_serializer(value)
 
 
 class SandboxTool(llm.Tool):
     """A tool HA built in the sandbox; a call runs there, in the sandbox's own loop."""
 
     def __init__(self, tool, home):
-        self.name, self.description, self.parameters = tool.name, tool.description, tool.parameters
-        self.integration = getattr(tool, "integration", None)
+        self.name, self.description = tool["name"], tool["description"]
+        self.parameters = probatio.Schema(Precomputed(tool["parameters"]))
+        self.integration = tool.get("integration")
         self.home = home
 
     @span("replay.tool")
@@ -40,7 +55,9 @@ class SandboxTool(llm.Tool):
         before = len(home.sandbox.unsimulated)
         tag(tool=tool_input.tool_name)
         try:
-            result = await home.sandbox.run(lambda sandbox_hass: home.ha_api.async_call_tool(tool_input))
+            found = await home.sandbox.call("tool", tool_name=tool_input.tool_name, tool_args=tool_input.tool_args,
+                                            call_id=tool_input.id, external=tool_input.external)
+            result = llm.ToolResult(data=found["data"], error=found["error"])
         except HomeAssistantError:
             raise  # HA's own answer to the model, as in real use (no match, say).
         except CaseError as err:
@@ -82,7 +99,8 @@ class SandboxHome(llm.API):
         self.alias_changes, self.prompt_template = alias_changes or {}, prompt_template
         self.alias_removals = alias_removals or {}
         self.household = household  # A change's household knowledge, read through Assist with household knowledge.
-        self.sandbox = self.ha_api = None
+        self.sandbox = None
+        self.tools = None  # Assist's tools in the sandbox, once it built them.
         self.unsupported, self.dispatched = [], []
         self.world = SimpleNamespace(states={}, transitions=[], calls=[])
         self.prompt = None  # The system prompt HA builds in the sandbox, for comparison with the recorded one.
@@ -104,13 +122,13 @@ class SandboxHome(llm.API):
         if (user_id := prepared["context"].get("context", {}).get("user_id")) and getattr(self.hass, "auth", None):
             user = await self.hass.auth.async_get_user(user_id)
             user_name = getattr(user, "name", None)
-        self.sandbox = await Sandbox.start(source.get("time_zone") or self.hass.config.time_zone)
+        self.sandbox = await RemoteSandbox.start(source.get("time_zone") or self.hass.config.time_zone)
         try:
             async with span("sandbox.seed"):
-                await self.sandbox.run(lambda hass: seed(
-                    hass, source, user_name=user_name, **seed_options(self.first_turn), scripts=scripts,
+                await self.sandbox.call(
+                    "seed", source=source, user_name=user_name, options=seed_options(self.first_turn), scripts=scripts,
                     automations=automations, exposure_changes=self.exposure_changes,
-                    alias_changes=self.alias_changes, alias_removals=self.alias_removals))
+                    alias_changes=self.alias_changes, alias_removals=self.alias_removals)
         except Exception as err:
             await self.stop()
             raise UnsupportedSimulation(f"The sandbox could not be seeded as the recorded home: {err}") from err
@@ -124,31 +142,31 @@ class SandboxHome(llm.API):
         recorded = household_api_ids(api_id)
         if self.household is not None or recorded:
             # The household API, as recorded (its knowledge then) or as a change would make it.
-            from .household import API_ID, HouseholdAPI
+            from .household import API_ID
             knowledge = self.household if self.household is not None else turn["source"].get("household")
-            await self.sandbox.run(lambda hass: _register(hass, HouseholdAPI(hass, knowledge)))
+            await self.sandbox.call("household", knowledge=knowledge)
             if not recorded:
                 api_id = [API_ID if a == "assist" else a for a in ([api_id] if isinstance(api_id, str) else api_id)]
-        self.prompt, self.ha_api = await self.sandbox.run(lambda hass: system_prompt(
-            hass, llm_context, api_id, template))
-        if self.ha_api is None:
+        built = await self.sandbox.call("prompt", context=context_data(llm_context), api_id=api_id, template=template)
+        self.prompt = built["prompt"]
+        if built["api_prompt"] is None:
             raise UnsupportedSimulation("Home Assistant's Assist tools are unavailable in the sandbox")
-        return RecordedAPIInstance(api=self, api_prompt=self.ha_api.api_prompt, llm_context=llm_context,
-                                   tools=[SandboxTool(t, self) for t in self.ha_api.tools],
-                                   custom_serializer=self.ha_api.custom_serializer)
+        self.tools = [SandboxTool(t, self) for t in built["tools"]]
+        return RecordedAPIInstance(api=self, api_prompt=built["api_prompt"], llm_context=llm_context,
+                                   tools=self.tools, custom_serializer=serializer)
 
     async def observe(self, source, exclude=()):
-        await self.sandbox.run(lambda hass: observe(hass, source, exclude))
+        await self.sandbox.call("observe", source=source, exclude=sorted(exclude))
         await self.refresh()
 
     async def refresh(self):
-        found = await self.sandbox.run(snapshot)
+        found = await self.sandbox.call("snapshot")
         self.world.states, self.world.transitions = found["states"], found["transitions"]
         self.world.calls = found["commands"]
 
     async def stop(self):
         if self.sandbox is not None:
-            sandbox, self.sandbox, self.ha_api = self.sandbox, None, None
+            sandbox, self.sandbox, self.tools = self.sandbox, None, None
             await sandbox.stop()
 
     async def async_get_api_instance(self, llm_context):
@@ -160,7 +178,8 @@ def household_api_ids(api_id):
     return API_ID in ([api_id] if isinstance(api_id, str) else api_id or [])
 
 
-async def _register(hass, api):
+async def register(hass, api):
+    """In the sandbox: serve this API there (the household's, with a replay's knowledge)."""
     from homeassistant.helpers import llm
     apis = llm._async_get_apis(hass)
     apis.pop(api.id, None)  # A sandbox serves one replay's knowledge at a time.

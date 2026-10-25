@@ -10,6 +10,10 @@ entry's minor version 3):
 
 Minor version 3 (0.35.0): where each taken-in conversation waits moves from a record in the run log
 (id pipeline-state) to the pipeline's own store.
+
+Minor version 4 (0.35.3): a recording kept every conversation configuration of its assistant's provider; with two
+assistants on one provider (say Opus and Haiku under one Anthropic entry), a replay couldn't tell which one answered.
+Each recording keeps the one of the assistant that answered it.
 """
 
 import logging
@@ -22,7 +26,7 @@ from homeassistant.helpers.storage import Store
 from .const import CONF_TESTS_PER_GOAL, DOMAIN, STORAGE_VERSION
 
 _LOGGER = logging.getLogger(__name__)
-MINOR_VERSION = 3
+MINOR_VERSION = 4
 OLD_ISSUES = ("improvement_", "household_")
 
 
@@ -38,7 +42,7 @@ async def async_migrate(hass, entry):
         for domain, issue_id in list(ir.async_get(hass).issues):
             if domain == DOMAIN and issue_id.startswith(OLD_ISSUES):
                 ir.async_delete_issue(hass, DOMAIN, issue_id)
-        rewritten = await _recordings(hass)
+        rewritten = await _recordings(hass, upgraded)
         entry_id = entry.entry_id
 
         @callback  # On the event loop: HA runs a plain function given to async_at_started in a thread.
@@ -51,7 +55,35 @@ async def async_migrate(hass, entry):
         moved = await _pipeline_state(hass)
         hass.config_entries.async_update_entry(entry, minor_version=3)
         _LOGGER.info("Assist Improver: migrated to 1.3 (%s waiting conversations moved)", moved)
+    if entry.minor_version < 4:
+        from .snapshot import subentry_of
+        narrowed = await _recordings(hass, lambda recording: answered(recording, lambda a: subentry_of(hass, a)))
+        hass.config_entries.async_update_entry(entry, minor_version=4)
+        _LOGGER.info("Assist Improver: migrated to 1.4 (%s recordings keep only their assistant's configuration)",
+                     narrowed)
     return True
+
+
+def answered(recording, subentry_of):
+    """A recording whose turns keep only the answering assistant's provider configuration; None if nothing
+    needed changing (one configuration already, or the assistant can't be found any more)."""
+    from .retention import pack, unpack
+    from .snapshot import answering
+    packed = bool(recording.get("packed"))
+    recording = unpack(recording)
+    contents = [c for turn in recording.get("turns", []) for p in turn.get("preparations") or []
+                for c in (p or {}).get("content") or []] + list((recording.get("chat_log") or {}).get("content") or [])
+    agents = {c.get("agent_id") for c in contents if c.get("role") == "assistant" and c.get("agent_id")}
+    subentry = subentry_of(agents.pop()) if len(agents) == 1 else None
+    changed = False
+    for turn in recording.get("turns", []):
+        configs = (turn.get("prepared") or {}).get("provider_config") or []
+        if len(configs) > 1 and len(mine := answering(configs, subentry)) == 1:
+            turn["prepared"]["provider_config"] = mine
+            changed = True
+    if not changed:
+        return None
+    return pack(recording) if packed else recording
 
 
 async def _pipeline_state(hass):
@@ -101,7 +133,8 @@ def upgraded(recording):
     return pack(recording) if packed else recording
 
 
-async def _recordings(hass):
+async def _recordings(hass, upgrade):
+    """Each stored recording rewritten by upgrade (a new recording, or None for one that's fine); how many were."""
     from homeassistant.helpers.storage import Store
     from .const import STORAGE_VERSION
     index = ((await Store(hass, STORAGE_VERSION, f"{DOMAIN}.index", private=True).async_load()) or {}).get(
@@ -110,7 +143,7 @@ async def _recordings(hass):
     for key in index:
         store = Store(hass, STORAGE_VERSION, f"{DOMAIN}.session_{key}", private=True, atomic_writes=True)
         recording = await store.async_load()
-        if recording and (new := upgraded(recording)) is not None:
+        if recording and (new := upgrade(recording)) is not None:
             await store.async_save(new)
             rewritten += 1
     return rewritten

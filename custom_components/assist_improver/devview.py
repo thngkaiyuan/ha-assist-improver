@@ -418,7 +418,7 @@ def _max_rss():
 
 async def health(hass, runtime):
     from .diagnostics import _storage
-    from .sandbox import STATS
+    from .worker import STATS
     disk = await hass.async_add_executor_job(_storage, hass.config.path(".storage"))
     pipeline = runtime.pipeline
     current = pipeline.current or {}

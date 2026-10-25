@@ -3,7 +3,7 @@
 from uuid import uuid4
 
 import probatio
-from homeassistant.const import EVENT_STATE_CHANGED
+from homeassistant.const import EVENT_HOMEASSISTANT_STOP, EVENT_STATE_CHANGED
 from homeassistant.core import SupportsResponse, callback
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import config_validation as cv, issue_registry as ir
@@ -31,7 +31,7 @@ SERVICES = ("status", "export_recording")  # For bug reports: what the improver 
 # They skip the panel's run guard and confirmation, so households never get them.
 DEVELOPER_SERVICES = ("list_recordings", "list_improvements", "analyze_recording", "quick_check",
                       "generate_hypotheses", "review_hypothesis", "test_hypotheses", "write_summaries",
-                      "check_replay_fidelity")
+                      "check_replay_fidelity", "replay_recording")
 
 
 async def async_setup(hass, config):
@@ -146,6 +146,12 @@ async def async_setup_entry(hass, entry):
     entry.async_on_unload(async_at_started(hass, filed_waiting))
 
     entry.async_on_unload(hass.bus.async_listen(EVENT_STATE_CHANGED, recheck, event_filter=_availability_changed))
+
+    async def stopping(_event):  # Home Assistant stopping: the replay worker ends with it.
+        from .worker import shutdown
+        await shutdown()
+
+    entry.async_on_unload(hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STOP, stopping))
     entry.runtime_data = runtime
     scheduled = {"options": dict(entry.options), "off": None}
 
@@ -191,6 +197,15 @@ async def async_setup_entry(hass, entry):
         from .replay import check_fidelity
         try:
             return await check_fidelity(hass, await recorder.export(call.data["recording_id"]))
+        except (CaseError, ValueError) as err:
+            raise HomeAssistantError(str(err)) from err
+
+    async def replay_recording(call):
+        if not call.data.get("allow_paid_inference"):
+            raise HomeAssistantError("Paid inference has not been authorized")
+        from .baseline import replay_recording as replay
+        try:
+            return await replay(hass, recorder, call.data["recording_id"], call.data["last_turn"])
         except (CaseError, ValueError) as err:
             raise HomeAssistantError(str(err)) from err
 
@@ -257,6 +272,9 @@ async def async_setup_entry(hass, entry):
             probatio.Required("recording_ids"): probatio.All([str], probatio.Length(min=1)),
             probatio.Optional("entity_id"): str, **paid})),
         ("check_replay_fidelity", check_replay_fidelity, probatio.Schema({probatio.Required("recording_id"): str})),
+        ("replay_recording", replay_recording, probatio.Schema({
+            probatio.Required("recording_id"): str,
+            probatio.Optional("last_turn", default=1): probatio.All(int, probatio.Range(min=1, max=20)), **paid})),
         ("test_hypotheses", test_hypotheses, probatio.Schema({
             probatio.Required("hypotheses"): probatio.All([dict], probatio.Length(min=1)),
             probatio.Required("analyses"): probatio.All([dict], probatio.Length(min=1)),
@@ -316,8 +334,8 @@ async def async_unload_entry(hass, entry):
     practice.uninstall()
     hass.data.pop(practice.MODE_KEY, None)
     await runtime.recorder.stop()
-    from .sandbox import stop_all
-    await stop_all()  # No replay sandbox outlives the improver.
+    from .worker import shutdown
+    await shutdown()  # No replay worker, nor any sandbox in it, outlives the improver.
     for name in SERVICES + DEVELOPER_SERVICES:
         if hass.services.has_service(DOMAIN, name):
             hass.services.async_remove(DOMAIN, name)

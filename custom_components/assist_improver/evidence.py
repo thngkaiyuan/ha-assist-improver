@@ -10,6 +10,9 @@ All of it runs in sandboxes seeded from recorded sessions; no model is called an
   resolves exactly as before, so it isn't replayed; how many weren't, and why, is said. They are signals to weigh, not regressions: a change that folds several
   flows into one more general script makes the old calls resolve differently while the new script covers them.
 - capabilities: each of HA's Assist tools is tried on each device, and what HA carries out is what Assist can do.
+
+The sandboxes run in the replay worker (worker.py): the jobs below that start one (JOBS) run there whole, and what
+the roles' tools call here asks the worker for them.
 """
 
 import asyncio
@@ -24,9 +27,12 @@ from .cases import CaseError, recording_turns, replayable_turns
 from .changes import setup_from_changes
 from .sandbox import SANDBOX_KEY, Sandbox, observe, sandbox_context, seed, seed_options
 from .simulation import recorded_transitions
+from .worker import worker
 
 CONCURRENT = 4  # Sandboxes started at once.
 SIGNALS_SHOWN = 15  # Resolution signals listed in full; the count covers the rest.
+JOBS = {"replay": "_replay", "run_scripts": "run_scripts", "match_aliases": "match_aliases",
+        "capabilities": "probe_capabilities"}  # What the worker runs here, by name: each starts its own sandbox.
 SIGNALS_NOTE = ("Each is a recorded tool call that Home Assistant resolves differently with the change: a signal to "
                 "weigh, not proof of a regression. It may be a problem (a name now matches another device, a device "
                 "is no longer reachable), or expected (a more general script or rule now covers what the old call "
@@ -106,7 +112,7 @@ async def _call(hass, api, name, args):
 
 async def replay_calls(recording, definitions, setup=None):
     """Each recorded HA tool call of a session, replayed in order without the model: [(turn, tool, args, result)]."""
-    found = await _replay(recording, definitions, setup)
+    found = await worker().call("evidence", job="replay", recording=recording, definitions=definitions, setup=setup)
     return found and found[0]
 
 
@@ -114,11 +120,18 @@ async def recorded_call_effects(recording, definitions):
     """Each turn's effects on the home when today's engine runs that turn's recorded tool calls: {turn: changes}.
     For a practice recording, this is what a baseline is compared with: its notes come from the practice engine of
     the day it was recorded, which may have emulated less (a sleeping car's climate, say)."""
-    found = await _replay(recording, definitions)
-    return found and found[1]
+    found = await worker().call("evidence", job="replay", recording=recording, definitions=definitions)
+    return found and {int(turn): changes for turn, changes in found[1].items()}  # JSON keys are text.
+
+
+async def capabilities(recording, entity_ids, definitions):
+    """What Assist can do with each device: each Assist tool tried on it by name in a sandbox, and what HA did."""
+    return await worker().call("evidence", job="capabilities", recording=recording, entity_ids=sorted(entity_ids),
+                               definitions=definitions)
 
 
 async def _replay(recording, definitions, setup=None):
+    """In the worker: replay_calls and recorded_call_effects, from one replay."""
     turns = replayable_turns(recording)
     if not turns or (context := _context(turns[0])) is None:
         return None
@@ -212,6 +225,10 @@ class Evidence:
             facts.append(await self._match_aliases(setup, entity_id, aliases))
         return facts
 
+    async def _run_scripts(self, recording, turn, setup, scripts, targets):
+        return await worker().call("evidence", job="run_scripts", recording=recording, turn=turn,
+                                   definitions=self.definitions, setup=setup, scripts=scripts, targets=targets)
+
     async def _try_scripts(self, recording, turn, setup, scripts, targets, goal):
         """Each script alone from the goal's starting state; if none reaches the goal alone, all of them together
         (one goal may need several, such as a script per door). Order never decides the result."""
@@ -231,59 +248,9 @@ class Evidence:
             out.update(reaches_goal=False, reached_by=[])
         return out
 
-    async def _run_scripts(self, recording, turn, setup, scripts, targets):
-        names = [f"script.{s}" for s in scripts]
-        try:
-            sandbox = await _start(recording, turn, self.definitions, setup)
-        except Exception as err:  # noqa: BLE001 - HA couldn't load the change: that's the fact.
-            return {"scripts": names, "loads": False, "why": str(err)[:300]}
-        try:
-            runs = []
-            for object_id in scripts:
-                before = len(sandbox.transitions)
-
-                async def run(hass, object_id=object_id):
-                    await hass.services.async_call("script", object_id, blocking=True)
-                    await hass.async_block_till_done()
-                try:
-                    await sandbox.run(run)
-                    runs.append({"script": f"script.{object_id}", "devices_changed": [
-                        f"{t['entity_id']}: {t['old']}→{t['new']}" for t in sandbox.transitions[before:]]})
-                except Exception as err:  # noqa: BLE001
-                    runs.append({"script": f"script.{object_id}", "error": str(err)[:300]})
-            final = await sandbox.run(lambda hass: _states(hass, [t["entity_id"] for t in targets]))
-            checks = []
-            for target in targets:
-                entity = target["entity_id"]
-                if "state" in target:
-                    checks.append({"entity_id": entity, "wanted": target["state"], "now": final.get(entity),
-                                   "reached": final.get(entity) == target["state"]})
-                else:
-                    seen = [t["new"] for t in sandbox.transitions if t["entity_id"] == entity]
-                    checks.append({"entity_id": entity, "wanted": target["states"], "went_through": seen,
-                                   "reached": seen == target["states"]})
-            return {"scripts": names, "loads": True, "runs": runs, "goal_devices": checks,
-                    "reaches_goal": bool(checks) and all(c["reached"] for c in checks),
-                    "unmodelled_commands": list(sandbox.unsimulated)}
-        finally:
-            await sandbox.stop()
-
     async def _match_aliases(self, setup, entity_id, aliases):
-        from homeassistant.helpers import intent
-        view = self.sessions.household
-        turn = recording_turns(view.recording)[0]
-        sandbox = await _start(view.recording, turn, self.definitions, setup)
-        try:
-            async def match(hass):
-                out = {}
-                for alias in aliases:
-                    found = intent.async_match_targets(hass, intent.MatchTargetsConstraints(
-                        name=alias, assistant="conversation", allow_duplicate_names=True))
-                    out[alias] = sorted(s.entity_id for s in found.states) if found.is_match else []
-                return out
-            matched = await sandbox.run(match)
-        finally:
-            await sandbox.stop()
+        matched = await worker().call("evidence", job="match_aliases", recording=self.sessions.household.recording,
+                                      definitions=self.definitions, setup=setup, aliases=aliases)
         return {"alias_for": entity_id, "matches": matched,
                 "ambiguous": [a for a, found in matched.items() if len(found) > 1]}
 
@@ -325,6 +292,63 @@ class Evidence:
                 "sessions_checked": len(results) - len(skipped), "skipped": skipped, "how_to_read": SIGNALS_NOTE}
 
 
+async def run_scripts(recording, turn, definitions, setup, scripts, targets):
+    """In the worker: each script run in a sandbox at the goal's starting state, and the goal's devices after."""
+    names = [f"script.{s}" for s in scripts]
+    try:
+        sandbox = await _start(recording, turn, definitions, setup)
+    except Exception as err:  # noqa: BLE001 - HA couldn't load the change: that's the fact.
+        return {"scripts": names, "loads": False, "why": str(err)[:300]}
+    try:
+        runs = []
+        for object_id in scripts:
+            before = len(sandbox.transitions)
+
+            async def run(hass, object_id=object_id):
+                await hass.services.async_call("script", object_id, blocking=True)
+                await hass.async_block_till_done()
+            try:
+                await sandbox.run(run)
+                runs.append({"script": f"script.{object_id}", "devices_changed": [
+                    f"{t['entity_id']}: {t['old']}→{t['new']}" for t in sandbox.transitions[before:]]})
+            except Exception as err:  # noqa: BLE001
+                runs.append({"script": f"script.{object_id}", "error": str(err)[:300]})
+        final = await sandbox.run(lambda hass: _states(hass, [t["entity_id"] for t in targets]))
+        checks = []
+        for target in targets:
+            entity = target["entity_id"]
+            if "state" in target:
+                checks.append({"entity_id": entity, "wanted": target["state"], "now": final.get(entity),
+                               "reached": final.get(entity) == target["state"]})
+            else:
+                seen = [t["new"] for t in sandbox.transitions if t["entity_id"] == entity]
+                checks.append({"entity_id": entity, "wanted": target["states"], "went_through": seen,
+                               "reached": seen == target["states"]})
+        return {"scripts": names, "loads": True, "runs": runs, "goal_devices": checks,
+                "reaches_goal": bool(checks) and all(c["reached"] for c in checks),
+                "unmodelled_commands": list(sandbox.unsimulated)}
+    finally:
+        await sandbox.stop()
+
+
+async def match_aliases(recording, definitions, setup, aliases):
+    """In the worker: what each alias matches through HA's own name matching, with the change applied."""
+    from homeassistant.helpers import intent
+    turn = recording_turns(recording)[0]
+    sandbox = await _start(recording, turn, definitions, setup)
+    try:
+        async def match(hass):
+            out = {}
+            for alias in aliases:
+                found = intent.async_match_targets(hass, intent.MatchTargetsConstraints(
+                    name=alias, assistant="conversation", allow_duplicate_names=True))
+                out[alias] = sorted(s.entity_id for s in found.states) if found.is_match else []
+            return out
+        return await sandbox.run(match)
+    finally:
+        await sandbox.stop()
+
+
 async def _states(hass, entity_ids):
     await hass.async_block_till_done()
     return {e: getattr(hass.states.get(e), "state", None) for e in entity_ids}
@@ -357,8 +381,8 @@ def _sample(schema):
     return "sample"
 
 
-async def capabilities(recording, entity_ids, definitions):
-    """What Assist can do with each device: each Assist tool tried on it by name in a sandbox, and what HA did."""
+async def probe_capabilities(recording, entity_ids, definitions):
+    """In the worker: what Assist can do with each device: each Assist tool tried on it by name, and what HA did."""
     import probatio
     turns = replayable_turns(recording)
     if not turns or (context := _context(turns[0])) is None:

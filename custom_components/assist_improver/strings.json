@@ -114,6 +114,24 @@
         }
       }
     },
+    "replay_recording": {
+      "name": "Replay a recording",
+      "description": "Replay a recorded conversation's first turns with the assistant it used, in a sandbox, and report whether the assistant changed the same devices the same way. Calls that assistant's AI model; nothing is stored.",
+      "fields": {
+        "recording_id": {
+          "name": "Recording",
+          "description": "The recording to replay."
+        },
+        "last_turn": {
+          "name": "Last turn",
+          "description": "Replay up to this user turn (the first by default)."
+        },
+        "allow_paid_inference": {
+          "name": "Allow paid inference",
+          "description": "Required: each turn is one or more calls to the assistant's model."
+        }
+      }
+    },
     "test_hypotheses": {
       "name": "Test hypotheses",
       "description": "Replay recorded conversations with each hypothesis's changes, on every goal it names, in a sandbox where devices are simulated; up to the tests-per-goal setting for each goal. Can cost money with your AI providers.",

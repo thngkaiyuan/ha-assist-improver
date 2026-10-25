@@ -14,6 +14,22 @@ check_replay_fidelity:
       required: true
       selector:
         text:
+replay_recording:
+  fields:
+    recording_id:
+      required: true
+      selector:
+        text:
+    last_turn:
+      selector:
+        number:
+          min: 1
+          max: 20
+          mode: box
+    allow_paid_inference:
+      default: false
+      selector:
+        boolean:
 test_hypotheses:
   fields:
     hypotheses:

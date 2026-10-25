@@ -8,7 +8,7 @@ from collections import Counter, defaultdict
 from homeassistant.const import __version__ as CORE_VERSION
 
 from .const import DOMAIN, VERSION
-from .sandbox import STATS
+from .worker import STATS
 from .settings import ROLES, role_model
 
 RUNS_SHOWN = 10

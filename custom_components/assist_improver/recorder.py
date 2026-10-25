@@ -27,7 +27,7 @@ from .digest import flap, worth_keeping
 from .records import Recording, RecordingSummary
 from .reflective import ROLE_ACTIVE
 from .serialization import plain
-from .snapshot import provider_config, snapshot, state_record
+from .snapshot import answering, provider_config, snapshot, state_record, subentry_of
 from .trace import journal, span, timed
 
 _LOGGER = logging.getLogger(__name__)
@@ -54,6 +54,15 @@ def _requests(session):
     return found
 
 
+def _agent(content, chat_log):
+    """The conversation agent answering, where an event shows it: a tool result's or a reply's agent_id (HA sends
+    no event for a reply itself; the chat log the recorder observes has them)."""
+    if isinstance(content, dict) and content.get("agent_id"):
+        return content["agent_id"]
+    replies = [c for c in (chat_log or {}).get("content") or [] if c.get("role") == "assistant" and c.get("agent_id")]
+    return replies[-1]["agent_id"] if replies else None
+
+
 class Recorder:
     def __init__(self, hass):
         self.hass = hass
@@ -72,6 +81,7 @@ class Recorder:
         self.capture_error = None
         self.running = False
         self.on_filed_closed = None  # Called with a filed recording's ID once it ends (on-demand: the pipeline runs).
+        self.answering = {}  # Recording ID -> the subentry of the assistant answering it, once it has.
         self.brief_cache = None  # Each recording's brief (sessions.BriefCache), loaded when a proposal first needs it.
 
     def store(self, key):
@@ -268,6 +278,13 @@ class Recorder:
         session["events"].append({"at": now, "type": kind, "data": plain(data)})
         content = data.get("content", {})
         turn_added = kind == "content_added" and content.get("role") == "user"
+        if key not in self.answering and (agent_id := _agent(content, data.get("chat_log"))):
+            # Now it's known which of the provider's assistants answers: its configuration is the one kept.
+            if (subentry := subentry_of(self.hass, agent_id)) is not None:
+                self.answering[key] = subentry
+                for turn in session["turns"]:
+                    if "prepared" in turn:
+                        turn["prepared"]["provider_config"] = answering(turn["prepared"]["provider_config"], subentry)
         if turn_added:
             with span("recorder.snapshot", recording_id=key):  # The whole home, on the event loop: watched.
                 source = snapshot(self.hass)
@@ -285,7 +302,8 @@ class Recorder:
             api = active.llm_api
             metadata = {"context": plain(api.llm_context), "api_id": api.api.id,
                         "api_prompt": api.api_prompt, "tools": [],
-                        "provider_config": provider_config(self.hass, api.llm_context.platform)}
+                        "provider_config": answering(provider_config(self.hass, api.llm_context.platform),
+                                                     self.answering.get(key))}
             for tool in api.tools:
                 metadata["tools"].append({"name": tool.name, "description": tool.description,
                     "integration": tool.integration,

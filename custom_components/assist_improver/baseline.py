@@ -12,7 +12,7 @@ from types import MappingProxyType
 from homeassistant.components import conversation
 from homeassistant.const import __version__ as CORE_VERSION
 
-from .cases import CaseError, digest, replay_readiness, verify_case
+from .cases import CaseError, create_case, digest, recording_turns, replay_readiness, verify_case
 from .const import REPLAY_ENGINE, TESTED_PROVIDERS
 from .replay import FrozenTurnLog
 from .records import Baseline
@@ -249,3 +249,23 @@ class BaselineManager:
                 return await self.book._save(case)
             await keep({**trial.export(), "status": "running"})  # Persist the attempt BEFORE any inference.
             return await keep(await trial.run(allow_paid_inference=True, progress=keep))
+
+
+async def replay_recording(hass, recorder, recording_id, last_turn=1):
+    """A recording's first turns replayed as a baseline would (the assistant it used, a sandbox in the replay
+    worker), judged by whether the assistant changed the same devices the same way: for checking the replay engine
+    end to end (a developer service). Paid: the assistant's own model. Nothing is stored."""
+    from homeassistant.components import conversation
+    from .simulation import recorded_transitions
+    recording = await recorder.export(recording_id)
+    case = create_case(recording, title="Developer replay", first_turn=1, last_turn=last_turn)
+    states = {t["entity_id"]: t["new"] for turn in recording_turns(recording) if turn["number"] in case["turns"]
+              for t in recorded_transitions(recording, turn)}
+    if not states:
+        raise CaseError("The recorded assistant changed no device in those turns, so there's nothing to compare with")
+    case["destination"] = {"status": "established", "summary": "What the recorded assistant did",
+                           "criteria": {"kind": "state", "states": states}, "evidence": {"kind": "developer_replay"}}
+    trial = BaselineTrial(hass, case, recording, conversation.async_get_agent(hass, prepare_plan(case, recording)["agent_id"]))
+    record = await trial.run(allow_paid_inference=True)
+    return {"agent_id": trial.plan["agent_id"], "model": (trial.plan["provider"].get("options") or {}).get("chat_model"),
+            **{k: v for k, v in record.items() if k != "plan"}}

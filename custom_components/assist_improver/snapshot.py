@@ -70,6 +70,19 @@ def provider_config(hass, platform):
     return output
 
 
+def answering(configs, subentry):
+    """Of a turn's provider configurations (provider_config gives every conversation subentry of the provider), the
+    one of the assistant that answered, by its subentry; all of them while that isn't known."""
+    mine = [c for c in configs if subentry and c.get("subentry_id") == subentry]
+    return mine if len(mine) == 1 else configs
+
+
+def subentry_of(hass, agent_id):
+    """The config subentry a conversation agent belongs to (several assistants can share one provider entry)."""
+    from homeassistant.helpers import entity_registry as er
+    return getattr(er.async_get(hass).async_get(agent_id), "config_subentry_id", None) if agent_id else None
+
+
 def live_definitions(hass):
     """The script and automation configurations, as the household has them now."""
     from copy import deepcopy
