@@ -8,7 +8,8 @@ places with no shared transaction, so a changeset is made atomic here:
    value the user changed since is a conflict, reported instead of overwritten.
    HA validates scripts and instruction templates before anything is written.
 2. Apply in a safe order: scripts (saved, not exposed: inert), aliases, exposure,
-   instruction lines last (they tell the assistant to use the rest). Nothing runs.
+   then the household knowledge, and last the assistant's switch to reading it
+   (instruction lines tell the assistant to use the rest). Nothing runs.
 3. A journal is saved before each write; a failed step undoes the done steps in
    reverse order. A journal left unfinished by a restart is undone at startup.
 4. Every written value is read back before the changeset counts as applied.
@@ -16,7 +17,6 @@ places with no shared transaction, so a changeset is made atomic here:
 
 from copy import deepcopy
 import json
-import re
 
 from homeassistant.components.homeassistant.exposed_entities import async_expose_entity, async_should_expose
 from homeassistant.helpers import entity_registry as er
@@ -24,7 +24,8 @@ from homeassistant.helpers.storage import Store
 
 from .const import DOMAIN, STORAGE_VERSION
 
-ORDER = ("script", "alias", "exposure", "prompt")
+# The assistant switches to the household API last: that is what makes the household lines take effect.
+ORDER = ("script", "alias", "exposure", "household", "prompt", "assistant_api")
 SCRIPTS_FILE = "scripts.yaml"  # Where HA's script editor keeps scripts (homeassistant.config.SCRIPT_CONFIG_PATH).
 
 
@@ -62,11 +63,19 @@ async def read(hass, kind, target):
         return None if entry is None else er._serialize_aliases(entry.aliases)
     if kind == "exposure":
         return async_should_expose(hass, "conversation", target)
-    if kind == "prompt":
+    if kind in ("prompt", "assistant_api"):
         entry_id, subentry_id = target.split("/")
         entry = hass.config_entries.async_get_entry(entry_id)
         sub = entry and entry.subentries.get(subentry_id)
-        return None if sub is None else sub.data.get("prompt")
+        if sub is None:
+            return None
+        if kind == "prompt":
+            return sub.data.get("prompt")
+        apis = sub.data.get("llm_hass_api") or []
+        return [apis] if isinstance(apis, str) else list(apis)
+    if kind == "household":
+        from . import household
+        return household.normalized(getattr(hass.data.get(household.KEY), "knowledge", None))
     raise ValueError(kind)
 
 
@@ -86,64 +95,17 @@ async def write(hass, kind, target, value):
         er.async_get(hass).async_update_entity(target, aliases=er._deserialize_aliases(value))
     elif kind == "exposure":
         async_expose_entity(hass, "conversation", target, value)
-    elif kind == "prompt":
+    elif kind in ("prompt", "assistant_api"):
         entry_id, subentry_id = target.split("/")
         entry = hass.config_entries.async_get_entry(entry_id)
         sub = entry.subentries[subentry_id]
-        hass.config_entries.async_update_subentry(entry, sub, data={**sub.data, "prompt": value})
+        key = "prompt" if kind == "prompt" else "llm_hass_api"
+        hass.config_entries.async_update_subentry(entry, sub, data={**sub.data, key: value})
+    elif kind == "household":
+        from . import household
+        await (await household.async_setup(hass)).save(value)
     else:
         raise ValueError(kind)
-
-
-# Instruction lines: a line for one person goes inside their block of the template.
-
-def person_block(user_id):
-    """The opening of a person's block, as Assist's instruction templates write it."""
-    return f"{{% if llm_context.context\n      and llm_context.context.user_id == '{user_id}' %}}"
-
-
-_TAG = re.compile(r"{%-?\s*(if|endif)\b[^%]*-?%}")
-
-
-def _block_end(template, user_id):
-    """Where the person's block closes (its endif), or None when the template has no block for them."""
-    opening = re.search(r"{%-?\s*if\s+llm_context\.context\s+and\s+llm_context\.context\.user_id\s*==\s*['\"]"
-                        + re.escape(user_id) + r"['\"]\s*-?%}", template)
-    if not opening:
-        return None
-    depth = 1
-    for tag in _TAG.finditer(template, opening.end()):
-        depth += 1 if tag.group(1) == "if" else -1
-        if depth == 0:
-            return tag.start()
-    return None
-
-
-def edit_instructions(template, changes, user_id):
-    """The template with the changes' instruction lines, merged into what's there now. Returns (template, problems):
-    a line a change replaces that's no longer there is a problem (the user edited it since)."""
-    template, problems = template or "", []
-    for change in changes:
-        if change["kind"] not in ("preference", "prompt"):
-            continue
-        for old in change.get("replaces") or []:
-            if old in template:
-                template = template.replace(old, "", 1)
-            elif (change.get("text") or "").strip() not in template:
-                problems.append(f"The instruction line it replaces has changed since it was tested: {old!r}")
-        text = (change.get("text") or "").strip()
-        if not text or text in template:
-            continue
-        if change.get("for") == "this_user" and user_id:
-            end = _block_end(template, user_id)
-            if end is None:
-                template = template.rstrip("\n") + f"\n{person_block(user_id)}\n{text}\n{{% endif %}}\n"
-            else:
-                head = template[:end].rstrip("\n")
-                template = head + "\n" + text + "\n" + template[end:]
-        else:
-            template = template.rstrip("\n") + "\n" + text + "\n"
-    return template, problems
 
 
 # Planning: every step, checked before anything is written.
@@ -204,28 +166,56 @@ async def plan_steps(hass, proposal):
         add("exposure", entity_id, async_should_expose(hass, "conversation", entity_id), exposed, base,
             _name(hass, entity_id, setup.get("scripts", {})))
     if any(c["kind"] in ("preference", "prompt") for c in proposal["changes"]):
+        # Instruction lines go into the household knowledge every assistant on the household API reads; the
+        # assistant the improvement was tested on is switched to that API if it isn't yet.
+        from . import household
         provider = proposal["provider"]
         target = f"{provider['config_entry_id']}/{provider['subentry_id']}"
-        live = await read(hass, "prompt", target)
-        what = f"{provider.get('title') or 'Assist'}'s instructions"
-        if live is None and hass.config_entries.async_get_entry(provider["config_entry_id"]) is None:
-            conflicts.append({"kind": "prompt", "target": target, "what": what,
+        title = provider.get("title") or "Assist"
+        apis = await read(hass, "assistant_api", target)
+        if apis is None:
+            conflicts.append({"kind": "assistant_api", "target": target, "what": title,
                               "why": "The assistant it was tested on is no longer set up."})
         else:
-            after, problems = edit_instructions(live, proposal["changes"], proposal.get("user_id"))
-            try:
-                Template(after, hass).ensure_valid()
-            except Exception as err:  # A template HA can't parse never reaches the assistant.
-                problems.append(f"Home Assistant can't read the edited instructions: {err}")
+            live_prompt = await read(hass, "prompt", target)
+            live = await read(hass, "household", "household")
+            knowledge, prompt, problems = household.edit(live, proposal["changes"], proposal.get("user_id"),
+                                                         live_prompt)
+            if prompt != live_prompt:
+                try:
+                    Template(prompt, hass).ensure_valid()
+                except Exception as err:  # A template HA can't parse never reaches the assistant.
+                    problems.append(f"Home Assistant can't read the edited instructions: {err}")
+            if household.API_ID not in apis and llm_assist() not in apis:
+                problems.append("The assistant doesn't use Assist, so it can't read the household knowledge.")
             if problems:
-                conflicts += [{"kind": "prompt", "target": target, "what": what, "why": p} for p in problems]
+                conflicts += [{"kind": "household", "target": "household", "what": "Household knowledge", "why": p}
+                              for p in problems]
             else:
-                add("prompt", target, live, after, _ANY, what)
+                add("household", "household", live, knowledge, _ANY, "Household knowledge")
+                if prompt != live_prompt:
+                    add("prompt", target, live_prompt, prompt, _ANY, f"{title}'s instructions")
+                # Every assistant that controls the home reads it: the one tested, and any other still on plain Assist.
+                switches = {target: (title, apis)}
+                for entry, sub, using in household.assistants(hass):
+                    if not using:
+                        switches.setdefault(f"{entry.entry_id}/{sub.subentry_id}", (sub.title, None))
+                for where, (name, current) in switches.items():
+                    current = current if current is not None else await read(hass, "assistant_api", where)
+                    if household.API_ID not in current:
+                        add("assistant_api", where, current,
+                            [household.API_ID if a == llm_assist() else a for a in current], _ANY,
+                            f"{name}: use {household.API_NAME}")
     steps.sort(key=lambda s: ORDER.index(s["kind"]))
     return steps, already, conflicts
 
 
 _ANY = object()  # A merged value: any current value is a valid base.
+
+
+def llm_assist():
+    from homeassistant.helpers.llm import LLM_API_ASSIST
+    return LLM_API_ASSIST
 
 
 def _name(hass, entity_id, scripts=None):

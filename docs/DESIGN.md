@@ -10,6 +10,32 @@ How Assist Improver is built, and why. The code follows these; when a principle 
 4. **Test.** Each change is replayed against the original conversations, on the household's own assistant, in a sandboxed Home Assistant set up as the recorded home, and kept only if it saves effort.
 5. **Ask.** Changes that proved themselves are shown to you to accept, revise or decline.
 
+New conversations wait at the start until a run takes them in; then each step works on what reached it and passes its output on: triage (or pass through, with no triage model), analysis, proposals, simulations, write-ups. It starts when you choose **Run now** (after it tells you what it will do and that it costs money), or on a schedule you set, off by default. A step you block is a gate: a run stops there and what reaches it waits, while later steps still work on theirs; the Run now menu can also run a single step. Improvements go up for review once written up. Your decisions feed the next run: it never proposes again what you declined or said was fine as it was, and a revision addresses your note. Nothing is fixed twice: code finds the existing improvements (waiting for your review, or applied) that touch the same devices as new friction and shows them to the proposer and reviewer upfront, who can read any of them in full. A goal one of them already addresses is noted with it and skipped, instead of becoming a new idea to simulate and review; code checks the claim (an improvement applied before the conversation didn't stop its friction).
+
+## Experience: simple, optimized by default, one thing at a time
+
+Assist Improver should need almost no explanation: not because it does little, but because each screen asks for one thing, the best choice is already made, and it tells you when it needs you.
+
+- **One thing at a time.** Each screen leads to one decision, with the recommended answer ready: the panel shows the next thing to do, a review opens with its summary on top and the details folded, **Accept changes** is the default, and the next review is one click away.
+- **Written for the household.** Each improvement leads with a plain headline (what it does) and what you get, written by a small AI editor and checked by code (short, no entity IDs, no jargon). Why it's safe is never written by a model: code states it from the tests and the changeset.
+- **Optimized by default.** The recommended setup is preselected: Claude Opus 5.5 for the steps that need judgement, and a small model (Claude Haiku, or the provider's own small one) for Triage and Write up, so a conversation that needs nothing costs little. The safe choices are the defaults, and no setting is needed to get good results. If you change things, one click in any model menu (Use recommended setup) brings it back.
+- **A step never fails silently.** A step whose model is gone or unavailable shows ⚠ on its model and in Repairs; a run that would need it waits and says which step, instead of failing midway. A model the improver can't judge (a provider whose settings it can't read) is marked "Fit unknown"; one that can't use tools is named as the reason a step failed.
+- **Nothing to remember.** It tells you when it needs you (a notification, the count beside it in the sidebar, Repairs for a setup gap) and every message links straight to the place to act.
+- **Safe by default.** Nothing in your home changes without your review; a run says what it will spend before it starts; changes apply all or nothing and can be undone.
+- **Never repeats itself.** A run leaves out goals that already have an improvement, and the same change is never shown twice. Asking for a revision brings back a new version, linked to your note.
+- **Takes care of itself.** Household knowledge reaches every assistant without setup; an assistant added later is offered in the panel and in Repairs.
+- **Settings you can see.** The panel's settings draw the pipeline as a track: requests merge onto the improvement loop, the proposer and reviewer go round their own small loop, revisions go round again, and what you accept peels off to the household. Each step has a glyph; each AI step names its model (one click to change it or add a new AI Task) and shows its backlog; a step can be blocked, or run on its own from the Run now menu. Your Assist names the assistant Assist uses by default, with household knowledge as a toggle on it; Your household opens what the household knowledge holds. Auto-accept (off by default) applies each improvement as soon as it's written up. A history below lists runs, improvements going up for review, and decisions. Text is kept to a minimum: explanations are tooltip bubbles, there when you hover.
+
+### The stories
+
+1. **Set up once.** Install, add the integration, keep the recommended AI model, done. The confirmation says what happens next. Every setting after that lives in the panel (Configure links there).
+2. **Live as usual.** Use Assist as you always do; the conversations where you had to repeat, correct or clarify yourself are what it learns from.
+3. **Run.** The panel shows how many new conversations are waiting and offers **Run now**, saying what the run will do and that it costs money. One click, then progress you can leave and come back to.
+4. **Review.** A notification lists what passed its tests, each linking to its review. Read the headline, open what you want to check, accept with one click, and go straight to the next one, until you're all caught up.
+5. **Change your mind.** An applied improvement can be undone from its page.
+6. **Steer.** Ask for a revision with a note, decline, or say things were fine as they were; the next run takes it into account and never proposes a declined idea again.
+7. **Add an assistant.** It's offered household knowledge in the panel and in Repairs, in one click.
+
 ## Models judge; code derives
 
 AI models are used only for judgement calls: what the user meant, what caused the friction, what change would help. Anything settled or deterministic is computed by code, for example:
@@ -52,10 +78,10 @@ Models answer through tools that validate their answer against the household and
 
 ## Asking you, and applying what you accept
 
-- **One list, two places.** Each tested improvement shows the idea and its cause, the exact changes, and before and after from the replays, with what was tested and what's only expected. It's in the integration's Configure → Improvements and in Repairs; a notification links to both. A decision in either place updates both.
+- **Reviewed like a pull request.** Each tested improvement has its own page in the Assist Improver panel: what it gets you, the goals it enables and the turns it saves, the changeset as files with line-numbered diffs, and the conversations it was tested on, with what's only expected. The notification links straight to each one.
 - **Your choices:** accept, ask for a revision, decline, "things were fine as they were", or "ignore, that was a test". An applied improvement can be undone.
 - **All of it or none of it.** Every change is checked before anything is written: a value you changed since the improvement was tested is a conflict, reported instead of overwritten, and Home Assistant validates scripts and instructions first. Changes then go in a safe order (scripts, saved but not exposed; aliases; exposure; instruction lines last), with a journal saved before each write. A failure undoes the steps already done; if Home Assistant stops midway, the next start undoes them and tells you. Every value is read back before the improvement counts as applied.
-- **Instruction lines go where they belong:** a line for one person inside their block of Assist's instructions, a household fact outside it. A line already there isn't added twice.
+- **Household knowledge, shared by every assistant.** Instruction lines go into one place, the household knowledge: lines for everyone, and lines for one person that only their requests see. Assistants read it through **Assist with household knowledge**, Home Assistant's own Assist (the same tools and instructions) with the household's lines added. An improvement with household lines also switches every assistant that controls the home to it, each shown in its changeset; the panel offers to turn it on for assistants added later. Code finds these from Home Assistant's own list of assistants. A line already there isn't added twice.
 
 ## Shared knowledge
 
@@ -64,13 +90,14 @@ Models answer through tools that validate their answer against the household and
 
 ## Safety
 
-- **Nothing in your home moves during testing.** Replays run in a sandboxed Home Assistant with no device integrations, and practice mode runs against a simulated copy of the home; only commands to devices are intercepted.
-- **Practice mode is per person.** It affects only the signed-in person who turned it on; others and voice satellites are never affected.
-- **Changes are ordinary Home Assistant configuration.** They are shown to you before they apply, nothing runs when they do, and they stay if you uninstall Assist Improver.
+- **Nothing in your home moves during testing.** Replays run in a sandboxed Home Assistant with no device integrations, and sandbox mode runs against a simulated copy of the home; only commands to devices are intercepted.
+- **Sandbox mode is per person.** It affects only the signed-in person who turned it on; others and voice satellites are never affected.
+- **Changes are ordinary Home Assistant configuration.** They are shown to you before they apply, nothing runs when they do, and they stay if you uninstall Assist Improver: scripts, aliases and exposure are Home Assistant's own, and uninstalling moves the household knowledge into each assistant's own instructions and switches it back to Assist.
 
 ## Cost and data
 
-- **A quick check before the deep analysis.** With a quick-check model chosen in Settings (a small or local model), each conversation is checked first; one it's sure went smoothly skips the journey analyzer. Unsure means a full analysis. The check is calibrated on labelled conversations: it must never skip one that had friction.
+- **Triage before the deep analysis.** With a triage model chosen in Settings (a small model, set up by default), each conversation is checked first, however many turns it has; one it's sure went smoothly skips the journey analyzer. It's told what a later turn usually means (the user repeating, correcting or answering a question). Unsure means a full analysis. The check is calibrated on labelled conversations: it must never skip one that had friction.
+- **A goal that's already fixed stops early.** The analyzer sees the existing improvements on the devices its conversation touched (found by code) and can read any of them; a goal one of them already fixes is marked as a duplicate, checked by code, and goes no further.
 - **Every conversation stays visible.** The generator and reviewer see all recordings, analysed, skipped as smooth, or not analysed yet: the ones with friction upfront, the rest through their session tools, and all of them in the regression replays. Filtering only saves the deep analysis.
 
 

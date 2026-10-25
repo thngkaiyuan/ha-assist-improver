@@ -16,9 +16,10 @@ import probatio
 from .analyzer import top_level
 from .cases import CaseError, digest
 from .candidates import CandidateTrial, prepare_change_candidate
-from .const import CONF_CHECK_AI_TASK, CONF_TESTS_PER_GOAL, DEFAULT_TESTS_PER_GOAL
+from .const import CONF_TESTS_PER_GOAL, DEFAULT_TESTS_PER_GOAL
 from .hypotheses import friction_by_goal
 from .reflective import run_role
+from .settings import role_model
 from .snapshot import live_definitions
 from .themes import create_theme
 
@@ -104,7 +105,7 @@ async def check_followups(hass, entity_id, followups):
             "all_fit": record["status"] == "completed" and all(v["fits"] for v in verdicts), "usage": record["usage"]}
 
 
-async def test_hypotheses(hass, entry, recorder, *, hypotheses, analyses, per_goal=None,
+async def test_hypotheses(hass, entry, recorder, *, hypotheses, analyses, per_goal=None, skip_goals=(),
                           allow_paid_inference=False):
     """Test each hypothesis on every goal instance it names that a replay can judge, most friction first. A goal
     instance is a goal as it came up in one conversation (session and turn): the same goal phrased differently must be
@@ -123,6 +124,9 @@ async def test_hypotheses(hass, entry, recorder, *, hypotheses, analyses, per_go
     for hypothesis, found, skipped in planned:
         tests = []
         for goal in found:
+            if goal["goal"] in skip_goals:  # Already has an improvement (waiting, applied or decided).
+                tests.append({"goal": goal["goal"], "status": "not_tested", "why": "This goal already has an improvement."})
+                continue
             if used.get(goal["goal"], 0) >= per_goal:
                 tests.append({"goal": goal["goal"], "status": "not_tested",
                               "why": f"This goal's {per_goal} tests are used this cycle."})
@@ -181,7 +185,7 @@ async def _test_one(hass, entry, recorder, hypothesis, found):
     agent = conversation.async_get_agent(hass, plan["baseline_plan"]["agent_id"])
     trial = CandidateTrial(hass, plan, cases, recording, agent, evidence_kind="model_counterfactual")
     item["result"] = await trial.run(allow_paid_inference=True)
-    item["result"]["followup_check"] = await check_followups(hass, entry.options.get(CONF_CHECK_AI_TASK),
+    item["result"]["followup_check"] = await check_followups(hass, role_model(entry, "followup_check"),
                                                              item["result"].get("followups"))
     item["status"] = item["result"]["status"]
     await candidates._save(item)

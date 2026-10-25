@@ -1,0 +1,305 @@
+"""One run of the pipeline: analyze, propose, test, then write up improvements for review.
+
+Started from the panel (Run now, after the user confirms what it will spend) or on
+the schedule (off by default). Each stage works on its backlog; code decides what
+that is, and the AI roles are the same ones the admin actions run:
+
+1. Analyze: each finished conversation not analyzed yet (each gets the quick
+   check first), except conversations the household marked as tests.
+2. Propose: the hypothesis generator and its reviewer, over every analysis, with the
+   household's decisions on earlier improvements; it runs when there are new
+   analyses with friction, or revisions asked for, since it last ran.
+3. Test: every hypothesis on every goal it names, up to the tests-per-goal setting.
+4. Write up: the editor's headline and what-you-get; then improvements go up for
+   review in the panel and the notification.
+
+Conversations wait at the start (Your Assist) until a run takes them in; then each
+stage works on what reached it and passes its output on: triage (each conversation
+gets the quick check; all pass through when no triage model is set), then
+analysis, and so on. A stage the household blocked (a gate) is skipped: what reached it
+waits there, and later stages still work on theirs. One run at a time; its progress is
+kept, so the panel shows it, and a run cut off by a restart is marked interrupted,
+never restarted on its own.
+"""
+
+import asyncio
+from copy import deepcopy
+from uuid import uuid4
+
+from homeassistant.core import callback
+from homeassistant.util.dt import utcnow
+
+from .cases import CaseError
+from .const import CONF_AUTO_ACCEPT, CONF_TESTS_PER_GOAL, DEFAULT_TESTS_PER_GOAL
+from .settings import GATES, blocked_stages, listed, paused, role_model
+
+STAGES = ("analyze", "propose", "test", "write")
+STATE_ID = "pipeline-state"  # Where each taken-in conversation waits ({recording id: "triage" | "analyze"}).
+
+
+def editor_model(entry):
+    """The editor's model: its own setting, else the quick-check model, else the follow-up check's, else the main one."""
+    return role_model(entry, "editor")
+CLOSED = ("session_expired", "interrupted", "capture_timed_out")
+
+
+class Pipeline:
+    def __init__(self, hass, entry, recorder):
+        self.hass, self.entry, self.recorder = hass, entry, recorder
+        self.current = None  # The run in progress, or the last one.
+        self._task = None
+
+    # What a run would do, for the confirmation before it starts.
+
+    def _analyzed(self):
+        """{recording id: its latest accepted analysis}."""
+        out = {}
+        for run in getattr(self.recorder.role_runs, "runs", []):
+            if run.get("kind") == "journey_analyzer" and run.get("analysis") and run.get("status") == "completed":
+                out[run["recording_id"]] = run["analysis"]
+        return out
+
+    def _tests(self):
+        """Recordings the household said were tests (ignored when deciding an improvement)."""
+        out = set()
+        for item in self.recorder.improvements.items.values():
+            if any(d["decision"] == "was_test" for d in item.get("decisions", [])):
+                out |= {t["case_id"] for t in item.get("tests", [])}
+        recordings = set()
+        for case_id in out:
+            try:
+                recordings.add(self.recorder.casebook.get(case_id)["recording_id"])
+            except CaseError:
+                continue
+        return recordings
+
+    def to_analyze(self):
+        analyzed, tests = self._analyzed(), self._tests()
+        return sorted(rid for rid, summary in self.recorder.index.items()
+                      if summary.get("status") in CLOSED and rid not in analyzed and rid not in tests)
+
+    def _at(self):
+        """{recording id: the stage it waits at} for conversations a run took in that aren't analysed yet."""
+        state = next((r for r in getattr(self.recorder.role_runs, "runs", []) if r.get("id") == STATE_ID), None)
+        analyzed = self._analyzed()
+        return {rid: stage for rid, stage in (state or {}).get("at", {}).items() if rid not in analyzed}
+
+    async def _save_at(self, at):
+        await self.recorder.role_runs.record({"id": STATE_ID, "kind": "pipeline_state", "status": "completed", "at": at})
+
+    def _new(self):
+        """Finished conversations no run has taken in yet: they wait at the start."""
+        at = self._at()
+        return [rid for rid in self.to_analyze() if rid not in at]
+
+    def _last_generator(self):
+        runs = getattr(self.recorder.role_runs, "runs", [])
+        return next(((n, r) for n, r in reversed(list(enumerate(runs)))
+                     if r.get("kind") == "hypothesis_generator" and r.get("status") == "completed"), (-1, None))
+
+    def _untested(self):
+        """The hypotheses the last proposal left untested (its tests were paused or cut off), with its run."""
+        _, run = self._last_generator()
+        if run is None or run.get("tested") is not False:
+            return [], None
+        return (run.get("output") or {}).get("hypotheses") or [], run
+
+    def _to_propose(self):
+        """What the proposer has to work on: analyses with friction since it last ran, and revisions asked for."""
+        from .hypotheses import friction_by_goal, short
+        position, _ = self._last_generator()
+        tests, count, settled = self._tests(), 0, set(self.recorder.improvements.settled_goals())
+        for run in getattr(self.recorder.role_runs, "runs", [])[position + 1:]:
+            analysis = run.get("analysis") if run.get("kind") == "journey_analyzer" and run.get("status") == "completed" else None
+            if analysis and run["recording_id"] not in tests:
+                try:  # Goals an existing improvement already covers (marked duplicates too) go no further.
+                    count += any(f"{short(run['recording_id'])}:{turn}" not in settled
+                                 for turn in friction_by_goal(analysis))
+                except (KeyError, TypeError):
+                    count += bool(analysis.get("goals"))
+        return count + sum(1 for i in self.recorder.improvements.items.values() if i["status"] == "revision_requested")
+
+    def backlog(self):
+        """What waits at each stage: {stage: count}, as the settings view shows it."""
+        waiting = list(self._at().values())
+        return {"requests": len(self._new()), "triage": waiting.count("triage"), "analyze": waiting.count("analyze"),
+                "propose": self._to_propose(), "test": len(self._untested()[0]),
+                "write": len(self.recorder.improvements.unwritten()),
+                "review": len(self.recorder.improvements.pending()),
+                "household": sum(1 for i in self.recorder.improvements.items.values() if i["status"] == "applied")}
+
+    def preview(self):
+        """What Run now will do, in numbers the confirmation shows (no per-call cost accounting: coarse controls)."""
+        options = self.entry.options
+        return {"conversations_to_analyze": len(self.to_analyze()), "backlog": self.backlog(),
+                "paused": sorted(paused(self.entry)),
+                "conversations_recorded": sum(1 for s in self.recorder.index.values() if s.get("status") in CLOSED),
+                "conversations_analyzed": len(self._analyzed()),
+                "quick_check": bool(role_model(self.entry, "triage")),
+                "tests_per_goal": int(options.get(CONF_TESTS_PER_GOAL, options.get("tests_per_cycle",
+                                                                                   DEFAULT_TESTS_PER_GOAL))),
+                "blocked_models": {stage: titles for stage in GATES  # Each stage, so Run one step can tell too.
+                                   for titles in [blocked_stages(self.hass, self.entry, stage).get(stage)] if titles},
+                "running": self.running}
+
+    @property
+    def running(self):
+        return self._task is not None and not self._task.done()
+
+    # Running.
+
+    def start(self, *, trigger, force=False, only=None):
+        """force: propose again over every analysis even with nothing new (Run anyway). only: run just that stage
+        (the others hold their backlog, as if paused, for this run)."""
+        if self.running:
+            raise CaseError("A run is already in progress")
+        if blocked := blocked_stages(self.hass, self.entry, only):
+            steps = list(dict.fromkeys(t for titles in blocked.values() for t in titles))
+            reason = (f"{listed(steps)} can't run: {'its AI model isn' if len(steps) == 1 else 'their AI models aren'}"
+                      "'t available. Choose another in the settings.")
+            if trigger == "scheduled":  # Nobody is watching: kept for the history, instead of a run that fails midway.
+                now = utcnow().isoformat()
+                self.current = {"id": uuid4().hex, "kind": "pipeline", "trigger": trigger, "status": "failed",
+                                "started": now, "finished": now, "stage": None, "progress": {}, "error": reason,
+                                "force": False, "only": None}
+                self.hass.async_create_task(self.recorder.role_runs.record(self.current))
+            raise CaseError(reason)
+        self.current = {"id": uuid4().hex, "kind": "pipeline", "trigger": trigger, "status": "running",
+                        "started": utcnow().isoformat(), "stage": STAGES[0], "progress": {}, "error": None,
+                        "force": force, "only": only}
+        self._task = self.hass.async_create_background_task(self._run(), "assist_improver_pipeline", eager_start=False)
+        return deepcopy(self.current)
+
+    async def cancel(self):
+        if self.running:
+            self._task.cancel()
+
+    def status(self):
+        return {"run": deepcopy(self.current), "preview": self.preview()}
+
+    async def _stage(self, stage, **progress):
+        self.current["stage"] = stage
+        self.current["progress"].update(progress)
+        await self.recorder.role_runs.record(self.current)  # Kept, so a restart loses nothing.
+
+    async def _run(self):
+        from . import _analyze, _hypotheses
+        from .validation import test_hypotheses
+        run = self.current
+        only = run.get("only")  # Read at each stage: a pause applies right away.
+        gate = (lambda stage: stage == only) if only else (lambda stage: stage not in paused(self.entry))
+        try:
+            await self._stage("analyze")
+            at = self._at()
+            if not only or only == "triage":  # A run takes in what waits at the start.
+                new = self._new()
+                at.update({rid: "triage" for rid in new})
+                run["progress"]["taken_in"] = len(new)
+                await self._save_at(at)
+            todo = [rid for rid, stage in at.items() if gate(stage)]
+            run["progress"].update(analyze_total=len(todo), analyzed=0, skipped_as_smooth=0, analyze_failed=0)
+            checker, tried = role_model(self.entry, "triage"), set()
+            for recording_id in todo:  # Triage first: a quick check, or pass through without a triage model.
+                if at.get(recording_id) != "triage":
+                    continue
+                if not checker:
+                    at[recording_id] = "analyze"
+                    continue
+                result = await _analyze(self.hass, self.entry, self.recorder, recording_id, allow_paid_inference=True,
+                                        triage_only=not gate("analyze"))
+                tried.add(recording_id)  # Analysed too (analysis is open): a failure waits for the next run.
+                self._count(result, at, recording_id)
+                await self._save_at(at); await self._stage("analyze")
+            if gate("analyze"):
+                for recording_id in [rid for rid, stage in at.items() if stage == "analyze" and rid not in tried]:
+                    result = await _analyze(self.hass, self.entry, self.recorder, recording_id, allow_paid_inference=True,
+                                            full=True)  # It passed triage already.
+                    self._count(result, at, recording_id)
+                    await self._save_at(at); await self._stage("analyze")
+            await self._save_at(at)
+            run["progress"]["held"] = sum(1 for stage in at.values() if not gate(stage))
+            analyses = [a for rid, a in self._analyzed().items() if rid not in self._tests()]
+            settled = self.recorder.improvements.settled_goals()  # Goals with an improvement already: left out.
+            hypotheses, generator = self._untested()
+            if analyses and gate("propose") and (self._to_propose() or run.get("force") or self._last_generator()[1] is None):
+                await self._stage("propose", sessions=len(analyses))
+                generator = await _hypotheses(self.hass, self.entry, self.recorder, "generate_hypotheses",
+                                              analyses=analyses, feedback=self.recorder.improvements.feedback(),
+                                              settled=settled,
+                                              existing=self.recorder.improvements.catalog(detailed=True),
+                                              allow_paid_inference=True)
+                hypotheses = (generator.get("output") or {}).get("hypotheses") or []
+                if generator.get("status") == "completed" and (found := await self.recorder.improvements.note_addressed(
+                        (generator.get("output") or {}).get("already_addressed"))):  # Kept with what covers them.
+                    run["progress"]["already_addressed"] = run["progress"].get("already_addressed", 0) + found
+                run["progress"].update(hypotheses=len(hypotheses), generator_run=generator.get("id"),
+                                       generator_status=generator.get("status"))
+                if generator.get("status") == "completed" and hypotheses:
+                    generator["tested"] = False  # Until its tests ran: a paused or cut-off test stage keeps them.
+                    await self.recorder.role_runs.record(generator)
+            if hypotheses and gate("test"):
+                await self._stage("test", hypotheses=len(hypotheses))
+                report = await test_hypotheses(self.hass, self.entry, self.recorder, hypotheses=hypotheses,
+                                               analyses=analyses, skip_goals=set(settled), allow_paid_inference=True)
+                generator["tested"] = True
+                await self.recorder.role_runs.record(generator)
+                run["progress"].update(tested=report.get("tested", 0))
+                before = {i["id"] for i in self.recorder.improvements.items.values()}
+                await self.recorder.improvements.refresh()
+                run["progress"].update(new_improvements=sum(1 for i in self.recorder.improvements.items.values()
+                                                            if i["id"] not in before))
+            if gate("write") and (waiting := self.recorder.improvements.unwritten()):
+                # What the household reads first: the headline and what they get, by the editor; then up for review.
+                await self._stage("write", writing=len(waiting))
+                written = await self.recorder.improvements.write_copy(editor_model(self.entry))
+                if self.entry.options.get(CONF_AUTO_ACCEPT):  # The household chose to accept without reviewing.
+                    run["progress"]["auto_accepted"] = await self.recorder.improvements.auto_accept(list(written))
+            await self._finish("done")
+        except asyncio.CancelledError:
+            await self._finish("cancelled")
+            raise
+        except Exception as err:  # A run never takes the integration down; its error is kept for the panel.
+            await self._finish("failed", error=f"{type(err).__name__}: {err}"[:500])
+
+    def _count(self, result, at, recording_id):
+        """Where a conversation goes after triage or analysis, and the run's counts."""
+        progress = self.current["progress"]
+        progress["analyzed"] += 1
+        if result.get("analysis"):  # Analysed (or triaged as smooth): done with the early stages.
+            at.pop(recording_id, None)
+            progress["skipped_as_smooth"] += result.get("answer_status") == "triaged_smooth"
+            if marked := len(result["analysis"].get("duplicates") or []):  # Already fixed: they stop here.
+                progress["already_addressed"] = progress.get("already_addressed", 0) + marked
+        elif result.get("status") == "held":
+            at[recording_id] = "analyze"  # Triage's verdict is kept; analysis is blocked.
+        else:
+            at[recording_id] = "analyze"  # Failed: tried again next run.
+            progress["analyze_failed"] += 1
+            if not progress.get("problem") and (why := (result.get("error") or {}).get("message")):
+                progress["problem"] = why  # The first failure's reason, for the history.
+
+    async def _finish(self, status, *, note=None, error=None):
+        self.current.update(status=status, finished=utcnow().isoformat(), note=note, error=error)
+        await self.recorder.role_runs.record(self.current)
+
+
+SCHEDULES = {"off": None, "daily": None, "weekly": 6}  # weekly: Sundays (weekday 6), at 03:00.
+
+
+def schedule(hass, entry, pipeline, choice):
+    """A scheduled run at 03:00 (daily, or Sundays for weekly); returns the unsubscribe, or None when off."""
+    from homeassistant.helpers.event import async_track_time_change
+    if choice not in ("daily", "weekly"):
+        return None
+
+    @callback
+    def fire(now):
+        if choice == "weekly" and now.weekday() != SCHEDULES["weekly"]:
+            return
+        if not pipeline.running:
+            try:
+                pipeline.start(trigger="scheduled")
+            except CaseError:  # A step's model isn't available: the run is recorded as failed, with why.
+                pass
+
+    return async_track_time_change(hass, fire, hour=3, minute=0, second=0)

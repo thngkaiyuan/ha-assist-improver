@@ -296,3 +296,16 @@ quick_check:
       default: false
       selector:
         boolean:
+write_summaries:
+  fields:
+    improvement_ids:
+      selector:
+        object:
+    entity_id:
+      selector:
+        entity:
+          domain: ai_task
+    allow_paid_inference:
+      default: false
+      selector:
+        boolean:

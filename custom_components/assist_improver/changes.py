@@ -23,25 +23,27 @@ def ha_step(step):
     return out
 
 
-def setup_from_changes(changes, *, source, prompt, scripts):
-    """{exposure, aliases, alias_removals (when any), prompt, scripts, prompt_changed} for a sandbox, from a hypothesis's changes.
+def setup_from_changes(changes, *, source, prompt, scripts, user_id=None):
+    """{exposure, aliases, alias_removals (when any), household (when any), prompt, scripts, prompt_changed} for a
+    sandbox, from a hypothesis's changes.
 
     source is the recorded home, prompt the assistant's recorded instruction template, scripts the household's
-    script definitions ({object id: config}). A line for this_user is appended like one for everyone: a replay
-    renders the instructions for the recorded person only, so both read the same there.
+    script definitions ({object id: config}), user_id the person speaking. Instruction lines go into the household
+    knowledge (household.py), as applying puts them: everyone's, or the speaking person's for this_user; the replay
+    reads them through Assist with household knowledge, as the assistant will.
     """
+    from . import household
     exposure, aliases, removals, new_scripts = {}, {}, {}, {}
-    template, prompt_changed = prompt or "", False
+    template, prompt_changed, knowledge = prompt or "", False, None
     for n, change in enumerate(changes, 1):
         kind, where = change["kind"], f"Change {n} ({change['kind']})"
         entity_id = change.get("entity_id")
         if kind in ("preference", "prompt"):
-            for old in change.get("replaces") or []:
-                if old not in template:
-                    raise CaseError(f"{where}: the text it replaces isn't in the assistant's instructions")
-                template = template.replace(old, "", 1)
-            if text := (change.get("text") or "").strip():
-                template = template.rstrip("\n") + "\n" + text + "\n"
+            base = knowledge if knowledge is not None else source.get("household") or household.EMPTY
+            knowledge, template, problems = household.edit(base, [change], user_id, template)
+            if problems:
+                raise CaseError(f"{where}: the text it replaces isn't in the household knowledge or the "
+                                "assistant's instructions")
             prompt_changed = True
         elif kind == "alias":
             alias = (change.get("alias") or "").strip()
@@ -84,4 +86,6 @@ def setup_from_changes(changes, *, source, prompt, scripts):
              "scripts": new_scripts, "prompt_changed": prompt_changed}
     if removals:  # Only when an alias replaces another, so plans without one keep their IDs.
         setup["alias_removals"] = removals
+    if knowledge is not None:  # Only with instruction lines.
+        setup["household"] = knowledge
     return setup

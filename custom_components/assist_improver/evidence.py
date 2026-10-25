@@ -159,7 +159,8 @@ class Evidence:
         turn = recording_turns(view.recording)[0]
         options = turn["prepared"]["provider_config"][0]["options"]
         return setup_from_changes(hypothesis.get("changes") or [], source=turn["source"],
-                                  prompt=options.get("prompt"), scripts=self._scripts(turn["source"]))
+                                  prompt=options.get("prompt"), scripts=self._scripts(turn["source"]),
+                                  user_id=(turn["prepared"].get("context") or {}).get("context", {}).get("user_id"))
 
     def _scripts(self, source):
         return deepcopy(source["scripts"]) if "scripts" in source else deepcopy(self.definitions["scripts"])

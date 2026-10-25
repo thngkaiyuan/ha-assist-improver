@@ -2,7 +2,7 @@
 
 DOMAIN = "assist_improver"
 NAME = "Assist Improver"
-VERSION = "0.19.5"
+VERSION = "0.33.0"
 # How replays run and are judged; changing it makes earlier baselines a different test (a new plan), not a resample.
 REPLAY_ENGINE = "2026-10-24.5"  # .2: a fix commanding what the baseline also changed isn't unintended. .3: baselines
 # are judged on the goal's devices. .4: a goal newly met counts, not only fewer turns. .5: controls the user would
@@ -22,6 +22,12 @@ CONF_TESTS_PER_GOAL, DEFAULT_TESTS_PER_GOAL = "tests_per_goal", 3
 CONF_CHECK_AI_TASK = "check_ai_task_entity_id"
 # A small model that checks each session first; a session it's sure was smooth skips the analyzer. Unset analyses all.
 CONF_TRIAGE_AI_TASK = "triage_ai_task_entity_id"
+# Runs on their own: off (the default), daily or weekly (Sundays), at 03:00. Each run can cost money.
+CONF_SCHEDULE = "schedule"
+# Stages the household paused (gates): a run skips them and their backlog waits; later stages still work on theirs.
+CONF_PAUSED = "paused_stages"
+# Improvements are accepted (applied) as soon as they're written up, without waiting for the household. Off by default.
+CONF_AUTO_ACCEPT = "auto_accept"
 SAVE_DELAY = 1
 ATTRIBUTES = {
     "friendly_name", "supported_features", "device_class", "unit_of_measurement",

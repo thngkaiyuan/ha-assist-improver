@@ -4,7 +4,7 @@ from homeassistant.components.homeassistant.exposed_entities import async_should
 from homeassistant.helpers import area_registry as ar, device_registry as dr, entity_registry as er
 from homeassistant.util.dt import utcnow
 
-from .const import ATTRIBUTES, PROVIDER_OPTIONS
+from .const import ATTRIBUTES, DOMAIN, PROVIDER_OPTIONS
 from .serialization import plain, SECRET
 
 
@@ -53,6 +53,8 @@ def snapshot(hass):
             "home_name": hass.config.location_name, "states": states,
             "entities": entities, "devices": devices, "areas": areas, "exposure": exposure,
             "scripts": plain(scripts), "automations": plain(automations),
+            # The household knowledge the household API served then, so a replay rebuilds the same prompt.
+            "household": plain(getattr(hass.data.get(f"{DOMAIN}_household"), "knowledge", None)),
             "attribute_policy": "allowlist-v1; omitted attributes are not recorded"}
 
 

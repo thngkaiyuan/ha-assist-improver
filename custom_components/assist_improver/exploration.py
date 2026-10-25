@@ -150,6 +150,13 @@ class SessionView:
                  **({"assist_acted_on": acted[t["turn"]]} if acted.get(t["turn"]) else {})}
                 for t in self.digest["turns"]]
 
+    def devices_touched(self):
+        """The devices this session touched: those Assist acted on or failed on, and those that changed."""
+        found = {a.rsplit("(", 1)[1].rstrip(")") for calls in self.acted_on().values() for call in calls
+                 for a in call.get("acted_on", []) + call.get("failed_on", []) if "(" in a}
+        return found | {c["entity_id"] for t in self.digest["turns"]
+                        for c in self.read_turn(t["turn"])["state_changes_during_turn"]}
+
     def acted_on(self):
         """{turn: [each of Assist's calls that acted on something: the call, and the devices HA's response says
         it acted on or failed on, or the error it returned]}. Calls that only read (live context) are left out."""
@@ -351,6 +358,76 @@ class ListScriptsAndScenes(_SessionTool):
 
 
 TOOLS = (ReadTurn, ListAreas, DevicesInArea, FindDevices, DeviceDetails, ListScriptsAndScenes)
+
+
+# Existing improvements (Improvements.catalog: waiting for the household's review, or applied), which every AI role
+# that could propose a fix checks first, so nothing is fixed twice.
+
+def change_devices(changes):
+    """The devices a set of changes names."""
+    return {e for c in changes for e in [c.get("entity_id"), *(s.get("entity_id") for s in c.get("steps") or [])]
+            if isinstance(e, str)}
+
+
+def applied_too_early(item, started):
+    """Why an improvement can't answer for friction in a session that started at `started`, or None: one applied
+    before the session didn't stop its friction."""
+    from homeassistant.util.dt import parse_datetime
+    if item.get("applied") and parse_datetime(started) >= parse_datetime(item["applied"]):
+        return f"{item['title']!r} was applied before this session, and the friction still happened, so it doesn't " \
+               "address it."
+    return None
+
+
+def related_improvements(existing, devices, goals=None):
+    """The existing improvements that touch any of these devices, found by code for a role to judge: each as
+    list_improvements shows it, with the devices it shares and (given goals as {"session:turn": devices}) the goals
+    it may address."""
+    out = []
+    for item in existing:
+        touched = set(item.get("devices") or [])
+        if shared := sorted(touched & set(devices)):
+            may = [goal for goal, found in (goals or {}).items() if found & touched]
+            out.append({**{k: v for k, v in item.items() if k not in ("devices", "details")},
+                        **({"may_address": may} if may else {}), "shared_devices": shared})
+    return out
+
+
+class ListImprovements(_SessionTool):
+    name = "list_improvements"
+    description = ("List the improvements that already exist: those waiting for the household's review, and those "
+                   "applied (with when). Each has its cause, its changes, and the goals (session:goal turn) it covers. "
+                   "Check it before proposing a fix: an improvement may already address the friction.")
+    parameters = probatio.Schema({})
+
+    def __init__(self, view, existing):
+        super().__init__(view)
+        self.existing = existing
+
+    def run(self):
+        listed = [{k: v for k, v in i.items() if k not in ("details", "devices")} for i in self.existing]
+        return {"improvements": listed} if listed else {
+            "improvements": [], "note": "No improvements yet: every goal's friction is new."}
+
+
+class ReadImprovement(_SessionTool):
+    name = "read_improvement"
+    description = ("Read one existing improvement in full: what it changes and was expected to do, the sessions it "
+                   "agrees and disagrees with, each test (the goal, the conversation before, the replay with the "
+                   "change after, the result), and goals already found addressed by it. Use it when the list "
+                   "doesn't settle whether it addresses a goal.")
+    parameters = probatio.Schema({probatio.Required("improvement"): str})
+
+    def __init__(self, view, existing):
+        super().__init__(view)
+        self.existing = existing
+
+    def run(self, improvement):
+        found = next((i for i in self.existing if i["improvement"] == improvement), None)
+        if found is None:
+            return {"error": f"There's no improvement {improvement!r}; list_improvements shows "
+                             f"{', '.join(i['improvement'] for i in self.existing) or 'none'}."}
+        return {**{k: v for k, v in found.items() if k not in ("details", "devices")}, **(found.get("details") or {})}
 
 
 class SessionAPI(llm.API):

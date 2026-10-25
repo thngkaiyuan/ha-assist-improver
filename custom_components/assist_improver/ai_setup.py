@@ -71,9 +71,18 @@ def assess(hass, entity_id):
             result["warnings"].append("It works, but Claude Opus 5.5 is recommended for the improver.")
         return result
     if provider != "anthropic" or data is None:
-        result["warnings"].append("The improver can't read this provider's settings. A strong model such as "
-                                  "Claude Opus 5.5 with a high output limit is recommended.")
-        result["ok"] = True
+        # Most providers name the model in its settings (OpenAI and Gemini as chat_model, Ollama as model); the rest
+        # (effort, output limit) differ by provider, so only the model is judged.
+        model = (data or {}).get("chat_model") or (data or {}).get("model")
+        result.update(model=model, ok=True)
+        if not model:
+            result["warnings"].append("The improver can't read this provider's settings. A strong model such as "
+                                      "Claude Opus 5.5 with a high output limit is recommended.")
+        elif any(word in model.lower() for word in WEAK_MODEL_WORDS):
+            result["warnings"].append(f"It uses {model}, a small model. Claude Opus 5.5 is recommended for the "
+                                      "improver.")
+        elif not RECOMMENDED_MODEL.search(model):
+            result["warnings"].append("It works, but Claude Opus 5.5 is recommended for the improver.")
         return result
     if data.get("recommended", False):
         try:
@@ -103,9 +112,9 @@ def create_options(hass):
         for entry in hass.config_entries.async_entries(domain):
             if getattr(entry, "state", ConfigEntryState.LOADED) is not ConfigEntryState.LOADED:
                 continue
-            label = (f"New: {RECOMMENDED_NAME} AI Task with Claude Opus 5.5 (recommended)" if domain == "anthropic"
-                     else f"New: {RECOMMENDED_NAME} AI Task with Claude Opus 5.5 via {name} (recommended)"
-                     if kind == "recommended" else f"New: {RECOMMENDED_NAME} AI Task in {name} (default settings)")
+            label = ("Claude Opus 5.5 · new · recommended" if domain == "anthropic"
+                     else f"Claude Opus 5.5 via {name} · new · recommended" if kind == "recommended"
+                     else f"{name}'s default model · new")
             options.append((entry.entry_id, kind, label))
     return sorted(options, key=lambda o: o[1] != "recommended")
 
@@ -127,10 +136,13 @@ def _pick_recommended(key):
     return None
 
 
-async def create_ai_task(hass, config_entry_id, kind):
-    """Drive the provider's own add-AI-Task flow. Returns (entity_id, None) or (None, reason)."""
+async def create_ai_task(hass, config_entry_id, kind, model=None, name=None):
+    """Drive the provider's own add-AI-Task flow, with the recommended settings (kind "recommended"), the provider's
+    defaults ("default"), or a chosen model and name (anything else at the provider's defaults). Returns
+    (entity_id, None) or (None, reason)."""
     entry = hass.config_entries.async_get_entry(config_entry_id)
-    wanted = _answers(entry.domain, kind)
+    wanted = (_answers(entry.domain, kind) if model is None else
+              {"name": name or RECOMMENDED_NAME, "recommended": False, "chat_model": model, "model": model})
     before = set(entry.subentries)
     manager = hass.config_entries.subentries
     try:

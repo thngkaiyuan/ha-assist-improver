@@ -19,7 +19,8 @@ from homeassistant.helpers import llm
 from .analyzer import top_level
 from .candidates import live_script_definitions
 from .cases import CaseError
-from .exploration import TOOLS, DeviceDetails, DevicesInArea, ReadTurn, SessionAPI, _SessionTool
+from .exploration import (TOOLS, DeviceDetails, DevicesInArea, ListImprovements, ReadImprovement, ReadTurn,
+                          SessionAPI, _SessionTool, applied_too_early, change_devices, related_improvements)
 from .reflective import run_role
 
 GENERATOR_ROLE = "hypothesis_generator"
@@ -36,7 +37,7 @@ HA_PRIMER = """How Home Assistant's Assist works (Home Assistant 2026.10):
 - Turning a climate device on resumes its last mode; a target temperature can be set; its mode (heat, cool, fan only) can't be chosen by Assist.
 - Scripts: each exposed script becomes its own Assist tool, named after the script and described by its description and aliases. Its steps run regardless of what is exposed. A step calls an action on a device, with its data, for example select.select_option with option: high, climate.set_hvac_mode with hvac_mode: fan_only, switch.turn_on, or script.turn_on to run another script. Scripts proposed here take no parameters, so each sets fixed values. One script per occasion solves that occasion only; a preference that teaches Assist to use existing tools or scripts generalises better.
 - Names and aliases: Assist finds devices by name, alias and area. Two exposed devices with the same name or alias make requests ambiguous and can fail. Aliases are extra names on a device.
-- Preferences: Assist's instructions are a template rendered for every request (it can use Home Assistant templates, such as the current time or a device's state), so a line there applies to every conversation. A block in the template can limit lines to one person (by their user ID); put a person's own preferences inside their block, and household facts that hold for everyone outside it. It's where household facts and preferences go: what the user means by a word, which device they usually mean, how a device is operated.
+- Preferences: household facts and preferences go into the household knowledge, lines every assistant reads with its instructions on every request (so a line applies to every conversation, whichever assistant handles it): lines for everyone, and lines for one person (this_user), which only that person's requests see. It's where household facts and preferences go: what the user means by a word, which device they usually mean, how a device is operated. Each assistant also has its own instructions (a template), which may already hold such lines from before; a change can replace those too.
 - Momentary relays: some switches act like buttons (a door opener moves when its relay goes off, then on). Switching such a relay doesn't report the door's position.
 - Local handling: with "prefer handling locally" on, simple commands that match Home Assistant's own sentences are handled without the AI, so instruction changes don't affect them.
 
@@ -54,7 +55,7 @@ The user seems to be encountering friction in the scenarios in your input. Each 
 Your task: propose personalisations to the user's Home Assistant setup that make their long-horizon experience with Assist as seamless as possible. The friction is your evidence; aim for changes that keep helping in future requests, not just in these sessions.
 
 How to work:
-1. Find the causes, with the tools.
+1. Find the causes, with the tools. Then check whether an existing improvement already addresses them: your input's related_improvements lists those (waiting for the household's review, or already applied) that touch the same devices as goals with friction, list_improvements lists them all, and read_improvement shows one in full (its changes, and the conversations it was tested on). A goal whose friction one of them already addresses goes in already_addressed, with that improvement and why, instead of into a new idea: there's no need to fix it twice. An improvement applied before the session took place didn't stop its friction, so it doesn't address it.
 2. Group goals whose friction has the same cause into one theme, across sessions. For each theme, form one coherent idea: the change that would have got those goals done without friction. Name the goals it fixes (session and goal turn); all of a goal's friction counts as removed. Prefer the least specific change that works, in this order:
    - prompt: make Assist itself reason better, written as a general behaviour instruction. This is in scope and often the most general fix: how it works out what the user means (from devices' current states, the time, what the user is doing or just did), when to act and when to ask, checking its own results, and stating them firmly when the data supports it. It applies to every request, so weigh what else it could change;
    - preference: a fact about this household or the user's preferences, written as a line for Assist's instructions (what the user meant by a word, which devices they mean, how a device is operated);
@@ -62,10 +63,12 @@ How to work:
    - script: a new script, only when nothing above would work.
    An idea may combine several changes when they serve the same theme, such as a preference and the exposure it relies on.
    Prefer the simplest rule that fits every session, not only the ones it fixes. Test each rule against all the sessions where it would apply, including sessions without friction (list_sessions, read_session): a rule that explains them all in one idea beats one with special cases. A special case, or a rule built from a single session, needs a reason the sessions show. Record what you found: in support, the sessions the rule agrees with; in conflicts, any it contradicts.
-3. Read what is already there before changing it: Assist's current instructions (read_assistant_instructions), a device's aliases, a script's steps. Prefer editing what exists over adding to it: rewrite or merge existing lines into a more general one (give the lines a change replaces in replaces), replace an alias, rework a script.
+3. Read what is already there before changing it: Assist's current instructions and the household knowledge (read_assistant_instructions), a device's aliases, a script's steps. Prefer editing what exists over adding to it: rewrite or merge existing lines into a more general one (give the lines a change replaces in replaces), replace an alias, rework a script.
 4. Check each idea with Home Assistant itself (check_hypothesis): your scripts run in a sandbox of the recorded home from the state each goal started in, showing whether the goal's devices end up as the goal wants, and new aliases are matched the way Assist matches names. It also replays every session's recorded tool calls with your change and lists those that now resolve differently: weigh each against what the user wanted there; it may be a problem, or expected when a more general change covers what the old call did.
 5. Discuss each idea with the reviewer, a separate model, using ask_reviewer: send it a draft hypothesis, and it answers with review comments backed by household evidence; any blocking comment requests changes. Take its points seriously: revise, or find another fix for the same goals, and ask again, answering each blocking comment (resolved, or wont_fix with a note).
-6. Implement: make the changes concrete and submit all hypotheses with submit_hypotheses. Every goal with friction needs a fix in some hypothesis, or a place in not_fixed with why its friction is outside the assistant's control. The submit tool checks this and everything else against the sessions and the household; if it reports problems, fix them and submit again. When it accepts your answer, finish with one short sentence.
+6. Implement: make the changes concrete and submit all hypotheses with submit_hypotheses. Every goal with friction needs a fix in some hypothesis, a place in already_addressed (an existing improvement covers it), or a place in not_fixed with why its friction is outside the assistant's control. The submit tool checks this and everything else against the sessions and the household; if it reports problems, fix them and submit again. When it accepts your answer, finish with one short sentence.
+
+Your input may include household_decisions: the household's decisions on earlier improvements. Never propose again what they declined or said was fine as it was; when they asked for a revision, address their note; build on what they accepted. Goals in already_handled already have an improvement (waiting for review, applied or decided): leave them out.
 
 Respect the timing and separation of the user's requests: what they asked for separately, at different times, stays separate; what they asked for together can be done together. Speech recognition mishearing the user is in scope too, when the sessions show it happened (for example, an alias for a name that's often misheard). Use only devices and scripts the tools show you.
 
@@ -81,7 +84,11 @@ Write your review as comments in the Conventional Comments style. Each comment h
 - evidence: the household facts that support it: sessions and turns (what the user said or did there), devices (names, aliases, exposure, states), or patterns across sessions (as a note). Every comment except praise needs at least one; a comment without household evidence is opinion.
 Test every rule against all the sessions where it would apply, not only the ones it fixes, and check the hypothesis's support and conflicts against them. Prefer the simplest rule consistent with all of them; a rule with special cases, or one resting on a single session, needs a reason the sessions show, and a simpler rule that fits as well is a blocking comment with those sessions as evidence. Each draft comes with checks from Home Assistant itself, run in a sandbox of the recorded home: implementation (whether each script, run from the state its goal started in, leaves the goal's devices as the goal wants; what a new alias matches) and resolution_signals (recorded tool calls that resolve differently with the change). Use them as evidence. A call that resolves differently is a signal to weigh, not proof of a regression: it may misfire (a name now matching another device), or be expected (a more general script covering what the old call did); judge it against what the user wanted in that session. Look for: a wrong cause (including a claimed mishearing that the sessions don't show); combining requests the user made separately, at different times; a change that would break, confuse or misfire on other things the household does, or won't carry over to the cases it should cover; and a simpler, more general or more polished version. The outcome follows from the comments: any blocking comment requests changes, otherwise the change is approved with your comments. So mark a comment blocking only when the evidence supports it, and put a revised hypothesis in revised when you know the better version. When you get responses to your previous comments, check each: comment again if a resolution didn't resolve it, and don't repeat comments that were resolved.
 
-A hypothesis's changes: preference and prompt lines say who they're for (everyone, or this_user, inside that person's block in the instructions); an exposure change exposes a device unless expose is false, which hides it; a script change makes a new script (script_name, steps; exposed to Assist unless expose is false) or edits an existing one (its entity_id, with a new description in text and/or new steps), and its steps may end with a stop step carrying the message for the user.
+A hypothesis's changes: preference and prompt lines say who they're for (everyone, or this_user: that person's own lines in the household knowledge); an exposure change exposes a device unless expose is false, which hides it; a script change makes a new script (script_name, steps; exposed to Assist unless expose is false) or edits an existing one (its entity_id, with a new description in text and/or new steps), and its steps may end with a stop step carrying the message for the user.
+
+Your input may include household_decisions: the household's decisions on earlier improvements. A proposal that repeats what they declined or said was fine as it was, or ignores their revision note, gets a blocking comment.
+
+Check existing improvements too: a draft lists related_improvements (those waiting for the household's review, or already applied, that touch the same devices), list_improvements lists them all, and read_improvement shows one in full. A change that repeats or overlaps one of them gets a blocking comment naming it: its goals belong in already_addressed, or the change should build on that improvement.
 
 Answer only by calling submit_review. When it accepts your answer, finish with one short sentence.
 
@@ -120,6 +127,9 @@ HYPOTHESES = probatio.Schema({
     # Goals with friction left unfixed, each with why the friction is outside the assistant's control.
     probatio.Optional("not_fixed"): [{probatio.Required("session"): str, probatio.Required("goal_turn"): int,
                                       probatio.Required("why"): str}],
+    # Goals with friction an existing improvement (waiting for review, or applied) already addresses.
+    probatio.Optional("already_addressed"): [{probatio.Required("session"): str, probatio.Required("goal_turn"): int,
+                                              probatio.Required("improvement"): str, probatio.Required("why"): str}],
 })
 # Review comments in the Conventional Comments style (conventionalcomments.org), outcomes as in GitHub reviews.
 LABELS = ("issue", "suggestion", "todo", "nitpick", "question", "thought", "praise")
@@ -169,6 +179,15 @@ def friction(analysis):
             out.append({"turn": goal["turn"], "kind": "ask", "left_open": goal.get("entity_ids", []),
                         "summary": goal["summary"], "user_chose": goal.get("user_chose", [])})
     return sorted(out, key=lambda f: f["turn"])
+
+
+def goal_devices(analysis, turn):
+    """The devices a goal (and the sub-goals serving it) wanted something from."""
+    found = set()
+    for goal in analysis.get("goals", []):
+        if goal["turn"] == turn or goal.get("serves") == turn:
+            found.update([goal["entity_id"]] if goal.get("entity_id") else goal.get("entity_ids") or [])
+    return found
 
 
 def friction_by_goal(analysis):
@@ -288,6 +307,9 @@ class Sessions:
         self.views = {short(a["recording_id"]): v for a, v in zip(analyses, views)}
         self.household = max(views, key=lambda v: v.digest["started"])
         self.evidence, self.capability_facts = None, None
+        self.feedback = []  # The household's decisions on earlier improvements.
+        self.settled = {}  # {(session, goal turn): title} of goals that already have an improvement.
+        self.existing = []  # Improvements waiting for review or applied (Improvements.catalog), for list_improvements.
 
     async def load_evidence(self, definitions):
         """Facts from HA's own engine: what Assist can do with each device in friction, and an Evidence for
@@ -303,7 +325,21 @@ class Sessions:
                 "areas": self.household.list_areas(), "assist_tools": self.assist_tools(),
                 "devices_in_friction": self.devices_in_friction(),
                 "friction_scenarios": [scenario(self.analyses[s], self.views[s]) for s in rough],
-                "other_sessions": f"{len(self.analyses) - len(rough)} sessions without friction; see list_sessions"}
+                "other_sessions": f"{len(self.analyses) - len(rough)} sessions without friction; see list_sessions",
+                **({"household_decisions": self.feedback} if self.feedback else {}),
+                **({"already_handled": [{"session": s, "goal_turn": t, "improvement": title}
+                                        for (s, t), title in sorted(self.settled.items())]} if self.settled else {}),
+                **({"related_improvements": related} if (related := self.related(
+                    [(s, t) for s in rough for t in friction_by_goal(self.analyses[s]) if (s, t) not in self.settled]))
+                   else {})}
+
+    def related(self, goals, devices=()):
+        """Existing improvements (waiting for review, or applied) that touch the same devices as these goals
+        ([(session, goal turn)]) or the given devices: found by code, for the roles to judge whether one already
+        addresses them. Each lists the goals it may address and the devices they share."""
+        wanted = {f"{s}:{t}": goal_devices(self.analyses[s], t) for s, t in goals if s in self.analyses}
+        return related_improvements(self.existing, set().union(*wanted.values(), devices) if wanted else set(devices),
+                                    wanted)
 
     def listing(self):
         """Every session in one line each."""
@@ -345,7 +381,8 @@ class Sessions:
                              "extra_turns": a.get("extra_turns", [])})
         chosen = [{"session": s, **{k: f[k] for k in ("summary", "user_chose")}}
                   for s, a in self.analyses.items() for f in friction(a) if f["kind"] == "ask"]
-        return {"home": self.household.digest["home"], "sessions": sessions, "known_choices": chosen}
+        return {"home": self.household.digest["home"], "sessions": sessions, "known_choices": chosen,
+                **({"household_decisions": self.feedback} if self.feedback else {})}
 
 
 def problems(sessions, answer, schema=HYPOTHESES):
@@ -355,7 +392,7 @@ def problems(sessions, answer, schema=HYPOTHESES):
     except probatio.Invalid as err:
         return [f"The answer does not match the format: {err}"]
     known, found = set(sessions.household._entities()), []
-    template, _ = instructions(sessions)
+    template = known_lines(sessions)
     items = answer["hypotheses"] if schema is HYPOTHESES else [answer["revised"]] if answer.get("revised") else []
     for n, hypothesis in enumerate(items, 1):
         where = f"Hypothesis {n} ({hypothesis['title']!r})"
@@ -366,6 +403,9 @@ def problems(sessions, answer, schema=HYPOTHESES):
             elif ref["goal_turn"] not in friction_by_goal(analysis):
                 found.append(f"{where}: session {ref['session']} has no goal with friction at turn {ref['goal_turn']}; "
                              f"its goals with friction start at turns {sorted(friction_by_goal(analysis)) or 'none'}.")
+            elif (title := sessions.settled.get((ref["session"], ref["goal_turn"]))) is not None:
+                found.append(f"{where}: {ref['session']}:{ref['goal_turn']} already has an improvement ({title!r}); "
+                             "leave it out.")
         if not hypothesis["goals"]:
             found.append(f"{where}: name the goals it fixes (session and goal turn).")
         if not hypothesis["support"]:
@@ -380,7 +420,29 @@ def problems(sessions, answer, schema=HYPOTHESES):
         for change in hypothesis["changes"]:
             found += _change_problems(where, change, known, sessions.household, template)
     if schema is HYPOTHESES:
-        found += _open_goals(sessions, answer)
+        found += _addressed_problems(sessions, answer) + _open_goals(sessions, answer)
+    return found
+
+
+def _addressed_problems(sessions, answer):
+    """already_addressed, checked: an improvement list_improvements shows, a goal with friction no hypothesis also
+    fixes, and an improvement applied only after the session (one applied before it didn't stop the friction)."""
+    existing, found = {i["improvement"]: i for i in sessions.existing}, []
+    fixed = {(r["session"], r["goal_turn"]) for h in answer.get("hypotheses", []) for r in h["goals"]}
+    for ref in answer.get("already_addressed") or []:
+        where, item = f"already_addressed {ref['session']}:{ref['goal_turn']}", existing.get(ref["improvement"])
+        analysis, view = sessions.analyses.get(ref["session"]), sessions.views.get(ref["session"])
+        if analysis is None or ref["goal_turn"] not in friction_by_goal(analysis):
+            found.append(f"{where}: there's no goal with friction there.")
+        elif item is None:
+            found.append(f"{where}: there's no improvement {ref['improvement']!r}; list_improvements shows "
+                         f"{', '.join(sorted(existing)) or 'none'}.")
+        elif (ref["session"], ref["goal_turn"]) in fixed:
+            found.append(f"{where}: a hypothesis fixes it too; keep it in one place.")
+        elif not ref["why"].strip():
+            found.append(f"{where}: say why {item['title']!r} addresses it.")
+        elif view is not None and (why := applied_too_early(item, view.digest["started"])):
+            found.append(f"{where}: {why} Fix it, or list it in not_fixed with why.")
     return found
 
 
@@ -388,8 +450,9 @@ def open_goals(sessions, answer):
     """Goals with friction that neither a hypothesis nor not_fixed addresses."""
     addressed = {(r["session"], r["goal_turn"]) for h in answer.get("hypotheses", []) for r in h["goals"]}
     addressed |= {(r["session"], r["goal_turn"]) for r in answer.get("not_fixed") or [] if r["why"].strip()}
+    addressed |= {(r["session"], r["goal_turn"]) for r in answer.get("already_addressed") or [] if r["why"].strip()}
     return [(s, turn) for s, analysis in sorted(sessions.analyses.items())
-            for turn in sorted(friction_by_goal(analysis)) if (s, turn) not in addressed]
+            for turn in sorted(friction_by_goal(analysis)) if (s, turn) not in addressed and (s, turn) not in sessions.settled]
 
 
 def _open_goals(sessions, answer):
@@ -399,8 +462,22 @@ def _open_goals(sessions, answer):
     names = [f"{s}:{t} ({'; '.join(dict.fromkeys(g['summary'] for g in top_level(sessions.analyses[s].get('goals', []))
                                                   if g['turn'] == t))})" for s, t in left]
     return [f"These goals still have friction that no hypothesis fixes: {', '.join(names)}. Find a fix for each "
-            "(an idea the reviewer rejected may have a different fix), or list it in not_fixed with why the friction "
-            "is outside the assistant's control."]
+            "(an idea the reviewer rejected may have a different fix), list it in already_addressed if an existing "
+            "improvement covers it, or in not_fixed with why the friction is outside the assistant's control."]
+
+
+def household_knowledge(sessions):
+    """The household knowledge as last recorded (lines every assistant on the household API reads)."""
+    from .household import normalized
+    return normalized(sessions.household.source.get("household"))
+
+
+def known_lines(sessions):
+    """Every instruction line a change can replace: the assistant's instructions and the household knowledge."""
+    template, _ = instructions(sessions)
+    knowledge = household_knowledge(sessions)
+    lines = knowledge["everyone"] + [l for mine in knowledge["people"].values() for l in mine]
+    return (template or "") + "\n" + "\n".join(lines) if template is not None or lines else None
 
 
 def instructions(sessions):
@@ -416,11 +493,11 @@ def _change_problems(where, change, known, household, template=None):
         found.append(f"{where}: a {kind} change needs text: the line for Assist's instructions.")
     if kind in ("preference", "prompt") and not change.get("for"):
         found.append(f"{where}: say who a {kind} line is for: everyone (household facts), or this_user (the person "
-                     "in the sessions, inside their block in the instructions).")
+                     "in the sessions: their own lines in the household knowledge).")
     for line in change.get("replaces") or []:
         if kind in ("preference", "prompt") and (template is None or line.strip() not in template):
-            found.append(f"{where}: replaces {line!r}, which isn't in Assist's current instructions; quote "
-                         "lines exactly as read_assistant_instructions shows them.")
+            found.append(f"{where}: replaces {line!r}, which isn't in Assist's current instructions or the household "
+                         "knowledge; quote lines exactly as read_assistant_instructions shows them.")
     if kind in ("alias", "exposure"):
         entity = change.get("entity_id")
         if entity not in known:
@@ -500,7 +577,9 @@ class SubmitHypotheses(_Submit):
                    "or edits an existing one when it gives that script's entity_id (a new description in text, "
                    "and/or new steps; editing doesn't expose it, so add an exposure change if Assist should run an "
                    "unexposed one); its steps may end with a stop step carrying the message Assist tells the "
-                   "user. An exposure change exposes a device unless expose is false, which hides it. It is checked against "
+                   "user. An exposure change exposes a device unless expose is false, which hides it. Goals an existing "
+                   "improvement already addresses go in already_addressed (from list_improvements), not in a "
+                   "hypothesis. It is checked against "
                    "the sessions and the household; if problems are reported, fix them and submit again.")
     parameters = HYPOTHESES
 
@@ -706,7 +785,10 @@ class AskReviewer(llm.Tool):
         if len(self.reviews) >= REVIEWS_PER_RUN or len(earlier) >= REVIEWS_PER_IDEA:
             return llm.ToolResult(data={"error": "The review budget for this run or idea is used up; submit your best version."})
         checks = await self.sessions.evidence.check(hypothesis) if self.sessions.evidence else None
-        answer = await self.channel.ask({**args, **({"checks": checks} if checks else {})})
+        related = self.sessions.related([(g["session"], g["goal_turn"]) for g in hypothesis.get("goals", [])],
+                                        change_devices(hypothesis.get("changes", [])))
+        answer = await self.channel.ask({**args, **({"checks": checks} if checks else {}),
+                                         **({"related_improvements": related} if related else {})})
         self.reviews.append({"hypothesis": hypothesis, "responses": args.get("responses"), "review": answer,
                              "verdict": verdict(answer) if answer else None, "checks": checks})
         if answer is None:
@@ -714,16 +796,18 @@ class AskReviewer(llm.Tool):
         return llm.ToolResult(data={**review_result(hypothesis, answer), **({"checks": checks} if checks else {})})
 
 
-async def run_generator(hass, sessions, entity_id, seeded=()):
+async def run_generator(hass, sessions, entity_id, seeded=(), reviewer_entity_id=None):
     """The generator and one long-running reviewer, side by side: (generator run, its submit tool, ask tool,
-    reviewer run, seeded reviews). Seeded cases (a test of the reviewer) go through the same reviewer afterwards."""
+    reviewer run, seeded reviews). The reviewer runs on its own model if given, else the generator's. Seeded cases
+    (a test of the reviewer) go through the same reviewer afterwards."""
     from .snapshot import live_definitions
     scripts, automations = live_definitions(hass)
     await sessions.load_evidence({"scripts": scripts, "automations": automations})
     channel = ReviewChannel()
     review_submit = ChannelSubmitReview(sessions, channel)
     reviewer = hass.async_create_task(run_role(
-        hass, role=REVIEWER_ROLE, entity_id=entity_id, instructions=REVIEWER_INSTRUCTIONS + REVIEWER_LOOP,
+        hass, role=REVIEWER_ROLE, entity_id=reviewer_entity_id or entity_id,
+        instructions=REVIEWER_INSTRUCTIONS + REVIEWER_LOOP,
         payload={"household": sessions.summary()}, structure=None, allow_paid_inference=True,
         llm_api=SessionAPI(hass, tools=reviewer_tools(sessions, review_submit) + [WaitForDraft(channel)])))
     channel.reviewer = reviewer
@@ -783,8 +867,9 @@ class CheckHypothesis(llm.Tool):
 
 class ReadAssistantInstructions(_SessionTool):
     name = "read_assistant_instructions"
-    description = ("Read Assist's current instructions (its prompt template, as configured) and which assistant and "
-                   "model it uses. Preference and prompt changes edit these instructions.")
+    description = ("Read Assist's current instructions (its prompt template, as configured), the household knowledge "
+                   "(the lines every assistant reads: for everyone, and for each person), and which assistant and "
+                   "model it uses. Preference and prompt changes add lines to the household knowledge.")
     parameters = probatio.Schema({})
 
     def __init__(self, sessions):
@@ -795,8 +880,12 @@ class ReadAssistantInstructions(_SessionTool):
         template, assistant = instructions(self.sessions)
         if template is None:
             return {"error": "No recorded session shows the assistant's instructions."}
+        knowledge = household_knowledge(self.sessions)
         return {"assistant": assistant.get("title"), "model": assistant.get("options", {}).get("model"),
-                "instructions_template": template}
+                "instructions_template": template,
+                "household_knowledge": {"everyone": knowledge["everyone"],
+                                        "the_person_in_the_sessions": [l for mine in knowledge["people"].values()
+                                                                       for l in mine]}}
 
 
 class ReadScript(llm.Tool):
@@ -835,7 +924,9 @@ def reviewer_tools(sessions, submit, scripts=None):
     scripts: offline script definitions for read_script; live from Home Assistant when None."""
     return ([cls(sessions.household) for cls in TOOLS if cls not in (ReadTurn, DeviceDetails, DevicesInArea)]
             + [DevicesInAreaNow(sessions.household), DeviceDetailsAt(sessions), ListSessions(sessions), ReadSession(sessions), ReadSessionTurn(sessions),
-               ReadAssistantInstructions(sessions), ReadScript(scripts)]
+               ReadAssistantInstructions(sessions), ReadScript(scripts),
+               ListImprovements(sessions.household, sessions.existing),
+               ReadImprovement(sessions.household, sessions.existing)]
             + ([CheckHypothesis(sessions)] if sessions.evidence else []) + [submit])
 
 

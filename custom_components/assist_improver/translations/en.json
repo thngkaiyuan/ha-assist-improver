@@ -4,12 +4,12 @@
     "step": {
       "user": {
         "title": "Set up Assist Improver",
-        "description": "Records supported conversations, tool activity and local state in HA storage. The improver's AI roles run only when an administrator allows paid inference, through the AI model chosen here. HA device actions in replays stay simulated. {guidance} {reason}",
+        "description": "Which AI should study your conversations? {guidance} {reason}",
         "data": {
           "ai_task_entity_id": "AI model"
         },
         "data_description": {
-          "ai_task_entity_id": "The improver's own AI roles call this. The recommended option is created with your AI provider's own setup; nothing else changes."
+          "ai_task_entity_id": "You can change this later."
         }
       },
       "confirm": {
@@ -25,6 +25,9 @@
     },
     "error": {
       "create_failed": "Couldn't create the AI Task automatically: {reason} Add one in Settings → Devices & services → your AI provider → Add AI Task, then choose it here."
+    },
+    "create_entry": {
+      "default": "You're set. Use Assist as usual; you'll be told when there's something to review. Nothing in your home changes until you accept."
     }
   },
   "services": {
@@ -307,11 +310,11 @@
     },
     "generate_hypotheses": {
       "name": "Generate hypotheses (hypothesis generator)",
-      "description": "Opt-in paid evaluation: sends analysed sessions to the configured AI Task, which groups their friction into themes and proposes one change per theme. One call, never retried. Nothing in the house changes.",
+      "description": "Opt-in paid evaluation: sends analyzed sessions to the configured AI Task, which groups their friction into themes and proposes one change per theme. One call, never retried. Nothing in the house changes.",
       "fields": {
-        "analyses": {
-          "name": "Analyses",
-          "description": "Analysed sessions, as Analyze recording returns them."
+        "analyzes": {
+          "name": "Analyzes",
+          "description": "Analyzed sessions, as Analyze recording returns them."
         },
         "allow_paid_inference": {
           "name": "Allow paid inference",
@@ -331,9 +334,9 @@
           "name": "Hypothesis",
           "description": "One hypothesis, as Generate hypotheses returns them."
         },
-        "analyses": {
-          "name": "Analyses",
-          "description": "The analysed sessions the review checks against."
+        "analyzes": {
+          "name": "Analyzes",
+          "description": "The analyzed sessions the review checks against."
         },
         "allow_paid_inference": {
           "name": "Allow paid inference",
@@ -359,9 +362,9 @@
           "name": "Hypotheses",
           "description": "The hypothesis generator's hypotheses."
         },
-        "analyses": {
-          "name": "Analyses",
-          "description": "The journey analyses the hypotheses were built from."
+        "analyzes": {
+          "name": "Analyzes",
+          "description": "The journey analyzes the hypotheses were built from."
         },
         "allow_paid_inference": {
           "name": "Allow paid inference",
@@ -395,72 +398,29 @@
           "description": "Required: each recording is one call to the model."
         }
       }
+    },
+    "write_summaries": {
+      "name": "Write summaries",
+      "description": "A small AI model writes each improvement's headline and what you get, in plain words (those without one, or the ones given). Can cost a little with your AI provider.",
+      "fields": {
+        "improvement_ids": {
+          "name": "Improvements",
+          "description": "Improvement IDs; leave empty for every improvement without a summary."
+        },
+        "entity_id": {
+          "name": "Model",
+          "description": "The AI Task to write with; defaults to the quick-check model, else the follow-up check model, else the main one."
+        },
+        "allow_paid_inference": {
+          "name": "Allow paid inference",
+          "description": "Required: each improvement is one short call to the model."
+        }
+      }
     }
   },
   "options": {
-    "step": {
-      "init": {
-        "title": "Assist Improver",
-        "description": "Improvements to review: {pending}.",
-        "menu_options": {
-          "improvements": "Improvements",
-          "settings": "Settings"
-        }
-      },
-      "settings": {
-        "title": "Assist Improver settings",
-        "description": "Assist Improver uses an AI model to analyse your conversations. {guidance} {reason}",
-        "data": {
-          "ai_task_entity_id": "AI model",
-          "check_ai_task_entity_id": "Follow-up check model",
-          "tests_per_goal": "Tests per goal",
-          "triage_ai_task_entity_id": "Quick-check model"
-        },
-        "data_description": {
-          "ai_task_entity_id": "The improver's own AI roles call this. The recommended option is created with your AI provider's own setup; nothing else changes.",
-          "check_ai_task_entity_id": "Optional. A small, cheap model is enough: it checks that the replay's follow-up messages (your recorded words, replayed in order) still fit the replies around them. Leave empty to skip the check.",
-          "tests_per_goal": "A multiplier on what your assistant normally costs. A goal can come up in several conversations, phrased differently; each time it came up is tested on its own. Each test replays that conversation with a fix, on your own assistant, so it costs about what the conversation did: with 3, testing costs roughly 3 times those conversations, plus one replay of each original.",
-          "triage_ai_task_entity_id": "Optional. A small, cheap model (a local one works) that checks each conversation first; one it's sure went smoothly skips the full analysis, saving its cost. Unsure means a full analysis. Leave empty to analyse every conversation."
-        }
-      },
-      "improvements": {
-        "title": "Improvements",
-        "description": "Improvements tested on your recorded conversations. Waiting for your review: {pending}. Applied ones can be undone here.",
-        "data": {
-          "improvement": "Improvement"
-        }
-      },
-      "review": {
-        "title": "{title}",
-        "description": "{proposal}\n\n{error}",
-        "data": {
-          "decision": "Decision"
-        }
-      },
-      "confirm": {
-        "title": "This AI Task may be too weak",
-        "description": "{entity}:\n{warnings}\n\nTo go back to the list and pick the recommended option, submit without ticking the box. You can also add an AI Task yourself in Settings → Devices & services → your AI provider → Add AI Task ({link}).",
-        "data": {
-          "use_anyway": "Use it anyway"
-        }
-      },
-      "note": {
-        "title": "{decision}",
-        "description": "Add a note for the improver (optional, except when asking for a revision: say what to change). {error}",
-        "data": {
-          "note": "Note"
-        }
-      }
-    },
-    "error": {
-      "create_failed": "Couldn't create the AI Task automatically: {reason} Add one in Settings → Devices & services → your AI provider → Add AI Task, then choose it here.",
-      "decision": "{error}"
-    },
     "abort": {
-      "decided": "{result}",
-      "closed": "{proposal}\n\nThis improvement is {status}; nothing is left to decide.",
-      "not_found": "This improvement is no longer in the list.",
-      "no_improvements": "No improvements yet. They appear here once tests show a change helps."
+      "settings_in_panel": "Assist Improver's settings are in its panel, beside the whole pipeline: which AI model each step uses, when it runs, and more.\n\n[Open the settings]({link})"
     }
   },
   "issues": {
@@ -470,12 +430,12 @@
         "step": {
           "choose": {
             "title": "Assist Improver needs an AI model",
-            "description": "Assist Improver uses an AI model to analyse your conversations. {guidance} {reason}",
+            "description": "Which AI should study your conversations? {guidance} {reason}",
             "data": {
               "ai_task_entity_id": "AI model"
             },
             "data_description": {
-              "ai_task_entity_id": "The improver's own AI roles call this. The recommended option is created with your AI provider's own setup; nothing else changes."
+              "ai_task_entity_id": "You can change this later."
             }
           },
           "confirm": {
@@ -490,71 +450,27 @@
           "create_failed": "Couldn't create the AI Task automatically: {reason} Add one in Settings → Devices & services → your AI provider → Add AI Task, then choose it here."
         },
         "abort": {
-          "no_choice": "No AI model was chosen, so Assist Improver can't analyse conversations yet."
+          "no_choice": "No AI model was chosen, so Assist Improver can't analyze conversations yet."
         }
       }
     },
-    "improvement_ready": {
-      "title": "An improvement to Assist is ready: {title}",
-      "description": "Review it here or in Assist Improver → Configure → Improvements.",
+    "household_assistant": {
+      "title": "{assistant} doesn't read your household knowledge",
       "fix_flow": {
         "step": {
-          "review": {
-            "title": "{title}",
-            "description": "{proposal}\n\n{error}",
-            "data": {
-              "decision": "Decision"
-            }
-          },
-          "note": {
-            "title": "{decision}",
-            "description": "Add a note for the improver (optional, except when asking for a revision: say what to change). {error}",
-            "data": {
-              "note": "Note"
-            }
+          "confirm": {
+            "title": "Let {assistant} read your household knowledge",
+            "description": "Assist Improver keeps what it has learned about your household (what you mean by a word, which device you usually mean) in one place. {assistant} controls your home through plain Assist, so it doesn't see any of it.\n\nSubmit to switch {assistant} to **Assist with household knowledge**: Home Assistant's own Assist, with the same tools and instructions, plus your household's lines. Nothing else in {assistant} changes."
           }
         },
         "abort": {
-          "decided": "{result}",
-          "closed": "{proposal}\n\nThis improvement is {status}; nothing is left to decide.",
-          "not_found": "This improvement is no longer in the list.",
-          "no_improvements": "No improvements yet. They appear here once tests show a change helps."
-        },
-        "error": {
-          "decision": "{error}"
+          "assistant_gone": "That assistant is no longer set up."
         }
       }
     },
-    "improvement_attention": {
-      "title": "An improvement needs attention: {title}",
-      "description": "Review it here or in Assist Improver → Configure → Improvements.",
-      "fix_flow": {
-        "step": {
-          "review": {
-            "title": "{title}",
-            "description": "{proposal}\n\n{error}",
-            "data": {
-              "decision": "Decision"
-            }
-          },
-          "note": {
-            "title": "{decision}",
-            "description": "Add a note for the improver (optional, except when asking for a revision: say what to change). {error}",
-            "data": {
-              "note": "Note"
-            }
-          }
-        },
-        "abort": {
-          "decided": "{result}",
-          "closed": "{proposal}\n\nThis improvement is {status}; nothing is left to decide.",
-          "not_found": "This improvement is no longer in the list.",
-          "no_improvements": "No improvements yet. They appear here once tests show a change helps."
-        },
-        "error": {
-          "decision": "{error}"
-        }
-      }
+    "step_models": {
+      "title": "Some Assist Improver steps can't run",
+      "description": "The AI model chosen for {steps} isn't available anymore. Runs wait until you choose another in [Assist Improver's settings]({link})."
     }
   }
 }

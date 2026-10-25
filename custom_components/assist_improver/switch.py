@@ -1,4 +1,4 @@
-"""The "Practice mode" switch: sandboxes your own conversations with your regular assistant."""
+"""The "Sandbox mode" switch (practice mode in the code): sandboxes your own conversations with your regular assistant."""
 
 from homeassistant.components import persistent_notification
 from homeassistant.components.switch import SwitchEntity
@@ -22,7 +22,7 @@ class PracticeModeSwitch(SwitchEntity):
     """On for whoever turned it on: their Assist conversations use a simulated home. Others are unaffected."""
 
     _attr_has_entity_name = False
-    _attr_name = "Practice mode"
+    _attr_name = "Sandbox mode"
     _attr_icon = "mdi:school-outline"
 
     def __init__(self, entry):
@@ -45,9 +45,9 @@ class PracticeModeSwitch(SwitchEntity):
     def _on_change(self):
         for user_id in set(self.mode.users) - self._notified:
             persistent_notification.async_create(
-                self.hass, f"Practice mode is on for {self.mode.users[user_id]}. Their Assist conversations use a "
+                self.hass, f"Sandbox mode is on for {self.mode.users[user_id]}. Their Assist conversations use a "
                            "simulated home, so nothing real changes. It stays on until they turn it off.",
-                title="Assist Improver: practice mode", notification_id=_notification_id(user_id))
+                title="Assist Improver: sandbox mode", notification_id=_notification_id(user_id))
         for user_id in self._notified - set(self.mode.users):
             persistent_notification.async_dismiss(self.hass, _notification_id(user_id))
         self._notified = set(self.mode.users)
@@ -64,7 +64,7 @@ class PracticeModeSwitch(SwitchEntity):
     def _user_id(self):
         user_id = self._context.user_id if self._context else None
         if not user_id:
-            raise HomeAssistantError("Practice mode is per person: turn it on while signed in to Home Assistant.")
+            raise HomeAssistantError("Sandbox mode is per person: turn it on while signed in to Home Assistant.")
         return user_id
 
     async def async_turn_on(self, **kwargs):

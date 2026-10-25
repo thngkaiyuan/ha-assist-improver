@@ -72,12 +72,13 @@ class SandboxHome(llm.API):
     """
 
     def __init__(self, hass, recording, turn, run_id, *, scripts=None, automations=None, exposure_changes=None,
-                 alias_changes=None, alias_removals=None, prompt_template=None):
+                 alias_changes=None, alias_removals=None, prompt_template=None, household=None):
         super().__init__(hass=hass, id=run_id, name="Recorded home")
         self.recording, self.first_turn = recording, turn
         self.scripts, self.automations, self.exposure_changes = scripts, automations, exposure_changes or {}
         self.alias_changes, self.prompt_template = alias_changes or {}, prompt_template
         self.alias_removals = alias_removals or {}
+        self.household = household  # A change's household knowledge, read through Assist with household knowledge.
         self.sandbox = self.ha_api = None
         self.unsupported, self.dispatched = [], []
         self.world = SimpleNamespace(states={}, transitions=[], calls=[])
@@ -114,8 +115,17 @@ class SandboxHome(llm.API):
         await self.start()
         options = turn["prepared"]["provider_config"][0]["options"]
         template = self.prompt_template if self.prompt_template is not None else options.get("prompt")
+        api_id = turn["prepared"].get("api_id") or "assist"
+        recorded = household_api_ids(api_id)
+        if self.household is not None or recorded:
+            # The household API, as recorded (its knowledge then) or as a change would make it.
+            from .household import API_ID, HouseholdAPI
+            knowledge = self.household if self.household is not None else turn["source"].get("household")
+            await self.sandbox.run(lambda hass: _register(hass, HouseholdAPI(hass, knowledge)))
+            if not recorded:
+                api_id = [API_ID if a == "assist" else a for a in ([api_id] if isinstance(api_id, str) else api_id)]
         self.prompt, self.ha_api = await self.sandbox.run(lambda hass: system_prompt(
-            hass, llm_context, turn["prepared"].get("api_id") or "assist", template))
+            hass, llm_context, api_id, template))
         if self.ha_api is None:
             raise UnsupportedSimulation("Home Assistant's Assist tools are unavailable in the sandbox")
         return RecordedAPIInstance(api=self, api_prompt=self.ha_api.api_prompt, llm_context=llm_context,
@@ -140,11 +150,23 @@ class SandboxHome(llm.API):
         raise UnsupportedSimulation("A replay's tools come from its sandbox")
 
 
+def household_api_ids(api_id):
+    from .household import API_ID
+    return API_ID in ([api_id] if isinstance(api_id, str) else api_id or [])
+
+
+async def _register(hass, api):
+    from homeassistant.helpers import llm
+    apis = llm._async_get_apis(hass)
+    apis.pop(api.id, None)  # A sandbox serves one replay's knowledge at a time.
+    llm.async_register_api(hass, api)
+
+
 class FrozenTurnLog(conversation.ChatLog):
     """Use the exact prepared prefix, never later user turns or today's context."""
     def __init__(self, hass, case, recording, *, turn_number=None, scripts=None, automations=None,
                  exposure_changes=None, alias_changes=None, alias_removals=None, prompt_template=None,
-                 use_sandbox_prompt=False):
+                 use_sandbox_prompt=False, household=None):
         turns = verify_case(case, recording)
         turn = next((t for t in turns if t["number"] == (turn_number or case["turns"][0])), None)
         if turn is None:
@@ -175,7 +197,7 @@ class FrozenTurnLog(conversation.ChatLog):
         self.replay_api = SandboxHome(hass, recording, verify_case(case, recording)[0], run_id, scripts=scripts,
                                       automations=automations, exposure_changes=exposure_changes,
                                       alias_changes=alias_changes, alias_removals=alias_removals,
-                                      prompt_template=prompt_template)
+                                      prompt_template=prompt_template, household=household)
         # A candidate whose change shows in Assist's instructions (a preference, an alias) uses the prompt HA builds
         # in the sandbox with the change; otherwise the model sees exactly the recorded prompt.
         self.use_sandbox_prompt = use_sandbox_prompt

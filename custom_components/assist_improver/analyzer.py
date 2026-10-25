@@ -42,6 +42,12 @@ If you cannot even tell which devices the user meant, write one short question f
 
 Answer only by calling submit_goals, with sub-goals in the same goals list. It checks your answer against the recording, including that every state is one the device has (device_details shows a device's modes and options). If it reports problems, fix them and submit again. When it accepts your answer, finish with one short sentence."""
 
+# Added to the instructions when improvements exist (waiting for review, or applied): a goal one of them already fixes
+# stops here instead of flowing on to the proposer.
+DUPLICATES = """
+
+Some of what went wrong here may already have a fix: an improvement waiting for the household's review, or one already applied. Your input's improvements_on_these_devices lists those that touch the devices in this session; list_improvements lists them all, and read_improvement shows one in full (its changes, and the conversations it was tested on). Once your goals are accepted, check each goal the user had to repeat, correct or clarify, or that went unmet: if an improvement already fixes what went wrong there, call mark_duplicate with the goal's turn, that improvement and why, so it isn't fixed twice. One applied before this session took place didn't prevent what happened here, so it doesn't count. Mark a goal only when you're sure; otherwise leave it."""
+
 STRUCTURE = probatio.Schema({
     probatio.Required("goals"): [{
         probatio.Required("turn"): int,
@@ -245,16 +251,16 @@ class SubmitGoals(_SessionTool):
                    "if problems are reported, fix them and submit again.")
     parameters = STRUCTURE
 
-    def __init__(self, view):
+    def __init__(self, view, then="Finish with one short sentence."):
         super().__init__(view)
-        self.submissions = []
+        self.submissions, self.then = [], then
 
     def run(self, **answer):
         found = problems(self.view, answer)
         self.submissions.append({"answer": answer, "problems": found})
         if found:
             return {"accepted": False, "problems": found}
-        return {"accepted": True, "message": "Accepted. Finish with one short sentence."}
+        return {"accepted": True, "message": f"Accepted. {self.then}"}
 
     def best(self):
         """(status, answer, problems): the last accepted submission, else the one with fewest problems."""
@@ -265,3 +271,40 @@ class SubmitGoals(_SessionTool):
             return "accepted", accepted[-1]["answer"], []
         best = min(reversed(self.submissions), key=lambda s: len(s["problems"]))
         return "best_rejected", best["answer"], best["problems"]
+
+
+class MarkDuplicate(_SessionTool):
+    """A goal an existing improvement already fixes: it stops here, kept with that improvement, instead of going on
+    to the proposer. Checked by code; the marks on goals in the final answer count."""
+    name = "mark_duplicate"
+    description = ("Mark a goal whose friction an existing improvement (from list_improvements) already fixes, so it "
+                   "isn't fixed twice: the goal's turn, the improvement, and why it fixes what went wrong there.")
+    parameters = probatio.Schema({probatio.Required("goal_turn"): int, probatio.Required("improvement"): str,
+                                  probatio.Required("why"): str})
+    THEN = "Check existing improvements for any goal that had friction (mark_duplicate), then finish with one short " \
+           "sentence."
+
+    def __init__(self, view, existing):
+        super().__init__(view)
+        self.existing, self.marks = {i["improvement"]: i for i in existing}, {}
+
+    def run(self, goal_turn, improvement, why):
+        from .exploration import applied_too_early
+        item = self.existing.get(improvement)
+        if item is None:
+            return {"accepted": False, "problem": f"There's no improvement {improvement!r}; list_improvements shows "
+                                                  f"{', '.join(self.existing) or 'none'}."}
+        if not 1 <= goal_turn <= len(self.view.digest["turns"]):
+            return {"accepted": False, "problem": f"This session has no turn {goal_turn}."}
+        if not why.strip():
+            return {"accepted": False, "problem": f"Say why {item['title']!r} fixes what went wrong there."}
+        if too_early := applied_too_early(item, self.view.digest["started"]):
+            return {"accepted": False, "problem": f"{too_early} Leave this goal unmarked."}
+        self.marks[goal_turn] = {"goal_turn": goal_turn, "improvement": improvement, "why": why.strip()}
+        return {"accepted": True, "message": f"Marked: the goal at turn {goal_turn} is already fixed by "
+                                             f"{item['title']!r}. It must be one of your accepted goals."}
+
+    def kept(self, answer):
+        """The marks on goals in the final answer (a mark on a turn that isn't a goal there is dropped)."""
+        turns = {g["turn"] for g in top_level((answer or {}).get("goals", []))}
+        return [mark for turn, mark in sorted(self.marks.items()) if turn in turns]

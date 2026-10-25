@@ -10,6 +10,7 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from copy import deepcopy
 import json
+import re
 
 from homeassistant.components import ai_task
 from homeassistant.components.conversation.trace import (
@@ -34,6 +35,16 @@ def role_marker(role):
         ROLE_ACTIVE.reset(token)
 
 
+NO_TOOLS = re.compile(r"(does not|doesn't|do not|not) support (tools|tool use|tool calling|function calling)", re.I)
+NO_TOOLS_MESSAGE = ("This AI model can't use tools, which this step needs. Choose a model that supports tool use, "
+                    "such as Claude Opus 5.5.")
+
+
+def explained(message):
+    """A provider's error in the household's words where it's one they can act on."""
+    return NO_TOOLS_MESSAGE if NO_TOOLS.search(message or "") else message
+
+
 async def run_role(hass, *, role, entity_id, instructions, payload, structure, llm_api=None,
                    allow_paid_inference=False):
     """One AI Task call. Returns a run record; never retries or resamples."""
@@ -52,7 +63,7 @@ async def run_role(hass, *, role, entity_id, instructions, payload, structure, l
                 instructions=text, structure=structure, llm_api=llm_api)
             record.update(status="completed", output=plain(result.data), conversation_id=result.conversation_id)
         except Exception as err:
-            record.update(status="failed", error={"type": type(err).__name__, "message": str(err)[:500]})
+            record.update(status="failed", error={"type": type(err).__name__, "message": explained(str(err))[:500]})
     stats = [plain(e["data"]["stats"]) for e in trace.as_dict()["events"]
              if e["event_type"] == ConversationTraceEventType.AGENT_DETAIL
              and isinstance(e["data"], dict) and "stats" in e["data"]]

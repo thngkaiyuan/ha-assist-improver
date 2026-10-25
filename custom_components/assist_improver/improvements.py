@@ -1,15 +1,12 @@
-"""Tested improvements awaiting the user's decision: one list, shown in Configure and in Repairs, kept in sync.
+"""Tested improvements awaiting the user's decision: one list, reviewed in the panel (panel.py).
 
 An improvement is one hypothesis's changes with every test of them (one per goal
 instance): built by code from the candidates store whenever tests finish. A
-decision in either place goes through `decide`, which updates the list, the
-Repairs items and the notification together.
+decision goes through `decide`, which updates the list and the notification
+together.
 """
 
 from copy import deepcopy
-import difflib
-import html
-import textwrap
 
 from homeassistant.components import persistent_notification
 from homeassistant.helpers import issue_registry as ir
@@ -20,17 +17,17 @@ from .cases import CaseError, digest, recording_turns
 from .changeset import Changesets, Conflict, plan_steps, read, undo_steps
 from .const import DOMAIN, STORAGE_VERSION
 
-PENDING = ("awaiting_review", "needs_attention")  # Waiting on the user: in Repairs and the notification.
+PENDING = ("awaiting_review", "needs_attention")  # Waiting on the user: in the notification.
 NOTIFICATION = f"{DOMAIN}_improvements"
 OUTCOME_NOTIFICATION = f"{DOMAIN}_changes"
-ISSUE_PREFIX = "improvement_"
+ISSUE_PREFIX = "improvement_"  # Repairs items from 0.18 to 0.20, removed at startup.
 DECISIONS = {  # Decision: (status, label).
     "accept": ("applied", "Accept changes"),
     "revise": ("revision_requested", "Ask for a revision"),
     "needs_improvement": ("revision_requested", "The change needs improvement"),
     "decline": ("declined", "Decline"),
     "fine_as_is": ("declined", "Things were fine as they were"),
-    "was_test": ("ignored", "Ignore: that conversation was a test"),
+    "was_test": ("ignored", "That conversation was a test"),
     "undo": ("undone", "Undo changes"),
 }
 
@@ -94,12 +91,126 @@ class Improvements:
             raise CaseError("Unknown improvement")
         return deepcopy(self.items[improvement_id])
 
+    def feedback(self):
+        """The household's decisions on earlier improvements, for the generator and reviewer: what was declined, what
+        was fine as it was, what to revise (with the note), and what was accepted."""
+        out = []
+        for item in self.items.values():
+            if not item.get("decisions"):
+                continue
+            last = item["decisions"][-1]
+            out.append({"title": item["title"], "changes": deepcopy(item["changes"]), "decision": last["decision"],
+                        "note": last.get("note") or "", "status": item["status"]})
+        return out
+
+    async def write_copy(self, entity_id, improvement_ids=None):
+        """The editor writes the headline and what-you-get for the improvements waiting for it (or the ones given),
+        which then go up for review. Returns {improvement id: copy}; an improvement whose copy failed goes up with
+        the generator's title."""
+        from .editor import write
+        out = {}
+        waiting = {i["id"] for i in self.unwritten()}
+        for item in list(self.items.values()):
+            if improvement_ids is not None and item["id"] not in improvement_ids:
+                continue
+            if improvement_ids is None and item["id"] not in waiting:
+                continue
+            item["copy"] = out[item["id"]] = await write(self.hass, item, entity_id)
+            await self._save()
+        self._sync()  # The notification names improvements by their headlines.
+        return out
+
+    def settled_goals(self):
+        """{"session:turn": title} of goal instances that already have an improvement waiting, applied or decided: a
+        run leaves them out. A goal whose improvement the household asked to revise (or that changed since it was
+        tested) is open again, with the note."""
+        out = {}
+        for item in self.items.values():
+            if item["status"] in ("revision_requested", "conflict", "revised"):
+                continue
+            for goal in self._covers(item):
+                out.setdefault(goal, item["title"])
+        return out
+
+    @staticmethod
+    def _covers(item):
+        """The goal instances ("session:turn") an improvement covers: tested, untested, and found already addressed."""
+        return list(dict.fromkeys([t["goal"] for t in item.get("tests", [])] + list(item.get("untested_goals", []))
+                                  + [g["goal"] for g in item.get("also_addressed", [])]))
+
+    def catalog(self, detailed=False):
+        """What the proposer and reviewer check before proposing a fix (their list_improvements tool): improvements
+        waiting for the household's review (written up or not) and those applied (with when), each with its cause,
+        changes and the goals it covers. detailed: each also carries what read_improvement shows."""
+        out = []
+        for item in self.items.values():
+            if item["status"] not in (*PENDING, "applied"):
+                continue
+            applied = item["status"] == "applied"
+            out.append({"improvement": item["id"], "title": (item.get("copy") or {}).get("headline") or item["title"],
+                        "status": "applied" if applied else "waiting for review",
+                        **({"applied": item["application"]["at"]} if applied and item.get("application") else {}),
+                        "cause": item.get("cause") or "", "changes": deepcopy(item["changes"]),
+                        "goals": self._covers(item), "devices": self._devices(item),
+                        **({"details": self._details(item)} if detailed else {})})
+        return out
+
+    @staticmethod
+    def _details(item):
+        """One improvement in full, for read_improvement: what it changes and expects, the sessions it agrees and
+        disagrees with, each test (the conversation before, the replay after, the result), and the goals found
+        already addressed by it."""
+        hypothesis, copy = item.get("hypothesis") or {}, item.get("copy") or {}
+        return {"headline": copy.get("headline"), "benefit": copy.get("benefit"), "cause": item.get("cause") or "",
+                "expected": hypothesis.get("expected"), "changes": deepcopy(item["changes"]),
+                "support": deepcopy(hypothesis.get("support") or []),
+                "conflicts": deepcopy(hypothesis.get("conflicts") or []),
+                "tested_on": [{k: deepcopy(t.get(k)) for k in ("goal", "summary", "status", "turns_before",
+                                                                "turns_after", "goal_newly_met", "before", "after")}
+                              for t in item.get("tests", [])],
+                "untested_goals": list(item.get("untested_goals", [])),
+                "also_addressed": [{k: g[k] for k in ("goal", "why")} for g in item.get("also_addressed", [])],
+                "decisions": [{k: d.get(k) for k in ("decision", "note")} for d in item.get("decisions", [])]}
+
+    def _devices(self, item):
+        """The devices an improvement touches: those its changes name, and those its tested goals wanted."""
+        found = set()
+        for change in item.get("changes", []):
+            found.update(e for e in [change.get("entity_id"), *(s.get("entity_id") for s in change.get("steps") or [])]
+                         if isinstance(e, str))
+        for test in item.get("tests", []):
+            try:
+                criteria = self.recorder.casebook.get(test["case_id"])["destination"].get("criteria") or {}
+            except (CaseError, KeyError):
+                continue
+            found.update(criteria.get("states") or criteria.get("sequences") or {})
+        return sorted(found)
+
+    async def note_addressed(self, found):
+        """Goals the proposer found an existing improvement already addresses ([{session, goal_turn, improvement,
+        why}]): kept with that improvement, so later runs leave them out, as they do its own goals."""
+        changed = 0
+        for entry in found or []:
+            item, goal = self.items.get(entry["improvement"]), f"{entry['session']}:{entry['goal_turn']}"
+            if item is not None and goal not in self._covers(item):
+                item.setdefault("also_addressed", []).append({"goal": goal, "why": entry["why"],
+                                                              "at": utcnow().isoformat()})
+                changed += 1
+        if changed:
+            await self._save()
+        return changed
+
     def pending(self):
-        return [deepcopy(i) for i in self.items.values() if i["status"] in PENDING]
+        """Improvements waiting on the household: written up, so each reads in plain words."""
+        return [deepcopy(i) for i in self.items.values() if i["status"] in PENDING and i.get("copy")]
+
+    def unwritten(self):
+        """Improvements waiting for the editor (the write-up stage's backlog), not yet up for review."""
+        return [deepcopy(i) for i in self.items.values() if i["status"] in PENDING and not i.get("copy")]
 
     def listed(self):
-        """Every improvement, those waiting on the user first, then the most recent."""
-        return sorted((deepcopy(i) for i in self.items.values()),
+        """Every improvement up for review or decided, those waiting on the user first, then the most recent."""
+        return sorted((deepcopy(i) for i in self.items.values() if i["status"] not in PENDING or i.get("copy")),
                       key=lambda i: (i["status"] not in PENDING, i["status"] != "applied", i["created"]), reverse=False)
 
     async def refresh(self):
@@ -131,7 +242,7 @@ class Improvements:
                      "cause": hypothesis.get("cause") or "", "hypothesis": deepcopy(hypothesis),
                      "changes": deepcopy(hypothesis["changes"]),
                      "setup": {k: deepcopy(plan["setup"].get(k, {})) for k in
-                               ("scripts", "exposure", "aliases", "alias_removals")},
+                               ("scripts", "exposure", "aliases", "alias_removals", "household")},
                      # What the replays started from: changed since, and the change is a conflict.
                      "tested": {"scripts": {e.split(".", 1)[1]: deepcopy(d) for e, d in plan["definitions"].items()},
                                 "exposure": {e["entity_id"]: e["before"] for e in plan["edits"]}},
@@ -145,8 +256,13 @@ class Improvements:
             else:
                 self.items[improvement_id] = {**built, "status": "awaiting_review", "created": utcnow().isoformat(),
                                               "decisions": [], "application": None, "history": []}
-        for improvement_id, item in list(self.items.items()):  # Built differently before, and never decided.
-            if improvement_id not in built_ids and not item["decisions"] and item["status"] == "awaiting_review":
+                self._link_revision(self.items[improvement_id])
+        # An undecided improvement whose tests now belong to another (regrouped) is dropped; one whose tests are
+        # simply gone from the candidates store stays: pruning records never loses a pending review.
+        regrouped = {i["plan"]["id"] for items in groups.values() for i in items}
+        for improvement_id, item in list(self.items.items()):
+            if (improvement_id not in built_ids and not item["decisions"] and item["status"] == "awaiting_review"
+                    and any(t.get("plan_id") in regrouped for t in item.get("tests", []))):
                 del self.items[improvement_id]
         await self._save()
         self._sync()
@@ -159,6 +275,21 @@ class Improvements:
             return case_id
         evidence = case["destination"].get("evidence") or {}
         return f"{evidence.get('session', case['recording_id'][:8])}:{evidence.get('goal_turn', case['turns'][0])}"
+
+    def _link_revision(self, new):
+        """A new improvement for goals whose earlier one the household asked to revise is that revision: it says so
+        (with their note), and the earlier one is marked revised, so only the new one waits for review."""
+        goals = {t["goal"] for t in new["tests"]} | set(new["untested_goals"])
+        for old in self.items.values():
+            if old is new or old["status"] != "revision_requested":
+                continue
+            if goals & ({t["goal"] for t in old.get("tests", [])} | set(old.get("untested_goals", []))):
+                note = next((d.get("note") for d in reversed(old["decisions"]) if d["decision"] in
+                             ("revise", "needs_improvement")), "") or ""
+                new["revises"] = {"id": old["id"], "title": old["title"], "note": note}
+                old["status"] = "revised"
+                old["revised_by"] = new["id"]
+                return
 
     async def _test(self, item):
         plan, result = item["plan"], item["result"]
@@ -187,28 +318,26 @@ class Improvements:
                       if (name := f"{g['session'][:8]}:{g['goal_turn']}") not in tested)
 
     def _sync(self):
-        """Repairs has one item per improvement waiting on the user; the notification counts them."""
+        """The notification lists the improvements waiting on the user, each linking to its review in the panel.
+        (Repairs items from earlier versions are removed.)"""
         registry = ir.async_get(self.hass)
-        wanted = {ISSUE_PREFIX + i["id"]: i for i in self.items.values() if i["status"] in PENDING}
         for (domain, issue_id) in list(registry.issues):
-            if domain == DOMAIN and issue_id.startswith(ISSUE_PREFIX) and issue_id not in wanted:
+            if domain == DOMAIN and issue_id.startswith(ISSUE_PREFIX):
                 ir.async_delete_issue(self.hass, DOMAIN, issue_id)
-        for issue_id, item in wanted.items():
-            attention = item["status"] == "needs_attention"
-            ir.async_create_issue(self.hass, DOMAIN, issue_id, is_fixable=True, severity=ir.IssueSeverity.WARNING,
-                                  translation_key="improvement_attention" if attention else "improvement_ready",
-                                  translation_placeholders={"title": item["title"]},
-                                  data={"improvement_id": item["id"]})
+        wanted = {i["id"]: i for i in self.pending()}
+        from .panel import set_count
+        set_count(self.hass, len(wanted))  # The count beside the panel in the sidebar.
         if not wanted:
             persistent_notification.async_dismiss(self.hass, NOTIFICATION)
             return
+        # Each links straight to its review in the panel.
+        from .panel import URL_PATH, review_url
         count = len(wanted)
+        titles = "\n".join(f"- [{display_title(i)}]({review_url(i['id'])})" for i in wanted.values())
+        these = "these improvements" if count > 1 else "this improvement"
         persistent_notification.async_create(
-            self.hass, f"{count} tested improvement{'s' if count > 1 else ''} to Assist "
-            f"{'are' if count > 1 else 'is'} ready for your review. Open "
-            f"[Assist Improver](/config/integrations/integration/{DOMAIN}) and choose Configure → Improvements, "
-            f"or review {'them' if count > 1 else 'it'} in [Repairs](/config/repairs).",
-            title="Assist Improver", notification_id=NOTIFICATION)
+            self.hass, f"{titles}\n\nReview {these} in [Assist Improver](/{URL_PATH}).",
+            title=f"{count} Improvement{'s' if count > 1 else ''} identified", notification_id=NOTIFICATION)
 
     async def decide(self, improvement_id, decision, *, note="", user_id=None):
         """Record a decision and act on it. Returns the improvement, with `outcome` saying what happened."""
@@ -226,10 +355,27 @@ class Improvements:
             item["status"] = DECISIONS[decision][0]
             outcome = {"status": "recorded"}
         item["decisions"].append({**record, "outcome": outcome["status"]})
+        item["last_outcome"] = {**outcome, "at": record["at"]}  # Shown on the review page for a short while.
         self.items[improvement_id] = item
         await self._save()
         self._sync()
+        from .household import update_issues
+        update_issues(self.hass)  # Once the whole changeset is in: an assistant it switched is no longer missing.
         return {**deepcopy(item), "outcome": outcome}
+
+    async def auto_accept(self, improvement_ids):
+        """Accept improvements as soon as they're written up (the auto-accept setting): each applied all or nothing,
+        recorded as accepted automatically; one that can't be applied stays up for review. Returns how many applied."""
+        applied = 0
+        for improvement_id in improvement_ids:
+            item = self.items.get(improvement_id)
+            if not item or item["status"] not in PENDING or "accept" not in choices(item):
+                continue
+            result = await self.decide(improvement_id, "accept", note="Accepted automatically")
+            self.items[improvement_id]["decisions"][-1]["auto"] = True
+            applied += result["status"] == "applied"
+        await self._save()
+        return applied
 
     async def _apply(self, item, user_id):
         steps, already, conflicts = await plan_steps(self.hass, item)
@@ -265,26 +411,13 @@ class Improvements:
         return {**result, "left": left}
 
 
-GREEN, RED = "#1a7f37", "#cf222e"  # A diff viewer's added and removed lines.
-KINDS = {"script": "script", "alias": "aliases", "exposure": "exposure", "prompt": "instructions"}
-WRAP = 56  # Characters per diff line.
+KINDS = {"script": "script", "alias": "aliases", "exposure": "exposure", "prompt": "instructions",
+         "household": "household", "assistant_api": "assistant"}
 
 
-def _n(count, word):
-    return f"{count} {word}{'' if count == 1 else 's'}"
-
-
-def _esc(text):
-    return html.escape(str(text), quote=False)
-
-
-def _section(title, body, open_=False):
-    return f"<details{' open' if open_ else ''}><summary>{title}</summary>\n\n{body}\n\n</details>"
-
-
-def _box(kind, lines):
-    """Lines in a tinted box: success is green, error is red."""
-    return f'<ha-alert alert-type="{kind}">' + "<br>".join(_esc(l) for l in lines) + "</ha-alert>"
+def display_title(item):
+    """What the household reads as the improvement's name: the editor's headline, else the generator's title."""
+    return ((item.get("copy") or {}).get("headline") or item["title"]).strip()
 
 
 def benefits(item):
@@ -294,106 +427,3 @@ def benefits(item):
     removed = [f"\u201c{turn['you'].strip()}\u201d" for t in improved
                if (t.get("turns_after") or 0) < (t.get("turns_before") or 0) for turn in t["before"][t["turns_after"]:]]
     return enabled, removed
-
-
-def describe(item, planned=None):
-    """The improvement the way a code review shows a change: what it gets you, then the goals it enables (green)
-    and the turns it saves (red), the changeset one line per change (each opening to its diff), and why.
-
-    planned: (steps, already, conflicts) from checking it against Home Assistant now; otherwise the applied steps."""
-    enabled, removed = benefits(item)
-    headline = " \u00b7 ".join(p for p in (enabled and f"Enables {_n(len(enabled), 'task')}",
-                                           removed and f"{_n(len(removed), 'fewer turn')}") if p)
-    parts = [f"**{headline or 'Tested on your conversations'}**"]  # The improvement's name is the dialog's title.
-    steps, already, conflicts = planned or ((item.get("application") or {}).get("steps") or [], [], [])
-    if conflicts:
-        parts += ["", _box("error", ["Can't apply it now:"] + [f"{c['what']}: {c['why']}" for c in conflicts])]
-    if enabled:
-        parts += ["", _section(f"Tasks now enabled ({len(enabled)})", _box("success", enabled))]
-    if removed:
-        parts += ["", _section(f"Turns no longer needed ({len(removed)})", _box("error", removed))]
-    changes = [_change_line(step) for step in steps] + [
-        _section(f"{_esc(a['what'])} \u00b7 {KINDS[a['kind']]} \u00b7 already in place", "Nothing to change.")
-        for a in already]
-    if not changes:  # Not checked against Home Assistant (decided already): the changes as proposed.
-        assistant = item["provider"].get("title") or "Assist"
-        changes = ["<br>".join(_esc(_change_text(c, assistant)) for c in item["changes"])]
-    parts += ["", _section(f"Changeset ({len(steps) + len(already) or len(item['changes'])})", "\n\n".join(changes))]
-    tested = []
-    for test in item["tests"]:
-        result = {"awaiting_review": "improved", "not_improved": "not improved"}.get(test["status"], test["status"])
-        tested.append(f"{_esc(test['summary'])}: {result}")
-    why = [_esc(item["cause"]), "", "Tested on " + _n(len(item["tests"]), "conversation") + ":<br>" + "<br>".join(tested)]
-    if item["untested_goals"]:
-        why += ["", f"Expected to help {_n(len(item['untested_goals']), 'more conversation')} too (not tested)."]
-    why += ["", "Replays ran in a sandboxed copy of your home: nothing in the house moved, and physical positions "
-            "aren't simulated. Accepting changes only Home Assistant settings; no script runs."]
-    parts += ["", _section("Why", "\n".join(why))]
-    return "\n".join(parts)
-
-
-def _change_line(step):
-    """One change, collapsed to its name, kind and +/- counts; open, its diff."""
-    lines = _diff(step)
-    added, gone = sum(1 for sign, _ in lines if sign == "+"), sum(1 for sign, _ in lines if sign == "-")
-    counts = " ".join(c for c in (added and f'<font color="{GREEN}">+{added}</font>',
-                                  gone and f'<font color="{RED}">\u2212{gone}</font>') if c)
-    rows = []
-    for sign, text in lines:  # Wrapped, keeping the indent: the dialog doesn't scroll sideways.
-        indent = " " * (len(text) - len(text.lstrip()))
-        for part in textwrap.wrap(text, WRAP, initial_indent="", subsequent_indent=indent + "  ",
-                                  drop_whitespace=False) or [""]:
-            rows.append(f'<font color="{GREEN if sign == "+" else RED}">{sign} {_esc(part)}</font>'
-                        if sign in "+-" else f"  {_esc(part)}")
-    body = "<pre>" + "\n".join(rows) + "</pre>"
-    return _section(f"{_esc(step['what'])} \u00b7 {KINDS[step['kind']]} {counts}".rstrip(), body)
-
-
-def _diff(step):
-    """[(sign, line)]: + added, - removed, space for context (one line around each change)."""
-    kind, before, after = step["kind"], step["before"], step["after"]
-    if kind == "exposure":
-        return [("+" if after else "-", "exposed to Assist")]
-    if kind == "alias":
-        name = lambda a: a if a is not None else "(its own name)"
-        return ([("-", name(a)) for a in before or [] if a not in after]
-                + [("+", name(a)) for a in after if a not in (before or [])])
-    if kind == "script":
-        import yaml
-        from annotatedyaml.dumper import FastestAvailableSafeDumper
-        def dump(config):  # As HA writes scripts, but unfolded: long lines are wrapped once, for the dialog.
-            return yaml.dump(config, default_flow_style=False, allow_unicode=True, sort_keys=False, width=10**6,
-                             Dumper=FastestAvailableSafeDumper).replace(": null\n", ":\n").splitlines()
-        old, new = (dump(before) if before else []), dump(after)
-    else:
-        old, new = (before or "").splitlines(), (after or "").splitlines()
-    out = []
-    for line in difflib.unified_diff(old, new, n=1, lineterm=""):
-        if line.startswith(("---", "+++")):
-            continue
-        out.append((" ", "\u2026") if line.startswith("@@") else (line[0], line[1:]))
-    return out[1:] if out and out[0] == (" ", "\u2026") else out
-
-
-def _change_text(change, assistant):
-    kind = change["kind"]
-    if kind in ("preference", "prompt"):  # The instructions of the assistant the conversations used.
-        who = "for you" if change.get("for") == "this_user" else "for everyone"
-        text = f"Add to {assistant}'s instructions ({who}): “{change.get('text', '').strip()}”"
-        if change.get("replaces"):
-            text += ", replacing " + ", ".join(f"“{r}”" for r in change["replaces"])
-        return text
-    if kind == "alias":
-        text = f"Give {change['entity_id']} the alias “{change.get('alias')}”"
-        return text + (", replacing " + ", ".join(change["replaces"]) if change.get("replaces") else "")
-    if kind == "exposure":
-        return f"{'Expose' if change.get('expose', True) else 'Hide'} {change['entity_id']} " \
-               f"{'to' if change.get('expose', True) else 'from'} Assist"
-    if kind == "script":
-        steps = ", ".join(s.get("stop") and f"stop: {s['stop']}" or f"{s['service']} {s['entity_id']}"
-                          for s in change.get("steps") or [])
-        if change.get("entity_id"):
-            return f"Change script {change['entity_id']}" + (f": {steps}" if steps else "") + \
-                   (f" (description: {change['text']})" if change.get("text") else "")
-        return f"New script “{change.get('script_name')}”: {steps}"
-    return kind

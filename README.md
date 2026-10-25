@@ -4,7 +4,7 @@
 
 **Your Home Assistant's AI, easier every week.**
 
-> 🚧 In development, and currently being tested in my household on Home Assistant 2026.10.2.
+> 🚧 In development, and currently being tested in my household on Home Assistant 2026.10.3.
 
 <p align="center"><img src="assets/smoother.png" alt="Saying you are cold: three turns today, one turn with exact words after the first improvement, one natural turn after the second"></p>
 
@@ -35,69 +35,29 @@ The principles behind each step: [Design principles](docs/DESIGN.md).
 - [x] Find journeys and interventions
 - [x] Spot recurring problems and propose fixes
 - [x] Build and test the fixes
-- [ ] Review and apply them in Home Assistant **<===== we are here**
-- [ ] Run on its own schedule
-- [ ] Ready for other households
+- [x] Review and apply them in Home Assistant
+- [x] Run when you choose, or on a schedule
+- [ ] Ready for other households **<===== we are here**
 
 ## Getting started
 
-<!-- Screenshots for each step come from a demo household (no real home), generated with the project's UI checks. -->
+1. **Install** through [HACS](https://hacs.xyz): add this repository as a custom repository (type **Integration**), download **Assist Improver**, and restart Home Assistant.
+2. **Add it:** Settings → Devices & services → Add integration → **Assist Improver**. Keep the recommended AI model: Claude Opus 5.5 does the thinking, and a small model is added for the quick steps.
+3. **Use Assist as usual.**
+4. **Run it:** open **Assist Improver** in the sidebar and choose **Run now**. Before anything starts, it tells you what the run will do and that it costs money with your AI providers.
+5. **Review:** you're told when improvements are ready. Open one, check what changes, and accept it.
 
-### 1. Install
+<p align="center"><img src="assets/getting-started/panel.png" width="720" alt="Assist Improver: 3 improvements to review, each with what it gets you"></p>
+<p align="center"><img src="assets/getting-started/review.png" width="720" alt="A review: the task it enables, the turn it saves, and the exact change, as a diff"></p>
 
-Through [HACS](https://hacs.xyz):
+That's it. Good to know:
 
-1. HACS → ⋮ → **Custom repositories**: add this repository's URL, type **Integration**.
-2. Download **Assist Improver**, then restart Home Assistant.
+- **Nothing in your home changes until you accept.** Tests run in a sandboxed copy of your home. Accepted changes apply all at once, can be undone, and stay if you uninstall.
+- **Every assistant benefits.** What the improver learns about your household reaches all your assistants, without setup.
+- **Your conversations stay in your Home Assistant.** Analysis sends what it needs to the AI model you chose.
+- **Settings** (the gear in the panel) are optimized by default: each step of the pipeline, its AI model, and what waits at it. If a model goes missing, the step says so before a run spends anything.
 
-<!-- screenshot: HACS custom repository dialog -->
-
-### 2. Add it and choose its AI model
-
-**Settings → Devices & services → Add integration → Assist Improver.** Pick the AI model the improver's own roles use. The recommended option is created for you with your AI provider's own setup; keep it for the best results. If the model you pick may be too weak, Assist Improver says why and lets you go back.
-
-<!-- screenshot: setup dialog with the recommended AI model selected -->
-
-### 3. Check the settings
-
-**Assist Improver → Configure → Settings** holds every setting in one place:
-
-- **AI model:** the one you chose above.
-- **Tests per goal:** how many fixes each goal is tested with, in each conversation where it came up. Each test replays that conversation on your own assistant, so this multiplies what those conversations cost: with 3, testing costs about three times as much.
-- **Quick-check model** (optional): a small, cheap model that checks each conversation first. One it's sure went smoothly skips the full analysis, which saves its cost. Leave it empty to analyse every conversation.
-- **Follow-up check model** (optional): a small model that checks that replayed follow-up messages still fit the conversation.
-
-<!-- screenshot: Configure → Settings -->
-
-### 4. Use Assist as you normally do
-
-Talk to your assistant as usual, by voice or text. Assist Improver keeps each conversation and what happened in your home during it. There's nothing to do differently: the conversations where you had to repeat, correct or clarify yourself are what it learns from.
-
-### 5. Review improvements
-
-When a tested improvement is ready, a notification takes you to it. Open **Assist Improver → Configure → Improvements**, or find it in **Settings → Repairs**; deciding in one place updates the other.
-
-Each improvement reads like a code review:
-
-- what it gets you, such as *Enables 1 task · 2 fewer turns*;
-- **Tasks now enabled** and **Turns no longer needed**, the goals it meets and the extra messages it saves you;
-- the **Changeset**, one line per change, each opening to exactly what changes in Home Assistant;
-- **Why**, with the conversations it was tested on.
-
-<!-- screenshot: an improvement, collapsed -->
-<!-- screenshot: an improvement with one change opened to its diff -->
-
-Choose **Accept changes** and **Submit**, or pick another decision from the list: ask for a revision, decline, say things were fine as they were, or mark the conversation as a test. Accepting checks everything against your Home Assistant first, applies all of the changes or none of them, and runs nothing. An accepted improvement can be undone from the same screen.
-
-### For now: starting the analysis
-
-Until Assist Improver runs on its own schedule, an administrator starts each step from **Developer tools → Actions**: *Analyze recording*, then *Generate hypotheses*, then *Test hypotheses*. Each one says what it costs and needs **Allow paid inference** switched on. Improvements that pass their tests then appear for review.
-
-## Your data and costs
-
-- Your conversations stay in your Home Assistant, as private as the rest of your setup.
-- Analysis sends a summary of them to the AI model you chose, through Home Assistant's own AI Task. It runs only when you allow it, because it can cost money with your AI provider.
-- Testing a fix replays your conversation on your own assistant, so it costs about what that conversation did. The **Tests per goal** setting caps it: with 3, testing costs roughly three times those conversations.
+<p align="center"><img src="assets/getting-started/settings.png" width="720" alt="The settings: your conversations flow through triage, analysis, proposals, simulation and write-up to your review, each step naming its AI model"></p>
 
 ## License
 

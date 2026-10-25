@@ -82,7 +82,9 @@ def prepare_change_candidate(theme, cases, recording, *, evaluation_case_id, hyp
         theme, cases, recording, evaluation_case_id, hypothesis.get("title", ""))
     source = turns[0]["source"]
     options = turns[0]["prepared"]["provider_config"][0]["options"]
-    setup = setup_from_changes(hypothesis["changes"], source=source, prompt=options.get("prompt"), scripts=scripts)
+    user_id = (turns[0]["prepared"].get("context") or {}).get("context", {}).get("user_id")
+    setup = setup_from_changes(hypothesis["changes"], source=source, prompt=options.get("prompt"), scripts=scripts,
+                               user_id=user_id)
     edits = [{"kind": "assist_exposure", "entity_id": e, "before": bool(source["exposure"].get(e)), "after": v}
              for e, v in sorted(setup["exposure"].items())]
     touched = {c["entity_id"].split(".", 1)[1] for c in hypothesis["changes"]
@@ -92,8 +94,8 @@ def prepare_change_candidate(theme, cases, recording, *, evaluation_case_id, hyp
                  evaluation_case_id=evaluation_case_id, case=case, turns=turns, baseline=baseline,
                  baseline_plan=baseline_plan, retained=retained, inputs=inputs, links=links, edits=edits,
                  definitions=definitions, definition_evidence=definition_evidence, setup=setup,
-                 extra_limits=["A this_user instruction line is tested as appended; applying it places it in the "
-                               "person's block"] if setup["prompt_changed"] else [])
+                 extra_limits=["Instruction lines are tested through Assist with household knowledge; applying "
+                               "switches the tested assistant to it"] if "household" in setup else [])
 
 
 def prepare_exposure_candidate(theme, cases, recording, *, evaluation_case_id,
@@ -185,7 +187,8 @@ class CandidateTrial:
         self.log = FrozenTurnLog(hass, case, recording, scripts={**scripts, **setup["scripts"]},
                                  exposure_changes=setup["exposure"], alias_changes=setup["aliases"],
                                  alias_removals=setup.get("alias_removals"),
-                                 prompt_template=setup["prompt"], use_sandbox_prompt=setup["prompt_changed"])
+                                 prompt_template=setup["prompt"], use_sandbox_prompt=setup["prompt_changed"],
+                                 household=setup.get("household"))
         self.agent = clone_provider(agent, plan["baseline_plan"])
         self.start = len(self.log.content)
         self.status, self.error, self.assessment = "prepared", None, None
