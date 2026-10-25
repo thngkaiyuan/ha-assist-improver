@@ -11,6 +11,7 @@ entry's minor version 2):
 
 import logging
 
+from homeassistant.core import callback
 from homeassistant.helpers import entity_registry as er, issue_registry as ir
 from homeassistant.helpers.start import async_at_started
 
@@ -35,8 +36,11 @@ async def async_migrate(hass, entry):
                 ir.async_delete_issue(hass, DOMAIN, issue_id)
         rewritten = await _recordings(hass)
         entry_id = entry.entry_id
-        async_at_started(hass, lambda _hass: hass.async_create_task(
-            _remove_practice_assistant(hass, entry_id), "assist_improver_practice_cleanup"))
+
+        @callback  # On the event loop: HA runs a plain function given to async_at_started in a thread.
+        def cleanup(_hass):
+            hass.async_create_task(_remove_practice_assistant(hass, entry_id), "assist_improver_practice_cleanup")
+        async_at_started(hass, cleanup)
         hass.config_entries.async_update_entry(entry, options=options, minor_version=2)
         _LOGGER.info("Assist Improver: migrated to 1.2 (%s recordings' aliases rewritten)", rewritten)
     return True

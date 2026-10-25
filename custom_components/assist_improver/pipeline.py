@@ -121,10 +121,11 @@ class Pipeline:
         return set(self._runs().unreadable)
 
     def _readable(self, rid, runs=None):
-        """A conversation with something to analyse: not one Home Assistant handled itself, with no turns recorded
-        (user_turns 0), and not one a run found malformed."""
+        """A conversation with something to analyse: still recorded (the tidy-up deletes empty ones), not one Home
+        Assistant handled itself, with no turns recorded (user_turns 0), and not one a run found malformed."""
         runs = self._runs() if runs is None else runs
-        return self.recorder.index.get(rid, {}).get("user_turns") != 0 and rid not in runs.unreadable
+        summary = self.recorder.index.get(rid)
+        return summary is not None and summary.get("user_turns") != 0 and rid not in runs.unreadable
 
     def to_analyze(self, tests=None):
         runs, tests = self._runs(), self._tests() if tests is None else tests
