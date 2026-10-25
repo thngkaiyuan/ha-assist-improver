@@ -24,6 +24,7 @@ from homeassistant.util.dt import utcnow
 from .retention import CLOSED, pack, unpack
 from .const import DOMAIN, SAVE_DELAY, STORAGE_VERSION, VERSION
 from .digest import flap, worth_keeping
+from .records import Recording, RecordingSummary
 from .reflective import ROLE_ACTIVE
 from .serialization import plain
 from .snapshot import provider_config, snapshot, state_record
@@ -57,8 +58,8 @@ class Recorder:
     def __init__(self, hass):
         self.hass = hass
         self.index_store = Store(hass, STORAGE_VERSION, f"{DOMAIN}.index", private=True, atomic_writes=True)
-        self.index = {}
-        self.sessions = {}
+        self.index: dict[str, RecordingSummary] = {}
+        self.sessions: dict[str, Recording] = {}  # The recordings still going, or not yet written.
         self.keys = {}
         self.logs = {}
         self.dirty = set()

@@ -14,6 +14,7 @@ from .const import DOMAIN, STORAGE_VERSION
 from .replay import FrozenTurnLog, check_fidelity
 from .changes import setup_from_changes
 from .snapshot import live_definitions
+from .records import Candidate, CandidateResult
 from .serialization import plain
 from .simulation import UnsupportedSimulation, destination_met as met
 from .trace import span
@@ -137,7 +138,7 @@ class CandidateTrial:
         self.start = len(self.log.content)
         self.status, self.error, self.assessment = "prepared", None, None
 
-    async def run(self, *, allow_paid_inference=False):
+    async def run(self, *, allow_paid_inference=False) -> CandidateResult:
         if not allow_paid_inference:
             raise CaseError("Paid inference has not been authorized")
         if self.status != "prepared":
@@ -179,7 +180,7 @@ class CandidateTrial:
             await self.log.close()
         return self.export()
 
-    def export(self):
+    def export(self) -> CandidateResult:
         return {"plan_id": self.plan["id"], "evaluation_case_id": self.plan["evaluation_case_id"],
                 "status": self.status, "evidence_kind": self.evidence_kind, "run_id": self.log.conversation_id,
                 "input": self.turns_run[0]["input"] if self.turns_run else self.log.input.text,
@@ -212,7 +213,7 @@ class CandidateManager:
     def __init__(self, hass, casebook):
         self.hass, self.book = hass, casebook
         self.store = Store(hass, STORAGE_VERSION, f"{DOMAIN}.candidates", private=True, atomic_writes=True)
-        self.items = {}
+        self.items: dict[str, Candidate] = {}
 
     async def start(self):
         saved = await self.store.async_load()

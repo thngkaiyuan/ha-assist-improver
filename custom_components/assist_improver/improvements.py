@@ -16,6 +16,7 @@ from homeassistant.util.dt import utcnow
 from .cases import CaseError, digest, recording_turns
 from .changeset import Changesets, Conflict, plan_steps, read, undo_steps
 from .const import DOMAIN, STORAGE_VERSION, VERSION
+from .records import Improvement
 from .trace import journal, span, timed
 
 PENDING = ("awaiting_review", "needs_attention")  # Waiting on the user: in the notification.
@@ -86,7 +87,7 @@ class Improvements:
         self.hass, self.recorder, self.casebook, self.candidates = hass, recorder, casebook, candidates
         self.store = Store(hass, STORAGE_VERSION, f"{DOMAIN}.improvements", private=True, atomic_writes=True)
         self.changesets = Changesets(hass)
-        self.items = {}
+        self.items: dict[str, Improvement] = {}
         # {plan id: digest of what its test was derived from}: a test derived from the same is reused (refresh).
         self._derived = {}
         self._locks = {}  # One decision at a time per improvement: two tabs, or auto-accept, never cross.

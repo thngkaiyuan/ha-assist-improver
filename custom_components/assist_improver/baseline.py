@@ -15,6 +15,7 @@ from homeassistant.const import __version__ as CORE_VERSION
 from .cases import CaseError, digest, replay_readiness, verify_case
 from .const import REPLAY_ENGINE, TESTED_PROVIDERS
 from .replay import FrozenTurnLog
+from .records import Baseline
 from .serialization import plain
 from .simulation import audit_recorded_case, destination_met, per_entity, recorded_transitions
 from .trace import span
@@ -124,13 +125,13 @@ class BaselineTrial:
                                                       {"scripts": scripts, "automations": automations}) or {}
         return self._rerun.get(turn["number"], [])
 
-    def export(self):
+    def export(self) -> Baseline:
         """The baseline record its case keeps."""
         return {"status": self.status, "plan": deepcopy(self.plan), "steps": deepcopy(self.steps),
                 "error": deepcopy(self.error), "destination_met": self.destination_met,
                 "usage": self.log.usage_report()}
 
-    async def run(self, *, allow_paid_inference=False, progress=None):
+    async def run(self, *, allow_paid_inference=False, progress=None) -> Baseline:
         """Replay every turn in order, moving on while the goal's devices get the recorded effects; stop at the first
         turn that doesn't (not_reproducible), can't be replayed (unsupported) or fails (infrastructure_failure).
         Reproduced once every turn has, with whether the goal was met. progress(record) is given the record so far

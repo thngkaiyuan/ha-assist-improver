@@ -6,12 +6,13 @@ from uuid import uuid4
 from . import hypotheses, trace, triage
 from .cases import CaseError
 from .exploration import SessionAPI, SessionView
+from .records import Proposal, Review
 from .reflective import run_role
 from .settings import role_model
 
 
 async def propose(hass, entry, runtime, service, analyses, hypothesis=None, seeded=None, feedback=None,
-                      settled=None, existing=None, allow_paid_inference=False):
+                      settled=None, existing=None, allow_paid_inference=False) -> Proposal | Review:
     """The hypothesis generator over analysed sessions (with one long-running reviewer beside it), or the reviewer
     alone on one hypothesis. Paid AI Task calls with read-only tools, recorded either way; answers come from the
     roles' submit tools (last accepted, else best)."""

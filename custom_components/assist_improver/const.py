@@ -2,7 +2,7 @@
 
 DOMAIN = "assist_improver"
 NAME = "Assist Improver"
-VERSION = "0.35.1"
+VERSION = "0.35.2"
 # How replays run and are judged; changing it makes earlier baselines a different test (a new plan), not a resample.
 REPLAY_ENGINE = "2026-10-24.5"  # .2: a fix commanding what the baseline also changed isn't unintended. .3: baselines
 # are judged on the goal's devices. .4: a goal newly met counts, not only fewer turns. .5: controls the user would

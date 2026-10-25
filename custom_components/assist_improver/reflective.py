@@ -25,6 +25,7 @@ from homeassistant.util.dt import parse_datetime, utcnow
 
 from .cases import CaseError, digest
 from .const import DOMAIN, STORAGE_VERSION
+from .records import PipelineRun, RoleCall, TestReport
 from .serialization import plain
 from .trace import ids, span, timed
 
@@ -197,7 +198,7 @@ class RoleRuns:
     def __init__(self, hass):
         self.store = Store(hass, STORAGE_VERSION, f"{DOMAIN}.role_runs", private=True, atomic_writes=True,
                            serialize_in_event_loop=False)
-        self.runs = []
+        self.runs: list[RoleCall | PipelineRun | TestReport] = []  # By kind: records.RUN_LOG.
         self.lock = asyncio.Lock()
         self._index = self._indexed = None  # The index, and the list of runs it was built for.
         self._json, self._json_for = [], None  # Each record's JSON, in order, and the list of runs it's for.

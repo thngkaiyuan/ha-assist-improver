@@ -6,11 +6,13 @@ from uuid import uuid4
 from . import analyzer, hypotheses, trace, triage
 from .cases import CaseError, digest as content_digest
 from .exploration import ListImprovements, ReadImprovement, SessionAPI, SessionView, related_improvements
+from .records import Analysis
 from .reflective import index_of, run_role
 from .settings import role_model
 
 
-async def analyze(hass, entry, runtime, recording_id, allow_paid_inference=False, full=False, triage_only=False):
+async def analyze(hass, entry, runtime, recording_id, allow_paid_inference=False, full=False,
+                  triage_only=False) -> Analysis:
     """Journey analyzer on one recording: one paid AI Task call with read-only session tools, recorded either way.
 
     The answer comes from the submit_goals tool, not the model's final text: the last accepted submission, or

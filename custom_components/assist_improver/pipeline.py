@@ -41,6 +41,7 @@ from homeassistant.util.dt import utcnow
 
 from .cases import CaseError
 from .const import CONF_AUTO_ACCEPT, CONF_ON_DEMAND, CONF_TESTS_PER_GOAL, DEFAULT_TESTS_PER_GOAL, DOMAIN
+from .records import PipelineRun
 from .reflective import index_of
 from .settings import GATES, blocked_stages, listed, paused, role_model
 from .trace import for_run, ids, journal, span, tag
@@ -61,11 +62,11 @@ CLOSED = ("session_expired", "interrupted", "capture_timed_out")
 class Pipeline:
     def __init__(self, hass, entry, runtime):
         self.hass, self.entry, self.runtime, self.recorder = hass, entry, runtime, runtime.recorder
-        self.current = None  # The run in progress, or the last one.
+        self.current: PipelineRun | None = None  # The run in progress, or the last one.
         self._task = None
         self._again = False  # A filed conversation ended during a run: run again right after it.
         self.store = Store(hass, 1, STORE, private=True, atomic_writes=True)
-        self.waiting = {}  # {recording id: the stage it waits at}, as last kept (_at() leaves out what's done).
+        self.waiting: dict[str, str] = {}  # {recording id: the stage it waits at}, as last kept (_at() leaves out what's done).
 
     async def load(self):
         self.waiting = ((await self.store.async_load()) or {}).get("at", {})

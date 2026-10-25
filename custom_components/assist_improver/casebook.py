@@ -8,6 +8,7 @@ from homeassistant.helpers.storage import Store
 
 from .cases import CaseError, create_case, verify_case
 from .const import DOMAIN, STORAGE_VERSION
+from .records import Case
 from .simulation import audit_recorded_case
 
 
@@ -15,7 +16,7 @@ class CaseBook:
     def __init__(self, hass, recorder):
         self.recorder = recorder
         self.store = Store(hass, STORAGE_VERSION, f"{DOMAIN}.cases", private=True, atomic_writes=True)
-        self.cases = {}
+        self.cases: dict[str, Case] = {}
         self.lock = asyncio.Lock()
 
     async def start(self):
