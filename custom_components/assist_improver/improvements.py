@@ -121,6 +121,12 @@ def _conversation(recording, first, last):
     return out
 
 
+def _own(result):
+    """A test's replayed turns of its goal, beside the recorded ones: the turns it replayed first (cases.lead_in) left
+    out."""
+    return [t for t in result.get("turns", []) if not t.get("lead_in")]
+
+
 class Improvements:
     """The list, its decisions and their application; the source of truth for both review screens."""
 
@@ -496,10 +502,10 @@ class Improvements:
                 **self._other_friction(case, assessment, recording),
                 "followups_fit": (result.get("followup_check") or {}).get("all_fit"),
                 "before": _conversation(recording, first, last),
-                "after": [{"you": t["input"], "assistant": t["reply"]} for t in result.get("turns", [])],
+                "after": [{"you": t["input"], "assistant": t["reply"]} for t in _own(result)],
                 # The steps that failed in each turn of those (cases.step), for the review to show where they happened.
                 "failed_steps": {"before": [t.get("failed", []) for t in transcript(recording)[first - 1:last]],
-                                 "after": [t.get("failed", []) for t in replayed(result.get("turns", []))]}}, source
+                                 "after": [t.get("failed", []) for t in replayed(_own(result))]}}, source
 
     @staticmethod
     def _other_friction(case, assessment, recording):

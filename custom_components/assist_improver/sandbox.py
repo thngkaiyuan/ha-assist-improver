@@ -27,6 +27,7 @@ import time
 from types import ModuleType, SimpleNamespace
 
 from homeassistant.core import callback
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.util import dt as dt_util
 
 from . import devices
@@ -261,8 +262,16 @@ class Sandbox:
         return sandbox
 
     async def run(self, fn, *args):
-        """Run fn(hass, *args) in the sandbox's loop and wait for its result."""
-        return await asyncio.wrap_future(asyncio.run_coroutine_threadsafe(fn(self.hass, *args), self.loop))
+        """Run fn(hass, *args) in the sandbox's loop and wait for its result. An HA error gets its message there: HA
+        translates it from its own loop and keeps it, so it reads anywhere after."""
+        async def inside():
+            try:
+                return await fn(self.hass, *args)
+            except HomeAssistantError as err:
+                with suppress(Exception):
+                    str(err)
+                raise
+        return await asyncio.wrap_future(asyncio.run_coroutine_threadsafe(inside(), self.loop))
 
     async def stop(self):
         RUNNING.discard(self)
@@ -398,7 +407,11 @@ async def seed(hass, source, *, user_name=None, integrations=(), timer_device=No
     hass.config.location_name = source.get("home_name") or hass.config.location_name
     # HA's chat log names the signed-in person; the sandbox has no accounts, only the recorded person.
     hass.auth = SimpleNamespace(async_get_user=_user(user_name))
+    # Scripts and automations create their own entities once loaded; everything else is seeded here.
+    own = {domain for domain, loaded in (("script", scripts), ("automation", automations)) if loaded}
     for integration in integrations:  # Their Assist tools (lights, media, timers, ...), without their devices.
+        if integration in own:
+            continue  # Set up below with the household's own; set up empty first, it would never load them.
         if not await async_setup_component(hass, integration, {}):
             raise RuntimeError(f"The sandbox could not set up {integration}")
     hass.data[SANDBOX_KEY].emulate_devices()
@@ -407,8 +420,6 @@ async def seed(hass, source, *, user_name=None, integrations=(), timer_device=No
     devices = hass.data[SANDBOX_KEY].device_ids = _seed_devices(hass, source.get("devices") or {}, areas)
     if timer_device in devices:  # The recorded device could run timers (its tools offered them).
         async_register_timer_handler(hass, devices[timer_device], lambda *args: None)
-    # Scripts and automations create their own entities once loaded; everything else is seeded here.
-    own = {domain for domain, loaded in (("script", scripts), ("automation", automations)) if loaded}
     registry = er.async_get(hass)
     for entity_id, entry in (source.get("entities") or {}).items():
         if entry.get("disabled_by") or entity_id not in source["states"] or entity_id.split(".", 1)[0] in own:

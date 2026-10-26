@@ -17,7 +17,7 @@ from homeassistant.components import conversation
 import probatio
 
 from .analyzer import top_level
-from .cases import CaseError, digest
+from .cases import CaseError, digest, replayed_turns
 from .candidates import CandidateTrial, prepare_change_candidate
 from .const import CONF_TESTS_PER_GOAL, DEFAULT_TESTS_PER_GOAL, NO_FIX
 from .failures import aside, closing, contained
@@ -144,7 +144,7 @@ async def check_baseline_feedback(hass, entry, casebook, case):
     replies = [{"turn": s["turn"], "input": s["input"],
                 "reply": next((m["content"] for m in reversed(s.get("output") or [])
                                if m.get("role") == "assistant" and m.get("content")), "")}
-               for s in baseline.get("steps", [])]
+               for s in baseline.get("steps", []) if not s.get("lead_in")]
     heard = await check_feedback(hass, role_model(entry, "followup_check") or role_model(entry, "editor"), feedback,
                                  replies)
     if heard["status"] != "completed":
@@ -293,7 +293,7 @@ async def _test_one(hass, entry, runtime, hypothesis, found):
                     "why": "Without the change the replies already follow the household's feedback, so a test can't "
                            "show the change makes them follow it."}
     recording = await runtime.recorder.export(found["recording_id"])
-    first = recording["turns"][found["first_turn"] - 1]["source"]
+    first = replayed_turns(case, recording)[0]["source"]  # The home the replay starts in (cases.lead_in).
     scripts = deepcopy(first["scripts"]) if "scripts" in first else live_definitions(hass)[0]
     plan = prepare_change_candidate(case, recording, hypothesis=hypothesis, scripts=scripts, definition_evidence={
         "provenance": "recorded" if "scripts" in first else "current, when tested", "source_sha256": digest(scripts)})
@@ -320,7 +320,7 @@ async def _test_one(hass, entry, runtime, hypothesis, found):
         if plan["judge"].get("feedback") and item["result"]["status"] == "awaiting_review":  # Its effects passed first.
             heard = item["result"]["feedback_check"] = await check_feedback(
                 hass, role_model(entry, "followup_check") or role_model(entry, "editor"), plan["judge"]["feedback"],
-                item["result"]["turns"])
+                [t for t in item["result"]["turns"] if not t.get("lead_in")])  # The goal's own replies.
             followed(item["result"], heard)
         item["status"] = item["result"]["status"]
         await keep(item)

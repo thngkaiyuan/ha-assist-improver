@@ -12,7 +12,7 @@ from types import MappingProxyType
 from homeassistant.components import conversation
 from homeassistant.const import __version__ as CORE_VERSION
 
-from .cases import CaseError, create_case, digest, recording_turns, replay_readiness, verify_case
+from .cases import CaseError, create_case, digest, recording_turns, replay_readiness, replayed_turns, verify_case
 from .const import REPLAY_ENGINE, TESTED_PROVIDERS
 from .failures import closing
 from .replay import FrozenTurnLog
@@ -31,7 +31,8 @@ def prepare_plan(case, recording):
     # reproduces the friction, reached or not, and a candidate must reach it.
     audit_recorded_case(case, recording)
     provider = turns[0]["prepared"]["provider_config"][0]
-    agent_ids = {m["agent_id"] for t in turns for m in t["messages"] if m["role"] == "assistant"}
+    agent_ids = {m["agent_id"] for t in replayed_turns(case, recording) for m in t["messages"]
+                 if m["role"] == "assistant"}
     if len(agent_ids) != 1:
         raise CaseError("Conversation provider identity is missing or ambiguous")
     platform = turns[0]["prepared"]["context"].get("platform")
@@ -57,6 +58,8 @@ def prepare_plan(case, recording):
             "external_limit": "Non-search server tools may execute remotely before being reported; if used, this evaluator stops as unsupported"}
     if case.get("unwanted"):  # Side effects to remove reproduce too, so the friction still happens (only then: IDs).
         plan["unwanted"] = sorted(case["unwanted"])
+    if case.get("lead_in"):  # Replayed first, not judged (cases.lead_in); only then, so other plans keep their IDs.
+        plan["lead_in"] = list(case["lead_in"])
     plan["id"] = digest(plan)
     return plan
 
@@ -104,7 +107,9 @@ class BaselineTrial:
     """One replay of a case's turns under its plan; it runs once, and its sandbox closes however it ends."""
     def __init__(self, hass, case, recording, agent):
         self.plan = prepare_plan(case, recording)
-        self.turns = verify_case(case, recording)
+        self.turns = replayed_turns(case, recording)
+        # The turns replayed first so the model sees what it saw then; the goal is judged from its own first turn.
+        self.lead_in, self.goal_first, self.goal_from = set(case.get("lead_in") or []), case["turns"][0], 0
         self.recording, self._rerun = recording, None
         criteria = self.criteria = case["destination"]["criteria"]
         # The goal's devices, and the side effects it left: both get their recorded effects, or it doesn't reproduce.
@@ -160,16 +165,19 @@ class BaselineTrial:
                         self.status = "unsupported"
                         self.error = {"type": type(err).__name__, "message": str(err)}
                         break
+                if turn["number"] == self.goal_first:
+                    self.goal_from = len(self.log.replay_api.world.transitions)
                 if not await self._turn(turn):
                     break
                 if turn["number"] == self.goal_last:
                     world = self.log.replay_api.world
-                    at_goal = destination_met(self.criteria, world.states, world.transitions)
+                    at_goal = destination_met(self.criteria, world.states, world.transitions[self.goal_from:])
             else:
                 world = self.log.replay_api.world
                 # Each side effect to remove happened in the replay too, or a fix can't be judged to leave it alone
                 # (a change outside the turns replayed matches as no change at all).
-                changed = {t["entity_id"] for step in self.steps for t in step.get("transitions", [])}
+                changed = {t["entity_id"] for step in self.steps if not step.get("lead_in")
+                           for t in step.get("transitions", [])}
                 if missing := sorted(self.unwanted - changed):
                     self.status = "unsupported"
                     self.error = {"type": "CaseError", "message": "The replay without a change didn't change "
@@ -177,7 +185,7 @@ class BaselineTrial:
                 else:
                     self.status = "reproduced"
                     self.destination_met = at_goal if at_goal is not None else destination_met(
-                        self.criteria, world.states, world.transitions)
+                        self.criteria, world.states, world.transitions[self.goal_from:])
         except asyncio.CancelledError:  # A cancelled run still closes its sandbox.
             self.status = "cancelled"
             raise
@@ -211,8 +219,8 @@ class BaselineTrial:
                              "recorded": [list(c) for c in expected_by.get(e, [])]}
                          for e in sorted((set(actual_by) | set(expected_by)) - self.goal_devices)
                          if actual_by.get(e, []) != expected_by.get(e, [])}
-            self.steps.append({"turn": turn["number"], "input": self.log.input.text,
-                               "output": actual, "original_reply": turn["final_reply"],
+            self.steps.append({"turn": turn["number"], **({"lead_in": True} if turn["number"] in self.lead_in else {}),
+                               "input": self.log.input.text, "output": actual, "original_reply": turn["final_reply"],
                                "ha_effects_match": matches, "same_tool_calls": _calls_key(calls) == _calls_key(turn["calls"]),
                                "differences_elsewhere": elsewhere,
                                "transitions": deepcopy(actual_transitions), "recorded_transitions": expected})
@@ -223,7 +231,8 @@ class BaselineTrial:
             self.error = {"type": type(err).__name__}
             if isinstance(err, CaseError):
                 self.error["message"] = str(err)
-            self.steps.append({"turn": turn["number"], "input": self.log.input.text,
+            self.steps.append({"turn": turn["number"], **({"lead_in": True} if turn["number"] in self.lead_in else {}),
+                               "input": self.log.input.text,
                                "output": plain([c.as_dict() for c in self.log.content[start:]]),
                                "external_calls": deepcopy(self.log.external_calls),
                                "incomplete": True})

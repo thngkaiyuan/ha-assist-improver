@@ -57,8 +57,8 @@ class CaseBook:
             if case["id"] in self.cases:
                 existing = self.get(case["id"])  # Repeated import cannot overwrite feedback.
                 # A case built before a field existed takes it from this fresh build; nothing it had is replaced.
-                upgrade = {k: case[k] for k in ("goal_unmet", "acceptable_devices", "unwanted", "follow_feedback")
-                           if case.get(k) and not existing.get(k)}
+                upgrade = {k: case[k] for k in ("goal_unmet", "acceptable_devices", "unwanted", "follow_feedback",
+                                                "lead_in") if case.get(k) and not existing.get(k)}
                 return await self._save({**existing, **upgrade}) if upgrade else existing
             return await self._save(case)
 

@@ -19,7 +19,7 @@ from homeassistant.core import Context
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import llm
 
-from .cases import CaseError, recording_turns, verify_case
+from .cases import CaseError, recording_turns, replayed_turns
 from .sandbox import seed_options
 from .snapshot import live_definitions
 from .serialization import plain
@@ -198,8 +198,8 @@ class FrozenTurnLog(conversation.ChatLog):
     def __init__(self, hass, case, recording, *, turn_number=None, scripts=None, automations=None,
                  exposure_changes=None, alias_changes=None, alias_removals=None, prompt_template=None,
                  use_sandbox_prompt=False, household=None):
-        turns = verify_case(case, recording)
-        turn = next((t for t in turns if t["number"] == (turn_number or case["turns"][0])), None)
+        turns = replayed_turns(case, recording)
+        turn = next((t for t in turns if t["number"] == (turn_number or turns[0]["number"])), None)
         if turn is None:
             raise CaseError("Turn is outside this journey")
         ctx = turn["prepared"]["context"]
@@ -225,7 +225,7 @@ class FrozenTurnLog(conversation.ChatLog):
                 raise CaseError("Unsupported historical content")
         run_id = f"improver-replay-{uuid4()}"
         super().__init__(hass, run_id, content=content)
-        self.replay_api = SandboxHome(hass, recording, verify_case(case, recording)[0], run_id, scripts=scripts,
+        self.replay_api = SandboxHome(hass, recording, turns[0], run_id, scripts=scripts,
                                       automations=automations, exposure_changes=exposure_changes,
                                       alias_changes=alias_changes, alias_removals=alias_removals,
                                       prompt_template=prompt_template, household=household)
@@ -234,7 +234,7 @@ class FrozenTurnLog(conversation.ChatLog):
         self.use_sandbox_prompt = use_sandbox_prompt
         self.turn, self.pending_source = turn, None
         # What the recorded assistant changed: the replay's own run decides those, not the recording's snapshots.
-        self.assistant_entities = {t["entity_id"] for case_turn in verify_case(case, recording)
+        self.assistant_entities = {t["entity_id"] for case_turn in turns
                                    for t in recorded_transitions(recording, case_turn)}
         self.recorded_context = llm.LLMContext(**{**ctx, "context": Context(**identity)})
         self.input = conversation.ConversationInput(text=history[-1]["content"],

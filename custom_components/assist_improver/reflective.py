@@ -113,19 +113,31 @@ RECENT = 50  # Analyses (and quick checks) the run confirmation's rough token es
 TRIED = ("awaiting_review", "not_improved", "unsupported", "baseline_not_reproducible", "baseline_unsupported")
 
 
+# Why a test couldn't run that was the replay engine's own gap, since closed (cases.lead_in replays those from turn 1):
+# such a test said nothing about its goal, so it doesn't count against it.
+ENGINE_GAPS = ("provider_native_history_missing_at_cutoff",)
+
+
 def counts_as_tried(test):
-    """Whether a goal's test counts against its tests-per-goal limit (TRIED)."""
-    return test.get("status") in TRIED
+    """Whether a goal's test counts against its tests-per-goal limit (TRIED), unless only the replay engine's own
+    gap, since closed, stopped it (ENGINE_GAPS)."""
+    return test.get("status") in TRIED and not _engine_gap(test)
+
+
+def _engine_gap(test):
+    why = " ".join(str(test.get(key) or "") for key in ("why", "error"))
+    return any(gap in why for gap in ENGINE_GAPS)
 
 
 def tried(run):
     """{goal ("session:turn"): tests} a test stage's record tried a fix on, against each goal's tests-per-goal limit:
-    its own count, else (a record from before it kept one) each test whose fix was tried
-    (counts_as_tried)."""
-    if isinstance(run.get("tried"), dict):
+    its own count, else (a record from before it kept one) each test whose fix was tried (counts_as_tried). A record
+    with a test only the engine's own gap stopped is counted from its tests, without that one."""
+    results = (run.get("output") or {}).get("results") or []
+    if isinstance(run.get("tried"), dict) and not any(_engine_gap(t) for r in results for t in r.get("tests") or []):
         return dict(run["tried"])
     out = Counter()
-    for result in (run.get("output") or {}).get("results") or []:
+    for result in results:
         for test in result.get("tests") or []:
             if counts_as_tried(test) and test.get("goal"):
                 out[test["goal"]] += 1

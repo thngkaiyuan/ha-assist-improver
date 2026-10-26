@@ -5,11 +5,12 @@ runs once: an identical plan reuses its result, never samples again.
 """
 
 from copy import deepcopy
+from types import SimpleNamespace
 
 from homeassistant.helpers.storage import Store
 
 from .baseline import clone_provider, prepare_plan
-from .cases import CaseError, digest, retained_inputs, verify_case
+from .cases import CaseError, digest, replayed_turns, retained_inputs, verify_case
 from .const import DOMAIN, STORAGE_VERSION
 from .replay import FrozenTurnLog, check_fidelity
 from .changes import setup_from_changes
@@ -29,7 +30,7 @@ def _grounding(case, recording):
     baseline = case["baseline"]
     matched = [s.get("turn") for s in baseline.get("steps", []) if s.get("ha_effects_match")]
     if (baseline["status"] != "reproduced" or baseline.get("plan", {}).get("id") != baseline_plan["id"]
-            or matched != case["turns"]):
+            or matched != (case.get("lead_in") or []) + case["turns"]):
         raise CaseError("Representative baseline must reproduce with current grounding before a candidate trial")
     # This slice supports just the first original input. Later slices can
     # retain longer ordered subsequences, with compatible recorded answers.
@@ -173,14 +174,17 @@ class CandidateTrial:
     def __init__(self, hass, plan, case, recording, agent, *, evidence_kind):
         if evidence_kind not in {"scripted_transport_fixture", "model_counterfactual"}:
             raise CaseError("Distinguish scripted transport tests from actual model decisions")
-        first = verify_case(case, recording)[0]
+        self.turns, self.turns_run = replayed_turns(case, recording), []
+        first = self.turns[0]  # Where the replay starts: its lead-in's first turn when it has one (cases.lead_in).
         scripts = deepcopy(first["source"]["scripts"]) if "scripts" in first["source"] else live_definitions(hass)[0]
         scripts.update({entity.split(".", 1)[1]: deepcopy(d) for entity, d in plan["definitions"].items()})
         self.plan = deepcopy(verify_candidate(plan, case, recording, scripts=scripts))
         self.evidence_kind, self.recording, self.first_turn = evidence_kind, recording, first["number"]
-        self.turns, self.turns_run = verify_case(case, recording), []
+        # Replayed with the change, with the user's recorded words, and not judged: the goal is, from its first turn.
+        self.lead_in = set(case.get("lead_in") or [])
         # What the conversation changed without the fix (its baseline): commanding those isn't unintended.
         self.baseline_entities = sorted({t["entity_id"] for step in case["baseline"].get("steps", [])
+                                         if not step.get("lead_in")  # The goal's own turns, as it's judged.
                                          for t in step.get("transitions", []) + step.get("recorded_transitions", [])})
         setup = self.plan["setup"]
         self.log = FrozenTurnLog(hass, case, recording, scripts={**scripts, **setup["scripts"]},
@@ -209,10 +213,16 @@ class CandidateTrial:
             # The user's own messages, in order (a scripted user): the first, then each follow-up the recording
             # has, until the destination is met and past each turn that made a side effect it must not repeat
             # (replay_through: the household said those either way; turns past the goal don't count against it).
-            through, met_at = self.plan["judge"].get("replay_through") or 0, None
+            through, met_at, world = self.plan["judge"].get("replay_through") or 0, None, self.log.replay_api.world
+            goal = 0  # The goal's turns replayed so far.
             for index, turn in enumerate(self.turns):
                 if index:
                     self.log.continue_with(turn)
+                lead_in = turn["number"] in self.lead_in
+                if not lead_in and not goal:  # The goal is judged on what its own turns do,
+                    if self.lead_in:  # from where the recording had its devices when it began.
+                        await self._check_start(turn, world)
+                    since = len(world.transitions), len(world.calls)
                 start = len(self.log.content)
                 async with span("replay.turn", replay="candidate", turn=turn["number"]):
                     await self.agent._async_handle_message(self.log.input, self.log)
@@ -220,14 +230,19 @@ class CandidateTrial:
                 if (not output or self.log.unresponded_tool_results or output[-1].role != "assistant"
                         or not output[-1].content or output[-1].tool_calls):
                     raise UnsupportedSimulation("Candidate did not finish the user's turn")
-                self.turns_run.append({"turn": turn["number"], "input": self.log.input.text,
-                                       "reply": output[-1].content, "output": plain([c.as_dict() for c in output])})
-                now = judge_effects(self.plan, self.log.replay_api.world, used_user_turns=met_at or index + 1,
-                                    also_expected=self.baseline_entities)
+                self.turns_run.append({"turn": turn["number"], **({"lead_in": True} if lead_in else {}),
+                                       "input": self.log.input.text, "reply": output[-1].content,
+                                       "output": plain([c.as_dict() for c in output])})
+                if lead_in:
+                    continue
+                goal += 1
+                own = SimpleNamespace(states=world.states, transitions=world.transitions[since[0]:],
+                                      calls=world.calls[since[1]:])
+                now = judge_effects(self.plan, own, used_user_turns=met_at or goal, also_expected=self.baseline_entities)
                 if met_at is None:
                     self.assessment = now
                     if now["command_destination_met"]:
-                        met_at, at_goal = index + 1, now
+                        met_at, at_goal = goal, now
                 else:  # Past the goal: the goal stands as judged where it was met; the side effects run on.
                     self.assessment = past_the_goal(at_goal, now, self.plan["judge"])
                 if met_at and turn["number"] >= through:
@@ -242,10 +257,25 @@ class CandidateTrial:
             await self.log.close()
         return self.export()
 
+    async def _check_start(self, turn, world):
+        """After a lead-in replayed with the change: the goal's devices, and the side effects it must not leave, as the
+        recording had them when the goal began (once what others moved in the home meanwhile is applied, as the turn
+        would apply it), or the goal can't be judged from there (unsupported)."""
+        if self.log.pending_source is not None:
+            await self.log.replay_api.observe(self.log.pending_source, self.log.assistant_entities)
+            self.log.pending_source = None
+        judge, recorded = self.plan["judge"], turn["source"]["states"]
+        criteria = judge["destination"]["criteria"]
+        devices = set(criteria.get("states", criteria.get("sequences", {}))) | set(judge.get("unwanted") or {})
+        moved = sorted(e for e in devices if e in recorded and world.states.get(e) != recorded[e]["state"])
+        if moved:
+            raise UnsupportedSimulation("With the change, the turns before the goal left "
+                                        f"{', '.join(moved)} unlike the recording, so the goal can't be judged")
+
     def export(self) -> CandidateResult:
         return {"plan_id": self.plan["id"], "evaluation_case_id": self.plan["evaluation_case_id"],
                 "status": self.status, "evidence_kind": self.evidence_kind, "run_id": self.log.conversation_id,
-                "input": self.turns_run[0]["input"] if self.turns_run else self.log.input.text,
+                "input": next((t["input"] for t in self.turns_run if not t.get("lead_in")), self.log.input.text),
                 "output": plain([c.as_dict() for c in self.log.content[self.start:]]),
                 "turns": deepcopy(self.turns_run),
                 # Each scripted follow-up between the replies around it, for a check that they still fit together.

@@ -184,6 +184,19 @@ def validate_criteria(criteria, source):
             raise CaseError("Expected transitions must be a nonempty on/off sequence")
 
 
+NATIVE_OMITTED = "provider_native_history_omitted"
+
+
+def lead_in(recording, first_turn):
+    """The turns a replay runs before first_turn, so the model sees what it saw then: none when the recording keeps
+    everything the provider was sent (a replay can start at first_turn), else every one from the first. A provider
+    that kept history outside HA's record (a model's earlier thinking, say) gave the model what a replay starting
+    mid-way can't; started from the first turn, the replay makes its own."""
+    if first_turn > 1 and any(NATIVE_OMITTED in x for x in recording.get("limitations", [])):
+        return list(range(1, first_turn))
+    return []
+
+
 def create_case(recording, *, title, first_turn, last_turn, destination=None,
                 criteria=None, evidence=None, intervention_turns=None, goal_unmet=False, acceptable=(),
                 unwanted=None, feedback=None):
@@ -226,6 +239,8 @@ def create_case(recording, *, title, first_turn, last_turn, destination=None,
             "recording_digest": digest(recording), "title": title,
             # The goal's own turns (a replay past them, for a side effect, doesn't count against a fix).
             "turns": selected, "original_user_turns": last_turn - first_turn + 1,
+            # The turns replayed first and not judged (lead_in); only when there are, so others keep their plans.
+            **({"lead_in": before} if (before := lead_in(recording, first_turn)) else {}),
             **({"replay_through": through} if through else {}),
             "intervention_turns": sorted(interventions),
             # The friction may be the goal itself going unmet (settings guessed or missed), not extra turns.
@@ -257,6 +272,15 @@ def verify_case(case, recording):
     return [turns[n - 1] for n in selected]
 
 
+def replayed_turns(case, recording):
+    """The turns a replay of the case runs: its lead-in (lead_in), then its own."""
+    turns = verify_case(case, recording)
+    before = case.get("lead_in") or []
+    if before and before != list(range(1, turns[0]["number"])):
+        raise CaseError("Invalid case lead-in")
+    return recording_turns(recording)[:len(before)] + turns
+
+
 def retained_inputs(case, recording, turn_numbers):
     """Fetch exact original strings; no fabricated answers or reordered turns."""
     turns = verify_case(case, recording)
@@ -274,14 +298,16 @@ def retained_inputs(case, recording, turn_numbers):
 
 def replay_readiness(case, recording):
     """Report gaps before spending; offline receipt playback does not fill them."""
-    turns = verify_case(case, recording)
+    turns = replayed_turns(case, recording)
     gaps, notes = [], []
     running = ha_const.__version__
     if recording.get("core_version") != running:
         # The sandbox runs this HA's engine; the replay fidelity check shows whether the request still looks the same.
         notes.append(f"recorded_on_ha_{recording.get('core_version')}_replayed_on_ha_{running}")
-    if turns[0]["number"] > 1 and any("provider_native_history_omitted" in x for x in recording.get("limitations", [])):
+    if turns[0]["number"] > 1 and any(NATIVE_OMITTED in x for x in recording.get("limitations", [])):
         gaps.append("provider_native_history_missing_at_cutoff")
+    if case.get("lead_in"):
+        notes.append("replay_starts_at_turn_1_for_provider_history_outside_the_record; lead_in_turns_are_not_judged")
     if any(not t["prepared"]["context"].get("context", {}).get("id") for t in turns):
         gaps.append("structured_request_identity_missing")
     configs = turns[0]["prepared"].get("provider_config", [])
