@@ -3,6 +3,7 @@
 import probatio
 
 from ..analyzer import top_level
+from ..const import NO_FIX
 from ..exploration import applied_too_early
 from .goals import friction_by_goal
 from .schema import HYPOTHESES
@@ -26,7 +27,9 @@ def problems(sessions, answer, schema=HYPOTHESES):
             elif ref["goal_turn"] not in friction_by_goal(analysis):
                 found.append(f"{where}: session {ref['session']} has no goal with friction at turn {ref['goal_turn']}; "
                              f"its goals with friction start at turns {sorted(friction_by_goal(analysis)) or 'none'}.")
-            elif (title := sessions.settled.get((ref["session"], ref["goal_turn"]))) is not None:
+            elif (title := sessions.settled.get((ref["session"], ref["goal_turn"]))) == NO_FIX:
+                found.append(f"{where}: no fix was found for {ref['session']}:{ref['goal_turn']} before; leave it out.")
+            elif title is not None:
                 found.append(f"{where}: {ref['session']}:{ref['goal_turn']} already has an improvement ({title!r}); "
                              "leave it out.")
         if not hypothesis["goals"]:
@@ -90,7 +93,7 @@ def _open_goals(sessions, answer):
 
 
 def household_knowledge(sessions):
-    """The household knowledge as last recorded (lines every assistant on the household API reads)."""
+    """The household knowledge as last recorded (lines every assistant on Assist reads)."""
     from ..household import normalized
     return normalized(sessions.household.source.get("household"))
 

@@ -2,7 +2,7 @@
 
 DOMAIN = "assist_improver"
 NAME = "Assist Improver"
-VERSION = "0.37.5"
+VERSION = "0.38.0"
 # How replays run and are judged; changing it makes earlier baselines a different test (a new plan), not a resample.
 REPLAY_ENGINE = "2026-10-24.5"  # .2: a fix commanding what the baseline also changed isn't unintended. .3: baselines
 # are judged on the goal's devices. .4: a goal newly met counts, not only fewer turns. .5: controls the user would
@@ -18,6 +18,8 @@ CONF_ACCEPTED_WEAK = "ai_task_accepted_weak"  # Entity the user chose despite wa
 # a conversation on the user's own assistant, so it's a multiplier on their normal assistant spend: 3 means
 # testing costs about 3 times those conversations, plus each goal's one baseline replay.
 CONF_TESTS_PER_GOAL, DEFAULT_TESTS_PER_GOAL = "tests_per_goal", 3
+# A goal's title once no fix was found for it (improvements.py): settled, like one with an improvement.
+NO_FIX = "No fix found"
 # A small model that checks the replay's scripted follow-ups still fit the replies around them; unset skips it.
 CONF_CHECK_AI_TASK = "check_ai_task_entity_id"
 # A small model that checks each session first; a session it's sure was smooth skips the analyzer. Unset analyses all.
@@ -36,6 +38,8 @@ CONF_ON_DEMAND = "on_demand"
 # admin sets each; settings.updated keeps the two in step).
 CONF_RECORDING = "recording"
 CONF_OPT_OUT = "recording_opt_out"
+# Household knowledge: whether Assist reads the household's lines (household.py), for every assistant; on by default.
+CONF_HOUSEHOLD = "household_knowledge"
 CONF_DEVELOPER = "developer_services"  # Hidden: registers the developer services (__init__.py).
 SAVE_DELAY = 1
 ATTRIBUTES = {

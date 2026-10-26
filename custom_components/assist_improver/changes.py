@@ -30,7 +30,7 @@ def setup_from_changes(changes, *, source, prompt, scripts, user_id=None):
     source is the recorded home, prompt the assistant's recorded instruction template, scripts the household's
     script definitions ({object id: config}), user_id the person speaking. Instruction lines go into the household
     knowledge (household.py), as applying puts them: everyone's, or the speaking person's for this_user; the replay
-    reads them through Assist with household knowledge, as the assistant will.
+    reads them through Assist, as the assistant will.
     """
     from . import household
     exposure, aliases, removals, new_scripts = {}, {}, {}, {}

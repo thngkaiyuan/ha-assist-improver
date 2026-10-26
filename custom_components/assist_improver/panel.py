@@ -124,7 +124,7 @@ def safety(item, steps, already):
             key = "name added"
         elif kind == "household":
             key = "household line"
-        elif kind == "assistant_api":
+        elif kind == "assistant_api":  # An improvement applied up to 0.37, which also switched the assistant.
             key = "assistant switched to household knowledge"
         else:
             key = "instruction change"
@@ -303,8 +303,8 @@ async def ws_decide(hass, connection, msg):
 @websocket_api.require_admin
 @websocket_api.async_response
 async def ws_household(hass, connection, msg):
-    """The household knowledge (everyone's lines, then each person's), and which assistants read it."""
-    from .household import KEY, assistants, normalized, pipelines
+    """The household knowledge (everyone's lines, then each person's), and Home Assistant's assistants."""
+    from .household import KEY, normalized, pipelines
     knowledge = normalized(getattr(hass.data.get(KEY), "knowledge", None))
     lines = len(knowledge["everyone"]) + sum(len(v) for v in knowledge["people"].values())
     people = []
@@ -314,31 +314,7 @@ async def ws_household(hass, connection, msg):
     me = connection.user
     connection.send_result(msg["id"], {"lines": lines, "everyone": list(knowledge["everyone"]), "people": people,
                                        "me": {"user_id": me.id, "name": getattr(me, "name", None) or "You"},
-                                       "pipelines": pipelines(hass), "assistants": [
-        {"target": f"{entry.entry_id}/{sub.subentry_id}", "title": sub.title, "using": using}
-        for entry, sub, using in assistants(hass)]})
-
-
-@websocket_api.websocket_command({probatio.Required("type"): f"{DOMAIN}/household/enable",
-                                  probatio.Required("target"): str, probatio.Optional("on", default=True): bool})
-@websocket_api.require_admin
-@websocket_api.async_response
-async def ws_household_enable(hass, connection, msg):
-    """Switch one assistant from Assist to Assist with household knowledge, or back (nothing else in it changes; the
-    lines stay in the household store)."""
-    from .changeset import read, write
-    from .household import API_ID
-    current = await read(hass, "assistant_api", msg["target"])
-    if current is None or "assist" not in current and API_ID not in current:
-        connection.send_error(msg["id"], "not_found", "That assistant doesn't control Home Assistant through Assist.")
-        return
-    on = msg.get("on", True)
-    if on:
-        from .household import use_household
-        await use_household(hass, msg["target"])
-    elif API_ID in current:
-        await write(hass, "assistant_api", msg["target"], list(dict.fromkeys("assist" if a == API_ID else a for a in current)))
-    connection.send_result(msg["id"], {"using": on})
+                                       "pipelines": pipelines(hass)})
 
 
 @websocket_api.websocket_command({probatio.Required("type"): f"{DOMAIN}/household/edit",
@@ -425,7 +401,8 @@ async def ws_run_start(hass, connection, msg):
         if missing := [rid for rid in conversations if not kept(runtime, rid)]:
             connection.send_error(msg["id"], "not_found", f"{len(missing)} of those conversations aren't kept.")
             return
-        fresh = [rid for rid in conversations if standing(runtime, rid) not in TAKEN]  # Never one the improver has.
+        # Never one the improver has, nor one with no fix found (it's sent in again one by one, with a note).
+        fresh = [rid for rid in conversations if standing(runtime, rid) not in (*TAKEN, "nofix")]
         await runtime.recorder.file_kept(fresh, user_id=connection.user.id, notify=False)
     try:
         run = runtime.pipeline.start(trigger="manual", force=msg.get("force", False), only=msg.get("only"),
@@ -468,6 +445,7 @@ def ws_settings(hass, connection, msg):
                                   probatio.Optional("tests_per_goal"): int, probatio.Optional("schedule"): str,
                                   probatio.Optional("stage"): str, probatio.Optional("pause"): bool,
                                   probatio.Optional("auto_accept"): bool, probatio.Optional("on_demand"): bool,
+                                  probatio.Optional("household_knowledge"): bool,
                                   probatio.Optional("recording"): bool, probatio.Optional("person"): str,
                                   probatio.Optional("developer_services"): bool})
 @websocket_api.require_admin
@@ -482,7 +460,8 @@ def ws_settings_set(hass, connection, msg):
         options = updated(hass, entry, role=msg.get("role"), entity_id=msg.get("entity_id"),
                           tests_per_goal=msg.get("tests_per_goal"), schedule=msg.get("schedule"),
                           stage=msg.get("stage"), pause=msg.get("pause"), auto_accept=msg.get("auto_accept"),
-                          on_demand=msg.get("on_demand"), recording=msg.get("recording"), person=msg.get("person"),
+                          on_demand=msg.get("on_demand"), household_knowledge=msg.get("household_knowledge"),
+                          recording=msg.get("recording"), person=msg.get("person"),
                           developer_services=msg.get("developer_services"))
     except SettingsError as err:
         connection.send_error(msg["id"], "invalid", str(err))
@@ -645,17 +624,21 @@ async def ws_conversation(hass, connection, msg):
 async def ws_conversation_send(hass, connection, msg):
     """Send a conversation in: filed, as Assist's file_improvement tool does, so the pipeline takes it in (at its
     next run, past the quick check; right away with on-demand improvements on). One it has, or an accepted
-    improvement covers, is already in."""
+    improvement covers, is already in. One with no fix found for its troubles goes in again: its goals are open once
+    more, each with a fresh tests-per-goal budget, and it's analysed again with the note."""
     from .conversations import TAKEN, kept, standing
+    from .sessions import short
     if (runtime := _runtime(hass, connection, msg)) is None:
         return
     rid = msg["recording_id"]
     if not kept(runtime, rid):
         connection.send_error(msg["id"], "not_found", "That conversation isn't kept.")
         return
-    if standing(runtime, rid) in TAKEN:
+    if (now := standing(runtime, rid)) in TAKEN:
         connection.send_error(msg["id"], "already_in", "The improver already has that conversation.")
         return
+    if now == "nofix":
+        await runtime.improvements.reopen(short(rid))
     await runtime.recorder.file_kept([rid], msg.get("note", ""), connection.user.id)
     connection.send_result(msg["id"], {"status": standing(runtime, rid), "on_demand": runtime.pipeline.on_demand})
 
@@ -730,7 +713,7 @@ async def ws_conversations_delete(hass, connection, msg):
 
 
 def register_commands(hass):
-    for handler in (ws_list, ws_get, ws_decide, ws_household, ws_household_enable, ws_run_status, ws_run_start,
+    for handler in (ws_list, ws_get, ws_decide, ws_household, ws_run_status, ws_run_start,
                     ws_run_cancel, ws_settings, ws_settings_set, ws_settings_models, ws_settings_create,
                     ws_settings_recommended, ws_practice, ws_assistant_prefer, ws_log, ws_household_edit,
                     ws_conversations, ws_conversation, ws_conversation_send, ws_conversation_hide,

@@ -33,9 +33,13 @@ export const TEXT = {
                   sentNow: "Sent in. The improver is looking at it now.", sentLater: "Sent in. It goes in with your next run.",
                   // Where each stands; past the quick check, the stage a run took it to (conversations.stage).
                   status: {waiting: "New", active: "Still going", sent: "Sent in", smooth: "Looked smooth", queued: "To analyze",
-                           fine: "No trouble found", working: "Looking for a fix", review: "Up for review", declined: "Declined",
-                           improved: "Improved", test: "Marked as a test", unreadable: "Couldn't be read"},
+                           fine: "No trouble found", working: "Looking for a fix", retry: "No fix yet", review: "Up for review",
+                           declined: "Declined", nofix: "No fix found", improved: "Improved", test: "Marked as a test",
+                           unreadable: "Couldn't be read"},
                   smoothTip: "Nothing to improve, at a quick look. Send it in for a full analysis.",
+                  // A chip's tooltip, where it says what comes next.
+                  retryTip: "The next proposal looks for another fix.",
+                  nofixTip: "No fix worked. Send it in again with a note for one more look.",
                   // The Status filter's button: everything, or what it shows (one status's name, or how many).
                   statusAll: "Status", statusSome: "Status: {n}",
                   more: "Show more", none: "No conversations match.", nothing: "(nothing said)",
@@ -62,10 +66,8 @@ export const TEXT = {
   revise: {label: "Revisions", short: "Revisions"},
   block: {tip: "Stop this stage.", blocked: "Resume this stage."},
   badges: {new: "{n} new: the next run takes them in", waiting: "{n} waiting", held: "{n} held while blocked", review: "{n} to review", applied: "{n} applied"},
-  assistant: {tip: "The assistant Assist uses by default", knowsOn: "Household knowledge on: {name} reads the {lines} learned so far. Click to turn off.",
-              knowsOff: "Household knowledge off for {name}. Click to turn it on, so it reads what the household taught it.",
-              none: "Add an assistant in Settings → Voice assistants first.", lines: "{lines} of household knowledge"},
-  simulate: {label: "Your assistant", tip: "A maximum of {n} simulation rounds will be run against your assistant.", perGoal: "simulations per goal",
+  assistant: {tip: "The assistant Assist uses by default", none: "Add an assistant in Settings → Voice assistants first."},
+  simulate: {label: "Your assistant", tip: "At most {n} simulations per goal, in all, on your assistant.", perGoal: "simulations per goal",
              cost: "Each simulation replays one of your conversations with a fix, on your own assistant: {n} per goal costs a maximum of about {n} times those conversations"},
   passThrough: {label: "Pass through", tip: "No triage model: conversations pass straight on to analysis."},
   followUpsOff: "Follow-ups aren't checked",
@@ -109,7 +111,10 @@ export const TEXT = {
               title: "Household knowledge", everyone: "Everyone", empty: "Nothing learned yet: accepted improvements add lines here.",
               search: "Search", none: "Nothing matches.", more: "Read more", less: "Show less", add: "Add a line",
               addFor: "Add a line just for {name}", placeholder: "One fact or preference, in a sentence", save: "Save", cancel: "Cancel",
-              edit: "Edit", remove: "Delete", confirmRemove: "Delete this line?"},
+              edit: "Edit", remove: "Delete", confirmRemove: "Delete this line?",
+              // The one switch: whether every assistant on Assist reads the lines (settings.js, the Your household step).
+              label: "Household knowledge", on: "Household knowledge on: your assistants read the {lines} learned so far.",
+              off: "Household knowledge off: your assistants don't read what's learned."},
   // A run in progress, by which it is (common.runTitle).
   progress: {working: "Improving your assistant", all: "Running on {n} new conversations", one: "Running on 1 new conversation",
              picked: "Running on the conversations you picked", sent: "Running on what you sent in", step: "Running {step} only"},

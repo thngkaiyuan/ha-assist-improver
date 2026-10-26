@@ -1,18 +1,9 @@
 // Household knowledge: what the assistants know about the household. A modal, since the list grows: everyone's lines,
 // then each person's; each clamped to two lines (Read more), editable in place, searchable once the list is long.
-// And the toggle, on an assistant, for whether it reads them.
 
 const v = new URL(import.meta.url).search;  // ?v=<version>, passed on to every module this one loads.
 const [{esc, plural, fill}, {TEXT}, {glyph}] = await Promise.all(
   ["format", "text", "icons"].map((name) => import(`./${name}.js${v}`)));
-
-export function knows(p, pipeline, lines) {
-  // Household knowledge for one assistant, as a toggle glyph: a book with a heart, tinted while it reads it.
-  if (!pipeline?.target) return "";
-  const tip = esc(fill(TEXT.assistant[pipeline.using ? "knowsOn" : "knowsOff"], {name: pipeline.name, lines: plural(lines, "line")}));
-  return `<button class="knows ${pipeline.using ? "on" : ""}" data-knows="${esc(pipeline.target)}" data-on="${pipeline.using ? "" : "1"}"
-    data-tip="${tip}" aria-label="Household knowledge" ${p.knowsBusy === pipeline.target ? "disabled" : ""}>${glyph("mdi:book-heart-outline")}</button>`;
-}
 
 const fresh = () => ({open: new Set(), edit: null, remove: null, adding: null, draft: "", error: null, busy: false, search: ""});
 const reset = (st) => Object.assign(st, fresh(), {open: st.open, search: st.search});
@@ -88,18 +79,6 @@ async function send(p, msg) {
   p.render();
 }
 
-async function enable(p, el) {
-  p.knowsBusy = el.dataset.knows;
-  p.render();
-  try {
-    await p.ws("household/enable", {target: el.dataset.knows, on: !!el.dataset.on});
-  } catch (err) {
-    alert(err.message || String(err));
-  }
-  p.knowsBusy = null;
-  await p.reloadHousehold();
-}
-
 export const actions = {
   click: [
     ["[data-knowledge]", (p) => { p.pop = {kind: "knowledge", anchor: "[data-knowledge]"}; p.kn = fresh(); p.render(); }],
@@ -128,7 +107,6 @@ export const actions = {
       const [scope, index] = split(p.kn.remove);
       send(p, {scope, action: "delete", index, old: linesOf(p.household || {}, scope)[index]});
     }],
-    ["[data-knows]", enable],
   ],
   input: [
     ["#kn-text", (p, el) => { p.kn.draft = el.value; }],

@@ -292,11 +292,18 @@ class Server:
             exposure_changes=exposure_changes, alias_changes=alias_changes, alias_removals=alias_removals))
         return self._reported(home)
 
-    async def op_home_household(self, session, knowledge):
-        from .household import HouseholdAPI
+    async def op_home_household(self, session, knowledge, legacy=False):
+        """The household knowledge the sandbox's Assist reads; legacy: through the household API (up to 0.37)."""
+        from .household import LegacyAPI, serve
         from .replay import register
         home = self._home(session)
-        await home.sandbox.run(lambda hass: register(hass, HouseholdAPI(hass, knowledge)))
+
+        async def read(hass):
+            if legacy:
+                await register(hass, LegacyAPI(hass, knowledge))
+            else:
+                serve(hass, knowledge)
+        await home.sandbox.run(read)
         return self._reported(home)
 
     async def op_home_prompt(self, session, context, api_id, template):

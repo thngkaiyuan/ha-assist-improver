@@ -174,11 +174,6 @@ export const STYLE = `
   .link { border: none; background: none; color: var(--primary-color); font: inherit; font-weight: 500; cursor: pointer; padding: 4px 0; }
   .history { border: none; margin-top: 8px; } .history > summary { padding: 8px 4px; color: var(--secondary-text-color); }
   .next { display: flex; justify-content: flex-end; margin: -4px 0 12px; }
-  .offer { background: var(--card-background-color); border: 1px solid var(--primary-color); border-radius: 12px;
-    padding: 12px 16px; margin: 8px 0 16px; line-height: 1.5; }
-  .offer-row { display: flex; align-items: center; justify-content: space-between; padding-top: 8px; }
-  .turn-on { border: none; border-radius: 16px; padding: 6px 14px; font: inherit; cursor: pointer;
-    background: var(--primary-color); color: var(--text-primary-color, white); }
   .revises { padding: 10px 14px; border-radius: 8px; margin-bottom: 12px; border: 1px solid var(--primary-color);
     color: var(--primary-text-color); background: var(--card-background-color); }
   .done-row { flex-direction: row !important; align-items: center !important; justify-content: space-between; flex-wrap: wrap; gap: 12px !important; }
@@ -272,7 +267,7 @@ export const STYLE = `
   .cs-reply { font-size: 13px; color: var(--secondary-text-color); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .cs-close { font-size: 13px; color: var(--secondary-text-color); margin: 0 0 8px; }
   .cs-last { font-size: 13px; color: var(--secondary-text-color); margin: -6px 0 12px; }
-  .chip.cs-waiting, .chip.cs-sent, .chip.cs-queued, .chip.cs-working { border-color: var(--primary-color); color: var(--primary-color); }
+  .chip.cs-waiting, .chip.cs-sent, .chip.cs-queued, .chip.cs-working, .chip.cs-retry { border-color: var(--primary-color); color: var(--primary-color); }
   button.chip.cs-review { align-self: center; flex: none; margin-right: 16px; font: inherit; font-size: 12px; cursor: pointer;
     border-color: var(--primary-color); background: color-mix(in srgb, var(--primary-color) 14%, transparent); color: var(--primary-color); }
   button.chip.cs-review:hover { background: color-mix(in srgb, var(--primary-color) 24%, transparent); }
@@ -390,10 +385,6 @@ export const STYLE = `
   .glyph { --mdc-icon-size: 16px; width: 16px; height: 16px; color: var(--secondary-text-color); flex: none; display: inline-flex; }
   .info-tip { flex: none; display: inline-flex; color: var(--secondary-text-color); opacity: .7; cursor: help; }
   .info-tip .ic { width: 13px; height: 13px; } .info-tip:hover { opacity: 1; }
-  .knows { flex: none; width: 24px; height: 24px; border-radius: 12px; padding: 0; cursor: pointer; display: inline-flex; --mdc-icon-size: 15px;
-    align-items: center; justify-content: center; border: 1px solid var(--divider-color); background: var(--card-background-color);
-    color: var(--secondary-text-color); --mdc-icon-size: 15px; }
-  .knows.on { color: var(--done); border-color: rgba(111, 158, 152, .55); background: rgba(111, 158, 152, .1); }
   .chip-row { display: flex; align-items: center; gap: 6px; justify-content: center; max-width: 100%; min-width: 0; }
   .tip { position: fixed; z-index: 30; max-width: 260px; padding: 7px 10px; border-radius: 8px; pointer-events: none;
     font-size: 12.5px; line-height: 1.4; color: #fff; background: rgba(40, 42, 46, .96); box-shadow: 0 4px 14px rgba(0, 0, 0, .25); }
@@ -404,9 +395,8 @@ export const STYLE = `
   :host(.dark) .chip-model { background: rgba(255, 255, 255, .08); border-color: rgba(255, 255, 255, .2); color: #ececec; }
   :host(.dark) .chip-model.off { border-color: rgba(255, 255, 255, .32); color: #c9c9c9; }
   :host(.dark) .chip-model.fixed { color: #cfcfcf; }
-  :host(.dark) .gate, :host(.dark) .knows { background: #2b2c2f; border-color: rgba(255, 255, 255, .24); color: #d0d0d0; }
+  :host(.dark) .gate { background: #2b2c2f; border-color: rgba(255, 255, 255, .24); color: #d0d0d0; }
   :host(.dark) .gate.paused { background: var(--held); border-color: var(--held); color: #fff; }
-  :host(.dark) .knows.on { color: #8fc7bf; border-color: rgba(143, 199, 191, .6); background: rgba(143, 199, 191, .14); }
   :host(.dark) .glyph { color: #cfcfcf; }
   :host(.dark) .info-tip { color: #c4c4c4; opacity: .9; }
   :host(.dark) .stream-label { color: #b9b9b9; }
@@ -466,7 +456,6 @@ export const STYLE = `
   .pop-lead { padding: 0 14px 8px; font-size: 12.5px; color: var(--secondary-text-color); line-height: 1.4; }
   .opt { padding: 8px 14px; cursor: pointer; } .opt:hover { background: var(--secondary-background-color); }
   .opt-main { display: flex; align-items: center; gap: 8px; } .opt-main .spacer { flex: 1; }
-  .pop-foot { display: flex; align-items: center; gap: 6px; padding-top: 8px; border-top: 1px solid var(--divider-color); margin-top: 4px; }
   .opt .check { width: 14px; color: var(--primary-color); font-weight: 700; flex: none; }
   .opt-label { font-weight: 500; }
   .opt-sub, .opt-warn { font-size: 12px; color: var(--secondary-text-color); margin-left: 22px; line-height: 1.35; }

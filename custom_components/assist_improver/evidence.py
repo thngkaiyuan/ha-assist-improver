@@ -64,11 +64,11 @@ def _context(turn):
 
 
 def _tools_api(turn):
-    """The API whose tools a recorded turn used: the household's API has Assist's own tools, so Assist's stand in for
-    it (the evidence sandbox carries no household knowledge, and needs none to try a tool)."""
-    from .household import API_ID
-    api_id = turn["prepared"].get("api_id") or "assist"
-    ids = list(dict.fromkeys("assist" if a == API_ID else a for a in ([api_id] if isinstance(api_id, str) else api_id)))
+    """The API whose tools a recorded turn used: the household API (up to 0.37) has Assist's own tools, so Assist's
+    stand in for it (the evidence sandbox carries no household knowledge, and needs none to try a tool); a merged id
+    (a|b) is its APIs."""
+    from .household import as_assist
+    ids = as_assist(turn["prepared"].get("api_id") or "assist")
     return ids[0] if len(ids) == 1 else ids
 
 

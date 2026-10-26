@@ -11,8 +11,8 @@ from homeassistant.helpers.start import async_at_started
 from homeassistant.helpers.service import async_register_admin_service
 
 from . import ai_setup, analysis, household, panel, practice, proposal, retention, settings, trace, triage
-from .const import (CONF_ACCEPTED_WEAK, CONF_AI_TASK, CONF_DEVELOPER, CONF_OPT_OUT, CONF_RECORDING, CONF_SCHEDULE,
-                    DOMAIN)
+from .const import (CONF_ACCEPTED_WEAK, CONF_AI_TASK, CONF_DEVELOPER, CONF_HOUSEHOLD, CONF_OPT_OUT, CONF_RECORDING,
+                    CONF_SCHEDULE, DOMAIN)
 from .casebook import CaseBook
 from .baseline import BaselineManager
 from .candidates import CandidateManager
@@ -36,7 +36,7 @@ DEVELOPER_SERVICES = ("list_recordings", "list_improvements", "analyze_recording
 
 
 async def async_setup(hass, config):
-    """Household knowledge and its LLM API, once per run: assistants using it never find it missing."""
+    """Household knowledge, once per run: Assist reads it (llm.py) even while the entry reloads."""
     await household.async_setup(hass)
     return True
 
@@ -48,10 +48,10 @@ async def async_migrate_entry(hass, entry):
 
 
 async def async_remove_entry(hass, entry):
-    """Uninstalling leaves only the applied improvements behind: assistants on the household API go back to Assist
-    with its lines written into their own instructions, and the AI Tasks the improver set up and everything it
-    stored (recordings, run log, traces, improvements' records) are removed."""
-    await household.async_remove(hass)
+    """Uninstalling leaves only the applied improvements behind: the household's lines are written into the own
+    instructions of each assistant on Assist (while the Household knowledge switch is on), and the AI Tasks the
+    improver set up and everything it stored (recordings, run log, traces, improvements' records) are removed."""
+    await household.async_remove(hass, on=entry.options.get(CONF_HOUSEHOLD, True))
     await ai_setup.remove_created(hass)
     await hass.async_add_executor_job(_remove_stores, hass.config.path(".storage"))
 
@@ -129,6 +129,7 @@ async def async_setup_entry(hass, entry):
             plans = {pid for pid, c in runtime.candidates.items.items() if c["plan"].get("evaluation_case_id") in cases}
             await runtime.candidates.drop(plans - {t.get("plan_id") for t in shown})
             await runtime.casebook.drop(cases - {t.get("case_id") for t in shown})
+            await runtime.improvements.forget({key[:8] for key in keys})  # No fix found for its goals, and budgets.
         recorder.on_forgotten = forgotten
         # Deleted during a run that a restart cut off: they go now.
         hass.async_create_task(recorder.forget_queued(), "assist_improver_forget_queued")

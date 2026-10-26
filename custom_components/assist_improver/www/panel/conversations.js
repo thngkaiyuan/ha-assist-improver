@@ -195,9 +195,9 @@ export function runPreview(p, preview) {
 // Drawing.
 
 // One the quick check found smooth can be picked or sent in too, one by one (never by Select all: each is a full
-// analysis), for the full analysis.
+// analysis), for the full analysis. One with no fix found can be sent in again, opened, with a note (never picked).
 const pickable = (status) => status === "waiting" || status === "smooth";
-const sendable = (status) => pickable(status) || status === "active";
+const sendable = (status) => pickable(status) || status === "active" || status === "nofix";
 
 function marked(text, query) {
   // The text, with the words searched for marked.
@@ -214,8 +214,8 @@ function marked(text, query) {
 
 function badge(row) {
   // Where it stands; one up for review is its own button beside the row (reviewLink), so it can open that review.
-  const C = TEXT.conversations;
-  const tip = row.status === "smooth" ? ` title="${esc(C.smoothTip)}"` : "";
+  const C = TEXT.conversations, tips = {smooth: C.smoothTip, retry: C.retryTip, nofix: C.nofixTip};
+  const tip = tips[row.status] ? ` title="${esc(tips[row.status])}"` : "";
   return row.status === "review" && row.review ? ""
     : `<span class="chip cs-${row.status}"${tip}>${esc(C.status[row.status] || row.status)}</span>`;
 }
@@ -328,8 +328,8 @@ export function section(p) {
 }
 
 // The Status filter's choices, in the order a conversation moves through them.
-const STATUSES = ["waiting", "sent", "active", "smooth", "queued", "fine", "working", "review", "declined", "improved", "test",
-                  "unreadable"];
+const STATUSES = ["waiting", "sent", "active", "smooth", "queued", "fine", "working", "retry", "review", "declined", "nofix",
+                  "improved", "test", "unreadable"];
 // The standings to choose from: those some conversation matching the rest has, and any chosen.
 const choosable = (cv) => STATUSES.filter((s) => cv.byStatus[s] || cv.only?.has(s));
 

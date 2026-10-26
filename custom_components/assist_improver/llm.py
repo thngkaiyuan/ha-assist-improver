@@ -1,9 +1,10 @@
-"""Assist's tool for on-demand improvements: with the setting on, Assist can file the conversation it's in, when the
-user asks ("file an improvement"), and the improver takes it in as soon as it ends (pipeline.py).
+"""What the improver adds to Assist: the household knowledge, and the tool for on-demand improvements.
 
-Home Assistant's llm integration gathers each integration's tools from its llm platform (this module) for the Assist
-API, so every assistant on Assist, or on Assist with household knowledge, gets it. The improver's own AI roles and
-replays never do.
+Home Assistant's llm integration gathers each integration's tools and prompt from its llm platform (this module) for
+the Assist API, so every assistant on Assist gets both:
+- the household's lines (household.py), while the Household knowledge switch is on;
+- with on-demand improvements on, a tool to file the conversation it's in, when the user asks ("file an improvement");
+  the improver takes it in as soon as it ends (pipeline.py). The improver's own AI roles and replays never get it.
 """
 
 import probatio
@@ -11,8 +12,8 @@ from homeassistant.components.llm import LLMTools
 from homeassistant.core import callback
 from homeassistant.helpers import llm
 
+from . import household
 from .const import CONF_ON_DEMAND, DOMAIN
-from .reflective import ROLE_ACTIVE
 from .runtime import loaded
 
 
@@ -44,10 +45,18 @@ class FileImprovement(llm.Tool):
 
 @callback
 def async_get_tools(hass, llm_context, api_id):
-    """The file_improvement tool, for the Assist API while on-demand improvements are on."""
-    runtime = loaded(hass)
-    if api_id != llm.LLM_API_ASSIST or runtime is None or not runtime.pipeline.entry.options.get(CONF_ON_DEMAND):
+    """For the Assist API: the household's lines as its prompt, and the file_improvement tool while on-demand
+    improvements are on. None when there's neither."""
+    if api_id != llm.LLM_API_ASSIST:
         return None
-    if ROLE_ACTIVE.get():  # The improver's own AI roles and replays never file anything.
-        return None
-    return LLMTools(tools=[FileImprovement()])
+    pipeline = getattr(loaded(hass), "pipeline", None)  # None while the improver starts, and in a sandbox: no tool.
+    files = pipeline is not None and pipeline.entry.options.get(CONF_ON_DEMAND) and not role_active()
+    prompt = household.prompt(hass, llm_context)
+    return LLMTools(tools=[FileImprovement()] if files else [], prompt=prompt) if files or prompt else None
+
+
+def role_active():
+    """Whether one of the improver's own AI roles is calling (they, and replays, never file anything). Imported here:
+    a sandbox's worker reads this module for the household's lines and never loads the AI roles."""
+    from .reflective import ROLE_ACTIVE
+    return ROLE_ACTIVE.get()

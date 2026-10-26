@@ -1,7 +1,7 @@
 """From the generator's hypotheses to tested candidates; code runs every step, models only where judgement is needed.
 
-For each hypothesis and each goal it names (up to the tests-per-goal setting per goal
-in a cycle): build the goal's case from the analysis, replay the recorded
+For each hypothesis and each goal it names (up to the tests-per-goal setting per goal,
+over the goal's lifetime): build the goal's case from the analysis, replay the recorded
 conversation as the baseline (reproduced when its effects on the home match the
 recording), then replay with the hypothesis's changes, the user's recorded
 messages in order, until the goal is met. A small model checks that each
@@ -17,9 +17,9 @@ import probatio
 from .analyzer import top_level
 from .cases import CaseError, digest
 from .candidates import CandidateTrial, prepare_change_candidate
-from .const import CONF_TESTS_PER_GOAL, DEFAULT_TESTS_PER_GOAL
+from .const import CONF_TESTS_PER_GOAL, DEFAULT_TESTS_PER_GOAL, NO_FIX
 from .hypotheses import friction_by_goal
-from .reflective import run_role
+from .reflective import counts_as_tried, run_role
 from .settings import role_model
 from .snapshot import live_definitions
 from .trace import ids, span, tag
@@ -94,12 +94,15 @@ async def check_followups(hass, entity_id, followups):
             "all_fit": record["status"] == "completed" and all(v["fits"] for v in verdicts), "usage": record["usage"]}
 
 
-async def test_hypotheses(hass, entry, runtime, *, hypotheses, analyses, per_goal=None, skip_goals=(),
+async def test_hypotheses(hass, entry, runtime, *, hypotheses, analyses, per_goal=None, skip_goals=(), earlier=None,
                           allow_paid_inference=False):
     """Test each hypothesis on every goal instance it names that a replay can judge, most friction first. A goal
     instance is a goal as it came up in one conversation (session and turn): the same goal phrased differently must be
-    fixed in each. No instance gets more than `per_goal` replays with a fix in this cycle (the tests-per-goal setting
-    by default); its baseline runs once."""
+    fixed in each. No instance gets more than `per_goal` tests with a fix in its lifetime (the tests-per-goal setting
+    by default): earlier, {goal: tests it had in earlier runs}, counts too. Only a test that says something about the
+    goal counts there (reflective.TRIED): its fix judged, or it can't be replayed; a failure of the provider, the
+    sandbox or the code doesn't. Its baseline runs once. skip_goals: {goal: why} of goals that are settled (an improvement, or no
+    fix found)."""
     if not allow_paid_inference:
         raise CaseError("Paid inference has not been authorized")
     from homeassistant.util.dt import utcnow
@@ -108,18 +111,19 @@ async def test_hypotheses(hass, entry, runtime, *, hypotheses, analyses, per_goa
     by_session = {a["recording_id"][:8]: a for a in analyses}
     planned = [(h, *targets(h, by_session)) for h in hypotheses]
     planned.sort(key=lambda p: -sum(f["friction"] for f in p[1]))
-    results, used = [], {}
+    results, used, tried, earlier = [], {}, {}, dict(earlier or {})
     for hypothesis, found, skipped in planned:
         tests = []
         async with span("test.hypothesis", hypothesis=hypothesis.get("title"), goals=len(found)):
             for goal in found:
-                if goal["goal"] in skip_goals:  # Already has an improvement (waiting, applied or decided).
+                if goal["goal"] in skip_goals:  # An improvement (waiting, applied or decided), or no fix found.
                     tests.append({"goal": goal["goal"], "status": "not_tested",
-                                  "why": "This goal already has an improvement."})
+                                  "why": NO_FIX_WHY if _no_fix(skip_goals, goal["goal"])
+                                  else "This goal already has an improvement."})
                     continue
-                if used.get(goal["goal"], 0) >= per_goal:
+                if used.get(goal["goal"], 0) + earlier.get(goal["goal"], 0) >= per_goal:
                     tests.append({"goal": goal["goal"], "status": "not_tested",
-                                  "why": f"This goal's {per_goal} tests are used this cycle."})
+                                  "why": f"This goal's {per_goal} tests are used."})
                     continue
                 used[goal["goal"]] = used.get(goal["goal"], 0) + 1
                 try:
@@ -127,8 +131,11 @@ async def test_hypotheses(hass, entry, runtime, *, hypotheses, analyses, per_goa
                         outcome = await _test_one(hass, entry, runtime, hypothesis, goal)
                         section.tag(status=outcome["status"])
                     tests.append({"goal": goal["goal"], "target": deepcopy(goal), **outcome})
+                    if counts_as_tried(outcome):
+                        tried[goal["goal"]] = tried.get(goal["goal"], 0) + 1
                 except CaseError as err:
                     tests.append({"goal": goal["goal"], "status": "unsupported", "why": str(err)})
+                    tried[goal["goal"]] = tried.get(goal["goal"], 0) + 1
                 except Exception as err:  # Unexpected: this goal's test fails (logged); the other tests go on.
                     _LOGGER.exception("Assist Improver: testing %r on %s failed", hypothesis.get("title"),
                                       goal["goal"])
@@ -136,13 +143,22 @@ async def test_hypotheses(hass, entry, runtime, *, hypotheses, analyses, per_goa
                                   "why": f"{type(err).__name__}: {err}"[:300]})
         results.append({"title": hypothesis.get("title"), "tests": tests, "not_testable": skipped})
     tested = sum(used.values())
-    report = {"results": results, "tests_per_goal": per_goal, "tested": tested, "paid_inference_performed": tested > 0}
+    report = {"results": results, "tests_per_goal": per_goal, "tested": tested, "paid_inference_performed": tested > 0,
+              "tried": dict(tried)}
     if runtime.role_runs is not None:  # Kept, so a lost page or connection loses nothing.
         from uuid import uuid4
+        # tried: each goal's tests, kept (trimmed) after the rest, so its tests-per-goal limit holds in later runs.
         await runtime.role_runs.record({"id": uuid4().hex, "kind": "hypothesis_tests", "status": "completed",
                                          "started": started, "finished": utcnow().isoformat(), "output": report,
-                                         **ids()})
+                                         "tried": dict(tried), **ids()})
     return report
+
+
+NO_FIX_WHY = "No fix was found for this goal."
+
+
+def _no_fix(skip_goals, goal):
+    return isinstance(skip_goals, dict) and skip_goals.get(goal) == NO_FIX
 
 
 async def _test_one(hass, entry, runtime, hypothesis, found):

@@ -15,20 +15,6 @@ const rows = (items) => items.map((i) => {
       <span class="chip ${esc(i.status)}">${esc(STATUS[i.status] || i.status)}</span></button>`;
 }).join("");
 
-function offer(p) {
-  // Household knowledge, offered to the assistants that don't read it yet.
-  const h = p.household;
-  const missing = h && h.lines ? h.assistants.filter((a) => !a.using) : [];
-  if (!missing.length) return "";
-  return `<div class="offer"><div><b>Household knowledge</b> · ${plural(h.lines, "line")} learned so far.
-      These assistants don't read it yet:</div>
-      ${missing.map((a) => {
-        const busy = p.turningOn === a.target;
-        return `<div class="offer-row"><span>${esc(a.title)}</span>
-        <button class="turn-on" data-target="${esc(a.target)}" ${busy ? "disabled" : ""}>${busy ? "Turning on…" : "Turn on"}</button></div>`;
-      }).join("")}</div>`;
-}
-
 function main(p, items) {
   // What waits for the household's decision, then their conversations.
   const {run} = p.run || {};
@@ -54,7 +40,7 @@ export function render(p) {
       <svg viewBox="0 0 24 24"><path d="${COG}"/></svg></button>`;
   return {
     bar: common.toolbar("Assist Improver", false, (p.developer ? common.devLink() : "") + settings),
-    page: `<div class="page">${running ? common.progress(run, p.cancelling) : ""}${offer(p)}${main(p, items)}</div>`,
+    page: `<div class="page">${running ? common.progress(run, p.cancelling) : ""}${main(p, items)}</div>`,
     layer: (p.confirming && preview ? common.confirm(p, p.picking ? conversations.runPreview(p, preview) : preview) : "")
       + (p.confirming ? "" : conversations.bar(p, preview, running)),
   };
@@ -64,21 +50,8 @@ export function after(p) {
   conversations.after(p);
 }
 
-async function turnOn(p, target) {
-  p.turningOn = target;
-  p.render();
-  try {
-    await p.ws("household/enable", {target});
-  } catch (err) {
-    alert(err.message || String(err));
-  }
-  p.turningOn = null;
-  await p.load();
-}
-
 export const actions = {
   click: [
     [".item", (p, el) => p.go(el.dataset.id)],
-    [".turn-on", (p, el) => turnOn(p, el.dataset.target)],
   ],
 };

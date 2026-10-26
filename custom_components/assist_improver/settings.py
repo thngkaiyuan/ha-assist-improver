@@ -15,8 +15,8 @@ from homeassistant.config_entries import ConfigEntryState
 
 from . import ai_setup
 from .const import (CONF_ACCEPTED_WEAK, CONF_AI_TASK, CONF_AUTO_ACCEPT, CONF_CHECK_AI_TASK, CONF_DEVELOPER,
-                    CONF_ON_DEMAND, CONF_OPT_OUT, CONF_PAUSED, CONF_RECORDING, CONF_SCHEDULE, CONF_TESTS_PER_GOAL,
-                    CONF_TRIAGE_AI_TASK, DEFAULT_TESTS_PER_GOAL)
+                    CONF_HOUSEHOLD, CONF_ON_DEMAND, CONF_OPT_OUT, CONF_PAUSED, CONF_RECORDING, CONF_SCHEDULE,
+                    CONF_TESTS_PER_GOAL, CONF_TRIAGE_AI_TASK, DEFAULT_TESTS_PER_GOAL)
 
 # Large roles need judgement (a strong model); small ones a quick, cheap one.
 ROLES = {
@@ -31,7 +31,7 @@ ROLES = {
 OPTIONAL = {role for role, spec in ROLES.items() if not spec["fallback"]}  # Off while unset.
 LIVE = {spec["key"] for spec in ROLES.values()} | {CONF_AI_TASK, CONF_ACCEPTED_WEAK, CONF_TESTS_PER_GOAL, CONF_SCHEDULE,
                                                    CONF_PAUSED, CONF_AUTO_ACCEPT, CONF_ON_DEMAND,
-                                                   CONF_RECORDING, CONF_OPT_OUT}  # Read when used.
+                                                   CONF_RECORDING, CONF_OPT_OUT, CONF_HOUSEHOLD}  # Read when used.
 GATES = ("triage", "analyze", "propose", "test", "write")  # Stages that can be paused, in order.
 STAGE_ROLES = {"triage": ("triage",), "analyze": ("analyzer",), "propose": ("generator", "reviewer"),
                "test": ("followup_check",), "write": ("editor",)}  # The roles each stage calls.
@@ -149,6 +149,7 @@ def view(hass, entry, user_id=None):
             "schedule": entry.options.get(CONF_SCHEDULE, "off"), "paused": sorted(paused(entry)),
             "auto_accept": bool(entry.options.get(CONF_AUTO_ACCEPT, False)),
             "on_demand": bool(entry.options.get(CONF_ON_DEMAND, False)),
+            "household_knowledge": bool(entry.options.get(CONF_HOUSEHOLD, True)),
             "recording": recording_on, "recording_people": [
                 {"user_id": uid, "name": name, "on": recording_on and uid not in opted_out}
                 for uid, name in sorted(people(hass).items(), key=lambda person: person[1].casefold())],
@@ -158,7 +159,8 @@ def view(hass, entry, user_id=None):
 
 
 def updated(hass, entry, *, role=None, entity_id=None, tests_per_goal=None, schedule=None, stage=None,
-            pause=None, auto_accept=None, on_demand=None, recording=None, person=None, developer_services=None):
+            pause=None, auto_accept=None, on_demand=None, household_knowledge=None, recording=None, person=None,
+            developer_services=None):
     """The entry's options with one setting changed, checked first."""
     options = dict(entry.options)
     if role is not None:
@@ -189,6 +191,8 @@ def updated(hass, entry, *, role=None, entity_id=None, tests_per_goal=None, sche
         options[CONF_AUTO_ACCEPT] = bool(auto_accept)
     if on_demand is not None:  # The fast lane: one filed or sent in gets a run of its own as it ends.
         options[CONF_ON_DEMAND] = bool(on_demand)
+    if household_knowledge is not None:  # Whether every assistant on Assist reads the household's lines.
+        options[CONF_HOUSEHOLD] = bool(household_knowledge)
     if recording is not None:  # Whether new conversations are kept: the household's, or one person's (person).
         everyone, out = set(people(hass)), set(options.get(CONF_OPT_OUT, []))
         if person is None:  # The household's switch: every person's goes with it.

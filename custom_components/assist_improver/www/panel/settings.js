@@ -38,11 +38,14 @@ function step(p, id, L, s) {
   } else if (id === "requests") {
     const h = p.household || {}, pipeline = (h.pipelines || []).find((x) => x.preferred);  // The one Assist uses by default.
     chip = `<div class="chip-row"><button class="chip-model" data-assist="1" data-tip="${esc(TEXT.assistant.tip)}">${
-      esc(pipeline?.name || "Choose…")} &#9662;</button>${household.knows(p, pipeline, h.lines || 0)}</div>`;
+      esc(pipeline?.name || "Choose…")} &#9662;</button></div>`;
   } else if (id === "household") {
-    const lines = p.household?.lines || 0;
-    chip = `<div class="chip-row"><button class="chip-model" data-knowledge="1" data-tip="${esc(TEXT.knowledge.tip)}">${
-      glyph("mdi:book-heart-outline", "in-chip")}${esc(fill(TEXT.knowledge[L.vertical ? "chipShort" : "chip"], {n: plural(lines, "line")}))}</button>${
+    // Its one switch, whether every assistant on Assist reads the lines, beside the lines themselves (dimmed while off).
+    const lines = p.household?.lines || 0, K = TEXT.knowledge, on = s.household_knowledge !== false;
+    const tip = fill(K[on ? "on" : "off"], {lines: plural(lines, "line")});
+    chip = `<div class="chip-row">${common.toggle("household-knowledge", on, `aria-label="${esc(K.label)}" data-tip="${esc(tip)}"`)}<button
+      class="chip-model ${on ? "" : "off"}" data-knowledge="1" data-tip="${esc(K.tip)}">${
+      glyph("mdi:book-heart-outline", "in-chip")}${esc(fill(K[L.vertical ? "chipShort" : "chip"], {n: plural(lines, "line")}))}</button>${
       backlog.household ? `<span class="done-count" data-tip="${esc(fill(TEXT.badges.applied, {n: backlog.household}))}">${svg("check")}${backlog.household}</span>` : ""}</div>`;
   }
   const gate = station.gate ? `<button class="gate ${isPaused ? "paused" : ""}" data-gate="${station.gate}"
@@ -176,6 +179,8 @@ export function after(p) {
 // Each switch: whether it's on, and what flipping it does.
 const SWITCHES = {
   "on-demand": [(s) => s.on_demand, (p) => p.saveSetting({on_demand: !p.settings.on_demand})],
+  "household-knowledge": [(s) => s.household_knowledge !== false,
+                          (p) => p.saveSetting({household_knowledge: p.settings.household_knowledge === false})],
   recording: [(s) => s.recording !== false, (p) => p.saveSetting({recording: p.settings.recording === false})],
   "auto-accept": [(s) => s.auto_accept, (p) => {
     if (p.settings.auto_accept) return p.saveSetting({auto_accept: false});

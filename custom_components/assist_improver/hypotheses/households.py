@@ -3,6 +3,7 @@
 import json
 
 from ..analyzer import top_level
+from ..const import NO_FIX
 from ..exploration import related_improvements
 from ..sessions import SessionSet, footprint
 from .goals import capabilities, friction, friction_by_goal, goal_devices, scenario
@@ -21,7 +22,8 @@ class Sessions(SessionSet):
         super().__init__(analyses, views, **lazy)
         self.evidence, self.capability_facts = None, None
         self.feedback = []  # The household's decisions on earlier improvements.
-        self.settled = {}  # {(session, goal turn): title} of goals that already have an improvement.
+        # {(session, goal turn): title} of settled goals: an improvement's title, or NO_FIX (no fix was found for it).
+        self.settled = {}
         self.existing = []  # Improvements waiting for review or applied (Improvements.catalog), for list_improvements.
         self._upfront = None  # The open friction the generator gets in full (prepare).
 
@@ -82,11 +84,12 @@ class Sessions(SessionSet):
                 "friction_scenarios": upfront,
                 **({"more_friction": more} if more else {}),
                 "other_sessions": (f"{counts.get('friction_handled', 0)} sessions whose friction already has an "
-                                   f"improvement, {counts.get('without_friction', 0)} without friction, "
+                                   f"improvement (or no fix), {counts.get('without_friction', 0)} without friction, "
                                    f"{counts.get('not_analysed', 0)} not analysed: list_sessions finds them"),
                 **({"household_decisions": decisions(self.feedback)} if self.feedback else {}),
-                **({"already_handled": [{"session": s, "goal_turn": t, "improvement": title}
-                                        for (s, t), title in sorted(self.settled.items())]} if self.settled else {}),
+                **({"already_handled": handled} if (handled := [
+                    {"session": s, "goal_turn": t, "improvement": title} for (s, t), title in sorted(self.settled.items())
+                    if title != NO_FIX]) else {}),
                 **({"related_improvements": related} if (related := self.related(
                     [(s, t) for s, turns in self.open_friction() for t in turns])) else {})}
 

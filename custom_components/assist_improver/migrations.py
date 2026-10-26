@@ -14,6 +14,16 @@ Minor version 3 (0.35.0): where each taken-in conversation waits moves from a re
 Minor version 4 (0.35.3): a recording kept every conversation configuration of its assistant's provider; with two
 assistants on one provider (say Opus and Haiku under one Anthropic entry), a replay couldn't tell which one answered.
 Each recording keeps the one of the assistant that answered it.
+
+Minor version 5 (household knowledge in Assist): Assist itself gives the household's lines now, so every assistant on
+the household API ("Assist with household knowledge") uses Assist instead, each API once (an assistant that ticked both
+read every tool twice). The Household knowledge switch starts on.
+
+Minor version 6 (no fix found): a goal that earlier proposals listed in not_fixed with a reason, or whose tests
+already reached the tests-per-goal limit with no improvement for it, is recorded as no fix found, once
+(Improvements.unfixed): no later run spends anything on it unless its conversation is sent in again. A goal of an
+improvement waiting for a revision, or one whose accept found Home Assistant changed (conflict), gets its budget
+afresh from that decision, as it would now.
 """
 
 import logging
@@ -23,10 +33,10 @@ from homeassistant.helpers import entity_registry as er, issue_registry as ir
 from homeassistant.helpers.start import async_at_started
 from homeassistant.helpers.storage import Store
 
-from .const import CONF_TESTS_PER_GOAL, DOMAIN, STORAGE_VERSION
+from .const import CONF_HOUSEHOLD, CONF_TESTS_PER_GOAL, DEFAULT_TESTS_PER_GOAL, DOMAIN, STORAGE_VERSION
 
 _LOGGER = logging.getLogger(__name__)
-MINOR_VERSION = 4
+MINOR_VERSION = 6
 OLD_ISSUES = ("improvement_", "household_")
 
 
@@ -61,7 +71,76 @@ async def async_migrate(hass, entry):
         hass.config_entries.async_update_entry(entry, minor_version=4)
         _LOGGER.info("Assist Improver: migrated to 1.4 (%s recordings keep only their assistant's configuration)",
                      narrowed)
+    if entry.minor_version < 5:
+        from .household import back_to_assist
+        moved = back_to_assist(hass)
+        hass.config_entries.async_update_entry(entry, options={CONF_HOUSEHOLD: True, **entry.options}, minor_version=5)
+        _LOGGER.info("Assist Improver: migrated to 1.5 (%s assistants back on Assist, which reads the household "
+                     "knowledge)", moved)
+    if entry.minor_version < 6:
+        found = await _no_fix_found(hass, int(entry.options.get(CONF_TESTS_PER_GOAL, DEFAULT_TESTS_PER_GOAL)))
+        hass.config_entries.async_update_entry(entry, minor_version=6)
+        _LOGGER.info("Assist Improver: migrated to 1.6 (no fix found for %s goals)", len(found))
     return True
+
+
+def no_fix_found(runs, improvements, recordings, per_goal):
+    """{goal: {at, by, why}} of goals to record as no fix found, from a run log, an improvements store and the
+    recordings kept: each one an earlier proposal listed in not_fixed with a reason (by proposer), or whose tests
+    reached per_goal (by limit); none an improvement covers or already recorded, and only goals with friction in their
+    conversation's latest analysis. A goal any improvement covers is its own (a revision or a conflict gets its
+    budget afresh: fresh_found)."""
+    from homeassistant.util.dt import utcnow
+    from .hypotheses import friction_by_goal
+    from .improvements import Improvements
+    from .pipeline import not_fixed
+    from .reflective import RunIndex
+    index, covered = RunIndex(runs), set(improvements.get("unfixed", {}))
+    for item in improvements.get("improvements", {}).values():
+        covered |= set(Improvements._covers(item))
+    open_goals = set()
+    for rid, analysis in index.analyzed.items():
+        if rid in recordings:
+            try:
+                open_goals |= {f"{rid[:8]}:{turn}" for turn in friction_by_goal(analysis)}
+            except (KeyError, TypeError):  # An analysis in an older shape: nothing to settle in it.
+                continue
+    found, now = {}, utcnow().isoformat()
+    for run in runs:
+        if run.get("kind") == "hypothesis_generator" and run.get("status") == "completed":
+            for goal, why in not_fixed(run.get("output") or {}).items():
+                found[goal] = {"at": now, "by": "proposer", "why": why.strip()[:500]}
+    for goal, times in index.tried.items():
+        if len(times) >= per_goal:
+            found.setdefault(goal, {"at": now, "by": "limit", "why": f"Its {per_goal} tests found no fix."})
+    return {goal: entry for goal, entry in found.items() if goal in open_goals and goal not in covered}
+
+
+def fresh_found(improvements):
+    """{goal: when} of goals whose budget starts afresh: those of an improvement waiting for a revision, or whose
+    accept found a conflict, from that decision (unless one is kept already)."""
+    from .improvements import Improvements
+    out = {}
+    for item in improvements.get("improvements", {}).values():
+        if item.get("status") in ("revision_requested", "conflict") and item.get("decisions"):
+            out.update(dict.fromkeys(Improvements._covers(item), item["decisions"][-1].get("at") or ""))
+    return {goal: at for goal, at in out.items() if goal not in improvements.get("fresh", {})}
+
+
+async def _no_fix_found(hass, per_goal):
+    """Minor version 6: the goals no_fix_found finds, recorded in the improvements store, and the budgets that start
+    afresh (fresh_found). Those recorded."""
+    runs = ((await Store(hass, STORAGE_VERSION, f"{DOMAIN}.role_runs", private=True).async_load()) or {}).get(
+        "runs", [])
+    store = Store(hass, STORAGE_VERSION, f"{DOMAIN}.improvements", private=True, atomic_writes=True)
+    saved = (await store.async_load()) or {}
+    recordings = ((await Store(hass, STORAGE_VERSION, f"{DOMAIN}.index", private=True).async_load()) or {}).get(
+        "sessions", {})
+    found, fresh = no_fix_found(runs, saved, set(recordings), per_goal), fresh_found(saved)
+    if found or fresh:
+        await store.async_save({**saved, "unfixed": {**saved.get("unfixed", {}), **found},
+                                "fresh": {**saved.get("fresh", {}), **fresh}})
+    return found
 
 
 def answered(recording, subentry_of):

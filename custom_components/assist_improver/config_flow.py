@@ -15,7 +15,7 @@ from homeassistant.core import callback
 from homeassistant.helpers.selector import SelectOptionDict, SelectSelector, SelectSelectorConfig, SelectSelectorMode
 
 from . import ai_setup, settings
-from .const import CONF_ACCEPTED_WEAK, CONF_AI_TASK, CONF_ON_DEMAND, DOMAIN, NAME
+from .const import CONF_ACCEPTED_WEAK, CONF_AI_TASK, CONF_HOUSEHOLD, CONF_ON_DEMAND, DOMAIN, NAME
 
 CREATE = "create"  # List values "create:<config entry>:<recommended|default>" add a new AI Task.
 USE_ANYWAY = "use_anyway"
@@ -129,7 +129,7 @@ class _AiTaskSteps:
 
 class AssistantImproverConfigFlow(_AiTaskSteps, ConfigFlow, domain=DOMAIN):
     VERSION = 1
-    MINOR_VERSION = 4  # migrations.py brings older entries (and their stores) up to it.
+    MINOR_VERSION = 6  # migrations.py brings older entries (and their stores) up to it.
 
     @staticmethod
     @callback
@@ -147,7 +147,8 @@ class AssistantImproverConfigFlow(_AiTaskSteps, ConfigFlow, domain=DOMAIN):
         return await self.async_step_user()
 
     def _finish(self, choice):
-        return self.async_create_entry(title=NAME, data={}, options=self._options({CONF_ON_DEMAND: True}, choice))
+        return self.async_create_entry(title=NAME, data={},
+                                       options=self._options({CONF_ON_DEMAND: True, CONF_HOUSEHOLD: True}, choice))
 
 
 class AssistantImproverOptionsFlow(OptionsFlow):

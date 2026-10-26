@@ -8,8 +8,8 @@ places with no shared transaction, so a changeset is made atomic here:
    value the user changed since is a conflict, reported instead of overwritten.
    HA validates scripts and instruction templates before anything is written.
 2. Apply in a safe order: scripts (saved, not exposed: inert), aliases, exposure,
-   then the household knowledge, and last the assistant's switch to reading it
-   (instruction lines tell the assistant to use the rest). Nothing runs.
+   then the household knowledge and the assistant's own instructions (instruction
+   lines tell the assistant to use the rest). Nothing runs.
 3. A journal is saved before each write; a failed step undoes the done steps in
    reverse order. A journal left unfinished by a restart is undone at startup.
 4. Every written value is read back before the changeset counts as applied.
@@ -24,7 +24,7 @@ from homeassistant.helpers.storage import Store
 
 from .const import DOMAIN, STORAGE_VERSION
 
-# The assistant switches to the household API last: that is what makes the household lines take effect.
+# assistant_api: an assistant switched to the household API (up to 0.37), last; still undone, never planned now.
 ORDER = ("script", "alias", "exposure", "household", "prompt", "assistant_api")
 SCRIPTS_FILE = "scripts.yaml"  # Where HA's script editor keeps scripts (homeassistant.config.SCRIPT_CONFIG_PATH).
 
@@ -166,15 +166,15 @@ async def plan_steps(hass, proposal):
         add("exposure", entity_id, async_should_expose(hass, "conversation", entity_id), exposed, base,
             _name(hass, entity_id, setup.get("scripts", {})))
     if any(c["kind"] in ("preference", "prompt") for c in proposal["changes"]):
-        # Instruction lines go into the household knowledge every assistant on the household API reads; the
-        # assistant the improvement was tested on is switched to that API if it isn't yet.
+        # Instruction lines go into the household knowledge, which every assistant on Assist reads; a line they
+        # replace in the tested assistant's own instructions comes out of those. No assistant is switched.
         from . import household
         provider = proposal["provider"]
         target = f"{provider['config_entry_id']}/{provider['subentry_id']}"
         title = provider.get("title") or "Assist"
         apis = await read(hass, "assistant_api", target)
         if apis is None:
-            conflicts.append({"kind": "assistant_api", "target": target, "what": title,
+            conflicts.append({"kind": "prompt", "target": target, "what": title,
                               "why": "The assistant it was tested on is no longer set up."})
         else:
             live_prompt = await read(hass, "prompt", target)
@@ -186,22 +186,20 @@ async def plan_steps(hass, proposal):
                     Template(prompt, hass).ensure_valid()
                 except Exception as err:  # A template HA can't parse never reaches the assistant.
                     problems.append(f"Home Assistant can't read the edited instructions: {err}")
-            if household.API_ID not in apis and llm_assist() not in apis:
+            if llm_assist() not in household.as_assist(apis):
                 problems.append("The assistant doesn't use Assist, so it can't read the household knowledge.")
+            if household.switched_off(hass):  # Nothing would read the lines (nor those it takes out of instructions).
+                problems.append("It's off in the settings, so no assistant would read it.")
             if problems:
                 conflicts += [{"kind": "household", "target": "household", "what": "Household knowledge", "why": p}
                               for p in problems]
             else:
-                if household.API_ID not in apis:  # Switching: lines its instructions already hold move out of them.
-                    prompt = household.without_lines(prompt, knowledge)
+                # A household line its own instructions hold too (an uninstall wrote it there, say) comes out of them:
+                # it reads the line once, from the household knowledge.
+                prompt = household.without_lines(prompt, knowledge)
                 add("household", "household", live, knowledge, _ANY, "Household knowledge")
                 if prompt != live_prompt:
                     add("prompt", target, live_prompt, prompt, _ANY, f"{title}'s instructions")
-                # Only the assistant it was tested on is switched: every other one opts in from the panel, so no
-                # assistant depends on this integration without the household choosing it.
-                if household.API_ID not in apis:
-                    add("assistant_api", target, apis, [household.API_ID if a == llm_assist() else a for a in apis],
-                        _ANY, f"{title}: use {household.API_NAME}")
     steps.sort(key=lambda s: ORDER.index(s["kind"]))
     return steps, already, conflicts
 

@@ -135,6 +135,7 @@ class TestReport(TypedDict, total=False):
     started: str
     finished: str
     output: dict
+    tried: dict  # {goal: tests it had}: kept after output (retention), for each goal's tests-per-goal limit.
     run_id: str
     trace_id: str
 

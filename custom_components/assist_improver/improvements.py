@@ -15,7 +15,8 @@ from homeassistant.util.dt import utcnow
 
 from .cases import CaseError, digest, recording_turns, replayed, transcript
 from .changeset import Changesets, Conflict, plan_steps, read, undo_steps
-from .const import DOMAIN, STORAGE_VERSION, VERSION
+from .household import switched_off
+from .const import DOMAIN, NO_FIX, STORAGE_VERSION, VERSION
 from .records import Improvement
 from .trace import journal, span, timed
 
@@ -60,6 +61,9 @@ DECISIONS = {  # Decision: (status, label).
 # household was only trying Assist out): the trouble the improver saw wasn't real, so it's recorded as fine as it was,
 # which the proposer and reviewer are told, and its goals stay settled.
 REASONS = {("decline", "not_an_issue"): "fine_as_is"}
+# A goal with friction and no fix (NO_FIX): the proposer said why it's outside the assistant's control, or its tests
+# reached the tests-per-goal limit without one passing. Settled like a decided improvement (settled_goals), so no later
+# run spends anything on it, until the household sends its conversation in again (reopen).
 
 
 def choices(item):
@@ -100,6 +104,8 @@ class Improvements:
         self.items: dict[str, Improvement] = {}
         # {plan id: digest of what its test was derived from}: a test derived from the same is reused (refresh).
         self._derived = {}
+        self.unfixed = {}  # {goal: {at, by: proposer | limit, why}}: no fix found for it (NO_FIX).
+        self.fresh = {}  # {goal: when its tests-per-goal budget started again}: sent in again, or a revision asked.
         self._locks = {}  # One decision at a time per improvement: two tabs, or auto-accept, never cross.
         self._notified = None  # The improvements the notification listed last (journaled when it changes).
 
@@ -107,6 +113,7 @@ class Improvements:
         saved = await self.store.async_load()
         self.items = (saved or {}).get("improvements", {})
         self._derived = (saved or {}).get("derived", {})
+        self.unfixed, self.fresh = (saved or {}).get("unfixed", {}), (saved or {}).get("fresh", {})
         await self.refresh()
 
     async def recover(self):
@@ -132,7 +139,8 @@ class Improvements:
 
     async def _save(self):
         async with timed("store.improvements"):
-            await self.store.async_save({"improvements": self.items, "derived": self._derived})
+            await self.store.async_save({"improvements": self.items, "derived": self._derived,
+                                         "unfixed": self.unfixed, "fresh": self.fresh})
 
     def get(self, improvement_id):
         if improvement_id not in self.items:
@@ -171,16 +179,57 @@ class Improvements:
         return out
 
     def settled_goals(self):
-        """{"session:turn": title} of goal instances that already have an improvement waiting, applied or decided: a
-        run leaves them out. A goal whose improvement the household asked to revise (or that changed since it was
-        tested) is open again, with the note."""
-        out = {}
-        for item in self.items.values():
-            if item["status"] in ("revision_requested", "conflict", "revised"):
-                continue
-            for goal in self._covers(item):
-                out.setdefault(goal, item["title"])
-        return out
+        """{"session:turn": title} of goal instances that already have an improvement waiting, applied or decided, or
+        for which no fix was found (title NO_FIX): a run leaves them out. A goal whose improvement the household asked
+        to revise (or that changed since it was tested) is open again, with the note."""
+        return settled(self.items, self.unfixed)
+
+    def tries(self, tested):
+        """{goal: tests it had towards its tests-per-goal limit}, from the run log's index (RunIndex.tried: when
+        each test finished): those since its budget last started again."""
+        return {goal: sum(1 for at in times if at > self.fresh.get(goal, "")) for goal, times in tested.items()}
+
+    async def no_fix(self, goals, by):
+        """No fix found for these goals ({goal: why}): settled from now on, unless an improvement covers one already.
+        by: proposer (it said why the friction is outside the assistant's control) or limit (its tests ran out).
+        How many were new."""
+        covered, added = settled(self.items, {}), 0
+        for goal, why in goals.items():
+            if goal not in covered and goal not in self.unfixed:
+                self.unfixed[goal] = {"at": utcnow().isoformat(), "by": by, "why": (why or "").strip()[:500]}
+                added += 1
+        if added:
+            journal("info", f"No fix found for {added} goal(s)", by=by, goals=sorted(goals))
+            await self._save()
+        return added
+
+    def revising(self):
+        """Improvements the household asked to revise that wait at Propose: those with a goal no fix was found for
+        (its tests since the request ran out, or the proposer said why) don't any more."""
+        return [item for item in self.items.values() if item["status"] == "revision_requested"
+                and not all(goal in self.unfixed for goal in self._covers(item) or [None])]
+
+    async def reopen(self, session):
+        """The household sent a conversation whose troubles had no fix found in again (with a note): its goals are open
+        once more, each with a fresh tests-per-goal budget. The goals reopened."""
+        mine = [goal for goal in self.unfixed if goal.split(":")[0] == session]
+        if mine:
+            now = utcnow().isoformat()
+            for goal in mine:
+                del self.unfixed[goal]
+                self.fresh[goal] = now
+            journal("info", "Sent in again: its goals are open once more", goals=mine)
+            await self._save()
+        return mine
+
+    async def forget(self, sessions):
+        """Deleted conversations ({short ID}): what was found about their goals goes with them."""
+        gone = [g for g in [*self.unfixed, *self.fresh] if g.split(":")[0] in sessions]
+        for goal in gone:
+            self.unfixed.pop(goal, None)
+            self.fresh.pop(goal, None)
+        if gone:
+            await self._save()
 
     @staticmethod
     def _covers(item):
@@ -445,6 +494,8 @@ class Improvements:
         if decision == "revise" and not note.strip():
             raise CaseError("Say what to change in the note")
         record = {"decision": decision, "note": note.strip(), "by": user_id, "at": utcnow().isoformat()}
+        if decision in ("revise", "needs_improvement"):  # Its goals are open again, with a fresh tests budget.
+            self.fresh.update(dict.fromkeys(self._covers(item), record["at"]))
         if decision == "accept":
             outcome = await self._apply(item, user_id)
         elif decision == "undo":
@@ -474,6 +525,8 @@ class Improvements:
             if (not item or item["status"] not in PENDING or "accept" not in choices(item)
                     or not low_risk(self.hass, item)):
                 continue
+            if switched_off(self.hass) and any(c.get("kind") in ("preference", "prompt") for c in item["changes"]):
+                continue  # Household knowledge is off: it waits for review (it can't apply now, and says why).
             try:
                 result = await self.decide(improvement_id, "accept", note="Accepted automatically")
             except CaseError:  # The household decided it meanwhile (their decision held the lock first).
@@ -491,8 +544,9 @@ class Improvements:
 
     async def _apply(self, item, user_id):
         steps, already, conflicts = await plan_steps(self.hass, item)
-        if conflicts:
+        if conflicts:  # Its goals are open again (Home Assistant changed since it was tested), with a fresh budget.
             item["status"] = "conflict"
+            self.fresh.update(dict.fromkeys(self._covers(item), utcnow().isoformat()))
             return {"status": "conflict", "conflicts": conflicts}
         try:
             result = await self.changesets.run(item["id"], "apply", steps)
@@ -521,6 +575,19 @@ class Improvements:
             item["status"] = "needs_attention"
         item["history"].append({"at": utcnow().isoformat(), "event": "undo", **result, "left": left})
         return {**result, "left": left}
+
+
+def settled(items, unfixed):
+    """settled_goals, from an improvements store's items and unfixed goals (migrations.py reads a store this way)."""
+    out = {}
+    for item in items.values():
+        if item["status"] in ("revision_requested", "conflict", "revised"):
+            continue
+        for goal in Improvements._covers(item):
+            out.setdefault(goal, item["title"])
+    for goal in unfixed:
+        out.setdefault(goal, NO_FIX)
+    return out
 
 
 KINDS = {"script": "script", "alias": "aliases", "exposure": "exposure", "prompt": "instructions",

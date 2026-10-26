@@ -11,7 +11,7 @@ export const toolbar = (title, back, end = "") => `<div class="toolbar">${back
 
 // A labelled switch (HA's own when the page has it) with an optional ⓘ tip, and any attributes the switch needs; its
 // clicks are the settings view's.
-const toggle = (id, on, attrs) => customElements.get("ha-switch") ? `<ha-switch id="${id}" ${attrs} ${on ? "checked" : ""}></ha-switch>`
+export const toggle = (id, on, attrs) => customElements.get("ha-switch") ? `<ha-switch id="${id}" ${attrs} ${on ? "checked" : ""}></ha-switch>`
   : `<button class="toggle ${on ? "on" : ""}" id="${id}" ${attrs} role="switch" aria-checked="${on}"></button>`;
 export const switchRow = (id, on, text, tip, cls = "", attrs = "") => `<div class="toggle-row ${cls}"><label class="practice">${toggle(id, on, attrs)}${esc(text)}</label>
     ${tip ? `<span class="info-tip" data-tip="${esc(tip)}" tabindex="0" aria-label="About ${esc(text)}">${svg("info")}</span>` : ""}</div>`;

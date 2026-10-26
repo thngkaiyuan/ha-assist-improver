@@ -9,7 +9,9 @@ that is, and the AI roles are the same ones the admin actions run:
 2. Propose: the hypothesis generator and its reviewer, over every analysis, with the
    household's decisions on earlier improvements; it runs when there are new
    analyses with friction, or revisions asked for, since it last ran.
-3. Test: every hypothesis on every goal it names, up to the tests-per-goal setting.
+3. Test: every hypothesis on every goal it names, up to the tests-per-goal setting over the goal's lifetime. A goal
+   with no fix found (the proposer said why, or its tests ran out without one passing) is settled: no later run
+   spends anything on it, unless the household sends its conversation in again (a fresh budget).
 4. Write up: the editor's headline and what-you-get; then improvements go up for
    review in the panel and the notification.
 
@@ -143,10 +145,18 @@ class Pipeline:
                 and not summary.get("deleting"))
 
     def _unanalysed(self, rid, runs):
-        """No analysis yet; or only the quick check's smooth verdict, and the user sent it in since:
-        it gets the full analysis then, once, as that analysis takes the verdict's place."""
+        """No analysis yet; or only the quick check's smooth verdict, and the user sent it in since: it gets the full
+        analysis then, once, as that analysis takes the verdict's place; or sent in again after its analysis (no fix
+        was found for it), so the analysis takes the user's note into account."""
         analysis = runs.analyzed.get(rid)
-        return analysis is None or bool(analysis.get("triaged") and self.filed(rid))
+        return analysis is None or bool(analysis.get("triaged") and self.filed(rid)) or self.resent(rid, runs)
+
+    def resent(self, rid, runs=None):
+        """Sent in after its latest full analysis: it waits for another one, with the user's note."""
+        runs = self._runs() if runs is None else runs
+        filed, analysis = (self.recorder.index.get(rid) or {}).get("filed"), runs.analyzed.get(rid)
+        return bool(filed and analysis and not analysis.get("triaged")
+                    and (filed.get("at") or "") > runs.analyzed_at.get(rid, ""))
 
     def to_analyze(self, tests=None, filed_only=False):
         """Finished conversations not analysed yet: every one, as a full run takes them in; only those sent in (filed)
@@ -196,9 +206,12 @@ class Pipeline:
                     count += bool(analysis.get("goals"))
         return count + self._revisions()
 
+    def _per_goal(self):
+        return int(self.entry.options.get(CONF_TESTS_PER_GOAL, DEFAULT_TESTS_PER_GOAL))
+
     def _revisions(self):
-        """Improvements the household asked to revise: they wait at Propose."""
-        return sum(1 for i in self.runtime.improvements.items.values() if i["status"] == "revision_requested")
+        """Improvements the household asked to revise: they wait at Propose (until no fix is found for them)."""
+        return len(self.runtime.improvements.revising())
 
     def backlog(self, todo=None, tests=None):
         """What waits at each stage: {stage: count}, as the settings view shows it, and how many of those at Propose
@@ -410,6 +423,9 @@ class Pipeline:
             if generator.get("status") == "completed" and (found := await self.runtime.improvements.note_addressed(
                     (generator.get("output") or {}).get("already_addressed"))):  # Kept with what covers them.
                 run["progress"]["already_addressed"] = run["progress"].get("already_addressed", 0) + found
+            if generator.get("status") == "completed" and (unfixed := await self.runtime.improvements.no_fix(
+                    not_fixed(generator.get("output") or {}), by="proposer")):  # Outside the assistant's control.
+                run["progress"]["no_fix_found"] = run["progress"].get("no_fix_found", 0) + unfixed
             run["progress"].update(hypotheses=len(hypotheses), generator_run=generator.get("id"),
                                    generator_status=generator.get("status"))
             if generator.get("status") == "completed" and hypotheses:
@@ -422,10 +438,12 @@ class Pipeline:
             if not (hypotheses and gate("test")):
                 return
             await self._stage("test", hypotheses=len(hypotheses))
+            improvements, per_goal = self.runtime.improvements, self._per_goal()
+            earlier = improvements.tries(self._runs().tried)  # Each goal's tests in earlier runs count too.
             try:
                 report = await test_hypotheses(self.hass, self.entry, self.runtime, hypotheses=hypotheses,
-                                               analyses=state["analyses"], skip_goals=set(state["settled"]),
-                                               allow_paid_inference=True)
+                                               analyses=state["analyses"], skip_goals=dict(state["settled"]),
+                                               earlier=earlier, per_goal=per_goal, allow_paid_inference=True)
             except Exception:
                 # Tried again next run, but not forever: after MAX_ATTEMPTS failures these ideas are set aside.
                 generator["test_attempts"] = generator.get("test_attempts", 0) + 1
@@ -435,10 +453,16 @@ class Pipeline:
             generator["tested"] = True
             await self.runtime.role_runs.record(generator)
             run["progress"].update(tested=report.get("tested", 0))
-            before = {i["id"] for i in self.runtime.improvements.items.values()}
-            await self.runtime.improvements.refresh()
-            run["progress"].update(new_improvements=sum(1 for i in self.runtime.improvements.items.values()
+            before = {i["id"] for i in improvements.items.values()}
+            await improvements.refresh()
+            run["progress"].update(new_improvements=sum(1 for i in improvements.items.values()
                                                         if i["id"] not in before))
+            # A goal whose tests ran out without an improvement for it, in a conversation still kept: no fix found.
+            from .sessions import short
+            kept, used = {short(rid) for rid in self.recorder.index}, improvements.tries(self._runs().tried)
+            if out := await improvements.no_fix({goal: f"Its {per_goal} tests found no fix." for goal, n in used.items()
+                                                 if n >= per_goal and goal.split(":")[0] in kept}, by="limit"):
+                run["progress"]["no_fix_found"] = run["progress"].get("no_fix_found", 0) + out
 
         async def write():
             if not (gate("write") and (waiting := self.runtime.improvements.unwritten())):
@@ -524,6 +548,13 @@ class Pipeline:
         journal("error" if status == "failed" else "info", f"Run {status}" + (f": {error}" if error else ""),
                 timings=self.current["progress"].get("timings"), problems=self.current["progress"].get("problems"))
         await self.runtime.role_runs.record(self.current)
+
+
+def not_fixed(answer):
+    """{goal: why} of the goals a proposal's answer listed in not_fixed with a reason, and no hypothesis of it fixes."""
+    fixing = {f"{g['session']}:{g['goal_turn']}" for h in answer.get("hypotheses") or [] for g in h.get("goals") or []}
+    return {f"{r['session']}:{r['goal_turn']}": r["why"] for r in answer.get("not_fixed") or []
+            if (r.get("why") or "").strip() and f"{r['session']}:{r['goal_turn']}" not in fixing}
 
 
 SCHEDULES = {"off": None, "daily": None, "weekly": 6}  # weekly: Sundays (weekday 6), at 03:00.

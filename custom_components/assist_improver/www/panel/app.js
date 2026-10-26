@@ -136,11 +136,11 @@ export class PanelApp {
       } else {
         // The settings only say whether developer mode is on (the Developer link); home works without them.
         const fromReview = this.view === "review";
-        const [found, known, run, options] = await Promise.all([this.ws("improvements"), this.ws("household"), this.ws("run"),
-                                                                this.ws("settings").catch(() => null), conversations.load(this)]);
+        const [found, run, options] = await Promise.all([this.ws("improvements"), this.ws("run"),
+                                                         this.ws("settings").catch(() => null), conversations.load(this)]);
         if (!current()) return;
-        Object.assign(this, {list: found.improvements, household: known, developer: !!options?.developer, review: null,
-                             view: "home", pop: null});
+        Object.assign(this, {list: found.improvements, developer: !!options?.developer, review: null, view: "home",
+                             pop: null});
         if (fromReview) this.scroller().scrollTop = 0;  // Back from a review: home starts at its top.
         this.setRun(run);
         KEPT.page = null;

@@ -75,8 +75,8 @@ def prepare_change_candidate(case, recording, *, hypothesis, scripts, definition
                        "HA's own engine runs the scripts in a sandbox; devices are emulated, physical position is not",
                        "Other scripts and automations use their current definitions unless the recording has them",
                        "Unmodelled device commands stop evaluation",
-                       *(["Instruction lines are tested through Assist with household knowledge; applying "
-                          "switches the tested assistant to it"] if "household" in setup else [])]}
+                       *(["Instruction lines are tested as household knowledge, which every assistant on Assist "
+                          "reads"] if "household" in setup else [])]}
     plan["id"] = digest(plan)
     return plan
 

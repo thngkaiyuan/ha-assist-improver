@@ -22,7 +22,7 @@ from homeassistant.util import dt as dt_util
 from homeassistant.util.dt import utcnow
 
 from .cases import failed_calls, transcript
-from .const import DOMAIN, STORAGE_VERSION
+from .const import DOMAIN, NO_FIX, STORAGE_VERSION
 from .improvements import PENDING
 from .sessions import short
 
@@ -78,18 +78,22 @@ def improved(runtime):
 
 
 # Standings the improver has or is done with (stage, and improved): never sent in again, never picked.
-TAKEN = ("queued", "fine", "working", "review", "declined", "improved", "test", "unreadable")
-STANDINGS = ("waiting", "smooth", "sent", "active", *TAKEN)  # Every standing, as the list counts them.
+TAKEN = ("queued", "fine", "working", "retry", "review", "declined", "improved", "test", "unreadable")
+# Every standing, as the list counts them. nofix (no fix found for any of its troubles) can be sent in again, one by
+# one, with a note: never picked for a run.
+STANDINGS = ("waiting", "smooth", "sent", "active", "nofix", *TAKEN)
 
 
 def decided(runtime):
     """What the improvements say about the conversations: {short ID: [(status, improvement ID)]} of those covering
-    each, and the goals ("short:turn") they settled (Improvements.settled_goals)."""
+    each, the goals ("short:turn") settled (Improvements.settled_goals: {goal: title}, NO_FIX for no fix found), and
+    the conversations whose analyses wait at Propose (since the last proposal)."""
     improvements, covers = runtime.improvements, {}
     for item in improvements.items.values():
         for conversation in dict.fromkeys(goal.split(":")[0] for goal in improvements._covers(item)):
             covers.setdefault(conversation, []).append((item["status"], item["id"]))
-    return {"covers": covers, "settled": set(improvements.settled_goals())}
+    return {"covers": covers, "settled": improvements.settled_goals(),
+            "since": {rid for rid, _ in runtime.pipeline._runs().since}}
 
 
 def standing(runtime, rid, at=None, tests=None, fixed=None, known=None):
@@ -103,6 +107,8 @@ def standing(runtime, rid, at=None, tests=None, fixed=None, known=None):
     tests = pipeline._tests() if tests is None else tests
     if short(rid) in (improved(runtime) if fixed is None else fixed):
         return "improved"
+    if pipeline.resent(rid, runs):  # Sent in again (no fix was found): in, until it's analysed with the note.
+        return "queued" if rid in at else "sent"
     smooth = bool((runs.analyzed.get(rid) or {}).get("triaged"))
     if (rid in at and at[rid] != "triage") or (rid in runs.analyzed and not smooth) or rid in runs.unreadable \
             or rid in tests:
@@ -118,8 +124,10 @@ def stage(rid, runs, tests, known):
     """Where a run took a conversation, from the run log's index and the improvements (decided): test (the household
     said it was one), unreadable (no role can read it), review (an improvement for it waits for the household's
     review), queued (waiting for analysis: one the quick check found smooth, sent in for the full analysis, too),
-    fine (analysed: nothing to fix), working (trouble no improvement covers yet: the next runs look for a fix), or
-    declined (every trouble it had has an improvement, and none was accepted: declined, or undone)."""
+    fine (analysed: nothing to fix), working (trouble nothing settles yet, waiting at Propose: analysed since the last
+    proposal), retry (trouble a proposal had and no fix yet: the next proposal looks again, within its tests-per-goal
+    budget), nofix (no fix was found for any of its troubles: final, unless sent in again), or declined (every trouble
+    it had is settled, by improvements none of which was accepted: declined, or undone)."""
     from .hypotheses import friction_by_goal
     if rid in tests:
         return "test"
@@ -135,7 +143,10 @@ def stage(rid, runs, tests, known):
         trouble = set()
     if not trouble:
         return "fine"
-    return "working" if trouble - known["settled"] else "declined"
+    if trouble - known["settled"].keys():  # Waiting at Propose: analysed since the last proposal, or a revision asked.
+        revising = any(status == "revision_requested" for status, _ in known["covers"].get(short(rid), []))
+        return "working" if rid in known["since"] or revising else "retry"
+    return "nofix" if all(known["settled"][goal] == NO_FIX for goal in trouble) else "declined"
 
 
 ORDERS = {  # How a list can be sorted: newest, oldest, or the most effort first (more turns, then failed calls).

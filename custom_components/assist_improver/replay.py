@@ -25,7 +25,7 @@ from .snapshot import live_definitions
 from .serialization import plain
 from .simulation import UnsupportedSimulation, recorded_transitions
 from .trace import span, tag
-from .worker import RemoteSandbox, context_data
+from .worker import RemoteSandbox, WorkerError, context_data
 
 
 class Precomputed:
@@ -98,7 +98,7 @@ class SandboxHome(llm.API):
         self.scripts, self.automations, self.exposure_changes = scripts, automations, exposure_changes or {}
         self.alias_changes, self.prompt_template = alias_changes or {}, prompt_template
         self.alias_removals = alias_removals or {}
-        self.household = household  # A change's household knowledge, read through Assist with household knowledge.
+        self.household = household  # A change's household knowledge, which Assist reads.
         self.sandbox = None
         self.tools = None  # Assist's tools in the sandbox, once it built them.
         self.unsupported, self.dispatched = [], []
@@ -138,19 +138,24 @@ class SandboxHome(llm.API):
         await self.start()
         options = turn["prepared"]["provider_config"][0]["options"]
         template = self.prompt_template if self.prompt_template is not None else options.get("prompt")
-        api_id = turn["prepared"].get("api_id") or "assist"
-        recorded = household_api_ids(api_id)
-        if self.household is not None or recorded:
-            # The household API, as recorded (its knowledge then) or as a change would make it.
-            from .household import API_ID
+        from .household import API_ID, api_ids, render
+        apis = api_ids(turn["prepared"].get("api_id") or "assist")
+        # Recorded through the household API (up to 0.37): replayed through it, so the prompt is the one recorded.
+        legacy = API_ID in apis
+        if (legacy or "assist" in apis) and (self.household is not None or reads_household(turn)):
+            # The household knowledge Assist read then, or as a change would make it.
             knowledge = self.household if self.household is not None else turn["source"].get("household")
-            await self.sandbox.call("household", knowledge=knowledge)
-            if not recorded:
-                api_id = [API_ID if a == "assist" else a for a in ([api_id] if isinstance(api_id, str) else api_id)]
-        built = await self.sandbox.call("prompt", context=context_data(llm_context), api_id=api_id, template=template)
+            await self.sandbox.call("household", knowledge=knowledge, legacy=legacy)
+            lines = render(knowledge, getattr(llm_context.context, "user_id", None))
+        else:
+            lines = ""
+        built = await self.sandbox.call("prompt", context=context_data(llm_context),
+                                        api_id=apis if len(apis) > 1 else apis[0], template=template)
         self.prompt = built["prompt"]
         if built["api_prompt"] is None:
             raise UnsupportedSimulation("Home Assistant's Assist tools are unavailable in the sandbox")
+        if lines not in built["api_prompt"]:  # Never a test without the lines it's meant to read: the sandbox's fault.
+            raise WorkerError("Assist didn't read the household knowledge in the sandbox")
         self.tools = [SandboxTool(t, self) for t in built["tools"]]
         return RecordedAPIInstance(api=self, api_prompt=built["api_prompt"], llm_context=llm_context,
                                    tools=self.tools, custom_serializer=serializer)
@@ -173,13 +178,15 @@ class SandboxHome(llm.API):
         raise UnsupportedSimulation("A replay's tools come from its sandbox")
 
 
-def household_api_ids(api_id):
-    from .household import API_ID
-    return API_ID in ([api_id] if isinstance(api_id, str) else api_id or [])
+def reads_household(turn):
+    """Whether Assist read the household knowledge in this recorded turn: the switch was on (recorded since the lines
+    came with Assist), or the assistant used the household API (up to 0.37)."""
+    from .household import API_ID, api_ids
+    return bool(turn["source"].get("household_on")) or API_ID in api_ids(turn["prepared"].get("api_id"))
 
 
 async def register(hass, api):
-    """In the sandbox: serve this API there (the household's, with a replay's knowledge)."""
+    """In the sandbox: serve this API there (the household API up to 0.37, with a replay's knowledge)."""
     from homeassistant.helpers import llm
     apis = llm._async_get_apis(hass)
     apis.pop(api.id, None)  # A sandbox serves one replay's knowledge at a time.

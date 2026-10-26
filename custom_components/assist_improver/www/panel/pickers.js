@@ -3,8 +3,8 @@
 // check; and the assistant Your Assist uses.
 
 const v = new URL(import.meta.url).search;  // ?v=<version>, passed on to every module this one loads.
-const [{esc, plural, fill}, {TEXT, STEPS}, {glyph}, household, {switchRow}] = await Promise.all(
-  ["format", "text", "icons", "household", "common"].map((name) => import(`./${name}.js${v}`)));
+const [{esc, fill}, {TEXT, STEPS}, {switchRow}] = await Promise.all(
+  ["format", "text", "common"].map((name) => import(`./${name}.js${v}`)));
 
 export const task = (s, entityId) => s.ai_tasks.find((t) => t.entity_id === entityId);
 
@@ -35,12 +35,11 @@ function privacy(s) {
 
 const PICKERS = {
   assist(p, s) {
-    const h = p.household || {}, list = h.pipelines || [];
+    const list = p.household?.pipelines || [];
     return `<div class="pop-head"><b>Your Assist</b> uses</div>` + (list.length ? list.map((x) =>
       `<div class="opt" data-prefer="${esc(x.id)}"><div class="opt-main"><span class="check">${x.preferred ? "&#10003;" : ""}</span>
-        <span class="opt-label">${esc(x.name)}</span><span class="spacer"></span>${household.knows(p, x, h.lines || 0)}</div></div>`).join("")
+        <span class="opt-label">${esc(x.name)}</span></div></div>`).join("")
       : `<div class="pop-lead">${esc(TEXT.assistant.none)}</div>`) +
-      `<div class="pop-lead pop-foot">${glyph("mdi:book-heart-outline")}<span>${esc(fill(TEXT.assistant.lines, {lines: plural(h.lines || 0, "line")}))}</span></div>` +
       privacy(s);
   },
   test(p, s) {

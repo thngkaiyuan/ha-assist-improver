@@ -53,8 +53,9 @@ def snapshot(hass):
             "home_name": hass.config.location_name, "states": states,
             "entities": entities, "devices": devices, "areas": areas, "exposure": exposure,
             "scripts": plain(scripts), "automations": plain(automations),
-            # The household knowledge the household API served then, so a replay rebuilds the same prompt.
+            # The household knowledge then, and whether Assist read it, so a replay rebuilds the same prompt.
             "household": plain(getattr(hass.data.get(f"{DOMAIN}_household"), "knowledge", None)),
+            "household_on": bool(getattr(hass.data.get(f"{DOMAIN}_household"), "on", False)),
             "attribute_policy": "allowlist-v1; omitted attributes are not recorded"}
 
 

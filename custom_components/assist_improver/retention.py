@@ -10,8 +10,9 @@ newest KEEP_NEWEST, which seed the sandbox. Recordings with no turns (Home Assis
 deleted.
 
 The log of runs and AI role calls (diagnostics and profiling) is tidied the same way: what the pipeline still reads
-stays (trimmed to those fields after KEEP_FULL_DAYS), runs with their stage timings stay for KEEP_HISTORY_DAYS, and
-every other record is deleted after KEEP_FULL_DAYS.
+stays (trimmed to those fields after KEEP_FULL_DAYS), runs with their stage timings and the test stages' tests per
+goal (what holds each goal to its tests-per-goal limit; trimmed to that after KEEP_FULL_DAYS) stay for
+KEEP_HISTORY_DAYS, and every other record is deleted after KEEP_FULL_DAYS.
 
 The developer view's traces (trace.py) are kept TRACE_DAYS after they were last written, and no more than
 TRACE_MAX_BYTES of them, the oldest deleted first; a trace still being written is never deleted.
@@ -34,6 +35,8 @@ TRACE_MAX_BYTES = 20 * 1024 * 1024
 NEEDED_FIELDS = ("id", "kind", "role", "recording_id", "status", "answer_status", "analysis", "digest_sha256",
                  "entity_id", "started", "finished", "seconds", "error", "tested", "test_attempts", "run_id",
                  "trace_id")
+# What a test stage's record keeps after KEEP_FULL_DAYS, for a year: each goal's tests, against its tests-per-goal limit.
+TEST_FIELDS = ("id", "kind", "status", "started", "finished", "tried", "run_id", "trace_id")
 READ_EVENTS = ("created", "content_added", "deleted")  # The events cases._content reads; the rest are copies.
 CLOSED = ("session_expired", "interrupted", "capture_timed_out")
 
@@ -252,6 +255,12 @@ def prune_runs(runs, recordings, now=None):
             fields = needed[n]
             if fields and (age is None or age > timedelta(days=KEEP_FULL_DAYS)) and set(run) - set(fields):
                 run = {k: v for k, v in run.items() if k in fields}
+                done["trimmed"] += 1
+            kept.append(run)
+        elif run.get("kind") == "hypothesis_tests" and age is not None and age <= timedelta(days=KEEP_HISTORY_DAYS):
+            if age > timedelta(days=KEEP_FULL_DAYS) and set(run) - set(TEST_FIELDS):
+                from .reflective import tried
+                run = {**{k: v for k, v in run.items() if k in TEST_FIELDS}, "tried": tried(run)}
                 done["trimmed"] += 1
             kept.append(run)
         elif age is not None and age <= timedelta(

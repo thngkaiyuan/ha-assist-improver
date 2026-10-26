@@ -102,6 +102,31 @@ def tokens(stats):
 RECENT = 50  # Analyses (and quick checks) the run confirmation's rough token estimate goes by.
 
 
+# A goal's test outcomes that say something about the goal, and count against its tests-per-goal limit: its fix judged,
+# or the fix or the conversation itself that can't be replayed (a baseline that isn't reproduced stays so). A failure
+# of the machinery (the provider, the sandbox, a bug) isn't the goal's, so it doesn't count.
+TRIED = ("awaiting_review", "not_improved", "unsupported", "baseline_not_reproducible", "baseline_unsupported")
+
+
+def counts_as_tried(test):
+    """Whether a goal's test counts against its tests-per-goal limit (TRIED)."""
+    return test.get("status") in TRIED
+
+
+def tried(run):
+    """{goal ("session:turn"): tests} a test stage's record tried a fix on, against each goal's tests-per-goal limit:
+    its own count, else (a record from before it kept one) each test whose fix was tried
+    (counts_as_tried)."""
+    if isinstance(run.get("tried"), dict):
+        return dict(run["tried"])
+    out = Counter()
+    for result in (run.get("output") or {}).get("results") or []:
+        for test in result.get("tests") or []:
+            if counts_as_tried(test) and test.get("goal"):
+                out[test["goal"]] += 1
+    return dict(out)
+
+
 class Recent:
     """The last few values added, with their sum: an average kept as they come, without a scan."""
 
@@ -119,14 +144,16 @@ class Recent:
 
 
 class RunIndex:
-    """What the pipeline reads from the run log, gathered in one pass: each recording's latest accepted analysis, the
-    recordings no role can read, unexpected failures, each recording's latest held quick-check verdict, records by id
-    (the pipeline's state), the last completed proposal with the analyses since, and the tokens recent analyses and
-    quick checks used. Kept current as records are added; taking out one an answer rests on (rare: a record replaced
+    """What the pipeline reads from the run log, gathered in one pass: each recording's latest accepted analysis (and
+    when), the recordings no role can read, unexpected failures, each recording's latest held quick-check verdict,
+    records by id (the pipeline's state), the last completed proposal with the analyses since, when each goal was
+    tested (its tests-per-goal budget), and the tokens recent analyses and quick checks used. Kept current as records are added; taking out one an answer rests on (rare: a record replaced
     by one with its id) means building it again."""
 
     def __init__(self, runs=()):
         self.analyzed = {}  # {recording id: its latest accepted analysis}, in the order each was first analysed.
+        self.analyzed_at = {}  # {recording id: when its latest accepted analysis finished}
+        self.tried = {}  # {goal ("session:turn"): [when each test on it finished]}, oldest first.
         self.unreadable = Counter()  # {recording id: records saying no role can read it}
         self.strikes = Counter()  # {recording id: runs that failed on it for an unexpected reason}
         self.held = {}  # {recording id: its latest held record with a completed quick check}
@@ -164,9 +191,13 @@ class RunIndex:
         rid = run.get("recording_id")
         if run.get("kind") == "hypothesis_generator" and run.get("status") == "completed":
             self.generator, self.since = (position, run), []
+        elif run.get("kind") == "hypothesis_tests" and run.get("status") == "completed":
+            for goal, n in tried(run).items():
+                self.tried.setdefault(goal, []).extend([run.get("finished") or ""] * n)
         elif run.get("kind") == "journey_analyzer":
             if self._analysis(run):
                 self.analyzed[rid] = run["analysis"]
+                self.analyzed_at[rid] = run.get("finished") or ""
                 self.since.append((rid, run["analysis"]))
                 if run.get("answer_status") != "triaged_smooth" and (used := self._tokens(run.get("usage"))):
                     self.spent["analyze"].add(used)
@@ -191,6 +222,12 @@ class RunIndex:
         self.size -= 1
         if position < self.generator[0]:
             self.generator = (self.generator[0] - 1, self.generator[1])
+        if run.get("kind") == "hypothesis_tests" and run.get("status") == "completed":
+            for goal, n in tried(run).items():
+                for _ in range(n):
+                    self.tried[goal].remove(run.get("finished") or "")
+                if not self.tried[goal]:
+                    del self.tried[goal]
         if run.get("kind") == "journey_analyzer":
             counter = {"unreadable": self.unreadable, "error": self.strikes}.get(run.get("answer_status"))
             if counter is not None:

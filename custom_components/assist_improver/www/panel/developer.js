@@ -8,7 +8,8 @@ const [{esc, bytes, dur, num, stamp, ago, between, devUrl}, {svg}, common, parts
 const {idLink, ids, kv, chip, statusChip, stageChip, timeline, journal, stageBar, waterfall, problemCount, WF_DEPTH} = parts;
 
 const TABS = [["find", "Find"], ["conversations", "Conversations"], ["runs", "Runs"], ["health", "Health"], ["logs", "Logs"]];
-const STAGES = ["active", "waiting", "held", "failing", "set_aside", "analysed", "improvement", "duplicate", "smooth", "test", "empty"];
+const STAGES = ["active", "waiting", "held", "failing", "set_aside", "analysed", "improvement", "duplicate", "no_fix", "smooth", "test",
+                "empty"];
 const LEVELS = ["debug", "info", "warning", "error", "critical"];
 const LOG_PAGE = 100;
 const NO_FILTERS = {level: "", text: "", run: "", recording: ""};

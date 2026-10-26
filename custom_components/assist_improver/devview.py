@@ -17,7 +17,7 @@ import probatio
 from homeassistant.components import websocket_api
 
 from . import trace
-from .const import CONF_DEVELOPER, DOMAIN, VERSION
+from .const import CONF_DEVELOPER, DOMAIN, NO_FIX, VERSION
 from .runtime import loaded
 
 MIN_PREFIX = 4  # Characters an ID prefix needs before lookup tries it.
@@ -102,6 +102,8 @@ class _Facts:
             return "waiting" if summary.get("filed") else "smooth"
         goals = [f"{_short(rid)}:{turn}" for turn in self.friction(analysis)]
         if goals and all(g in self.settled for g in goals):
+            if all(self.settled[g] == NO_FIX for g in goals):  # No fix found for any of them.
+                return "no_fix"
             return "duplicate" if analysis.get("duplicates") and not self.covering.get(_short(rid)) else "improvement"
         return "improvement" if self.covering.get(_short(rid)) else "analysed"
 
@@ -119,7 +121,7 @@ def conversation_rows(runtime, sizes=None):
     """One row per recording, newest first: {id, short, started, ended, user_turns, status, stored, bytes, practice,
     stage, waiting_at, strikes, goals, friction, improvements, cases, runs}. stage is one of active, empty, waiting,
     held, failing (its last attempt failed; strikes counts the unexpected ones, which set it aside at three),
-    set_aside, test, smooth, analysed, duplicate, improvement."""
+    set_aside, test, smooth, analysed, duplicate, improvement, no_fix."""
     facts, sizes = _Facts(runtime), sizes or {}
     rows = []
     for rid, summary in runtime.recorder.index.items():

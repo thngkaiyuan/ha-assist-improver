@@ -1,14 +1,18 @@
 """Household knowledge: the instruction lines improvements add, kept in one place for every assistant.
 
-An assistant reads them through an LLM API this integration provides, "Assist with
-household knowledge": Home Assistant's own Assist API (the same tools, the same
-prompt) with the household's lines appended, for everyone and for the person
-speaking. An assistant chooses it instead of "Assist" once; after that, every
-accepted line reaches it, and every other assistant that chose it.
+Every assistant that controls Home Assistant through Assist reads them: Home
+Assistant's Assist gathers a prompt from each integration's llm platform, and this
+integration's (llm.py) adds the household's lines, for everyone and for the person
+speaking. One switch in the settings turns them off (on by default): off, or with
+no lines yet, Assist is exactly Home Assistant's own. Home Assistant doesn't say
+which assistant is asking, so it's every assistant or none.
 
-With no lines yet, it gives exactly what Assist gives. On uninstall, assistants
-are switched back to Assist with the lines written into their own instructions,
-so nothing learned is lost (see async_remove).
+Up to 0.37 the lines came through a second LLM API, "Assist with household
+knowledge", chosen instead of Assist; an assistant could tick both and read every
+tool twice. migrations.py moves those assistants back to Assist, and only replays
+of conversations recorded through it still use it (LegacyAPI, in a sandbox). On
+uninstall, the lines are written into each assistant's own instructions, so
+nothing learned is lost (see async_remove).
 """
 
 import re
@@ -17,9 +21,9 @@ from copy import deepcopy
 from homeassistant.helpers import llm
 from homeassistant.helpers.storage import Store
 
-from .const import DOMAIN, STORAGE_VERSION
+from .const import CONF_HOUSEHOLD, DOMAIN, STORAGE_VERSION
 
-API_ID = DOMAIN
+API_ID = DOMAIN  # The household API up to 0.37: what assistants and recordings of then still name.
 API_NAME = "Assist with household knowledge"
 KEY = f"{DOMAIN}_household"  # hass.data: the Household (knowledge and its store).
 EMPTY = {"everyone": [], "people": {}}
@@ -82,19 +86,66 @@ def edit(knowledge, changes, user_id, prompt=None):
     return knowledge, prompt, problems
 
 
-class HouseholdAPI(llm.API):
-    """Assist, with the household's lines appended to its prompt. The same tools, so nothing else changes."""
+def prompt(hass, llm_context):
+    """What Assist reads of the household knowledge for one request: the lines for everyone and the person speaking,
+    or None while the switch is off or nothing is learned. Ends with a blank line, before Home Assistant's own part."""
+    household = hass.data.get(KEY)
+    if household is None or not household.on:
+        return None
+    text = render(household.knowledge, getattr(getattr(llm_context, "context", None), "user_id", None))
+    return f"{text}\n" if text else None
 
-    def __init__(self, hass, knowledge=None):
-        super().__init__(hass=hass, id=API_ID, name=API_NAME)
-        self._fixed = knowledge  # A sandbox's fixed knowledge; otherwise the household's current one.
+
+class Household:
+    """The knowledge and its store; Assist reads it on every request (llm.py)."""
+
+    def __init__(self, hass):
+        self.hass = hass
+        self.store = Store(hass, STORAGE_VERSION, f"{DOMAIN}.household", private=True, atomic_writes=True)
+        self.knowledge = normalized(EMPTY)
 
     @property
-    def knowledge(self):
-        if self._fixed is not None:
-            return self._fixed
-        household = self.hass.data.get(KEY)
-        return household.knowledge if household else EMPTY
+    def on(self):
+        """The settings' Household knowledge switch, on by default; off while the improver is disabled or gone."""
+        entries = self.hass.config_entries.async_entries(DOMAIN)
+        return bool(entries) and not entries[0].disabled_by and bool(entries[0].options.get(CONF_HOUSEHOLD, True))
+
+    async def load(self):
+        self.knowledge = normalized(await self.store.async_load())
+
+    async def save(self, knowledge):
+        self.knowledge = normalized(knowledge)
+        await self.store.async_save(self.knowledge)
+
+
+def switched_off(hass):
+    """Whether the household turned the Household knowledge switch off (an improver set up, its setting off)."""
+    entries = hass.config_entries.async_entries(DOMAIN)
+    return bool(entries) and not entries[0].options.get(CONF_HOUSEHOLD, True)
+
+
+class Fixed:
+    """A sandbox's household knowledge: the lines one replay reads, as recorded or as a change would make them."""
+
+    on = True
+
+    def __init__(self, knowledge):
+        self.knowledge = normalized(knowledge)
+
+
+def serve(hass, knowledge):
+    """In a sandbox: its Assist reads these lines, through this integration's llm platform as on the real instance."""
+    hass.data[KEY] = Fixed(knowledge)
+    hass.config.components.add(DOMAIN)  # Home Assistant's Assist asks the platforms of loaded integrations.
+
+
+class LegacyAPI(llm.API):
+    """The household API up to 0.37: Assist, with the household's lines appended to its prompt. Only a sandbox serves
+    it now, to replay a conversation recorded through it as it was."""
+
+    def __init__(self, hass, knowledge):
+        super().__init__(hass=hass, id=API_ID, name=API_NAME)
+        self.knowledge = knowledge
 
     async def async_get_api_instance(self, llm_context):
         assist = await llm.async_get_api(self.hass, llm.LLM_API_ASSIST, llm_context)
@@ -105,77 +156,70 @@ class HouseholdAPI(llm.API):
                                custom_serializer=assist.custom_serializer)
 
 
-class Household:
-    """The knowledge and its store; the API reads it on every request."""
-
-    def __init__(self, hass):
-        self.hass = hass
-        self.store = Store(hass, STORAGE_VERSION, f"{DOMAIN}.household", private=True, atomic_writes=True)
-        self.knowledge = normalized(EMPTY)
-
-    async def load(self):
-        self.knowledge = normalized(await self.store.async_load())
-
-    async def save(self, knowledge):
-        self.knowledge = normalized(knowledge)
-        await self.store.async_save(self.knowledge)
-
-
 async def async_setup(hass):
-    """Load the knowledge and offer the API, once per run (it outlives the entry's reloads, so an assistant using it
-    never finds it missing while the integration reloads)."""
+    """Load the knowledge, once per run: it outlives the entry's reloads, so Assist never misses it while the
+    integration reloads."""
     if KEY in hass.data:
         return hass.data[KEY]
     household = Household(hass)
     await household.load()
     hass.data[KEY] = household
-    llm.async_register_api(hass, HouseholdAPI(hass))
     return household
 
 
+def api_ids(apis):
+    """An assistant's or recording's LLM APIs as a list: stored as a list, one name, or a merged API's id (a|b)."""
+    if isinstance(apis, str):
+        return apis.split("|")
+    return list(apis or [])
+
+
+def as_assist(apis):
+    """The APIs with the household API (up to 0.37) replaced by Assist, each once."""
+    return list(dict.fromkeys(llm.LLM_API_ASSIST if a == API_ID else a for a in api_ids(apis)))
+
+
 def assistants(hass):
-    """[(config entry, subentry, uses the household API)] of conversation assistants that control Home Assistant
-    (through Assist, or already through the household API)."""
+    """[(config entry, subentry)] of conversation assistants that control Home Assistant through Assist (or still
+    through the household API, up to 0.37)."""
     out = []
     for entry in hass.config_entries.async_entries():
         for sub in entry.subentries.values():
-            apis = sub.data.get("llm_hass_api") or []
-            apis = [apis] if isinstance(apis, str) else apis
+            apis = api_ids(sub.data.get("llm_hass_api"))
             if sub.subentry_type == "conversation" and (API_ID in apis or llm.LLM_API_ASSIST in apis):
-                out.append((entry, sub, API_ID in apis))
+                out.append((entry, sub))
     return out
 
 
+def back_to_assist(hass):
+    """Every assistant still on the household API (up to 0.37) uses Assist instead, once (migrations.py): Assist gives
+    the lines itself now, and an assistant that ticked both reads each tool once again. Also one that keeps its API in
+    its entry's options (an integration without assistants as subentries). How many changed."""
+    changed = 0
+    for entry, sub in assistants(hass):
+        if API_ID in api_ids(sub.data.get("llm_hass_api")):
+            hass.config_entries.async_update_subentry(
+                entry, sub, data={**sub.data, "llm_hass_api": as_assist(sub.data["llm_hass_api"])})
+            changed += 1
+    for entry in hass.config_entries.async_entries():
+        if API_ID in api_ids(entry.options.get("llm_hass_api")):
+            hass.config_entries.async_update_entry(
+                entry, options={**entry.options, "llm_hass_api": as_assist(entry.options["llm_hass_api"])})
+            changed += 1
+    return changed
+
+
 def pipelines(hass):
-    """Home Assistant's assistants (Assist pipelines), the preferred one first, each with the assistant behind it and
-    whether it reads the household knowledge: [{id, name, preferred, target, using}]; target and using are None for an
-    assistant that doesn't control Home Assistant through Assist (Home Assistant's own, for example)."""
+    """Home Assistant's assistants (Assist pipelines), the preferred one first: [{id, name, preferred}]."""
     try:
         from homeassistant.components.assist_pipeline.pipeline import KEY_ASSIST_PIPELINE
         store = hass.data[KEY_ASSIST_PIPELINE].pipeline_store
     except (ImportError, KeyError, AttributeError):
         return []
-    from homeassistant.helpers import entity_registry as er
-    registry, preferred = er.async_get(hass), store.async_get_preferred_item()
-    using = {f"{entry.entry_id}/{sub.subentry_id}": on for entry, sub, on in assistants(hass)}
-    out = []
-    for pipeline in store.data.values():
-        item = registry.async_get(pipeline.conversation_engine or "")
-        target = f"{item.config_entry_id}/{item.config_subentry_id}" if item and item.config_subentry_id else None
-        out.append({"id": pipeline.id, "name": pipeline.name, "preferred": pipeline.id == preferred,
-                    "target": target if target in using else None, "using": using.get(target)})
+    preferred = store.async_get_preferred_item()
+    out = [{"id": pipeline.id, "name": pipeline.name, "preferred": pipeline.id == preferred}
+           for pipeline in store.data.values()]
     return sorted(out, key=lambda p: not p["preferred"])
-
-
-def assistants_using(hass):
-    """[(config entry, subentry)] of conversation assistants that chose the household API."""
-    out = []
-    for entry in hass.config_entries.async_entries():
-        for sub in entry.subentries.values():
-            apis = sub.data.get("llm_hass_api")
-            if sub.subentry_type == "conversation" and API_ID in (apis if isinstance(apis, list) else [apis]):
-                out.append((entry, sub))
-    return out
 
 
 def literal(line):
@@ -197,9 +241,8 @@ def person_block(user_id, lines):
 
 
 def without_lines(prompt, knowledge):
-    """An assistant's instructions without the household's lines, as uninstalling wrote them there (everyone's lines,
-    and each person's block): an assistant that reads the household knowledge again (after a reinstall) shouldn't
-    read them twice."""
+    """An assistant's instructions without the household's lines (everyone's, and each person's block, as uninstalling
+    writes them there): an assistant on Assist reads them from the household knowledge, so not twice."""
     if not prompt:
         return prompt
     knowledge = normalized(knowledge)
@@ -212,36 +255,23 @@ def without_lines(prompt, knowledge):
     return prompt if cleaned == prompt else cleaned.rstrip("\n")
 
 
-async def use_household(hass, target):
-    """Switch one assistant ("entry/subentry") from Assist to the household API, taking out of its instructions any
-    lines the household knowledge already gives it. False when it's gone or doesn't use Assist."""
-    from .changeset import read, write
-    apis = await read(hass, "assistant_api", target)
-    if apis is None or (API_ID not in apis and llm.LLM_API_ASSIST not in apis):
-        return False
-    if API_ID not in apis:
-        household = hass.data.get(KEY)
-        prompt = await read(hass, "prompt", target)
-        if (cleaned := without_lines(prompt, household.knowledge if household else EMPTY)) != prompt:
-            await write(hass, "prompt", target, cleaned)
-        await write(hass, "assistant_api", target,
-                    list(dict.fromkeys(API_ID if a == llm.LLM_API_ASSIST else a for a in apis)))
-    return True
-
-
-async def async_remove(hass):
-    """Uninstalling: each assistant on the household API goes back to Assist, with the household's lines written
-    into its own instructions (everyone's lines, then each person's in their block), so nothing learned is lost."""
+async def async_remove(hass, on=True):
+    """Uninstalling: while the switch is on, each assistant on Assist gets the household's lines written into its own
+    instructions (everyone's lines, then each person's in their block), so nothing learned is lost; one still on the
+    household API (up to 0.37) goes back to Assist. Instructions left empty were Home Assistant's default ones: the
+    lines go after those."""
     household = hass.data.get(KEY)
     knowledge = normalized(household.knowledge if household else await Household(hass).store.async_load())
-    for entry, sub in assistants_using(hass):
-        stored = sub.data.get("llm_hass_api") or []
-        apis = [llm.LLM_API_ASSIST if a == API_ID else a for a in ([stored] if isinstance(stored, str) else stored)]
-        prompt = sub.data.get("prompt") or ""
-        lines = "\n".join(literal(line) for line in knowledge["everyone"])
-        for user_id, mine in knowledge["people"].items():
-            lines += "\n" + person_block(user_id, mine)
-        hass.config_entries.async_update_subentry(
-            entry, sub, data={**sub.data, "llm_hass_api": list(dict.fromkeys(apis)),
-                              "prompt": (prompt.rstrip("\n") + "\n" + lines.strip("\n") + "\n") if lines.strip() else prompt})
-
+    lines = "\n".join(literal(line) for line in knowledge["everyone"])
+    for user_id, mine in knowledge["people"].items():
+        lines += "\n" + person_block(user_id, mine)
+    for entry, sub in assistants(hass):
+        data = {**sub.data}
+        if API_ID in api_ids(sub.data.get("llm_hass_api")):
+            data["llm_hass_api"] = as_assist(sub.data["llm_hass_api"])
+        if on and lines.strip():
+            prompt = sub.data.get("prompt") or llm.DEFAULT_INSTRUCTIONS_PROMPT
+            data["prompt"] = prompt.rstrip("\n") + "\n" + lines.strip("\n") + "\n"
+        hass.config_entries.async_update_subentry(entry, sub, data=data)
+    if household is not None:  # Read from the instructions now: never twice, even before Home Assistant restarts.
+        household.knowledge = normalized(EMPTY)
