@@ -82,7 +82,8 @@ def open_goals(sessions, answer):
     addressed |= {(r["session"], r["goal_turn"]) for r in answer.get("not_fixed") or [] if r["why"].strip()}
     addressed |= {(r["session"], r["goal_turn"]) for r in answer.get("already_addressed") or [] if r["why"].strip()}
     return [(s, turn) for s, analysis in sorted(sessions.analyses.items())
-            for turn in sorted(friction_by_goal(analysis)) if (s, turn) not in addressed and (s, turn) not in sessions.settled]
+            for turn in sorted(friction_by_goal(analysis))
+            if (s, turn) not in addressed and (s, turn) not in getattr(sessions, "handled", sessions.settled)]
 
 
 def _open_goals(sessions, answer):

@@ -51,7 +51,8 @@ export function progress(run, cancelling) {
   const detail = {
     analyze: p.analyze_total != null ? `Analyzing conversations: ${p.analyzed || 0} of ${p.analyze_total}` +
       (p.skipped_as_smooth ? ` (${p.skipped_as_smooth} went smoothly, skipped).` : ".") : "Finding conversations to analyze…",
-    propose: `Proposing fixes from ${plural(p.sessions || 0, "conversation")}, with a reviewer checking each…`,
+    // The conversations whose trouble it's proposing fixes for (troubled); a run from before counted every one read.
+    propose: `Proposing fixes for ${plural(p.troubled ?? p.sessions ?? 0, "conversation")}, with a reviewer checking each…`,
     test: `Testing ${plural(p.hypotheses || 0, "fix")} in a sandboxed copy of your home…`,
     write: `Writing up ${plural(p.writing || 0, "improvement")}…`}[run.stage];
   return `<div class="run"><div class="run-head"><div class="what"><div class="title">${esc(runTitle(run))}</div>

@@ -370,6 +370,7 @@ class Recorder:
             mark = {**filed, **({"again": True} if key in again else {})}
             self.index[key]["filed"] = dict(mark)
             self.index[key].pop("unarchived", None)  # In again: once it settles again, it leaves the list on its own.
+            self.index[key].pop("hidden", None)  # Sent in: back in the list and the pipeline, archived or not.
             if (session := self.sessions.get(key)) is not None:
                 session["filed"] = dict(mark)
                 self.schedule(key, soon=True)

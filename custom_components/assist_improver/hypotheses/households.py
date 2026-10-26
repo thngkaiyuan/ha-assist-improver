@@ -27,6 +27,9 @@ class Sessions(Assistants, SessionSet):
         self.feedback = []  # The household's decisions on earlier improvements.
         # {(session, goal turn): title} of settled goals: an improvement's title, or NO_FIX (no fix was found for it).
         self.settled = {}
+        # {(session, goal turn): why} of trouble this proposal isn't asked to fix (archived by hand, or not in a run on
+        # picked conversations): those sessions are still read, to check rules against, as ones without friction.
+        self.later = {}
         self.existing = []  # Improvements waiting for review or applied (Improvements.catalog), for list_improvements.
         self._upfront = None  # The open friction the generator gets in full (prepare).
 
@@ -43,12 +46,17 @@ class Sessions(Assistants, SessionSet):
         async with contained("propose", session, step=PROBE, expected=(CaseError,)):  # CaseError: it can't.
             self.capability_facts = await probe(self.household.recording, self._entities_in_friction(), definitions)
 
+    @property
+    def handled(self):
+        """The goals not this proposal's to fix: settled (an improvement, or no fix found), or left for later."""
+        return {**self.later, **self.settled}
+
     def open_friction(self):
         """[(session, its goal turns with friction no improvement handles)], newest first: what the generator has
         to place, each goal in a hypothesis, already_addressed or not_fixed."""
         out = []
         for session in sorted(self.analyses, key=lambda s: (self.briefs.get(s) or {}).get("started") or "", reverse=True):
-            turns = [t for t in sorted(friction_by_goal(self.analyses[session])) if (session, t) not in self.settled]
+            turns = [t for t in sorted(friction_by_goal(self.analyses[session])) if (session, t) not in self.handled]
             if turns:
                 out.append((session, turns))
         return out
@@ -91,7 +99,7 @@ class Sessions(Assistants, SessionSet):
         more = [{"session": s, "started": ((self.briefs.get(s) or {}).get("started") or "")[:16],
                  "goals_with_friction": [self._goal_line(s, t) for t in turns]}
                 for s, turns in self.open_friction() if s not in shown]
-        counts = self.counts(self.settled)
+        counts = self.counts(self.handled)
         return {"home": self.household.digest["home"], "time_zone": self.household.digest["time_zone"],
                 "areas": self.household.list_areas(), "assist_tools": self.assist_tools(),
                 **({"assistants": rows} if (rows := self.assistant_rows()) else {}),
@@ -118,7 +126,7 @@ class Sessions(Assistants, SessionSet):
 
     def listing(self, **filters):
         """One page of sessions (list_sessions), newest first."""
-        return self.page(self.settled, names=self._names(), **filters)
+        return self.page(self.handled, names=self._names(), **filters)
 
     def _names(self):
         from ..sessions import device_names
@@ -161,7 +169,7 @@ class Sessions(Assistants, SessionSet):
         """The sessions a draft's changes would apply to, besides its own goals' (sessions.where_it_applies)."""
         mine = {g["session"][:8] for g in hypothesis.get("goals") or []}
         rows, total = self.where_it_applies(footprint(self.with_targets(hypothesis.get("changes")), self.household),
-                                            self.settled, exclude=mine)
+                                            self.handled, exclude=mine)
         out = {"sessions": rows, "count": total}
         if total > len(rows):
             out["more"] = f"{total - len(rows)} more: list_sessions filtered by a device or area finds them"
@@ -174,7 +182,7 @@ class Sessions(Assistants, SessionSet):
                    **{k: f[k] for k in ("summary", "user_chose")}}
                   for s, a in self.analyses.items() for f in friction(a) if f["kind"] == "ask"]
         chosen.sort(key=lambda c: c["started"], reverse=True)
-        return {"home": self.household.digest["home"], "sessions": self.counts(self.settled),
+        return {"home": self.household.digest["home"], "sessions": self.counts(self.handled),
                 **({"assistants": rows} if (rows := self.assistant_rows()) else {}),
                 "known_choices": chosen[:CHOICES_SHOWN],
                 **({"more_known_choices": len(chosen) - CHOICES_SHOWN} if len(chosen) > CHOICES_SHOWN else {}),

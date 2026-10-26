@@ -235,17 +235,25 @@ class Pipeline:
 
     def to_analyze(self, tests=None, filed_only=False):
         """Finished conversations not analysed yet: every one, as a full run takes them in; only those sent in (filed)
-        with filed_only, as a run on picked conversations and the fast lane do."""
+        with filed_only, as a run on picked conversations and the fast lane do. Never one archived by hand."""
         runs, tests = self._runs(), self._tests() if tests is None else tests
         return sorted(rid for rid, summary in self.recorder.index.items()
                       if summary.get("status") in CLOSED and self._unanalysed(rid, runs) and rid not in tests
-                      and self._readable(rid, runs) and (not filed_only or summary.get("filed")))
+                      and self._readable(rid, runs) and (not filed_only or summary.get("filed"))
+                      and not summary.get("hidden"))
+
+    def archived(self, rid):
+        """Archived by hand: out of the pipeline. No run takes it in or works on its trouble (a step it waited at lets
+        it go); it's still kept, so other changes are checked against it. Sending it in, or unarchiving it, brings it
+        back: the next run takes it in."""
+        return bool((self.recorder.index.get(rid) or {}).get("hidden"))
 
     def _at(self):
-        """{recording id: the stage it waits at} for conversations a run took in that aren't analysed yet."""
+        """{recording id: the stage it waits at} for conversations a run took in that aren't analysed yet (not one
+        archived since: it's out of the pipeline)."""
         runs = self._runs()
         return {rid: stage for rid, stage in self.waiting.items()
-                if self._unanalysed(rid, runs) and self._readable(rid, runs)}
+                if self._unanalysed(rid, runs) and self._readable(rid, runs) and not self.archived(rid)}
 
     async def _save_at(self, at):
         self.waiting = dict(at)
@@ -292,19 +300,58 @@ class Pipeline:
         await self.runtime.role_runs.amend(changed)
         return len(changed)
 
-    def _to_propose(self, tests=None):
+    def _to_propose(self, tests=None, mine=None):
         """What the proposer has to work on: analyses with friction since it last ran, earlier ones with friction it
-        wasn't given (unseen), and revisions asked for."""
+        wasn't given (unseen), and revisions asked for; never a conversation archived by hand. mine: a run on picked
+        conversations, or the fast lane, works only on those it took in (sent in): the rest waits for a full run."""
         from .hypotheses import friction_by_goal, short
         tests = self._tests() if tests is None else tests
         count, settled = 0, set(self.runtime.improvements.settled_goals())
+
+        def ours(rid):
+            return not self.archived(rid) and (mine is None or mine(rid))
         for rid, analysis in self._runs().since:
-            if rid not in tests:
+            if rid not in tests and ours(rid):
                 try:  # Goals an existing improvement already covers (marked duplicates too) go no further.
                     count += any(f"{short(rid)}:{turn}" not in settled for turn in friction_by_goal(analysis))
                 except (KeyError, TypeError):
                     count += bool(analysis.get("goals"))
-        return count + len(self.unseen(tests, settled)) + self._revisions()
+        unseen = sum(1 for rid in self.unseen(tests, settled) if ours(rid))
+        return count + unseen + (self._revisions() if mine is None else 0)
+
+    @staticmethod
+    def _troubled(analyses, settled, later):
+        """How many conversations have trouble the proposer is asked to fix (not settled, not left for later)."""
+        from .hypotheses import friction_by_goal, short
+        found = set()
+        for analysis in analyses:
+            session = short(analysis["recording_id"])
+            try:
+                goals = friction_by_goal(analysis)
+            except (KeyError, TypeError):  # An analysis in an older shape: as _to_propose reads it.
+                goals = [None] if analysis.get("goals") else []
+            if any(f"{session}:{turn}" not in settled and f"{session}:{turn}" not in later for turn in goals):
+                found.add(session)
+        return len(found)
+
+    def _later(self, analyses, settled, mine=None):
+        """{goal ("session:turn"): why} of trouble this run leaves to another: in a conversation archived by hand, or
+        (a run on picked conversations, the fast lane: mine) in one it didn't take in. The proposer still sees those
+        conversations, to check its rules against them, but isn't asked to fix their trouble."""
+        from .hypotheses import friction_by_goal, short
+        out = {}
+        for analysis in analyses:
+            rid = analysis["recording_id"]
+            why = ("archived" if self.archived(rid) else
+                   "not in this run (it waits for a full run)" if mine is not None and not mine(rid) else None)
+            if why is None:
+                continue
+            try:
+                goals = friction_by_goal(analysis)
+            except (KeyError, TypeError):
+                continue
+            out.update({key: why for turn in goals if (key := f"{short(rid)}:{turn}") not in settled})
+        return out
 
     def _per_goal(self):
         return int(self.entry.options.get(CONF_TESTS_PER_GOAL, DEFAULT_TESTS_PER_GOAL))
@@ -528,14 +575,18 @@ class Pipeline:
             # Goals with an improvement already: left out.
             state["settled"] = settled = self.runtime.improvements.settled_goals()
             state["hypotheses"], state["generator"] = self._untested()
-            if not (analyses and gate("propose") and (self._to_propose(tests) or run.get("force")
-                                                      or self._last_generator()[1] is None)):
+            # A run on picked conversations, and the fast lane, propose only for those they took in (sent in).
+            mine = self.filed if run["trigger"] == "filed" or run.get("picked") else None
+            later = self._later(analyses, settled, mine)
+            if not (analyses and gate("propose") and (self._to_propose(tests, mine) or run.get("force")
+                                                      or (mine is None and self._last_generator()[1] is None))):
                 return
-            await self._stage("propose", sessions=len(analyses))
-            async with span("propose", sessions=len(analyses)) as section:
+            troubled = self._troubled(analyses, settled, later)
+            await self._stage("propose", sessions=len(analyses), troubled=troubled)
+            async with span("propose", sessions=len(analyses), troubled=troubled) as section:
                 generator = await run_proposal(self.hass, self.entry, self.runtime, "generate_hypotheses",
                                               analyses=analyses, feedback=self.runtime.improvements.feedback(),
-                                              settled=settled,
+                                              settled=settled, later=later,
                                               existing=self.runtime.improvements.catalog(detailed=True),
                                               allow_paid_inference=True)
                 section.tag(status=generator.get("status"), generator_run=generator.get("id"))

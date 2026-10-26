@@ -12,7 +12,7 @@ from .reflective import run_role
 from .settings import role_model
 
 
-async def window(runtime, analyses, *, feedback=None, settled=None, existing=None):
+async def window(runtime, analyses, *, feedback=None, settled=None, existing=None, later=None):
     """The sessions a proposal works over, by code alone (hypotheses.Sessions): the analyses given that can be read,
     and every other recording too, analysed or not, as a rule is tested where it would apply, sessions without
     friction included. Each comes as a brief; a full recording is loaded only when a tool or a check opens it. With
@@ -35,13 +35,15 @@ async def window(runtime, analyses, *, feedback=None, settled=None, existing=Non
     sessions = hypotheses.Sessions(analyses, briefs=briefs, loader=load, household=household, assistant=assistant)
     sessions.feedback = list(feedback or [])
     sessions.settled = {tuple(k.split(":")[:1]) + (int(k.split(":")[1]),): v for k, v in (settled or {}).items()}
+    # Trouble this proposal isn't asked to fix (archived by hand, or not in this run): its conversations stay in view.
+    sessions.later = {tuple(k.split(":")[:1]) + (int(k.split(":")[1]),): v for k, v in (later or {}).items()}
     sessions.existing = list(existing or [])  # For list_improvements.
     await sessions.load_assistants(recorder.hass)  # Each assistant's instructions now, beside those it ran with.
     return sessions
 
 
 async def propose(hass, entry, runtime, service, analyses, hypothesis=None, seeded=None, feedback=None,
-                      settled=None, existing=None, allow_paid_inference=False) -> Proposal | Review:
+                      settled=None, existing=None, later=None, allow_paid_inference=False) -> Proposal | Review:
     """The hypothesis generator over analysed sessions (with one long-running reviewer beside it), or the reviewer
     alone on one hypothesis. Paid AI Task calls with read-only tools, recorded either way; answers come from the
     roles' submit tools (last accepted, else best)."""
@@ -49,7 +51,7 @@ async def propose(hass, entry, runtime, service, analyses, hypothesis=None, seed
         raise CaseError("Paid inference has not been authorized")
     generating = service == "generate_hypotheses"
     entity_id = role_model(entry, "generator" if generating else "reviewer")
-    sessions = await window(runtime, analyses, feedback=feedback, settled=settled, existing=existing)
+    sessions = await window(runtime, analyses, feedback=feedback, settled=settled, existing=existing, later=later)
     role = hypotheses.GENERATOR_ROLE if generating else hypotheses.REVIEWER_ROLE
     run = {"id": uuid4().hex, "kind": role, "status": "running", "entity_id": entity_id,
            "sessions": sorted(sessions.analyses), **trace.ids()}
