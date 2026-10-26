@@ -271,6 +271,27 @@ class Pipeline:
         run = deepcopy(run) if copy else run
         return (run.get("output") or {}).get("hypotheses") or [], run
 
+    async def upgrade_side_effects(self):
+        """Analyses an earlier version kept before a side effect had to be Assist's own change (with its turn):
+        recomputed by code from the recording, once, so a device's own follow-on (a fan's climate turning off with it)
+        no longer counts as trouble. No model; one whose recording can't be read stays as it was. How many changed."""
+        from .analyzer import side_effects_left
+        from .exploration import SessionView
+        changed = {}
+        for run in self.runtime.role_runs.runs:
+            analysis = run.get("analysis") if run.get("kind") == "journey_analyzer" else None
+            effects = (analysis or {}).get("side_effects_left") or []
+            if not effects or all("turn" in e for e in effects):
+                continue
+            try:
+                view = SessionView(await self.recorder.export(run["recording_id"]))
+            except (CaseError, ValueError, KeyError, TypeError):
+                continue
+            changed[run["id"]] = {**run, "analysis": {**analysis, "side_effects_left": side_effects_left(
+                view, analysis.get("goals") or [])}}
+        await self.runtime.role_runs.amend(changed)
+        return len(changed)
+
     def _to_propose(self, tests=None):
         """What the proposer has to work on: analyses with friction since it last ran, earlier ones with friction it
         wasn't given (unseen), and revisions asked for."""

@@ -303,6 +303,16 @@ class RoleRuns:
         self._index, self._indexed = RunIndex(self.runs), self.runs
         await self._save()
 
+    async def amend(self, changed):
+        """Change kept records in place ({record id: the record as it should be}), keeping their order: a code-only
+        upgrade of what an earlier version kept (record would move each to the end, as if new)."""
+        if not changed:
+            return
+        async with self.lock:
+            self.runs = [deepcopy(changed[r["id"]]) if r.get("id") in changed else r for r in self.runs]
+            self._index, self._indexed = RunIndex(self.runs), self.runs
+            await self._save()
+
     async def record(self, run):
         """Keep a record (replacing the one with its id). One a pipeline run creates names the run and its trace."""
         kept = deepcopy(run)

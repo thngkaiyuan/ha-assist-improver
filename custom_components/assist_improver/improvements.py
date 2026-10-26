@@ -77,7 +77,7 @@ DECISIONS = {  # Decision: (status, label).
     "accept": ("applied", "Accept changes"),
     "revise": ("revision_requested", "Ask for a revision"),
     "decline": ("declined", "Decline"),
-    "undo": ("undone", "Undo changes"),
+    "undo": ("awaiting_review", "Undo changes"),  # Undone: back up for review, to accept again, revise or decline.
     # No longer offered, but kept: the household chose them from the review's earlier menu of six.
     "needs_improvement": ("revision_requested", "The change needs improvement"),
     "fine_as_is": ("declined", "Things were fine as they were"),
@@ -93,11 +93,12 @@ REASONS = {("decline", "not_an_issue"): "fine_as_is"}
 
 
 def choices(item):
-    """The decisions open for an improvement in its status."""
+    """The decisions open for an improvement in its status. One undone is up for review again: accept it again, ask for
+    a revision, or decline it for good."""
     if item["status"] == "applied":
         return ["undo"]
-    if item["status"] in ("undone", "conflict", "declined", "revision_requested", "ignored", "revised"):
-        return ["accept"] if item["status"] == "undone" else []
+    if item["status"] in ("conflict", "declined", "revision_requested", "ignored", "revised"):
+        return []
     return ["accept", "revise", "decline"]
 
 
@@ -138,6 +139,9 @@ class Improvements:
     async def start(self):
         saved = await self.store.async_load()
         self.items = (saved or {}).get("improvements", {})
+        for item in self.items.values():  # Undone before an undo put it back up for review: up for review too.
+            if item.get("status") == "undone":
+                item["status"] = "awaiting_review"
         self._derived = (saved or {}).get("derived", {})
         self.unfixed, self.fresh = (saved or {}).get("unfixed", {}), (saved or {}).get("fresh", {})
         await self.refresh()
@@ -589,7 +593,8 @@ class Improvements:
         for improvement_id in improvement_ids:
             item = self.items.get(improvement_id)
             if (not item or item["status"] not in PENDING or "accept" not in choices(item)
-                    or not low_risk(self.hass, item)):
+                    or not low_risk(self.hass, item)
+                    or any(d.get("decision") == "undo" for d in item.get("decisions", []))):  # Undone by someone.
                 continue
             if switched_off(self.hass) and any(household_line(c) for c in item["changes"]):
                 continue  # Household knowledge is off: it waits for review (it can't apply now, and says why).
@@ -637,8 +642,8 @@ class Improvements:
             result = await self.changesets.run(item["id"], "undo", steps)
         except Conflict as err:
             return {"status": "busy", "error": str(err)}
-        if result["status"] == "done":
-            item["status"] = "undone"
+        if result["status"] == "done":  # Back up for review: the household decides again (accept, revise, decline).
+            item["status"] = "awaiting_review"
         elif result["status"] == "needs_attention":
             item["status"] = "needs_attention"
         item["history"].append({"at": utcnow().isoformat(), "event": "undo", **result, "left": left})

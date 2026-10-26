@@ -69,13 +69,13 @@ function reasonsFor(r, decision) {
 function footer(p, r) {
   // Right after a decision, the footer says what happened (with Undo) and offers the next review: the page above
   // stays where it was.
-  if (p.result || r.recent_outcome) {
-    const ok = p.result ? p.resultOk : r.recent_outcome_ok;
-    const again = r.choices.find((c) => c.value === "accept");  // Undone: it can be accepted again from here.
-    return `<div class="footer"><div class="footer-inner done-row">
-      <div class="done-msg ${ok ? "ok" : "bad"}"><span class="mark">${ok ? "&#10003;" : "!"}</span><span>${esc(p.result || r.recent_outcome)}${
-        r.choices.some((c) => c.value === "undo") ? ` <button class="link" id="undo-link">Undo</button>`
-          : again ? ` <button class="link" id="accept-again">${esc(again.label)}</button>` : ""}</span></div>
+  const said = p.result || r.recent_outcome, ok = p.result ? p.resultOk : r.recent_outcome_ok;
+  const done = said && `<div class="done-msg ${ok ? "ok" : "bad"}"><span class="mark">${ok ? "&#10003;" : "!"}</span><span>${
+    esc(said)}${r.choices.some((c) => c.value === "undo") ? ` <button class="link" id="undo-link">Undo</button>` : ""}</span></div>`;
+  // Undone: up for review again, so the decision is open right here, under what happened.
+  const again = said && r.status === "awaiting_review" && r.choices.length > 0;
+  if (said && !again) {
+    return `<div class="footer"><div class="footer-inner done-row">${done}
       ${r.next_pending ? `<button class="btn" id="next" data-id="${esc(r.next_pending.id)}">Next: ${esc(r.next_pending.title)} &#8594;</button>`
         : `<button class="link" id="back-list">All caught up · back to the list</button>`}</div></div>`;
   }
@@ -93,7 +93,7 @@ function footer(p, r) {
   const menu = p.menuOpen ? `<div class="menu">${r.choices.map((c) =>
     `<div data-choice="${esc(c.value)}" class="${c.value === decision ? "on" : ""}">${esc(c.label)}</div>`).join("")}</div>` : "";
   return `${p.menuOpen ? `<div class="backdrop" id="menu-backdrop"></div>` : ""}<div class="footer"><div class="footer-inner">
-      ${reasons}${needsNote ? `<textarea id="note" placeholder="${esc(prompt)}">${esc(p.note || "")}</textarea>` : ""}
+      ${again ? done : ""}${reasons}${needsNote ? `<textarea id="note" placeholder="${esc(prompt)}">${esc(p.note || "")}</textarea>` : ""}
       <div class="split"><button class="main" id="decide" ${p.busy ? "disabled" : ""}>${esc(p.busy ? "Working…" : label)}</button>
       <button class="arrow" id="arrow" aria-label="Other decisions" ${p.busy ? "disabled" : ""}>&#9662;</button>${menu}</div>
     </div></div>`;
@@ -179,7 +179,6 @@ export const actions = {
     }],
     ["#decide", (p) => decide(p)],
     ["#undo-link", (p) => decide(p, "undo")],
-    ["#accept-again", (p) => decide(p, "accept")],
     ["#next", (p, el) => p.go(el.dataset.id)],
     ["#back-list", (p) => p.go(null)],
   ],

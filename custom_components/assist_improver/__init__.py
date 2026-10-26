@@ -161,12 +161,15 @@ async def async_setup_entry(hass, entry):
 
     entry.async_on_unload(async_at_started(hass, recover))
 
-    @callback
-    def filed_waiting(_hass):  # On-demand: conversations filed before a restart run once HA has started.
+    async def started(_hass):
+        # Once HA has started: analyses an earlier version kept are upgraded by code first (their side effects), then
+        # conversations filed before a restart run (on-demand).
+        if upgraded := await pipeline.upgrade_side_effects():
+            trace.journal("info", f"Side effects recomputed for {upgraded} stored analyses")
         if pipeline.on_demand and pipeline.to_analyze(filed_only=True):
             pipeline.request()
 
-    entry.async_on_unload(async_at_started(hass, filed_waiting))
+    entry.async_on_unload(async_at_started(hass, started))
 
     entry.async_on_unload(hass.bus.async_listen(EVENT_STATE_CHANGED, recheck, event_filter=_availability_changed))
 

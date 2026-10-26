@@ -9,7 +9,7 @@ Nothing is copied or run again: it's the same conversation, let in earlier.
 Archiving one only takes it out of the list: it's kept, analysed, tested and replayed as before, so later changes are
 still checked against it. One the improver is done with (SETTLED), or whose improvement waits for review at the top of
 the home page, is archived on its own (OFF_LIST), from where it stands, so it comes back once it stands otherwise (sent
-in again, a revision asked; a fix undone leaves it declined, still settled); the household's own choice wins (the recorder index's flags: hidden, archived by
+in again, a revision asked; a fix undone puts its improvement up for review again); the household's own choice wins (the recorder index's flags: hidden, archived by
 hand; unarchived, kept in the list whenever it stands as it did when unarchived). Deleting one (Recorder.forget)
 removes it, with what the improver derived from it, and it no longer counts for those checks.
 
@@ -154,7 +154,7 @@ def stage(rid, runs, tests, known):
     fine (analysed: nothing to fix), working (trouble nothing settles yet, waiting at Propose: analysed since the last
     proposal), retry (trouble a proposal had and no fix yet: the next proposal looks again, within its tests-per-goal
     budget), nofix (no fix was found for any of its troubles: final, unless sent in again), or declined (every trouble
-    it had is settled, by improvements none of which was accepted: declined, or undone)."""
+    it had is settled, by improvements none of which was accepted: declined)."""
     from .hypotheses import friction_by_goal
     if rid in tests:
         return "test"

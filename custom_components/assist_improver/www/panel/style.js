@@ -184,6 +184,7 @@ export const STYLE = `
     color: var(--primary-text-color); background: var(--card-background-color); }
   .done-row { flex-direction: row !important; align-items: center !important; justify-content: space-between; flex-wrap: wrap; gap: 12px !important; }
   .done-msg { display: flex; align-items: baseline; gap: 8px; flex: 1 1 320px; min-width: 0; line-height: 1.45; }
+  .footer-inner:not(.done-row) > .done-msg { flex: none; align-self: stretch; }  /* Above a decision open again. */
   .done-msg .mark { font-weight: 700; } .done-msg.ok .mark { color: var(--add-fg); } .done-msg.bad .mark { color: var(--del-fg); }
   .done-row .btn { max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
   .outcome-banner { padding: 10px 14px; border-radius: 8px; margin-bottom: 12px; border: 1px solid; }
