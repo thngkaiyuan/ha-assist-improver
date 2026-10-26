@@ -31,6 +31,7 @@ class RecordingSummary(TypedDict, total=False):
     stored: str  # packed or compact (retention.py); absent while kept in full.
     filed: Filed
     hidden: bool  # Out of the conversations list (Archive); kept, analysed and tested all the same.
+    unarchived: str  # Kept in the conversations list (Unarchive) whenever it stands so, though settled (conversations).
     deleting: bool  # Deleted during a run: out of view, and deleted once the run ends (Recorder.forget_later).
 
 
@@ -101,6 +102,7 @@ class Analysis(RoleCall, total=False):
 class Proposal(RoleCall, total=False):
     """hypothesis_generator (proposal.propose): the proposed changes, and the reviewer's verdict on each."""
     sessions: list  # The conversations it was given.
+    friction: list[str]  # The goals with open friction it was given ("session:turn").
     reviews: list[dict]
     seeded_reviews: dict
     reviewer_run: dict  # The reviewer's own call: status, error, usage, output.
@@ -172,12 +174,15 @@ class BaselineStep(TypedDict, total=False):
 class Baseline(TypedDict, total=False):
     """A case's conversation replayed without a fix, to check it reproduces (BaselineTrial.export)."""
     status: str  # not_run, running, reproduced, not_reproducible, unsupported, infrastructure_failure, cancelled,
-    # or interrupted.
+    # interrupted, or failed (an error outside the replay: failures.closing).
     plan: dict  # What it replays and how; its id is their digest.
     steps: list[BaselineStep]
     error: dict | None
     destination_met: bool | None  # Whether the replay met the goal without a fix.
     usage: dict
+    # Whether its replies follow the case's feedback (validation.check_baseline_feedback): a fix is judged on it only
+    # where they don't. status, verdicts, followed, error, usage, and the feedback it judged.
+    feedback_check: dict
     attempts: int  # Earlier versions (and a case not run yet).
     run_id: str  # Earlier versions.
     next_turn: int  # Earlier versions.
@@ -198,6 +203,9 @@ class Case(TypedDict, total=False):
     intervention_turns: list
     goal_unmet: bool
     acceptable_devices: list
+    unwanted: dict  # {device: its start}: side effects the original left, which a fix must not repeat.
+    replay_through: int  # The last turn that made one, past the goal's own: a fix's replay goes on to it.
+    follow_feedback: list[str]  # What the household said about how Assist behaved, which a fix's replies must follow.
     destination: dict  # status, summary, criteria, evidence: when the goal counts as met.
     feedback: list[dict]
     revision: int
@@ -266,8 +274,10 @@ class CandidateResult(TypedDict, total=False):
 class Candidate(TypedDict, total=False):
     """A change tested on a case: its plan, and once it ran, its result."""
     plan: CandidatePlan
-    status: str  # running, awaiting_review (it improved the goal), not_improved, ...
+    status: str  # running, awaiting_review (it improved the goal), not_improved, ..., failed or interrupted (an error
+    # or a cancellation before its result: failures.closing).
     result: CandidateResult | None
+    error: dict | None  # Why it failed before its result: type and message.
     evidence: list  # Earlier versions, as are the rest.
     reviews: list
     application: None
@@ -317,9 +327,20 @@ class Transcript(TypedDict, total=False):
     failed: int  # Assist's tool calls that failed in it.
 
 
+class Setback(TypedDict, total=False):
+    """An item that failed in runs in a row (failures.Collector), by "stage:item" or "stage:step:item"."""
+    runs: int  # Runs in a row it failed in.
+    run: str  # The last of them.
+    error: str
+    at: str
+    version: str  # The integration's version then: a new one tries again.
+    aside: str  # Why it's set aside (MAX_ATTEMPTS runs in a row), once it is.
+
+
 class Waiting(TypedDict, total=False):
-    """Where the pipeline's taken-in conversations wait (Pipeline.store)."""
+    """Where the pipeline's taken-in conversations wait (Pipeline.store), and the items failing run after run."""
     at: dict[str, str]  # Recording ID: triage or analyze.
+    setbacks: dict[str, Setback]
 
 
 RUN_LOG: dict[str, Any] = {  # The run log's record type for each kind.

@@ -332,7 +332,8 @@ class Recorder:
         self.index[key] = {"id": key, "started": session["started"], "updated": now,
                            "status": session["status"], "user_turns": len(session["turns"]),
                            **({"filed": session["filed"]} if session.get("filed") else {}),
-                           **{flag: True for flag in ("hidden", "deleting") if (self.index.get(key) or {}).get(flag)}}
+                           **{flag: value for flag in ("hidden", "unarchived", "deleting")
+                              if (value := (self.index.get(key) or {}).get(flag))}}
         self.schedule(key, soon=turn_added)
         if kind == "deleted":
             self._closed(key)
@@ -368,6 +369,7 @@ class Recorder:
         for key in marked:
             mark = {**filed, **({"again": True} if key in again else {})}
             self.index[key]["filed"] = dict(mark)
+            self.index[key].pop("unarchived", None)  # In again: once it settles again, it leaves the list on its own.
             if (session := self.sessions.get(key)) is not None:
                 session["filed"] = dict(mark)
                 self.schedule(key, soon=True)
@@ -445,14 +447,19 @@ class Recorder:
         """The Assist conversation IDs of these recordings, while this run of Home Assistant knows them."""
         return {cid for cid, key in self.keys.items() if key in keys}
 
-    async def hide(self, *keys, hidden=True):
-        """Take kept conversations out of the conversations list, or put them back; the index is saved once. Nothing
-        else changes: they're kept, analysed, tested and replayed as before."""
+    async def hide(self, *keys, hidden=True, settled=None):
+        """Take kept conversations out of the conversations list (Archive), or put them back (Unarchive); the index is
+        saved once. settled: {key: standing} of those out of it on their own (conversations.SETTLED), kept in it once
+        put back while they stand so (unarchived). Nothing else changes: they're kept, analysed, tested and replayed
+        as before."""
         for key in keys:
+            summary = self.index[key]
+            summary.pop("hidden", None)
+            summary.pop("unarchived", None)
             if hidden:
-                self.index[key]["hidden"] = True
-            else:
-                self.index[key].pop("hidden", None)
+                summary["hidden"] = True
+            elif key in (settled or {}):
+                summary["unarchived"] = settled[key]
         await self.save_index()
         journal("info", f"{len(keys)} conversation(s) {'hidden' if hidden else 'unhidden'}", recording_ids=list(keys))
 
@@ -467,7 +474,7 @@ class Recorder:
 
     async def forget_queued(self):
         """Delete the conversations queued for deletion (forget_later), together; if that fails, one by one, so one
-        that can't be is put back in the list, and the household told. The IDs deleted."""
+        that can't be is put back where it was (in the list, or among the archived when settled), and the household told. The IDs deleted."""
         from homeassistant.components import persistent_notification
         queued = [k for k, s in self.index.items() if s.get("deleting")]
         if not queued:
@@ -492,7 +499,7 @@ class Recorder:
         if failed:
             await self.save_index()
             persistent_notification.async_create(
-                self.hass, "A conversation couldn't be deleted, so it's back in your list. Try deleting it again.",
+                self.hass, "A conversation couldn't be deleted. Try deleting it again.",
                 title="Assist Improver", notification_id=f"{DOMAIN}_not_deleted")
         return done
 

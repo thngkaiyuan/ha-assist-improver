@@ -8,9 +8,11 @@ Why each piece is there (what it helps the roles do):
 - A full recording (about 9 MB in memory) is what read_session, read_session_turn, device_details and the
   sandboxes need. At most LOADED stay loaded; the household's snapshot (the newest replayable session) and the
   assistant's configuration stay for the whole run.
-- where_it_applies: the sessions whose recorded calls or requests touch a change's devices, their names or areas.
-  Sessions without friction come first: they're where a rule could misfire on requests that already work. The
-  regression replays use the same test, so a session no change could affect isn't replayed.
+- where_it_applies: the sessions whose recorded calls or requests touch a change's devices, their names or areas,
+  and every session on an assistant whose own instructions it edits. Sessions without friction come first: they're
+  where a rule could misfire on requests that already work. The regression replays use the same test (without the
+  assistants: an instruction edit doesn't change how Home Assistant resolves a call), so a session no change could
+  affect isn't replayed.
 """
 
 from collections import Counter, OrderedDict
@@ -19,11 +21,13 @@ from homeassistant.helpers.storage import Store
 
 from .cases import CaseError, replayable_turns
 from .const import DOMAIN, STORAGE_VERSION
+from .failures import aside, contained
 
 LOADED = 12  # Full recordings loaded at once, besides the household's and the assistant's.
 PAGE = 20  # Sessions per list_sessions page.
 APPLIES_SHOWN = 12  # Sessions where a change applies, listed with a draft; the count covers the rest.
 STATES = ("open_friction", "friction_handled", "without_friction", "not_analysed")
+BRIEF_FORMAT = 2  # A brief made by an earlier format is made again (2: which assistant the session used).
 
 
 def short(recording_id):
@@ -54,11 +58,15 @@ def brief(view, recording_id):
         replayable = bool(replayable_turns(view.recording))
     except CaseError:
         replayable = False
+    from .instructions import ran_with
+    used = ran_with(view.recording) or {}
     return {"recording_id": recording_id, "session": short(recording_id), "started": view.digest["started"],
             "turns": len(turns), "requests": [(t.get("user_says") or "").strip()[:300] for t in turns],
             "words": sorted(words), "entities": sorted(entities), "domains": sorted(domains),
             "live_context": any(str(c["calls"]).endswith("GetLiveContext") for c in calls),
             "replayable": replayable, "assistant": view.assistant is not None,
+            # Which assistant it used (its config subentry), and its name then.
+            "assistant_target": used.get("target"), "assistant_title": used.get("title"),
             "assist_tools": [t["name"] for t in view.digest.get("capabilities", {}).get("assist_tools", [])]}
 
 
@@ -99,7 +107,8 @@ class BriefCache:
 
 
 def _stamp(summary):
-    return [summary.get("status"), summary.get("user_turns"), summary.get("stored", "full"), summary.get("updated")]
+    return [summary.get("status"), summary.get("user_turns"), summary.get("stored", "full"), summary.get("updated"),
+            BRIEF_FORMAT]
 
 
 async def catalog(recorder, recording_ids):
@@ -111,10 +120,14 @@ async def catalog(recorder, recording_ids):
         cache = recorder.brief_cache = BriefCache(recorder.hass)
     briefs, kept = [], {}
     for recording_id in recording_ids:
-        try:
+        if aside("propose", short(recording_id)):  # Unreadable here run after run (failures.py).
+            continue
+        # Still being recorded, or not a conversation the tools can read (expected): left out. Anything else is a
+        # problem of the run's, and the others go on.
+        async with contained("propose", short(recording_id), expected=(CaseError, ValueError, KeyError)) as one:
             made, view = await cache.get(recorder, recording_id)
-        except (CaseError, ValueError, KeyError):
-            continue  # Still being recorded, or not a conversation the tools can read.
+        if one.failed:
+            continue
         briefs.append(made)
         if view is not None:
             kept[recording_id] = view
@@ -195,9 +208,10 @@ class SessionSet:
             return view
         if session not in self.briefs or self._loader is None:
             return None
-        try:
+        # One that can't be read is None (expected); one that fails otherwise is a problem of the run's too.
+        async with contained("propose", session, expected=(CaseError, ValueError)) as one:
             view = await self._loader(self.briefs[session]["recording_id"])
-        except (CaseError, ValueError):
+        if one.failed:
             return None
         self._loaded[session] = view
         while len(self._loaded) > LOADED:
@@ -284,8 +298,9 @@ def _names_of(entity_ids, names):
 
 def footprint(changes, household):
     """What a set of changes touches, for matching sessions: devices, their names and aliases (and new ones), their
-    areas and domains, and whether it changes what Assist can see."""
+    areas and domains, whether it changes what Assist can see, and the assistants whose own instructions it edits."""
     from .exploration import change_devices
+    from .instructions import is_edit
     entities = set(change_devices(changes))
     names, areas = set(), set()
     for change in changes:
@@ -303,7 +318,8 @@ def footprint(changes, household):
     return {"entities": entities, "names": {n for n in names if len(n) >= 3}, "areas": areas,
             "domains": {e.split(".", 1)[0] for e in entities},
             "exposure": any(c.get("kind") == "exposure" or (c.get("kind") == "script" and c.get("expose") is not False)
-                            for c in changes)}
+                            for c in changes),
+            "assistants": {c["target"] for c in changes if is_edit(c) and c.get("target")}}
 
 
 def device_names(household, entity_id):
@@ -328,6 +344,8 @@ def applies(b, fp):
         return "their names"
     if any(a in w for a in fp["areas"] for w in b["words"]):
         return "their areas"
+    if b.get("assistant_target") and b["assistant_target"] in fp.get("assistants", ()):
+        return "its assistant's instructions"
     if fp["exposure"] and (b["live_context"] or fp["domains"] & set(b["domains"])):
         return "what Assist can see"
     return None

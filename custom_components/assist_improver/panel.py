@@ -20,7 +20,7 @@ from homeassistant.core import callback
 from .cases import CaseError
 from .changeset import plan_steps
 from .const import DOMAIN, VERSION
-from .improvements import DECISIONS, KINDS, PENDING, benefits, choices, display_title, reasons
+from .improvements import DECISIONS, KINDS, PENDING, benefits, choices, display_title, reasons, reply_words, spared
 from .runtime import loaded
 
 URL_PATH = "assist-improver"  # The panel's address: /assist-improver?id=<improvement>.
@@ -84,15 +84,27 @@ def change_rows(step, names=None):
 
 
 def test_result(test):
-    """A test's outcome in a few words: the goal now met, fewer turns, or just improved."""
+    """A test's outcome in a few words: the goal now met, fewer turns, a side effect gone, your feedback followed (as
+    many as it showed), or just improved."""
     if test.get("status") != "awaiting_review":
         return "not improved"
+    shown = []
     if test.get("goal_newly_met"):
-        return "goal now met"
+        shown.append("goal now met")
     before, after = test.get("turns_before"), test.get("turns_after")
-    if isinstance(before, int) and isinstance(after, int) and after < before:
-        return f"{before} \u2192 {after} turns"
-    return "improved"
+    if not shown and isinstance(before, int) and isinstance(after, int) and after < before:
+        shown.append(f"{before} \u2192 {after} turns")
+    if gone := test.get("side_effects_gone"):
+        shown.append("side effect gone" if len(gone) == 1 else "side effects gone")
+    if test.get("feedback_followed"):
+        shown.append("follows your feedback")
+    return " \u00b7 ".join(shown) or "improved"
+
+
+def more_words(test):
+    """{more_words: Assist's words a reply, before and with the change} when the change made it noticeably wordier."""
+    found = reply_words(test)
+    return {"more_words": {"before": found["before"], "after": found["after"]}} if found and found["wordier"] else {}
 
 
 def said(test):
@@ -144,6 +156,7 @@ def safety(item, steps, already):
 def review(item, planned=None, names=None):
     """Everything the panel shows for one improvement, built by code. names: {user id: name} for household lines."""
     enabled, removed = benefits(item)
+    gone, followed = spared(item)
     steps, already, conflicts = planned or ((item.get("application") or {}).get("steps") or [], [], [])
     changes = []
     for step in steps:
@@ -169,11 +182,14 @@ def review(item, planned=None, names=None):
             "safety": safety(item, steps, already), "status": item["status"], "enabled": enabled,
             "recent_outcome": recent, "recent_outcome_ok": recent_ok, "revises": item.get("revises"),
             "removed": removed, "conflicts": conflicts, "changes": changes, "cause": item["cause"],
+            # Side effects it no longer leaves (each device, left as it was) and the feedback it follows.
+            "spared": [f"{g['name']} stays {g['start']}" for g in gone], "followed": followed,
             # A door's or valve's motion isn't simulated: said where the improvement involves one.
             "physical": bool(PHYSICAL.search(json.dumps([item.get(k) for k in ("changes", "tests", "cause")],
                                                         default=str))),
             "tests": [{"summary": t["summary"], "improved": t["status"] == "awaiting_review",
-                       "result": test_result(t), **said(t)} for t in item["tests"]],
+                       "result": test_result(t), **said(t), **more_words(t)} for t in item["tests"]],
+            "wordier": sum(1 for t in item["tests"] if more_words(t)),
             "untested": len(item["untested_goals"]),
             # Each decision open now, with the reasons it can be given with (Decline: not an issue).
             "choices": [{"value": d, "label": DECISIONS[d][1], **({"reasons": r} if (r := reasons(d)) else {})}
@@ -209,7 +225,15 @@ def outcome_text(item):
 
 
 def _change_text(change, assistant):
+    from .instructions import is_edit
     kind = change["kind"]
+    if is_edit(change):  # One assistant's own instructions: lines added, replaced or removed there.
+        name = change.get("assistant") or assistant
+        replaced = ", ".join(f"“{r}”" for r in change.get("replaces") or [])
+        if not (change.get("text") or "").strip():
+            return f"Remove from {name}'s instructions: {replaced}"
+        text = f"Add to {name}'s instructions: “{change['text'].strip()}”"
+        return text + (f", replacing {replaced}" if replaced else "")
     if kind in ("preference", "prompt"):  # The instructions of the assistant the conversations used.
         who = "for you" if change.get("for") == "this_user" else "for everyone"
         text = f"Add to {assistant}'s instructions ({who}): “{change.get('text', '').strip()}”"
@@ -250,7 +274,9 @@ def ws_list(hass, connection, msg):
     items = runtime.improvements.listed()
     connection.send_result(msg["id"], {"improvements": [
         {"id": i["id"], "title": display_title(i), "status": i["status"], "pending": i["status"] in PENDING,
-         "enabled": len(benefits(i)[0]), "removed": len(benefits(i)[1]), "revision": bool(i.get("revises"))}
+         "enabled": len(benefits(i)[0]), "removed": len(benefits(i)[1]), "revision": bool(i.get("revises")),
+         # Side effects it no longer leaves, and feedback it follows: counted where it has any.
+         **{key: n for key, n in zip(("spared", "followed"), map(len, spared(i))) if n}}
         for i in items]})
 
 
@@ -390,7 +416,7 @@ def ws_run_status(hass, connection, msg):
 async def ws_run_start(hass, connection, msg):
     """Start a run; the panel asks the user to confirm what it will spend first. picked (the home page's Run): the
     given conversations are sent in first, and the run takes in only conversations sent in."""
-    from .conversations import TAKEN, kept, standing
+    from .conversations import AGAIN, TAKEN, kept, standing
     if (runtime := _runtime(hass, connection, msg)) is None:
         return
     picked, conversations = msg.get("picked", False), msg.get("conversations") or []
@@ -401,8 +427,8 @@ async def ws_run_start(hass, connection, msg):
         if missing := [rid for rid in conversations if not kept(runtime, rid)]:
             connection.send_error(msg["id"], "not_found", f"{len(missing)} of those conversations aren't kept.")
             return
-        # Never one the improver has, nor one with no fix found (it's sent in again one by one, with a note).
-        fresh = [rid for rid in conversations if standing(runtime, rid) not in (*TAKEN, "nofix")]
+        # Never one the improver has, nor one with nothing more to do (it's sent in again one by one, with a note).
+        fresh = [rid for rid in conversations if standing(runtime, rid) not in (*TAKEN, *AGAIN)]
         await runtime.recorder.file_kept(fresh, user_id=connection.user.id, notify=False,
                                          again=[rid for rid in fresh if runtime.pipeline.sent_again(rid)])
     try:
@@ -587,19 +613,20 @@ async def ws_log(hass, connection, msg):
                                   probatio.Optional("order"): probatio.In(["newest", "oldest", "effort"]),
                                   probatio.Optional("offset", default=0): probatio.All(int, probatio.Range(min=0)),
                                   probatio.Optional("hidden", default=False): bool,
-                                  probatio.Optional("statuses"): [str]})
+                                  probatio.Optional("statuses"): [str],
+                                  probatio.Optional("ids"): probatio.All([str], probatio.Length(max=5000))})
 @websocket_api.require_admin
 @websocket_api.async_response
 async def ws_conversations(hass, connection, msg):
     """A page of the kept conversations, found by what was said and when (conversations.listed); hidden ones too if
-    asked for, and only those standing as asked (statuses)."""
+    asked for, only those standing as asked (statuses), and where each of ids stands, whatever the filters."""
     from .conversations import listed
     if (runtime := _runtime(hass, connection, msg)) is None:
         return
     kept = await runtime.transcripts.all()
     connection.send_result(msg["id"], listed(runtime, kept, msg.get("query"), msg.get("days"), msg.get("order"),
                                              msg.get("offset", 0), hidden=msg.get("hidden", False),
-                                             statuses=msg.get("statuses")))
+                                             statuses=msg.get("statuses"), ids=msg.get("ids", ())))
 
 
 @websocket_api.websocket_command({probatio.Required("type"): f"{DOMAIN}/conversation",
@@ -625,10 +652,11 @@ async def ws_conversation(hass, connection, msg):
 async def ws_conversation_send(hass, connection, msg):
     """Send a conversation in: filed, as Assist's file_improvement tool does, so the pipeline takes it in (at its
     next run; right away with on-demand improvements on), past the quick check with a note, or sent in again after
-    an analysis: the quick check found it smooth, or no fix was found (pipeline.deliberate). One it has, or an
-    accepted improvement covers, is already in. One with no fix found for its troubles goes in again: its goals are
-    open once more, each with a fresh tests-per-goal budget, and it's analysed again with the note."""
-    from .conversations import TAKEN, kept, standing
+    an analysis (pipeline.deliberate). One it has, or an accepted improvement covers, is already in. One already
+    analysed with nothing more to do goes in again (Pipeline.resent): looked smooth, no trouble found, or no fix found
+    (its goals open once more, each with a fresh tests-per-goal budget); it gets one fresh full analysis that reads
+    the note as feedback, and is back in the list, unless archived by hand (hidden says whether it's archived now)."""
+    from .conversations import TAKEN, archived, kept, standing
     from .sessions import short
     if (runtime := _runtime(hass, connection, msg)) is None:
         return
@@ -643,7 +671,9 @@ async def ws_conversation_send(hass, connection, msg):
         await runtime.improvements.reopen(short(rid))
     await runtime.recorder.file_kept([rid], msg.get("note", ""), connection.user.id,
                                      again=[rid] if runtime.pipeline.sent_again(rid) else ())
-    connection.send_result(msg["id"], {"status": standing(runtime, rid), "on_demand": runtime.pipeline.on_demand})
+    now = standing(runtime, rid)
+    connection.send_result(msg["id"], {"status": now, "on_demand": runtime.pipeline.on_demand,
+                                       "hidden": archived(runtime.recorder.index[rid], now)})
 
 
 @websocket_api.websocket_command({probatio.Required("type"): f"{DOMAIN}/conversation/hide",
@@ -652,14 +682,15 @@ async def ws_conversation_send(hass, connection, msg):
 @websocket_api.require_admin
 @websocket_api.async_response
 async def ws_conversation_hide(hass, connection, msg):
-    """Hide a conversation from the list, or (hidden: false) show it again. It's kept, analysed and tested as before."""
+    """Archive a conversation, out of the list, or (hidden: false) unarchive it: back in the list, and kept there though
+    settled (Recorder.hide). It's kept, analysed and tested as before."""
     from .conversations import kept
     if (runtime := _runtime(hass, connection, msg)) is None:
         return
     if not kept(runtime, msg["recording_id"]):
         connection.send_error(msg["id"], "not_found", "That conversation isn't kept.")
         return
-    await runtime.recorder.hide(msg["recording_id"], hidden=msg.get("hidden", True))
+    await _hide(runtime, [msg["recording_id"]], msg.get("hidden", True))
     connection.send_result(msg["id"], {"hidden": msg.get("hidden", True)})
 
 
@@ -694,8 +725,15 @@ async def ws_conversations_hide(hass, connection, msg):
         return
     keys = [rid for rid in dict.fromkeys(msg["recording_ids"]) if kept(runtime, rid)]
     if keys:
-        await runtime.recorder.hide(*keys, hidden=msg.get("hidden", True))
+        await _hide(runtime, keys, msg.get("hidden", True))
     connection.send_result(msg["id"], {"changed": len(keys)})
+
+
+async def _hide(runtime, keys, hidden):
+    """Archive kept conversations, or unarchive them: those settled are then kept in the list (Recorder.hide)."""
+    from .conversations import SETTLED, standings
+    settled = None if hidden else {rid: now for rid, now in standings(runtime, keys).items() if now in SETTLED}
+    await runtime.recorder.hide(*keys, hidden=hidden, settled=settled)
 
 
 @websocket_api.websocket_command({probatio.Required("type"): f"{DOMAIN}/conversations/delete",

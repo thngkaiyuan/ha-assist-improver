@@ -3,7 +3,8 @@
 // (conversations.py). Found with assist_improver/conversations, read with .../conversation, sent with
 // .../conversation/send; a Run on picked ones is assist_improver/run/start with them (common.js). An opened one can
 // also be archived, out of the list (.../conversation/hide: the improver keeps using it), or deleted from Assist
-// Improver (.../conversation/delete).
+// Improver (.../conversation/delete). One the improver is done with is archived on its own (conversations.SETTLED),
+// until it stands otherwise; Unarchive keeps it in the list.
 
 const v = new URL(import.meta.url).search;  // ?v=<version>, passed on to every module this one loads.
 const [{esc, when, plural, fill}, {TEXT}, {svg}, common] = await Promise.all(
@@ -17,9 +18,10 @@ const errText = (err) => err?.message || String(err);
 
 export function state(p) {
   // order: the one chosen, or null: newest first, or the closest to a time searched for (closest).
-  // showArchived: archived ones are listed too; archivedCount: how many are archived (the recorder's hidden flag).
+  // showArchived: archived ones are listed too; archivedCount: how many are archived (by hand, or settled).
   // picked: the selection, any row, kept through searches, filters and Show more; byHand: those ticked one by one;
-  // known: where each one listed so far stands ({status, hidden}); every: the IDs of all that match now.
+  // known: where each one listed so far stands ({status, hidden}); every: the IDs of all that match now. A row with
+  // stays: the opened one, kept in view though it no longer matches (list).
   return p.cv || (p.cv = {query: "", days: "", order: null, rows: null, total: 0, waiting: [], counts: {},
                           opened: null, shown: null, note: "", sent: {}, picked: new Set(), byHand: new Set(),
                           known: new Map(), every: [], error: null, showArchived: false, archivedCount: 0,
@@ -48,22 +50,42 @@ export async function load(p) {
   await list(p, state(p), false, false);
 }
 
+const served = (cv) => cv.rows.filter((r) => !r.stays).length;  // The rows Home Assistant listed: where the next page starts.
+
 async function list(p, cv, more, draw = true) {
   const seq = cv.seq = (cv.seq || 0) + 1;
+  // Where the selected ones and the opened one stand now, whatever the filters (as many as Home Assistant takes).
+  const ids = [...new Set([...cv.picked, ...(cv.opened ? [cv.opened] : [])])].slice(0, 5000);
   try {
     const found = await p.ws("conversations", {query: cv.query || undefined, days: cv.days ? Number(cv.days) : undefined,
-                                               order: cv.order || undefined, offset: more ? cv.rows.length : 0,
-                                               hidden: cv.showArchived || undefined, statuses: cv.only ? [...cv.only] : undefined});
+                                               order: cv.order || undefined, offset: more ? served(cv) : 0,
+                                               hidden: cv.showArchived || undefined, statuses: cv.only ? [...cv.only] : undefined,
+                                               ids: ids.length ? ids : undefined});
     if (seq !== cv.seq) return;  // A newer search took over.
-    Object.assign(cv, {rows: more ? [...cv.rows, ...found.conversations] : found.conversations, total: found.total,
+    const stands = new Map((found.stands || []).map((r) => [r.id, r]));
+    // A page appended: the opened one kept in view (stays) gives way to its own row when that page brings it.
+    const fresh = new Set(found.conversations.map((r) => r.id));
+    let rows = more ? [...cv.rows.filter((r) => !(r.stays && fresh.has(r.id))), ...found.conversations]
+      : found.conversations;
+    // The opened one stays in view while it's read, though it no longer matches (a run settled it, so it's archived,
+    // or took it past the statuses chosen); it goes once it's closed and the list is read again.
+    const was = !more && cv.opened && (cv.rows || []).find((r) => r.id === cv.opened);
+    if (was && stands.has(was.id) && !rows.some((r) => r.id === was.id)) {
+      const {status, hidden} = stands.get(was.id), at = Math.min(cv.rows.indexOf(was), rows.length);
+      rows = [...rows.slice(0, at), {...was, status, hidden, stays: true}, ...rows.slice(at)];
+    }
+    Object.assign(cv, {rows, total: found.total,
                        waiting: found.waiting || [], counts: found.counts || {}, close: !!found.close, closest: !!found.closest,
                        queued: found.queued || {ids: [], sent: 0}, archivedCount: found.hidden || 0,
                        every: (found.every || []).map((r) => r.id), byStatus: found.by_status || {}, onDemand: found.on_demand,
                        error: null});
-    for (const r of found.every || []) cv.known.set(r.id, {status: r.status, hidden: r.hidden});
+    for (const r of [...(found.every || []), ...stands.values()]) cv.known.set(r.id, {status: r.status, hidden: r.hidden});
+    // Selected ones archived since (a run settled them) are out of view: none of them stays picked.
+    const inView = new Set(rows.map((r) => r.id));
+    if (!cv.showArchived) unpick(cv, [...stands.values()].filter((r) => r.hidden && !inView.has(r.id)).map((r) => r.id));
     // The opened one stands where its row now does (a run may have taken it in since it was opened).
     const row = cv.shown && !cv.shown.error && cv.rows.find((r) => r.id === cv.opened);
-    if (row) Object.assign(cv.shown, {status: row.status, note: row.note});
+    if (row) Object.assign(cv.shown, {status: row.status, note: row.note, hidden: row.hidden});
   } catch (err) {
     if (seq !== cv.seq) return;
     cv.error = errText(err);
@@ -100,9 +122,15 @@ async function send(p, cv, id) {
   try {
     const result = await p.ws("conversation/send", {recording_id: id, note: cv.note || ""});
     cv.sent[id] = {text: result.on_demand ? C.sentNow : C.sentLater};
-    for (const row of cv.rows || []) if (row.id === id) Object.assign(row, {status: result.status, note: cv.note || null});
-    cv.known.set(id, {...cv.known.get(id), status: result.status});
-    if (cv.shown?.id === id) Object.assign(cv.shown, {status: result.status, note: cv.note || null});
+    // One settled (archived on its own, opened while archived ones are shown) is back in the list once sent in again.
+    const hidden = result.hidden ?? cv.known.get(id)?.hidden;
+    if (cv.known.get(id)?.hidden && !hidden) {
+      cv.archivedCount = Math.max(0, cv.archivedCount - 1);
+      if (!cv.archivedCount) cv.showArchived = false;
+    }
+    for (const row of cv.rows || []) if (row.id === id) Object.assign(row, {status: result.status, note: cv.note || null, hidden});
+    cv.known.set(id, {...cv.known.get(id), status: result.status, hidden});
+    if (cv.shown?.id === id) Object.assign(cv.shown, {status: result.status, note: cv.note || null, hidden});
     unpick(cv, [id]);
     cv.waiting = cv.waiting.filter((w) => w !== id);
     // Waiting for the quick check, it skips it only with a note.
@@ -123,7 +151,7 @@ async function send(p, cv, id) {
 function drop(cv, row) {
   // A conversation gone from the list (archived, or deleted): closed, no longer picked, and no longer counted as waiting.
   cv.rows = cv.rows.filter((r) => r.id !== row.id);
-  cv.total = Math.max(0, cv.total - 1);
+  if (!row.stays) cv.total = Math.max(0, cv.total - 1);
   cv.waiting = cv.waiting.filter((w) => w !== row.id);
   cv.every = cv.every.filter((w) => w !== row.id);
   unpick(cv, [row.id]);
@@ -202,9 +230,10 @@ export function runPreview(p, preview) {
 // Drawing.
 
 // One the quick check found smooth can be picked or sent in too, one by one (never by Select all: each is a full
-// analysis), for the full analysis. One with no fix found can be sent in again, opened, with a note (never picked).
+// analysis), for the full analysis. One with no trouble or no fix found can be sent in again, opened, with a note
+// (never picked): a fresh full analysis that reads the note.
 const pickable = (status) => status === "waiting" || status === "smooth";
-const sendable = (status) => pickable(status) || status === "active" || status === "nofix";
+const sendable = (status) => pickable(status) || status === "active" || status === "nofix" || status === "fine";
 
 function marked(text, query) {
   // The text, with the words searched for marked.
@@ -221,7 +250,7 @@ function marked(text, query) {
 
 function badge(row) {
   // Where it stands; one up for review is its own button beside the row (reviewLink), so it can open that review.
-  const C = TEXT.conversations, tips = {smooth: C.smoothTip, retry: C.retryTip, nofix: C.nofixTip};
+  const C = TEXT.conversations, tips = {smooth: C.smoothTip, retry: C.retryTip, nofix: C.nofixTip, fine: C.fineTip};
   const tip = tips[row.status] ? ` title="${esc(tips[row.status])}"` : "";
   return row.status === "review" && row.review ? ""
     : `<span class="chip cs-${row.status}"${tip}>${esc(C.status[row.status] || row.status)}</span>`;
@@ -316,10 +345,12 @@ export function section(p) {
   const selectAll = cv.every.length > 1 ? `<label class="cs-all"><input type="checkbox" id="cs-all" ${all ? "checked" : ""}
       ${some ? "data-mixed" : ""}>${esc(fill(C.selectAll, {n: cv.every.length}))}</label>` : "";
   const nothingYet = !cv.query && !cv.days && !cv.only && !cv.total && !cv.archivedCount;
+  // Every one archived (settled, or by hand), no search or filter on: nothing left for the household here.
+  const allAway = !cv.query && !cv.days && !cv.only && !cv.total && cv.archivedCount && !cv.showArchived;
   const rows = cv.error ? `<div class="conflict">${esc(cv.error)}</div>`
     : cv.rows.length ? (cv.close ? `<p class="cs-close">${esc(C.close)}</p>` : "") + `<div class="card cs-list">${cv.rows.map((row) => rowHtml(p, cv, row)).join("")}</div>`
-      + (cv.rows.length < cv.total ? `<button class="link cs-more" id="cs-more">${esc(C.more)}</button>` : "")
-    : `<p class="cs-empty">${esc(nothingYet ? C.empty : C.none)}</p>`;
+      + (served(cv) < cv.total ? `<button class="link cs-more" id="cs-more">${esc(C.more)}</button>` : "")
+    : `<p class="cs-empty">${esc(nothingYet ? C.empty : allAway ? C.allArchived : C.none)}</p>`;
   const archived = cv.archivedCount && !cv.error ? `<label class="cs-all cs-show-archived"><input type="checkbox" id="cs-archived" ${
     cv.showArchived ? "checked" : ""}>${esc(fill(TEXT.privacy.showArchived, {n: cv.archivedCount}))}</label>` : "";
   // How the last run went; what it found is left out once nothing is left to review.

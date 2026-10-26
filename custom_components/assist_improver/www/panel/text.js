@@ -40,13 +40,22 @@ export const TEXT = {
                   // A chip's tooltip, where it says what comes next.
                   retryTip: "The next proposal looks for another fix.",
                   nofixTip: "No fix worked. Send it in again with a note for one more look.",
+                  fineTip: "Nothing went wrong, as far as it could tell. Send it in again with a note if something did.",
                   // The Status filter's button: everything, or what it shows (one status's name, or how many).
                   statusAll: "Status", statusSome: "Status: {n}",
-                  more: "Show more", none: "No conversations match.", nothing: "(nothing said)",
+                  more: "Show more", none: "No conversations match.", allArchived: "Nothing needs you right now.", nothing: "(nothing said)",
                   close: "No conversation has all those words. The closest:",
                   empty: "Use Assist as usual: your conversations show up here, ready to send in."},
   // An improvement's review: each test opens to its conversation as it went, and its replay with the change.
   review: {before: "Before", after: "With the change", stopped: "The replay stopped before Assist replied.",
+           // What else an improvement gets you, beside new things Assist can do and fewer turns: side effects it no
+           // longer leaves (each device, as it stays) and the feedback it follows. {n}: how many.
+           spared: {gain: "{n} unwanted change{s} avoided", title: "Unwanted changes avoided ({n})"},
+           followed: {gain: "follows your feedback", title: "Your feedback it follows ({n})"},
+           // A test whose replay made Assist noticeably wordier (counted by code): its chip and tooltip, and a line
+           // under the tests when any did.
+           moreWords: "Says more", moreWordsTip: "Assist's replies: about {after} words each, {before} before.",
+           moreWordsLine: "With this change, Assist's replies got longer in {n} of these.",
            // A reason a decision can be given with: a box to tick under it, and the note's placeholder once ticked.
            reasons: {not_an_issue: {label: "Not an issue", hint: "It went fine, or you were only trying Assist out.",
                                     note: "Anything to add? (optional)"}}},

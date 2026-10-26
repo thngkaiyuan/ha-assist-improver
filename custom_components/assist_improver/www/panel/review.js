@@ -2,7 +2,7 @@
 // decision at a time in the footer; after a decision the footer says what happened, with Undo and the next review.
 
 const v = new URL(import.meta.url).search;  // ?v=<version>, passed on to every module this one loads.
-const [{esc, plural}, {STATUS, TEXT}, common, {dialog}] = await Promise.all([
+const [{esc, plural, fill}, {STATUS, TEXT}, common, {dialog}] = await Promise.all([
   import(`./format.js${v}`), import(`./text.js${v}`), import(`./common.js${v}`), import(`./conversations.js${v}`)]);
 
 // Home Assistant makes the panel's element again whenever its sidebar title (the count) changes, as it does after a
@@ -51,8 +51,10 @@ function replay(t) {
 
 function test(p, t, n) {
   // A test's row: what it tested and what it showed; opened, its replay.
+  const R = TEXT.review, more = t.more_words;
   const row = `<span class="mark">${t.improved ? "&#10003;" : "&#8211;"}</span><span>${esc(t.summary)}</span>
-    <span class="result">${esc(t.result || (t.improved ? "improved" : "not improved"))}</span>`;
+    <span class="result">${esc(t.result || (t.improved ? "improved" : "not improved"))}</span>${more
+      ? `<span class="result more-words" title="${esc(fill(R.moreWordsTip, more))}">${esc(R.moreWords)}</span>` : ""}`;
   const key = `test${n}`;
   return `<li class="${t.improved ? "ok" : "no"}">${t.before?.length || t.after?.length
     ? `<details data-key="${key}" ${p.open.has(key) ? "open" : ""}><summary class="row">${row}</summary>${replay(t)}</details>`
@@ -99,8 +101,9 @@ function footer(p, r) {
 
 export function render(p) {
   const r = p.review;
-  const outcome = [r.enabled.length && `${plural(r.enabled.length, "new thing")} Assist can do`,
-    r.removed.length && `${plural(r.removed.length, "fewer turn")}`].filter(Boolean).join(" · ");
+  const R = TEXT.review, spared = r.spared || [], followed = r.followed || [];
+  const outcome = common.gains({enabled: r.enabled.length, removed: r.removed.length, spared: spared.length,
+                                followed: followed.length});
   const lines = (cls, sign, items) => `<div class="lines">${items.map((t) =>
     `<div class="line ${cls}"><span class="sign">${sign}</span><span>${esc(t)}</span></div>`).join("")}</div>`;
   const files = r.changes.map((c, n) => `<div class="file">${section(p, `file${n}`,
@@ -116,6 +119,7 @@ export function render(p) {
     <div class="label">Why it's safe</div><ul class="safe">${r.safety.map((f) =>
       `<li><span class="mark">&#10003;</span><span>${esc(f)}</span></li>`).join("")}</ul>
     <div class="label">Tested on ${plural(r.tests.length, "conversation")} · ${improvedCount} improved</div><ul class="tests">${tests}</ul>
+    ${r.wordier ? `<p class="lead more-words-line">${esc(fill(TEXT.review.moreWordsLine, {n: r.wordier}))}</p>` : ""}
     ${r.untested ? `<p class="lead">Expected to help ${plural(r.untested, "more conversation")} too (not tested).</p>` : ""}</div>`;
   const how = `<div class="details-body"><p>${esc(r.cause)}</p>
     ${r.physical ? `<div class="note"><span>&#9432;</span><span>Physical positions aren't simulated in the sandbox: a door's motion, for
@@ -123,6 +127,8 @@ export function render(p) {
   const sections = [
     r.enabled.length && section(p, "enabled", `New things Assist can do (${r.enabled.length})`, lines("add", "+", r.enabled)),
     r.removed.length && section(p, "removed", `Turns no longer needed (${r.removed.length})`, lines("del", "−", r.removed)),
+    spared.length && section(p, "spared", esc(fill(R.spared.title, {n: spared.length})), lines("add", "✓", spared)),
+    followed.length && section(p, "followed", esc(fill(R.followed.title, {n: followed.length})), lines("add", "✓", followed)),
     section(p, "changes", `What changes (${r.changes.length})`, `<div class="files">${files}</div>`),
     section(p, "details", "What went wrong", how),
   ].filter(Boolean).join("");

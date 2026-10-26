@@ -9,6 +9,10 @@ _CHANGE = {
     probatio.Optional("text"): str,
     probatio.Optional("for"): probatio.In(["everyone", "this_user"]),
     probatio.Optional("replaces"): [str],
+    # A prompt change edits this assistant's own instructions (its name, as read_assistant_instructions shows it);
+    # code adds where Home Assistant keeps it (target: "config entry/subentry") once it's accepted.
+    probatio.Optional("assistant"): str,
+    probatio.Optional("target"): str,
     probatio.Optional("entity_id"): str,
     probatio.Optional("alias"): str,
     probatio.Optional("expose"): bool,

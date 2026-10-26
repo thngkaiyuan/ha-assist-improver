@@ -64,9 +64,10 @@ def edit(knowledge, changes, user_id, prompt=None):
     A line for this_user goes in the speaking person's lines, any other in everyone's. A line a change replaces is
     removed where it is: the household knowledge, or the assistant's own instructions (lines written there before).
     One that's in neither has changed since the change was tested: a problem, unless the new line is there already."""
+    from .instructions import household_line
     knowledge, problems = normalized(knowledge), []
     for change in changes:
-        if change["kind"] not in ("preference", "prompt"):
+        if not household_line(change):  # An edit of one assistant's own instructions isn't a household line.
             continue
         text = (change.get("text") or "").strip()
         mine = change.get("for") == "this_user" and user_id

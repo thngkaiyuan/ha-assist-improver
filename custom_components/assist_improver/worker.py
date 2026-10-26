@@ -385,7 +385,9 @@ def _error(err):
 
 def main():
     """The worker process: answer messages from stdin until it closes, then stop every sandbox and exit."""
+    from . import sandbox
     logging.basicConfig(level=logging.WARNING, stream=sys.stderr, format="%(levelname)s %(name)s: %(message)s")
+    sandbox.OWN_PROCESS = True  # Only sandboxes run here: the process's time zone is the home's.
     asyncio.run(_serve())
 
 

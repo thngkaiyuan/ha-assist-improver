@@ -190,7 +190,7 @@ function find(dev, p, state) {
   delete progress.timings; delete progress.problems;
   const more = stageBar(timings) + (Object.keys(progress).length
     ? `<div class="dv-card-title" style="margin:12px 0 6px">Progress</div>${kv(progress)}` : "")
-    + failed.map((x) => `<div class="dv-err">${esc(x.stage)}: ${esc(x.error)}</div>`).join("");
+    + failed.map((x) => `<div class="dv-err">${esc(x.stage)}${x.item ? ` · ${esc(x.item)}` : ""}: ${esc(x.error)}</div>`).join("");
   const head = `<div class="card dv-card"><div class="dv-head">${chip(m.kind, "c-primary")}${idLink(m.id, true)}</div>
     ${m.title ? `<div class="dv-head"><span class="dv-title">${esc(m.title)}</span></div>` : ""}
     ${m.recording ? `<div class="dv-head"><span class="dv-dim">recording</span>${idLink(m.recording, true)}</div>` : ""}
@@ -296,7 +296,7 @@ function run(dev, p, r) {
     : "No trace for this run: traces are kept for a week, and runs from before tracing have none. The stage timings above come from the run log."))}</div>`;
   const spans = `<div class="card dv-card flush"><div class="dv-card-title">Waterfall</div>${wf}</div>`;
   const failed = r.problems?.length ? `<div class="card dv-card"><div class="dv-card-title">Problems <span class="dv-dim">${r.problems.length}</span></div>
-    ${r.problems.map((x) => `<div class="dv-log lv-error"><div class="dv-log-head"><span class="dv-level lv-error">${esc(x.stage)}</span></div>
+    ${r.problems.map((x) => `<div class="dv-log lv-error"><div class="dv-log-head"><span class="dv-level lv-error">${esc(x.stage)}</span>${x.item ? `<span class="dv-dim">${esc(x.item)}</span>` : ""}</div>
       <div class="dv-msg">${esc(x.error)}</div></div>`).join("")}</div>` : "";
   const entries = t?.journal || [], shown = dev.journalAll ? entries : entries.slice(0, 200);
   const dropped = t?.dropped?.journal ? `, ${num(t.dropped.journal)} dropped over the cap` : "";

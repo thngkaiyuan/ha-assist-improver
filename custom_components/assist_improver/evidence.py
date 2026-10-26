@@ -10,6 +10,9 @@ All of it runs in sandboxes seeded from recorded sessions; no model is called an
   resolves exactly as before, so it isn't replayed; how many weren't, and why, is said. They are signals to weigh, not regressions: a change that folds several
   flows into one more general script makes the old calls resolve differently while the new script covers them.
 - capabilities: each of HA's Assist tools is tried on each device, and what HA carries out is what Assist can do.
+- instructions: an assistant's instructions as a prompt change edits them, rendered by HA for that assistant's newest
+  conversation as its chat log renders them (ha_name, user_name, llm_context): what Assist would read, or HA's error;
+  and for a request without a signed-in person or an asking device, which HA renders them for too.
 
 The sandboxes run in the replay worker (worker.py): the jobs below that start one (JOBS) run there whole, and what
 the roles' tools call here asks the worker for them.
@@ -25,6 +28,7 @@ from homeassistant.helpers import llm
 from .analyzer import top_level
 from .cases import CaseError, recording_turns, replayable_turns
 from .changes import setup_from_changes
+from .failures import contained
 from .sandbox import SANDBOX_KEY, Sandbox, observe, sandbox_context, seed, seed_options
 from .simulation import recorded_transitions
 from .worker import worker
@@ -32,7 +36,11 @@ from .worker import worker
 CONCURRENT = 4  # Sandboxes started at once.
 SIGNALS_SHOWN = 15  # Resolution signals listed in full; the count covers the rest.
 JOBS = {"replay": "_replay", "run_scripts": "run_scripts", "match_aliases": "match_aliases",
-        "capabilities": "probe_capabilities"}  # What the worker runs here, by name: each starts its own sandbox.
+        "capabilities": "probe_capabilities",
+        "render_instructions": "render_instructions"}  # What the worker runs here, by name: each starts its own sandbox.
+UNCHECKED = "Home Assistant couldn't check this: "  # A fact the sandbox couldn't give (failures.contained).
+NOT_REPLAYABLE = "can't be replayed"
+RENDERED_SHOWN = 2000  # Characters of rendered instructions shown with a draft.
 SIGNALS_NOTE = ("Each is a recorded tool call that Home Assistant resolves differently with the change: a signal to "
                 "weigh, not proof of a regression. It may be a problem (a name now matches another device, a device "
                 "is no longer reachable), or expected (a more general script or rule now covers what the old call "
@@ -178,26 +186,66 @@ class Evidence:
         self._baselines, self._lock = {}, asyncio.Lock()
 
     def setup(self, hypothesis, session=None):
+        from .instructions import assistant_config, target
         view = self.sessions.views[session] if session else self.sessions.household
         turn = recording_turns(view.recording)[0]
-        options = turn["prepared"]["provider_config"][0]["options"]
-        return setup_from_changes(hypothesis.get("changes") or [], source=turn["source"],
-                                  prompt=options.get("prompt"), scripts=self._scripts(turn["source"]),
-                                  user_id=(turn["prepared"].get("context") or {}).get("context", {}).get("user_id"))
+        configs = turn["prepared"]["provider_config"]
+        return setup_from_changes(self.sessions.with_targets(hypothesis.get("changes")), source=turn["source"],
+                                  prompt=configs[0]["options"].get("prompt"), scripts=self._scripts(turn["source"]),
+                                  user_id=(turn["prepared"].get("context") or {}).get("context", {}).get("user_id"),
+                                  assistant=target(assistant_config(configs)))
+
+    async def render(self, view, templates, user_name=None, quiet_only=False):
+        """Each template rendered as an assistant's instructions for this session's first request, and for one
+        without a signed-in person or an asking device, in a sandbox of its home: [{"rendered"} or {"error"}], or
+        None when it can't seed one (render_instructions; quiet_only: the latter only)."""
+        return await worker().call("evidence", job="render_instructions", recording=view.recording,
+                                   definitions=self.definitions, templates=list(templates), user_name=user_name,
+                                   quiet_only=quiet_only)
+
+    async def instructions(self, hypothesis, hass=None):
+        """Each assistant's instructions as the hypothesis's prompt changes edit them: rendered by HA (what Assist
+        would read), or why not."""
+        from .instructions import is_edit
+        changes, facts = self.sessions.with_targets(hypothesis.get("changes")), []
+        for target in sorted({c["target"] for c in changes if is_edit(c) and c.get("target")}):
+            record = self.sessions.assistants()[target]
+            template, problems = self.sessions.edited(target, changes)
+            fact = {"assistant": record["name"]}
+            if problems:
+                fact["problems"] = problems
+            rendered = await self.sessions.render(hass, target, template)
+            if rendered is None:
+                fact["renders"] = None
+                fact["note"] = "No conversation with it can seed a sandbox, so it wasn't rendered."
+            elif "error" in rendered:
+                fact.update(renders=False, error=rendered["error"])
+            else:
+                fact["renders"] = True
+                if "rendered" in rendered:
+                    fact["assist_reads"] = rendered["rendered"][:RENDERED_SHOWN]
+                    fact["rendered_for"] = f"its newest conversation that can be replayed ({record['replayable']})"
+                elif rendered.get("renders_quietly"):
+                    fact["note"] = ("No conversation with it can seed a sandbox: rendered only for a request without a "
+                                    "signed-in person or an asking device.")
+            facts.append(fact)
+        return facts
 
     def _scripts(self, source):
         return deepcopy(source["scripts"]) if "scripts" in source else deepcopy(self.definitions["scripts"])
 
-    async def check(self, hypothesis):
-        """Both kinds of facts for a draft; problems with the change itself (HA can't load it) come first."""
+    async def check(self, hypothesis, hass=None):
+        """The facts for a draft; problems with the change itself (HA can't load it) come first."""
         try:
             setup = self.setup(hypothesis)
         except CaseError as err:
             return {"problems": [str(err)]}
         implementation = await self.implementation(hypothesis, setup)
+        edited = await self.instructions(hypothesis, hass)
         if setup["exposure"] or setup["aliases"] or setup["scripts"]:
             from .sessions import applies, footprint
-            fp = footprint(hypothesis.get("changes") or [], self.sessions.household)
+            # An edit of an assistant's instructions doesn't change how HA resolves a recorded call.
+            fp = {**footprint(hypothesis.get("changes") or [], self.sessions.household), "assistants": set()}
             replayable = {s for s, b in self.sessions.briefs.items() if b["replayable"]}
             affected = {s for s in replayable if applies(self.sessions.briefs[s], fp)}
             signals = await self.resolution_signals(setup, affected)
@@ -209,7 +257,10 @@ class Evidence:
         else:
             signals = {"note": "Only instruction lines change: HA resolves devices as before; their effect needs a "
                                "replay with the model."}
-        return {"implementation": implementation, "resolution_signals": signals}
+        from .hypotheses.checks import speech
+        talk = speech(hypothesis, self.definitions.get("scripts"))  # What it would have Assist say, for the reviewer.
+        return {"implementation": implementation, "resolution_signals": signals, **({"speech": talk} if talk else {}),
+                **({"instructions": edited} if edited else {})}
 
     async def implementation(self, hypothesis, setup):
         """Each new or edited script, run from the state each named goal started in; new aliases, matched by HA."""
@@ -226,11 +277,22 @@ class Evidence:
             # New and edited scripts, and existing ones the change exposes: what Assist would now run.
             exposed = [e.split(".", 1)[1] for e, on in setup["exposure"].items() if on and e.startswith("script.")]
             scripts = sorted(set(setup["scripts"]) | set(exposed))
-            if scripts:
+            if not scripts:
+                continue
+            # A goal HA couldn't check is said so (a problem of the run's, unless it's a case it can't replay); the
+            # other facts still come.
+            async with contained("propose", f"{session}:{turn_no}", step="script check", expected=(CaseError,),
+                                 setback=False) as one:
                 facts.append(await self._try_scripts(view.recording, turns[turn_no - 1], setup, scripts, targets,
                                                      f"{session}:{turn_no}"))
+            if one.failed:
+                facts.append({"goal": f"{session}:{turn_no}", "reaches_goal": None, "note": UNCHECKED + one.error})
         for entity_id, aliases in setup["aliases"].items():
-            facts.append(await self._match_aliases(setup, entity_id, aliases))
+            async with contained("propose", entity_id, step="alias match", expected=(CaseError,),
+                                 setback=False) as one:
+                facts.append(await self._match_aliases(setup, entity_id, aliases))
+            if one.failed:
+                facts.append({"alias_for": entity_id, "matches": None, "note": UNCHECKED + one.error})
         return facts
 
     async def _run_scripts(self, recording, turn, setup, scripts, targets):
@@ -272,24 +334,25 @@ class Evidence:
             async with gate:
                 view = await self.sessions.load(session)
                 if view is None:
-                    return session, None, None
+                    return session, None, None, None
                 async with self._lock:
                     cached = session in self._baselines
-                if not cached:
-                    before = await replay_calls(view.recording, self.definitions)
-                    async with self._lock:
-                        self._baselines[session] = before
-                after = await replay_calls(view.recording, self.definitions, setup)
-                return session, self._baselines[session], after
-        results = await asyncio.gather(*(one(s) for s in chosen), return_exceptions=True)
+                # A session HA couldn't replay is skipped, with why (a problem of the run's, unless it's one it
+                # can't replay); the others go on.
+                async with contained("propose", session, step="replay", expected=(CaseError,),
+                                     setback=False) as attempt:
+                    if not cached:
+                        before = await replay_calls(view.recording, self.definitions)
+                        async with self._lock:
+                            self._baselines[session] = before
+                    after = await replay_calls(view.recording, self.definitions, setup)
+                    return session, self._baselines[session], after, None
+                return session, None, None, attempt.error
+        results = await asyncio.gather(*(one(s) for s in chosen))
         changed, skipped = [], []
-        for item in results:
-            if isinstance(item, BaseException):
-                skipped.append(str(item)[:200])
-                continue
-            session, before, after = item
+        for session, before, after, why in results:
             if before is None or after is None:
-                skipped.append(f"{session}: can't be replayed")
+                skipped.append(f"{session}: {why or NOT_REPLAYABLE}"[:200])
                 continue
             for (turn, tool, args, was), (_, _, _, now) in zip(before, after):
                 if was != now:
@@ -355,6 +418,50 @@ async def match_aliases(recording, definitions, setup, aliases):
         return await sandbox.run(match)
     finally:
         await sandbox.stop()
+
+
+async def render_instructions(recording, definitions, templates, user_name=None, quiet_only=False):
+    """In the worker: each template rendered as an assistant's instructions are for the recording's first request, as
+    HA's chat log renders them (ha_name, user_name, llm_context), in a sandbox seeded as its home: {"rendered"}, or
+    {"error"}. HA renders them for requests without a signed-in person or an asking device too (a voice satellite's),
+    and a template that fails there fails those requests: each is rendered that way as well. quiet_only: that way
+    only ({"renders_quietly"}), when the recording is another assistant's."""
+    from dataclasses import replace
+    from homeassistant.helpers.template import Template
+    turns = replayable_turns(recording)
+    if not turns or (context := _context(turns[0])) is None:
+        return None
+    sandbox = await _start(recording, turns[0], definitions)
+    try:
+        async def render(hass):
+            recorded = sandbox_context(hass, context)
+            quiet = replace(recorded, context=Context(), device_id=None)
+
+            def one(template, name, llm_context):
+                return Template(template, hass).async_render(
+                    {"ha_name": hass.config.location_name, "user_name": name, "llm_context": llm_context},
+                    parse_result=False)
+            out = []
+            for template in templates:
+                try:
+                    found = {"renders_quietly": True} if quiet_only else {"rendered": one(template, user_name, recorded)}
+                except Exception as err:  # noqa: BLE001 - a template HA can't render is the fact.
+                    out.append({"error": _render_error(err)})
+                    continue
+                try:
+                    one(template, None, quiet)
+                except Exception as err:  # noqa: BLE001 - a template HA can't render is the fact.
+                    found = {"error": f"for a request without a signed-in person or an asking device: "
+                                      f"{_render_error(err)}"}
+                out.append(found)
+            return out
+        return await sandbox.run(render)
+    finally:
+        await sandbox.stop()
+
+
+def _render_error(err):
+    return str(err)[:300] or type(err).__name__
 
 
 async def _states(hass, entity_ids):

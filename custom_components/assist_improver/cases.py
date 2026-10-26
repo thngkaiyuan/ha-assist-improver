@@ -185,8 +185,14 @@ def validate_criteria(criteria, source):
 
 
 def create_case(recording, *, title, first_turn, last_turn, destination=None,
-                criteria=None, evidence=None, intervention_turns=None, goal_unmet=False, acceptable=()):
-    """Explicit grounding input, not an automatic destination inference."""
+                criteria=None, evidence=None, intervention_turns=None, goal_unmet=False, acceptable=(),
+                unwanted=None, feedback=None):
+    """Explicit grounding input, not an automatic destination inference. unwanted: {device: its start} of side effects
+    a fix must not leave; feedback: what the household said a fix's replies must follow.
+
+    A side effect counts only where the replay can show it: a change Assist made (the recording says in which turn)
+    from first_turn on; others are left out. The case runs through the latest such turn, and a fix's replay goes on
+    past the goal to each one that isn't the goal's own turn (replay_through): the household says those either way."""
     turns = recording_turns(recording)
     if (type(first_turn) is not int or type(last_turn) is not int
             or not 1 <= first_turn <= last_turn <= len(turns)):
@@ -201,15 +207,35 @@ def create_case(recording, *, title, first_turn, last_turn, destination=None,
         raise CaseError("An established destination requires summary, criteria and evidence")
     if established:
         validate_criteria(criteria, turns[first_turn - 1]["source"])
-    key = digest({"recording": digest(recording), "turns": selected})
+    if any(e not in turns[first_turn - 1]["source"]["states"] for e in unwanted or {}):
+        raise CaseError("A side effect to remove has no recorded state")
+    from .simulation import recorded_transitions
+    made = {t["entity_id"]: turn["number"] for turn in turns[first_turn - 1:]
+            for t in recorded_transitions(recording, turn) if t["entity_id"] in (unwanted or {})}
+    if unwanted and not made and not (interventions or goal_unmet or feedback):
+        raise CaseError("Assist's changes to the side effects aren't in a turn the replay runs, so a fix can't be "
+                        "judged to avoid them")
+    unwanted = {e: start for e, start in (unwanted or {}).items() if e in made}
+    through = max((made[e] for e in unwanted if made[e] not in (first_turn, *interventions)), default=None)
+    selected = list(range(first_turn, max(last_turn, through or 0) + 1))
+    # One case per goal: general feedback replays the goal before it, so its case names its own turn too.
+    goal_turn = (evidence or {}).get("goal_turn")
+    key = digest({"recording": digest(recording), "turns": selected,
+                  **({"goal_turn": goal_turn} if goal_turn not in (None, first_turn) else {})})
     return {"format": 1, "id": key, "recording_id": recording["id"],
             "recording_digest": digest(recording), "title": title,
-            "turns": selected, "original_user_turns": len(selected),
+            # The goal's own turns (a replay past them, for a side effect, doesn't count against a fix).
+            "turns": selected, "original_user_turns": last_turn - first_turn + 1,
+            **({"replay_through": through} if through else {}),
             "intervention_turns": sorted(interventions),
             # The friction may be the goal itself going unmet (settings guessed or missed), not extra turns.
             "goal_unmet": bool(goal_unmet),
             # Controls the user would accept being set alongside the goal (a car's climate when warming it up).
             "acceptable_devices": sorted(set(acceptable)),
+            # Side effects the original left (a fix must not change these devices) and the household's feedback (a
+            # fix's replies must follow it): friction besides turns, so as many turns can be an improvement too.
+            **({"unwanted": dict(sorted(unwanted.items()))} if unwanted else {}),
+            **({"follow_feedback": list(feedback)} if feedback else {}),
             "destination": {"status": "established" if established else "needs_feedback",
                             "summary": destination, "criteria": deepcopy(criteria),
                             "evidence": deepcopy(evidence)},
@@ -238,8 +264,9 @@ def retained_inputs(case, recording, turn_numbers):
     if (not turn_numbers or any(type(n) is not int or n not in allowed for n in turn_numbers)
             or turn_numbers != sorted(set(turn_numbers))):
         raise CaseError("Inputs must be an ordered subsequence of original journey turns")
-    if len(turn_numbers) >= len(allowed) and not case.get("goal_unmet"):
-        # For an unmet goal, meeting it in as many turns is an improvement too.
+    if len(turn_numbers) >= len(allowed) and not (case.get("goal_unmet") or case.get("unwanted")
+                                                  or case.get("follow_feedback")):
+        # For an unmet goal, a side effect left or feedback, meeting it in as many turns is an improvement too.
         raise CaseError("Same or more user turns is not an improvement")
     by_number = {t["number"]: t for t in turns}
     return [by_number[n]["messages"][0]["content"] for n in turn_numbers]

@@ -10,7 +10,9 @@ device. It lives only as long as one replay.
 What it shares with the real instance is the process, and it leaves nothing of itself there: HA's frame helper goes
 back to the real instance before the sandbox's start first awaits; its log records are kept out of HA's log by a
 filter that comes off with the last sandbox; its entries in HA's memo caches go when it stops (a single-entry memo
-it took over is recomputed for the real instance on its next call); and the time zone is its own config's only.
+it took over is recomputed for the real instance on its next call); and the time zone is its own config's only. In
+the replay worker's own process (OWN_PROCESS) nothing else shares it, so the process's default time zone is the
+home's there too, as the real instance has it.
 """
 
 import asyncio
@@ -36,6 +38,9 @@ SANDBOX_KEY = "assist_improver_sandbox"
 RUNNING = set()  # Sandboxes not yet stopped; stop_all() ends them when the improver unloads.
 THREAD_NAME = "assist-improver-sandbox"
 SANDBOX_LOG_LIMIT = 200
+# True in the replay worker's own process (worker.main), where only sandboxes run: there the process's default time
+# zone is the home's, which templates' now() reads (an assistant's instructions, HA's date and time line).
+OWN_PROCESS = False
 DEVICE_SERVICES = {
     "light": ("turn_on", "turn_off", "toggle"),
     "switch": ("turn_on", "turn_off", "toggle"),
@@ -303,9 +308,13 @@ class Sandbox:
         hass.data[SANDBOX_KEY] = self
         # The sandbox's own config only: HA's async_set_time_zone also sets the process-wide default time zone, which
         # would carry over to the real instance. The recording is from the same home, so the default is its zone.
-        if await dt_util.async_get_time_zone(self.time_zone) is None:
+        # In the worker's own process the default is set too, as the real instance has it (every sandbox there is the
+        # same home's): templates read it.
+        if (zone := await dt_util.async_get_time_zone(self.time_zone)) is None:
             raise ValueError(f"Received invalid time zone {self.time_zone}")
         hass.config.time_zone = self.time_zone
+        if OWN_PROCESS:
+            dt_util.set_default_time_zone(zone)
         loader.async_setup(hass)
         hass.config_entries = config_entries.ConfigEntries(hass, {})
         real = frame._hass.hass
@@ -360,7 +369,10 @@ class Sandbox:
             self.hass.states.async_set(entity_id, result[0], result[1], context=call.context)
 
 
-INTEGRATION_TOOLS = {"intent", "homeassistant", "llm"}  # Tool prefixes HA's core sets up, not an integration.
+# Tool prefixes that aren't an integration to set up: HA's core sets these up, and the improver's own (its
+# file_improvement tool) is no part of the home: a sandbox serves the improver's llm platform itself, for the
+# household's lines, without the tool (household.serve), and the worker never runs the integration's setup.
+INTEGRATION_TOOLS = {"intent", "homeassistant", "llm", "assist_improver"}
 
 
 def seed_options(turn):

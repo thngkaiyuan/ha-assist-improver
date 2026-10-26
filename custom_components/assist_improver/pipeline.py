@@ -5,10 +5,12 @@ the schedule (off by default). Each stage works on its backlog; code decides wha
 that is, and the AI roles are the same ones the admin actions run:
 
 1. Analyze: each finished conversation not analyzed yet (each gets the quick
-   check first), except conversations the household marked as tests.
+   check first), except conversations the household marked as tests; and each one
+   sent in again after its analysis (resent), whatever it found, for one fresh look.
 2. Propose: the hypothesis generator and its reviewer, over every analysis, with the
    household's decisions on earlier improvements; it runs when there are new
-   analyses with friction, or revisions asked for, since it last ran.
+   analyses with friction, friction no proposal has had yet, or revisions asked for,
+   since it last ran.
 3. Test: every hypothesis on every goal it names, up to the tests-per-goal setting over the goal's lifetime. A goal
    with no fix found (the proposer said why, or its tests ran out without one passing) is settled: no later run
    spends anything on it, unless the household sends its conversation in again (a fresh budget).
@@ -21,7 +23,9 @@ gets the quick check; all pass through when no triage model is set), then
 analysis, and so on. A stage the household blocked (a gate) is skipped: what reached it
 waits there, and later stages still work on theirs. One run at a time; its progress is
 kept, so the panel shows it, and a run cut off by a restart is marked interrupted,
-never restarted on its own.
+never restarted on its own. What goes wrong stays where it happened (failures.py): one item's failure (a
+conversation, a hypothesis, a goal's test, a write-up) with that item, kept in the run's problems, while the stage
+goes on with the others; a stage's own failure with that stage, while the stages that don't need it go on.
 
 Each run has a trace (trace.py) under the run's id: a span for the run, each stage, each conversation, the
 proposal, each test and each write-up, with the AI calls and their tools inside.
@@ -50,16 +54,19 @@ from homeassistant.util.dt import utcnow
 
 from .cases import CaseError
 from .const import CONF_AUTO_ACCEPT, CONF_ON_DEMAND, CONF_TESTS_PER_GOAL, DEFAULT_TESTS_PER_GOAL, DOMAIN
+from . import failures
+from .failures import MAX_ATTEMPTS  # A conversation that keeps failing for an unexpected reason is set aside then.
 from .records import PipelineRun
 from .reflective import index_of
 from .settings import GATES, blocked_stages, listed, paused, role_model
 from .trace import for_run, ids, journal, span, tag
 
 _LOGGER = logging.getLogger(__name__)
-MAX_ATTEMPTS = 3  # A conversation that keeps failing for an unexpected reason is set aside after this many runs.
 
 STAGES = ("analyze", "propose", "test", "write")
-STORE = f"{DOMAIN}.pipeline"  # Where each taken-in conversation waits: {"at": {recording id: "triage" | "analyze"}}.
+# Where each taken-in conversation waits, {"at": {recording id: "triage" | "analyze"}}, and the items that failed in
+# runs in a row, {"setbacks": {...}} (failures.py).
+STORE = f"{DOMAIN}.pipeline"
 
 
 def editor_model(entry):
@@ -85,9 +92,11 @@ class Pipeline:
         self._again = False  # A filed conversation ended during a run: run again right after it.
         self.store = Store(hass, 1, STORE, private=True, atomic_writes=True)
         self.waiting: dict[str, str] = {}  # {recording id: the stage it waits at}, as last kept (_at() leaves out what's done).
+        self.setbacks = {}  # {item: its failed runs in a row} (failures.Collector).
 
     async def load(self):
-        self.waiting = ((await self.store.async_load()) or {}).get("at", {})
+        saved = (await self.store.async_load()) or {}
+        self.waiting, self.setbacks = saved.get("at", {}), failures.kept_setbacks(saved.get("setbacks"))
 
     # On-demand improvements.
 
@@ -167,19 +176,62 @@ class Pipeline:
                 and not summary.get("deleting"))
 
     def _unanalysed(self, rid, runs):
-        """No analysis yet; or only the quick check's smooth verdict, and the user sent it in again since (or with a
-        note): it gets the full analysis then, once, as that analysis takes the verdict's place. One sent in plainly
-        that the quick check then found smooth is done with: it stands smooth, as a full run's would. Or sent in again
-        after its full analysis (no fix was found for it), so the analysis takes the user's note into account."""
-        analysis = runs.analyzed.get(rid)
-        return analysis is None or bool(analysis.get("triaged") and self.skips_check(rid)) or self.resent(rid, runs)
+        """No analysis yet, or sent in again since its latest one (resent). One sent in plainly that the quick check
+        then found smooth is done with: it stands smooth, as a full run's would, until it's sent in again."""
+        return runs.analyzed.get(rid) is None or self.resent(rid, runs)
 
     def resent(self, rid, runs=None):
-        """Sent in after its latest full analysis: it waits for another one, with the user's note."""
+        """Sent in after its latest analysis, whatever that found: smooth at the quick check, no trouble found, or no
+        fix found. It waits for one fresh full analysis, which reads the user's note as feedback and takes the old
+        one's place for every stage after it. A run takes it past the quick check: the user said it needs a closer
+        look (a signal for skipping the check)."""
         runs = self._runs() if runs is None else runs
-        filed, analysis = (self.recorder.index.get(rid) or {}).get("filed"), runs.analyzed.get(rid)
-        return bool(filed and analysis and not analysis.get("triaged")
-                    and (filed.get("at") or "") > runs.analyzed_at.get(rid, ""))
+        filed = (self.recorder.index.get(rid) or {}).get("filed")
+        return bool(filed and rid in runs.analyzed and (filed.get("at") or "") > runs.analyzed_at.get(rid, ""))
+
+    def seen(self):
+        """The goals with friction ("session:turn") the last proposal was given, or None before the first: from its
+        record, or (one kept before it listed them) the goals its answer placed, since it had to place every one."""
+        _, run = self._last_generator()
+        if run is None:
+            return None
+        if isinstance(run.get("friction"), list):
+            return set(run["friction"])
+        answer = run.get("output") or {}
+        refs = [g for h in answer.get("hypotheses") or [] for g in h.get("goals") or []] + [
+            r for key in ("not_fixed", "already_addressed") for r in answer.get(key) or []]
+        return {f"{str(r.get('session'))[:8]}:{r.get('goal_turn')}" for r in refs}
+
+    def unseen(self, tests=None, settled=None):
+        """{recording id: its goals with friction that no proposal has had}, among analyses before the last proposal:
+        what an upgrade counts as friction now (side effects left, feedback). Not given to the last proposal, though it
+        could read their conversation (its sessions: one it couldn't read waits until it can), and no improvement ever
+        covered them (a revision waits at Propose on its own). They wait at Propose like a new analysis."""
+        from .hypotheses import friction_by_goal, short
+        from .improvements import Improvements
+        seen = self.seen()
+        if seen is None:
+            return {}
+        runs, tests, improvements = self._runs(), self._tests() if tests is None else tests, self.runtime.improvements
+        settled = improvements.settled_goals() if settled is None else settled
+        known = seen | set(settled)
+        for item in improvements.items.values():
+            try:
+                known |= set(Improvements._covers(item))
+            except (KeyError, TypeError):  # One in an older shape covers what settled_goals says it does.
+                continue
+        since, out = {rid for rid, _ in runs.since}, {}
+        given = self._last_generator()[1].get("sessions")
+        for rid, analysis in runs.analyzed.items():
+            if rid in since or rid in tests or (isinstance(given, list) and short(rid) not in given):
+                continue
+            try:
+                goals = {f"{short(rid)}:{turn}" for turn in friction_by_goal(analysis)} - known
+            except (KeyError, TypeError):  # An analysis in an older shape: nothing new in it.
+                continue
+            if goals:
+                out[rid] = goals
+        return out
 
     def to_analyze(self, tests=None, filed_only=False):
         """Finished conversations not analysed yet: every one, as a full run takes them in; only those sent in (filed)
@@ -197,7 +249,10 @@ class Pipeline:
 
     async def _save_at(self, at):
         self.waiting = dict(at)
-        await self.store.async_save({"at": self.waiting})
+        await self._save()
+
+    async def _save(self):
+        await self.store.async_save({"at": self.waiting, "setbacks": self.setbacks})
 
     def _new(self, filed_only=False):
         """Finished conversations no run has taken in yet: they wait at the start (filed_only: as to_analyze)."""
@@ -217,7 +272,8 @@ class Pipeline:
         return (run.get("output") or {}).get("hypotheses") or [], run
 
     def _to_propose(self, tests=None):
-        """What the proposer has to work on: analyses with friction since it last ran, and revisions asked for."""
+        """What the proposer has to work on: analyses with friction since it last ran, earlier ones with friction it
+        wasn't given (unseen), and revisions asked for."""
         from .hypotheses import friction_by_goal, short
         tests = self._tests() if tests is None else tests
         count, settled = 0, set(self.runtime.improvements.settled_goals())
@@ -227,7 +283,7 @@ class Pipeline:
                     count += any(f"{short(rid)}:{turn}" not in settled for turn in friction_by_goal(analysis))
                 except (KeyError, TypeError):
                     count += bool(analysis.get("goals"))
-        return count + self._revisions()
+        return count + len(self.unseen(tests, settled)) + self._revisions()
 
     def _per_goal(self):
         return int(self.entry.options.get(CONF_TESTS_PER_GOAL, DEFAULT_TESTS_PER_GOAL))
@@ -351,11 +407,18 @@ class Pipeline:
 
     async def _guarded(self, stage, work):
         """One stage's work. An unexpected failure stays with that stage: kept with why (and logged with its
-        traceback, for a bug report), and the run goes on to the stages that don't need it. False if it failed."""
+        traceback, for a bug report), and the run goes on to the stages that don't need it. One item's failure stays
+        with that item (failures.contained); the stage failed too when every one of its items did. False if it
+        failed."""
         began = time.monotonic()
         try:
             async with span(f"stage.{stage}"):
                 await work()
+            if failed := failures.nothing_done(stage):
+                self.current["progress"].setdefault("problems", []).append(
+                    {"stage": stage, "error": "Nothing done: its 1 item failed" if failed == 1
+                     else f"Nothing done: all {failed} of its items failed"})
+                return False
             return True
         except asyncio.CancelledError:
             raise
@@ -370,12 +433,21 @@ class Pipeline:
             _LOGGER.debug("Assist Improver: %s took %.1f s", stage, seconds)
 
     async def _run(self):
-        """The run, in its own trace (its id is the run's)."""
+        """The run, in its own trace (its id is the run's), with its failures collected (failures.py)."""
         run = self.current
-        async with for_run(run["id"]), span("run", trigger=run["trigger"], only=run.get("only"),
-                                            force=run.get("force")):
-            journal("info", f"Run started: {run['trigger']}" + (f", {run['only']} only" if run.get("only") else ""))
-            await self._stages()
+        collector = failures.Collector(run["id"], run["progress"], self.setbacks, self._save)
+        try:
+            async with for_run(run["id"]), span("run", trigger=run["trigger"], only=run.get("only"),
+                                                force=run.get("force")):
+                with failures.collecting(collector):
+                    journal("info", f"Run started: {run['trigger']}"
+                            + (f", {run['only']} only" if run.get("only") else ""))
+                    await self._stages()
+        except Exception as err:  # Outside any stage (its trace, say): the run's record still closes.
+            if run["status"] != "running":
+                raise
+            _LOGGER.exception("Assist Improver: the run failed")
+            await self._finish("failed", error=f"{type(err).__name__}: {err}"[:500])
 
     async def _stages(self):
         from .proposal import propose as run_proposal
@@ -543,9 +615,12 @@ class Pipeline:
             _LOGGER.exception("Assist Improver couldn't analyse conversation %s", recording_id)
             message = f"{type(err).__name__}: {err}"[:500]
             if self._strikes(recording_id) + 1 >= MAX_ATTEMPTS:
+                message = f"Set aside after {MAX_ATTEMPTS} failed runs: {message}"
+                failures.problem("analyze", recording_id[:8], message)
                 return await self.runtime.role_runs.record({
                     **record, "id": f"unreadable-{recording_id}", "answer_status": "unreadable",
-                    "error": {"message": f"Set aside after {MAX_ATTEMPTS} failed runs: {message}"}})
+                    "error": {"message": message}})
+            failures.problem("analyze", recording_id[:8], message)  # Counted by the run log (_strikes).
             return await self.runtime.role_runs.record({**record, "answer_status": "error",
                                                          "error": {"message": message}})
 
@@ -570,6 +645,7 @@ class Pipeline:
                 progress["problem"] = why  # The first failure's reason, for the history.
 
     async def _finish(self, status, *, note=None, error=None):
+        await self._save()  # The setbacks too, as code that doesn't await left them (failures.contained).
         self.current.update(status=status, finished=utcnow().isoformat(), note=note, error=error)
         tag(outcome=status)
         journal("error" if status == "failed" else "info", f"Run {status}" + (f": {error}" if error else ""),

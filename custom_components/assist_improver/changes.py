@@ -1,9 +1,10 @@
 """A hypothesis's changes as a sandbox setup: what a replay changes in the recorded home.
 
 Each change kind maps onto HA's own configuration: exposure, entity aliases,
-the assistant's instruction template, and scripts in HA's script format. Code
-only places them; the sandbox's HA validates and runs them, so anything HA
-can't load stops the candidate instead of being guessed at.
+the household knowledge, the instruction template of the assistant the
+conversation used, and scripts in HA's script format. Code only places them;
+the sandbox's HA validates and runs them, so anything HA can't load stops the
+candidate instead of being guessed at.
 """
 
 from copy import deepcopy
@@ -23,22 +24,31 @@ def ha_step(step):
     return out
 
 
-def setup_from_changes(changes, *, source, prompt, scripts, user_id=None):
+def setup_from_changes(changes, *, source, prompt, scripts, user_id=None, assistant=None):
     """{exposure, aliases, alias_removals (when any), household (when any), prompt, scripts, prompt_changed} for a
     sandbox, from a hypothesis's changes.
 
-    source is the recorded home, prompt the assistant's recorded instruction template, scripts the household's
-    script definitions ({object id: config}), user_id the person speaking. Instruction lines go into the household
-    knowledge (household.py), as applying puts them: everyone's, or the speaking person's for this_user; the replay
-    reads them through Assist, as the assistant will.
+    source is the recorded home, prompt the recorded instruction template of the assistant the conversation used
+    (assistant: its target), scripts the household's script definitions ({object id: config}), user_id the person
+    speaking. Household lines go into the household knowledge (household.py), as applying puts them: everyone's, or
+    the speaking person's for this_user; the replay reads them through Assist, as the assistant will. An edit of an
+    assistant's own instructions changes this conversation's template only when it used that assistant.
     """
-    from . import household
+    from . import household, instructions
     exposure, aliases, removals, new_scripts = {}, {}, {}, {}
     template, prompt_changed, knowledge = prompt or "", False, None
     for n, change in enumerate(changes, 1):
         kind, where = change["kind"], f"Change {n} ({change['kind']})"
         entity_id = change.get("entity_id")
-        if kind in ("preference", "prompt"):
+        if instructions.is_edit(change):
+            if not change.get("target") or change["target"] != assistant:
+                continue  # Another assistant's instructions: this conversation never read them.
+            template, problems = instructions.edit(template, [change])
+            if problems:
+                raise CaseError(f"{where}: the lines it replaces aren't in the instructions this conversation's "
+                                "assistant ran with")
+            prompt_changed = True
+        elif kind in ("preference", "prompt"):
             base = knowledge if knowledge is not None else source.get("household") or household.EMPTY
             knowledge, template, problems = household.edit(base, [change], user_id, template)
             if problems:

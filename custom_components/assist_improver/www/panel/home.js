@@ -7,7 +7,7 @@ const [{esc, plural}, {TEXT, STATUS}, {COG}, common, conversations] = await Prom
   import(`./conversations.js${v}`)]);
 
 const rows = (items) => items.map((i) => {
-  const gains = [i.enabled && `${plural(i.enabled, "new thing")} Assist can do`, i.removed && `${plural(i.removed, "fewer turn")}`].filter(Boolean).join(" · ");
+  const gains = common.gains(i);
   // A revision of an earlier improvement says so beside its title.
   return `<button class="item" type="button" data-id="${esc(i.id)}"><span class="title">${esc(i.title)}${
       i.revision ? ` <span class="tag">Revision</span>` : ""}

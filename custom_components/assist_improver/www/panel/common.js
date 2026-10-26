@@ -16,6 +16,15 @@ export const toggle = (id, on, attrs) => customElements.get("ha-switch") ? `<ha-
 export const switchRow = (id, on, text, tip, cls = "", attrs = "") => `<div class="toggle-row ${cls}"><label class="practice">${toggle(id, on, attrs)}${esc(text)}</label>
     ${tip ? `<span class="info-tip" data-tip="${esc(tip)}" tabindex="0" aria-label="About ${esc(text)}">${svg("info")}</span>` : ""}</div>`;
 
+// What an improvement gets you, in a line (the home list and the review's header): new things Assist can do, fewer
+// turns, unwanted changes avoided, your feedback followed. Each a count.
+export const gains = ({enabled, removed, spared, followed}) => {
+  const R = TEXT.review;
+  return [enabled && `${plural(enabled, "new thing")} Assist can do`, removed && `${plural(removed, "fewer turn")}`,
+    spared && fill(R.spared.gain, {n: spared, s: spared === 1 ? "" : "s"}), followed && R.followed.gain]
+    .filter(Boolean).join(" · ");
+};
+
 export const devLink = () =>
   `<button class="tb-btn tb-text" id="open-developer" title="Developer view" aria-label="Developer view">${svg("code")}Developer</button>`;
 

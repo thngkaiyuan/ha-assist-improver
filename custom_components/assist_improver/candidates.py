@@ -13,6 +13,7 @@ from .cases import CaseError, digest, retained_inputs, verify_case
 from .const import DOMAIN, STORAGE_VERSION
 from .replay import FrozenTurnLog, check_fidelity
 from .changes import setup_from_changes
+from .instructions import target
 from .snapshot import live_definitions
 from .records import Candidate, CandidateResult
 from .serialization import plain
@@ -37,6 +38,17 @@ def _grounding(case, recording):
     return turns, baseline_plan, baseline, retained, inputs
 
 
+def _feedback_counts(case, baseline):
+    """Whether a fix can be judged on the household's feedback: the replies without it (the baseline's, checked once
+    by validation.check_baseline_feedback) didn't follow it. Feedback no check has seen yet stops the plan."""
+    if not case.get("follow_feedback"):
+        return False
+    heard = baseline.get("feedback_check") or {}
+    if heard.get("status") != "completed" or heard.get("feedback") != case["follow_feedback"]:
+        raise CaseError("The replies without the change haven't been checked against the household's feedback")
+    return heard["followed"] is False
+
+
 def prepare_change_candidate(case, recording, *, hypothesis, scripts, definition_evidence):
     """A generated hypothesis's changes, tested on one case (the goal as it came up in one recording). scripts: the
     household's script definitions ({object id: config}) the changes build on."""
@@ -46,10 +58,11 @@ def prepare_change_candidate(case, recording, *, hypothesis, scripts, definition
         raise CaseError("Candidate needs one coherent hypothesis")
     turns, baseline_plan, baseline, retained, inputs = _grounding(case, recording)
     source = turns[0]["source"]
-    options = turns[0]["prepared"]["provider_config"][0]["options"]
+    config = turns[0]["prepared"]["provider_config"][0]
     user_id = (turns[0]["prepared"].get("context") or {}).get("context", {}).get("user_id")
-    setup = setup_from_changes(hypothesis["changes"], source=source, prompt=options.get("prompt"), scripts=scripts,
-                               user_id=user_id)
+    # The instructions it ran with, edited where the hypothesis edits this conversation's assistant's.
+    setup = setup_from_changes(hypothesis["changes"], source=source, prompt=config["options"].get("prompt"),
+                               scripts=scripts, user_id=user_id, assistant=target(config))
     edits = [{"kind": "assist_exposure", "entity_id": e, "before": bool(source["exposure"].get(e)), "after": v}
              for e, v in sorted(setup["exposure"].items())]
     touched = {c["entity_id"].split(".", 1)[1] for c in hypothesis["changes"]
@@ -58,11 +71,22 @@ def prepare_change_candidate(case, recording, *, hypothesis, scripts, definition
     plan = {"format": 1, "kind": "hypothesis_changes", "hypothesis": deepcopy(hypothesis),
             "evaluation_case_id": case["id"], "baseline_digest": digest(baseline),
             "baseline_plan": baseline_plan, "retained_turns": retained, "user_inputs": inputs,
-            "judge": {"destination": deepcopy(case["destination"]), "original_user_turns": len(turns),
+            "judge": {"destination": deepcopy(case["destination"]),
+                      "original_user_turns": case.get("original_user_turns", len(turns)),
                       # Whether the conversation without the fix met the goal (its baseline): a fix that meets an
                       # unmet goal improves it even in as many turns.
                       "baseline_met": baseline.get("destination_met"),
-                      "acceptable_devices": case.get("acceptable_devices", [])},
+                      "acceptable_devices": case.get("acceptable_devices", []),
+                      # Side effects the original left, which the fix must not repeat (replayed through the last
+                      # turn that made one), and the household's feedback, which its replies must follow
+                      # (validation.check_feedback) where the replies without it didn't; only when there are (plan IDs).
+                      **({"unwanted": deepcopy(case["unwanted"])} if case.get("unwanted") else {}),
+                      **({"replay_through": case["replay_through"]} if case.get("replay_through") else {}),
+                      **({"feedback": list(case["follow_feedback"])} if _feedback_counts(case, baseline) else {}),
+                      # Feedback its only friction (no extra turns, nothing unmet, no side effect): judged on that
+                      # alone, so turns it replays to reach the goal aren't credited as saved.
+                      **({"feedback_only": True} if case.get("follow_feedback") and not any(
+                          case.get(k) for k in ("intervention_turns", "goal_unmet", "unwanted")) else {})},
             "edits": edits, "definitions": deepcopy(definitions), "setup": deepcopy(setup),
             "definition_evidence": deepcopy(definition_evidence),
             # What this test covers: its case, replayed with the change. Each other goal the hypothesis names gets
@@ -94,24 +118,54 @@ def verify_candidate(plan, case, recording, scripts=None):
 
 def judge_effects(plan, world, *, used_user_turns, also_expected=()):
     """Fixed command-level judge, independent of the candidate's tool responses. also_expected: devices the
-    conversation changed without the fix too (its baseline), which aren't unintended."""
-    criteria = plan["judge"]["destination"]["criteria"]
+    conversation changed without the fix too (its baseline), which aren't unintended.
+
+    A fix improves the goal when it reaches it in no more turns, commands nothing unintended, changes none of the
+    side effects the original left (unwanted), and removes some of its friction: fewer turns, the goal newly met, a
+    side effect gone, or (judged after, by a small model: validation.followed) the household's feedback followed."""
+    judge = plan["judge"]
+    criteria = judge["destination"]["criteria"]
     targets = set(criteria.get("states", criteria.get("sequences", {})))
     destination_met = met(criteria, world.states, world.transitions)
     # A command to an unintended target counts even if its state did not change. A script's own run is not a
     # device command; its steps are.
     unintended = sorted({c["entity_id"] for c in world.calls if not c["service"].startswith("script.")}
-                        - targets - set(also_expected) - set(plan["judge"].get("acceptable_devices", [])))
-    original = plan["judge"]["original_user_turns"]
-    reduced = 0 < used_user_turns < original
+                        - targets - set(also_expected) - set(judge.get("acceptable_devices", [])))
+    original = judge["original_user_turns"]
+    no_more = 0 < used_user_turns <= original
+    # Judged on its feedback alone, turns and the goal aren't its friction to remove.
+    reduced = 0 < used_user_turns < original and not judge.get("feedback_only")
     # Goals met first, then fewer turns: meeting a goal the baseline didn't meet counts in as many turns.
-    newly_met = destination_met and plan["judge"].get("baseline_met") is False and 0 < used_user_turns <= original
-    return {"command_destination_met": destination_met, "unintended_targets": unintended,
-            "strictly_fewer_user_turns": reduced, "goal_newly_met": newly_met,
-            "baseline_met": plan["judge"].get("baseline_met"),
-            "original_user_turns": original, "candidate_user_turns": used_user_turns,
-            "command_check_passed": destination_met and (reduced or newly_met) and not unintended,
-            "physical_outcome": "not_verified_by_simulation"}
+    newly_met = destination_met and judge.get("baseline_met") is False and no_more and not judge.get("feedback_only")
+    # A side effect is gone when the replay didn't change that device at all (off and on again is still a change).
+    unwanted = judge.get("unwanted") or {}
+    left = sorted({t["entity_id"] for t in world.transitions} & set(unwanted))
+    gone = sorted(set(unwanted) - set(left)) if not left else []
+    out = {"command_destination_met": destination_met, "unintended_targets": unintended,
+           "strictly_fewer_user_turns": reduced, "goal_newly_met": newly_met,
+           "baseline_met": judge.get("baseline_met"),
+           "original_user_turns": original, "candidate_user_turns": used_user_turns,
+           "command_check_passed": destination_met and not unintended and not left and no_more and (
+               reduced or newly_met or bool(gone) or bool(judge.get("feedback"))),
+           "physical_outcome": "not_verified_by_simulation"}
+    if unwanted:
+        out.update(side_effects_left=left, side_effects_gone=gone)
+    if judge.get("feedback"):
+        out["feedback_followed"] = None  # Until the small model judged the replies (validation.followed).
+    return out
+
+
+def past_the_goal(at_goal, now, judge):
+    """The assessment of a replay gone on past the turn its goal was met (to a later turn that made a side effect):
+    the goal, and the turns it took, as judged there; what the fix commanded and left, through the last turn."""
+    out = {**now, **{key: at_goal[key] for key in ("command_destination_met", "strictly_fewer_user_turns",
+                                                   "goal_newly_met", "candidate_user_turns")}}
+    no_more = 0 < at_goal["candidate_user_turns"] <= at_goal["original_user_turns"]
+    out["command_check_passed"] = (at_goal["command_destination_met"] and not now["unintended_targets"]
+                                   and not now.get("side_effects_left") and no_more
+                                   and (at_goal["strictly_fewer_user_turns"] or at_goal["goal_newly_met"]
+                                        or bool(now.get("side_effects_gone")) or bool(judge.get("feedback"))))
+    return out
 
 
 class CandidateTrial:
@@ -153,7 +207,9 @@ class CandidateTrial:
                     raise UnsupportedSimulation("The sandbox doesn't rebuild this recording's instructions exactly: "
                                                 + " | ".join(report["prompt_diff"][2:8]))
             # The user's own messages, in order (a scripted user): the first, then each follow-up the recording
-            # has, until the destination is met.
+            # has, until the destination is met and past each turn that made a side effect it must not repeat
+            # (replay_through: the household said those either way; turns past the goal don't count against it).
+            through, met_at = self.plan["judge"].get("replay_through") or 0, None
             for index, turn in enumerate(self.turns):
                 if index:
                     self.log.continue_with(turn)
@@ -166,9 +222,15 @@ class CandidateTrial:
                     raise UnsupportedSimulation("Candidate did not finish the user's turn")
                 self.turns_run.append({"turn": turn["number"], "input": self.log.input.text,
                                        "reply": output[-1].content, "output": plain([c.as_dict() for c in output])})
-                self.assessment = judge_effects(self.plan, self.log.replay_api.world, used_user_turns=index + 1,
-                                                also_expected=self.baseline_entities)
-                if self.assessment["command_destination_met"]:
+                now = judge_effects(self.plan, self.log.replay_api.world, used_user_turns=met_at or index + 1,
+                                    also_expected=self.baseline_entities)
+                if met_at is None:
+                    self.assessment = now
+                    if now["command_destination_met"]:
+                        met_at, at_goal = index + 1, now
+                else:  # Past the goal: the goal stands as judged where it was met; the side effects run on.
+                    self.assessment = past_the_goal(at_goal, now, self.plan["judge"])
+                if met_at and turn["number"] >= through:
                     break
             self.status = "awaiting_review" if self.assessment["command_check_passed"] else "not_improved"
         except Exception as err:

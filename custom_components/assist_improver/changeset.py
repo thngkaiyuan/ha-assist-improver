@@ -8,8 +8,10 @@ places with no shared transaction, so a changeset is made atomic here:
    value the user changed since is a conflict, reported instead of overwritten.
    HA validates scripts and instruction templates before anything is written.
 2. Apply in a safe order: scripts (saved, not exposed: inert), aliases, exposure,
-   then the household knowledge and the assistant's own instructions (instruction
-   lines tell the assistant to use the rest). Nothing runs.
+   then the household knowledge and assistants' own instructions (instruction
+   lines tell the assistant to use the rest). Nothing runs. An edit of one
+   assistant's instructions goes to that assistant, and is a conflict when its
+   instructions changed after the improvement was tested.
 3. A journal is saved before each write; a failed step undoes the done steps in
    reverse order. A journal left unfinished by a restart is undone at startup.
 4. Every written value is read back before the changeset counts as applied.
@@ -165,8 +167,10 @@ async def plan_steps(hass, proposal):
         base = tested["exposure"].get(entity_id, False)
         add("exposure", entity_id, async_should_expose(hass, "conversation", entity_id), exposed, base,
             _name(hass, entity_id, setup.get("scripts", {})))
-    if any(c["kind"] in ("preference", "prompt") for c in proposal["changes"]):
-        # Instruction lines go into the household knowledge, which every assistant on Assist reads; a line they
+    from .instructions import edit, household_line, is_edit
+    prompts = {}  # {target: [instructions now, as they become, base, name]}: one step per assistant.
+    if any(household_line(c) for c in proposal["changes"]):
+        # Household lines go into the household knowledge, which every assistant on Assist reads; a line they
         # replace in the tested assistant's own instructions comes out of those. No assistant is switched.
         from . import household
         provider = proposal["provider"]
@@ -199,12 +203,49 @@ async def plan_steps(hass, proposal):
                 prompt = household.without_lines(prompt, knowledge)
                 add("household", "household", live, knowledge, _ANY, "Household knowledge")
                 if prompt != live_prompt:
-                    add("prompt", target, live_prompt, prompt, _ANY, f"{title}'s instructions")
+                    prompts[target] = [live_prompt, prompt, _ANY, title]
+    edits = {}
+    for change in proposal["changes"]:
+        if is_edit(change):
+            edits.setdefault(change.get("target"), []).append(change)
+    for target, changes in edits.items():
+        # An edit of one assistant's own instructions: on its instructions as they are now, which must be those it
+        # was tested with.
+        title = _assistant_title(hass, target) or changes[0].get("assistant") or "Assist"
+        live_prompt = await read(hass, "prompt", target) if target else None
+        if not target or await read(hass, "assistant_api", target) is None:
+            conflicts.append({"kind": "prompt", "target": target, "what": f"{title}'s instructions",
+                              "why": "The assistant it was tested on is no longer set up."})
+            continue
+        base = tested.get("prompts", {}).get(target, _ANY)  # Changed since: a conflict (add), unless already done.
+        before, after, _, _ = prompts.get(target) or [live_prompt, live_prompt, _ANY, title]
+        after, problems = edit(after, changes)
+        if problems:
+            changed = base is not _ANY and not _same(live_prompt, base)
+            conflicts += [{"kind": "prompt", "target": target, "what": f"{title}'s instructions", "why": p} for p in (
+                ["It was changed in Home Assistant after the improvement was tested."] if changed else problems)]
+            continue
+        prompts[target] = [before, after, base, title]
+    for target, (before, after, base, title) in prompts.items():
+        if target in edits:
+            try:
+                Template(after, hass).ensure_valid()
+            except Exception as err:  # A template HA can't parse never reaches the assistant.
+                conflicts.append({"kind": "prompt", "target": target, "what": f"{title}'s instructions",
+                                  "why": f"Home Assistant can't read the edited instructions: {err}"})
+                continue
+        add("prompt", target, before, after, base, f"{title}'s instructions")
     steps.sort(key=lambda s: ORDER.index(s["kind"]))
     return steps, already, conflicts
 
 
 _ANY = object()  # A merged value: any current value is a valid base.
+
+
+def _assistant_title(hass, target):
+    """An assistant's name in Home Assistant now, or None."""
+    from .instructions import live
+    return (live(hass, target) or {}).get("title")
 
 
 def llm_assist():

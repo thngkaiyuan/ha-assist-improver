@@ -25,6 +25,7 @@ from homeassistant.util.dt import parse_datetime, utcnow
 
 from .cases import CaseError, digest
 from .const import DOMAIN, STORAGE_VERSION
+from .failures import closing
 from .records import PipelineRun, RoleCall, TestReport
 from .serialization import plain
 from .trace import ids, span, timed
@@ -64,27 +65,31 @@ async def run_role(hass, *, role, entity_id, instructions, payload, structure, l
     record = {"role": role, "entity_id": entity_id, "started": utcnow().isoformat(),
               "instructions_sha256": digest(instructions), "input_sha256": digest(payload),
               "input_chars": len(text), "status": "running", "output": None, "error": None, **ids()}
-    # One span per call; the tools it calls get theirs inside (trace.traced_tool).
-    async with span(f"ai.{role}", role=role, model=entity_id, input_chars=len(text)) as section:
-        with role_marker(role), async_conversation_trace() as trace:
-            try:
-                result = await ai_task.async_generate_data(
-                    hass, task_name=f"Assist Improver: {role}", entity_id=entity_id,
-                    instructions=text, structure=structure, llm_api=llm_api)
-                record.update(status="completed", output=plain(result.data), conversation_id=result.conversation_id)
-            except Exception as err:
-                record.update(status="failed", error={"type": type(err).__name__,
-                                                      "message": explained(str(err))[:500]})
-                section.fail(f"{type(err).__name__}: {err}")
-        stats = [plain(e["data"]["stats"]) for e in trace.as_dict()["events"]
-                 if e["event_type"] == ConversationTraceEventType.AGENT_DETAIL
-                 and isinstance(e["data"], dict) and "stats" in e["data"]]
-        section.tag(status=record["status"], tokens=tokens(stats) or None)
-    record["usage"] = {"status": "provider_reported_partial" if stats else "unavailable", "events": stats,
-                       "billing_total": None,
-                       "limits": "Provider-reported token counts where available; not an exact bill"}
-    record["finished"] = utcnow().isoformat()
-    record["seconds"] = round((parse_datetime(record["finished"]) - parse_datetime(record["started"])).total_seconds(), 2)
+    # Ended however the call ends (failures.closing); its caller keeps it, inside a record that closes the same way.
+    async with closing(None, record):
+        # One span per call; the tools it calls get theirs inside (trace.traced_tool).
+        async with span(f"ai.{role}", role=role, model=entity_id, input_chars=len(text)) as section:
+            with role_marker(role), async_conversation_trace() as trace:
+                try:
+                    result = await ai_task.async_generate_data(
+                        hass, task_name=f"Assist Improver: {role}", entity_id=entity_id,
+                        instructions=text, structure=structure, llm_api=llm_api)
+                    record.update(status="completed", output=plain(result.data),
+                                  conversation_id=result.conversation_id)
+                except Exception as err:
+                    record.update(status="failed", error={"type": type(err).__name__,
+                                                          "message": explained(str(err))[:500]})
+                    section.fail(f"{type(err).__name__}: {err}")
+            stats = [plain(e["data"]["stats"]) for e in trace.as_dict()["events"]
+                     if e["event_type"] == ConversationTraceEventType.AGENT_DETAIL
+                     and isinstance(e["data"], dict) and "stats" in e["data"]]
+            section.tag(status=record["status"], tokens=tokens(stats) or None)
+        record["usage"] = {"status": "provider_reported_partial" if stats else "unavailable", "events": stats,
+                           "billing_total": None,
+                           "limits": "Provider-reported token counts where available; not an exact bill"}
+        record["finished"] = utcnow().isoformat()
+        record["seconds"] = round((parse_datetime(record["finished"])
+                                   - parse_datetime(record["started"])).total_seconds(), 2)
     _LOGGER.debug("%s on %s: %s in %.1f s", role, entity_id, record["status"], record["seconds"])
     return record
 

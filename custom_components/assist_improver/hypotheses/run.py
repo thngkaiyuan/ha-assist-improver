@@ -35,8 +35,9 @@ async def run_generator(hass, sessions, entity_id, seeded=(), reviewer_entity_id
                                    allow_paid_inference=True, llm_api=SessionAPI(hass, tools=tools(sessions, submit, ask)))
         seeded_reviews = {}
         for name, hypothesis in seeded:
-            checks = await sessions.evidence.check(hypothesis)
+            checks = await sessions.evidence.check(hypothesis, hass)
             answer = await channel.ask({**hypothesis, "checks": checks,
+                                        "friction_it_targets": sessions.goal_friction(hypothesis),
                                         "sessions_where_it_would_apply": sessions.where_it_applies_to(hypothesis)})
             seeded_reviews[name] = {"review": answer, "verdict": verdict(answer) if answer else None}
     except BaseException:  # Failed or cancelled: the reviewer never waits for a draft that won't come.

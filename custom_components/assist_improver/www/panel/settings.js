@@ -65,7 +65,10 @@ function head(p, s) {
   const running = p.run?.run?.status === "running";
   const backlog = p.run?.preview?.backlog || {};
   const last = esc(common.lastRun(p.run?.run) || "No runs yet");
-  const runWords = common.runLabel(common.allConversations(backlog, new Set(s.paused)));  // A full run: on all of them.
+  // A full run: on all of them; with no conversation but other work waiting (a proposal, tests, a write-up), Run says
+  // so, as the home page's does.
+  const blocked = new Set(s.paused), all = common.allConversations(backlog, blocked);
+  const runWords = !all && common.waiting(backlog, blocked).length ? TEXT.conversations.runWaiting : common.runLabel(all);
   const waits = (gate) => gate === "triage" ? (backlog.requests || 0) + (backlog.triage || 0) : backlog[gate] || 0;  // Triage takes in the new ones.
   const when = SCHEDULE.find(([value]) => value === s.schedule) || SCHEDULE[0];
   const menu = p.runMenu ? `<div class="menu">${SCHEDULE.map(([value, label]) =>
@@ -96,12 +99,14 @@ function history(p) {
       x.new_improvements && plural(x.new_improvements, "new improvement"), x.auto_accepted && `${x.auto_accepted} accepted automatically`,
       x.already_addressed && fill(H.addressed, {n: x.already_addressed})];
     const failed = x.analyze_failed && fill(H.failed, {n: x.analyze_failed, s: x.analyze_failed === 1 ? "" : "s", why: x.problem || ""});
-    const unfinished = (x.problems || []).length && fill(H.unfinished, {steps: listed(x.problems.map((y) => GATE_NAMES[y.stage] || y.stage))});
+    // A step that couldn't finish: its own failure (one item's stays with that item, listed under Details only).
+    const stopped = (x.problems || []).filter((y) => !y.item);
+    const unfinished = stopped.length && fill(H.unfinished, {steps: listed([...new Set(stopped.map((y) => GATE_NAMES[y.stage] || y.stage))])});
     const aside = x.unreadable && fill(H.setAside, {n: x.unreadable, s: x.unreadable === 1 ? "" : "s"});
     const which = H.triggers[e.picked ? "picked" : e.trigger];  // A full run from here says nothing more.
     // What went wrong, for a bug report: the error, or each step that couldn't finish (no longer on the home page).
     const lines = e.error && !/ can't run: /.test(e.error) ? [e.error]
-      : (x.problems || []).map((y) => `${GATE_NAMES[y.stage] || y.stage}: ${y.error}`);
+      : (x.problems || []).map((y) => `${GATE_NAMES[y.stage] || y.stage}${y.item ? ` · ${y.item}` : ""}: ${y.error}`);
     return [`${H.run[e.status] || "Run"}${e.only ? ` · ${GATE_NAMES[e.only]} only` : ""}${which ? ` · ${which}` : ""}`,
             e.error ? (/ can't run: /.test(e.error) ? e.error : H.stopped) : [...parts, failed, unfinished, aside].filter(Boolean).join(" · "),
             lines.length ? common.details(p, `history:${e.at}`, lines) : ""];

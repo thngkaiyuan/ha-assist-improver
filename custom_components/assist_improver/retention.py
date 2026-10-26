@@ -215,7 +215,8 @@ async def prune(recorder, referenced, now=None, named=None):
 def needed_runs(runs, recordings):
     """Positions of the records the pipeline still reads, each with the fields it reads (None: the whole record).
     Anything still running, each existing conversation's latest analysis, unreadable marker, failed
-    attempts (while it's not analysed) and held verdict, and the latest proposal with its hypotheses."""
+    attempts (while it's not analysed) and held verdict, and the latest proposal with its hypotheses and the friction
+    and sessions it was given (Pipeline.seen, unseen)."""
     needed, latest, analysed, settled = {}, {}, set(), set()
     for n, run in enumerate(runs):
         kind, status, rid = run.get("kind"), run.get("status"), run.get("recording_id")
@@ -234,7 +235,7 @@ def needed_runs(runs, recordings):
                 latest[("held", rid)] = n
     for key, n in latest.items():
         if key == "generator":
-            needed[n] = NEEDED_FIELDS + ("output",)
+            needed[n] = NEEDED_FIELDS + ("output", "friction", "sessions")
         elif key[0] != "held" or key[1] not in analysed:
             needed[n] = None if key[0] == "held" else NEEDED_FIELDS
     for n, run in enumerate(runs):  # Failed attempts count towards setting a conversation aside.

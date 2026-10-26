@@ -103,8 +103,14 @@ export const STYLE = `
   .tests .mark { width: 16px; font-weight: 700; } .tests .ok .mark { color: var(--add-fg); }
   .tests .no .mark { color: var(--secondary-text-color); }
   .tests .result { font-size: 12px; padding: 0 8px; border-radius: 10px; white-space: nowrap; }
+  /* Narrow (a phone): what a test showed goes on its own line, under what it tested, so a longer result ("3 → 1 turns ·
+     follows your feedback") never squeezes it; the longest wraps within the row. */
+  @container (max-width: 479px) { .tests .row { flex-wrap: wrap; row-gap: 2px; }
+    .tests .row > span:nth-child(2) { flex: 1 1 calc(100% - 48px); }
+    .tests .result { margin-left: 44px; white-space: normal; } }
   .tests .ok .result { color: var(--add-fg); background: var(--add-bg); }
   .tests .no .result { color: var(--secondary-text-color); background: var(--secondary-background-color); }
+  .tests .result.more-words { color: var(--warn-fg); background: color-mix(in srgb, var(--warn-fg) 12%, transparent); }
   .note { display: flex; gap: 8px; font-size: 13px; color: var(--secondary-text-color); border-top: 1px solid var(--divider-color);
     padding-top: 10px; margin-top: 4px; }
   .conflict { background: var(--del-bg); border: 1px solid var(--del-fg); border-radius: 8px; padding: 10px 14px; margin-bottom: 12px;

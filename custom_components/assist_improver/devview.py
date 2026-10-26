@@ -271,7 +271,8 @@ def run_timeline(runtime, run_id):
             events.append(_event(call.get("started") or call.get("finished"), "role_call", what,
                                  role_call=call.get("id"), recording=call.get("recording_id")))
     for problem in progress.get("problems") or []:
-        events.append(_event(run.get("finished"), "problem", f"{problem.get('stage')}: {problem.get('error')}",
+        item = f" · {problem['item']}" if problem.get("item") else ""  # One item's, or the stage's own.
+        events.append(_event(run.get("finished"), "problem", f"{problem.get('stage')}{item}: {problem.get('error')}",
                              run=run_id))
     if run.get("finished"):
         events.append(_event(run["finished"], "finished", f"Run {run.get('status')}"

@@ -14,6 +14,7 @@ from homeassistant.const import __version__ as CORE_VERSION
 
 from .cases import CaseError, create_case, digest, recording_turns, replay_readiness, verify_case
 from .const import REPLAY_ENGINE, TESTED_PROVIDERS
+from .failures import closing
 from .replay import FrozenTurnLog
 from .records import Baseline
 from .serialization import plain
@@ -54,6 +55,8 @@ def prepare_plan(case, recording):
             "notes": readiness["fidelity_notes"],
             "effect_boundary": "HA's own tools act on a simulated copy of the recorded states; provider tools retain original configuration",
             "external_limit": "Non-search server tools may execute remotely before being reported; if used, this evaluator stops as unsupported"}
+    if case.get("unwanted"):  # Side effects to remove reproduce too, so the friction still happens (only then: IDs).
+        plan["unwanted"] = sorted(case["unwanted"])
     plan["id"] = digest(plan)
     return plan
 
@@ -104,8 +107,12 @@ class BaselineTrial:
         self.turns = verify_case(case, recording)
         self.recording, self._rerun = recording, None
         criteria = self.criteria = case["destination"]["criteria"]
-        self.goal_devices = set(criteria.get("states", criteria.get("sequences", {})))
+        # The goal's devices, and the side effects it left: both get their recorded effects, or it doesn't reproduce.
+        self.unwanted = set(case.get("unwanted") or {})
+        self.goal_devices = set(criteria.get("states", criteria.get("sequences", {}))) | self.unwanted
         self.destination_met = None  # Whether the replay without a fix met the goal, once it's reproduced.
+        # Where the goal's own turns end: a replay on past them (to a later side effect) doesn't judge the goal.
+        self.goal_last = case["turns"][0] + case.get("original_user_turns", len(case["turns"])) - 1
         self.agent = clone_provider(agent, self.plan)
         self.log = FrozenTurnLog(hass, case, recording)
         self.status = "prepared"
@@ -142,6 +149,7 @@ class BaselineTrial:
             raise CaseError("Baseline already attempted; no automatic resampling")
         self.status = "running"
         try:
+            at_goal = None  # Whether the goal was met where its own turns end.
             for index, turn in enumerate(self.turns):
                 if index:
                     if progress is not None:
@@ -154,10 +162,22 @@ class BaselineTrial:
                         break
                 if not await self._turn(turn):
                     break
+                if turn["number"] == self.goal_last:
+                    world = self.log.replay_api.world
+                    at_goal = destination_met(self.criteria, world.states, world.transitions)
             else:
-                self.status = "reproduced"
                 world = self.log.replay_api.world
-                self.destination_met = destination_met(self.criteria, world.states, world.transitions)
+                # Each side effect to remove happened in the replay too, or a fix can't be judged to leave it alone
+                # (a change outside the turns replayed matches as no change at all).
+                changed = {t["entity_id"] for step in self.steps for t in step.get("transitions", [])}
+                if missing := sorted(self.unwanted - changed):
+                    self.status = "unsupported"
+                    self.error = {"type": "CaseError", "message": "The replay without a change didn't change "
+                                  f"{', '.join(missing)}, so a fix can't be judged to leave it alone"}
+                else:
+                    self.status = "reproduced"
+                    self.destination_met = at_goal if at_goal is not None else destination_met(
+                        self.criteria, world.states, world.transitions)
         except asyncio.CancelledError:  # A cancelled run still closes its sandbox.
             self.status = "cancelled"
             raise
@@ -179,9 +199,10 @@ class BaselineTrial:
                 raise CaseError("Provider did not finish this turn")
             actual = plain([c.as_dict() for c in new_content])
             calls = [c for m in actual for c in m.get("tool_calls", [])]
-            # The friction still happens: the goal's devices get the same effects as recorded, however the model
-            # phrased its calls. The model may vary elsewhere (another device, a question instead of an action);
-            # those differences are kept as notes, not a reason to stop. The replies are kept for reading.
+            # The friction still happens: the goal's devices (and side effects to remove) get the same effects as
+            # recorded, however the model phrased its calls. The model may vary elsewhere (another device, a question
+            # instead of an action); those differences are kept as notes, not a reason to stop. The replies are kept
+            # for reading.
             actual_transitions = self.log.replay_api.world.transitions[transition_start:]
             expected = await self._expected(turn)
             actual_by, expected_by = per_entity(actual_transitions), per_entity(expected)
@@ -244,11 +265,12 @@ class BaselineManager:
             agent = conversation.async_get_agent(self.hass, plan["agent_id"])
             trial = BaselineTrial(self.hass, case, recording, agent)
 
-            async def keep(record):
+            async def save(record):
                 case["baseline"] = record
                 return await self.book._save(case)
-            await keep({**trial.export(), "status": "running"})  # Persist the attempt BEFORE any inference.
-            return await keep(await trial.run(allow_paid_inference=True, progress=keep))
+            # Kept before any inference and after each turn; closed however it ends.
+            async with closing(save, {**trial.export(), "status": "running"}) as keep:
+                return await keep(await trial.run(allow_paid_inference=True, progress=keep))
 
 
 async def replay_recording(hass, recorder, recording_id, last_turn=1):

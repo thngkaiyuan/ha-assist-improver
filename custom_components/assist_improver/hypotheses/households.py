@@ -2,11 +2,14 @@
 
 import json
 
-from ..analyzer import top_level
+from ..cases import CaseError
 from ..const import NO_FIX
 from ..exploration import related_improvements
+from ..failures import aside, contained
 from ..sessions import SessionSet, footprint
-from .goals import capabilities, friction, friction_by_goal, goal_devices, scenario
+from .assistants import Assistants
+from .goals import (FRICTION_KINDS, capabilities, friction, friction_by_goal, goal_devices, goal_summary, scenario,
+                    short)
 
 # The open friction the generator gets as full scripts upfront (newest first), in characters and sessions; the
 # rest of the open goals come one line each, and read_session reads any session.
@@ -14,9 +17,9 @@ SCENARIO_BUDGET, SCENARIOS_SHOWN = 24000, 12
 CHOICES_SHOWN = 40  # Known choices (what the user picked when a setting was left open) the reviewer gets, newest.
 
 
-class Sessions(SessionSet):
-    """The sessions a role works over (sessions.py: briefs at hand, full recordings loaded when opened), and what
-    the generator and the reviewer get upfront."""
+class Sessions(Assistants, SessionSet):
+    """The sessions a role works over (sessions.py: briefs at hand, full recordings loaded when opened), the
+    assistants they used (assistants.py), and what the generator and the reviewer get upfront."""
 
     def __init__(self, analyses, views=(), **lazy):
         super().__init__(analyses, views, **lazy)
@@ -29,10 +32,16 @@ class Sessions(SessionSet):
 
     async def load_evidence(self, definitions):
         """Facts from HA's own engine: what Assist can do with each device in open friction, and an Evidence for
-        checking drafts. definitions: the household's scripts and automations, for recordings without them."""
+        checking drafts. definitions: the household's scripts and automations, for recordings without them. Facts
+        the household's conversation can't give are left out (each device's are unknown; a problem of the run's
+        unless the sandbox said it can't); the rest goes on."""
         from ..evidence import Evidence, capabilities as probe
-        self.evidence = Evidence(self, definitions)
-        self.capability_facts = await probe(self.household.recording, self._entities_in_friction(), definitions)
+        self.evidence, self.capability_facts = Evidence(self, definitions), {}
+        session = short(self.household.recording["id"])
+        if aside("propose", session, step=PROBE):
+            return
+        async with contained("propose", session, step=PROBE, expected=(CaseError,)):  # CaseError: it can't.
+            self.capability_facts = await probe(self.household.recording, self._entities_in_friction(), definitions)
 
     def open_friction(self):
         """[(session, its goal turns with friction no improvement handles)], newest first: what the generator has
@@ -56,7 +65,11 @@ class Sessions(SessionSet):
         for session, _ in self.open_friction():
             if session not in views or len(chosen) >= SCENARIOS_SHOWN:
                 continue
-            script = scenario(self.analyses[session], views[session])
+            script = scenario_of(self.analyses[session], views[session])
+            if script is None:  # Its analysis and recording don't read together: one line in more_friction instead.
+                continue
+            if assistant := self.assistant_of(session):  # Which assistant's instructions it ran with.
+                script["assistant"] = assistant["name"]
             size = len(json.dumps(script, ensure_ascii=False))
             if chosen and used + size > SCENARIO_BUDGET:
                 break
@@ -65,8 +78,9 @@ class Sessions(SessionSet):
         return chosen
 
     def _goal_line(self, session, turn):
-        goals = top_level(self.analyses[session].get("goals", []))
-        return {"turn": turn, "summary": "; ".join(dict.fromkeys(g["summary"] for g in goals if g["turn"] == turn))}
+        analysis = self.analyses[session]
+        return {"turn": turn, "summary": goal_summary(analysis, turn),
+                "friction": sorted({f["kind"] for f in friction_by_goal(analysis).get(turn, [])})}
 
     def overview(self):
         """Background; the newest open friction as scripts (within a budget) and the rest of it one line per goal;
@@ -80,6 +94,7 @@ class Sessions(SessionSet):
         counts = self.counts(self.settled)
         return {"home": self.household.digest["home"], "time_zone": self.household.digest["time_zone"],
                 "areas": self.household.list_areas(), "assist_tools": self.assist_tools(),
+                **({"assistants": rows} if (rows := self.assistant_rows()) else {}),
                 "devices_in_friction": self.devices_in_friction(),
                 "friction_scenarios": upfront,
                 **({"more_friction": more} if more else {}),
@@ -129,10 +144,23 @@ class Sessions(SessionSet):
         """What Assist can and can't do with each device in open friction, so causes are checkable."""
         return [capabilities(self.household, e, self.capability_facts) for e in self._entities_in_friction()]
 
+    def goal_friction(self, hypothesis):
+        """The friction of each goal a draft names, by kind (FRICTION_KINDS says what each means), for the reviewer
+        to check the draft removes all of it."""
+        out = []
+        for ref in hypothesis.get("goals") or []:
+            analysis = self.analyses.get(str(ref.get("session"))[:8])
+            if analysis is not None:
+                items = friction_by_goal(analysis).get(ref.get("goal_turn"), [])
+                out.append({"session": ref["session"], "goal_turn": ref["goal_turn"],
+                            "summary": goal_summary(analysis, ref["goal_turn"]), "friction": items})
+        kinds = {f["kind"] for g in out for f in g["friction"]}
+        return {"goals": out, "kinds": {k: v for k, v in FRICTION_KINDS.items() if k in kinds}}
+
     def where_it_applies_to(self, hypothesis):
         """The sessions a draft's changes would apply to, besides its own goals' (sessions.where_it_applies)."""
         mine = {g["session"][:8] for g in hypothesis.get("goals") or []}
-        rows, total = self.where_it_applies(footprint(hypothesis.get("changes") or [], self.household),
+        rows, total = self.where_it_applies(footprint(self.with_targets(hypothesis.get("changes")), self.household),
                                             self.settled, exclude=mine)
         out = {"sessions": rows, "count": total}
         if total > len(rows):
@@ -147,9 +175,21 @@ class Sessions(SessionSet):
                   for s, a in self.analyses.items() for f in friction(a) if f["kind"] == "ask"]
         chosen.sort(key=lambda c: c["started"], reverse=True)
         return {"home": self.household.digest["home"], "sessions": self.counts(self.settled),
+                **({"assistants": rows} if (rows := self.assistant_rows()) else {}),
                 "known_choices": chosen[:CHOICES_SHOWN],
                 **({"more_known_choices": len(chosen) - CHOICES_SHOWN} if len(chosen) > CHOICES_SHOWN else {}),
                 **({"household_decisions": decisions(self.feedback)} if self.feedback else {})}
+
+
+PROBE = "capability probe"  # What load_evidence tries on the household's conversation (failures.contained's step).
+
+
+def scenario_of(analysis, view):
+    """A session as a script (goals.scenario), or None when its analysis and recording don't read together: a
+    problem of the run's, and the generator gets the session one line per goal instead."""
+    with contained("propose", short(analysis.get("recording_id") or ""), step="scenario", setback=False):
+        return scenario(analysis, view)
+    return None
 
 
 def decisions(feedback):
@@ -160,7 +200,7 @@ def decisions(feedback):
         changes = []
         for change in item.get("changes") or []:
             what = {"kind": change.get("kind")}
-            for key in ("text", "for", "entity_id", "alias", "script_name", "expose"):
+            for key in ("text", "for", "assistant", "entity_id", "alias", "script_name", "expose"):
                 if change.get(key) not in (None, "", []):
                     what[key] = change[key]
             changes.append(what)

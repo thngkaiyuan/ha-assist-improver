@@ -16,11 +16,14 @@ from homeassistant.util.dt import utcnow
 from .cases import CaseError, digest, recording_turns, replayed, transcript
 from .changeset import Changesets, Conflict, plan_steps, read, undo_steps
 from .household import switched_off
+from .instructions import household_line
 from .const import DOMAIN, NO_FIX, STORAGE_VERSION, VERSION
+from .failures import aside, contained
 from .records import Improvement
 from .trace import journal, span, timed
 
 PENDING = ("awaiting_review", "needs_attention")  # Waiting on the user: in the notification.
+BUILD = "building"  # Building an improvement from its tests (refresh), as a run's problems name it.
 # Never changed without the household's review: devices whose misuse is a safety or security problem.
 SENSITIVE_DOMAINS = {"lock", "alarm_control_panel", "valve", "siren"}
 SENSITIVE_COVERS = {"garage", "door", "gate"}
@@ -40,11 +43,34 @@ def sensitive(hass, entity_id):
 def low_risk(hass, item):
     """Whether an improvement may be applied without review: only household lines, and new names for devices that
     aren't security-sensitive. Never anything that lets Assist control more (exposing a device, a new or changed
-    script)."""
+    script), nor an edit to an assistant's own instructions (template code, run for every request: someone decides), nor
+    one whose tests made Assist noticeably wordier (people want it brief: someone decides)."""
+    from .instructions import household_line
     changes = item.get("changes") or []
-    return bool(changes) and all(
-        c.get("kind") in ("preference", "prompt")
-        or (c.get("kind") == "alias" and not sensitive(hass, c.get("entity_id"))) for c in changes)
+    return bool(changes) and not any(wordier(t) for t in item.get("tests") or []) and all(
+        household_line(c) or (c.get("kind") == "alias" and not sensitive(hass, c.get("entity_id"))) for c in changes)
+
+
+# Noticeably wordier: Assist's replies with the change at least this many times as long, and this many more words,
+# a reply on average (counted by code, from the test's conversation and its replay).
+WORDIER, MORE_WORDS = 1.5, 10
+
+
+def reply_words(test):
+    """Assist's replies in words, a reply on average: before (the recorded turns the test covers) and after (its
+    replay with the change), and whether it got noticeably wordier. None without both."""
+    def average(turns):
+        said = [len((t.get("assistant") or "").split()) for t in turns or [] if t.get("assistant")]
+        return sum(said) / len(said) if said else None
+    before, after = average(test.get("before")), average(test.get("after"))
+    if before is None or after is None:
+        return None
+    return {"before": round(before), "after": round(after),
+            "wordier": after >= WORDIER * before and after - before >= MORE_WORDS}
+
+
+def wordier(test):
+    return bool((reply_words(test) or {}).get("wordier"))
 NOTIFICATION = f"{DOMAIN}_improvements"
 OUTCOME_NOTIFICATION = f"{DOMAIN}_changes"
 DECISIONS = {  # Decision: (status, label).
@@ -162,7 +188,8 @@ class Improvements:
     async def write_copy(self, entity_id, improvement_ids=None):
         """The editor writes the headline and what-you-get for the improvements waiting for it (or the ones given),
         which then go up for review. Returns {improvement id: copy}; an improvement whose copy failed goes up with
-        the generator's title."""
+        the generator's title. One whose write-up fails unexpectedly waits for the next run (a problem of this one's),
+        and the others go on; after failing run after run it's set aside: up with the generator's title, with why."""
         from .editor import write
         out = {}
         waiting = {i["id"] for i in self.unwritten()}
@@ -171,10 +198,14 @@ class Improvements:
                 continue
             if improvement_ids is None and item["id"] not in waiting:
                 continue
-            async with span("write", improvement_id=item["id"]) as section:
-                item["copy"] = out[item["id"]] = await write(self.hass, item, entity_id)
-                section.tag(status=item["copy"]["status"])
-            await self._save()
+            async with contained("write", item["id"]) as one:
+                async with span("write", improvement_id=item["id"]) as section:
+                    item["copy"] = out[item["id"]] = await write(self.hass, item, entity_id)
+                    section.tag(status=item["copy"]["status"])
+            if one.set_aside:
+                item["copy"] = {"status": "failed", "entity_id": entity_id, "error": {"message": one.error}}
+            if not one.failed or one.set_aside:
+                await self._save()
         self._sync()  # The notification names improvements by their headlines.
         return out
 
@@ -264,8 +295,8 @@ class Improvements:
                 "expected": hypothesis.get("expected"), "changes": deepcopy(item["changes"]),
                 "support": deepcopy(hypothesis.get("support") or []),
                 "conflicts": deepcopy(hypothesis.get("conflicts") or []),
-                "tested_on": [{k: deepcopy(t.get(k)) for k in ("goal", "summary", "status", "turns_before",
-                                                                "turns_after", "goal_newly_met", "before", "after")}
+                "tested_on": [{**{k: deepcopy(t.get(k)) for k in TESTED_ON},  # And side effects, feedback, if any.
+                               **{k: deepcopy(t[k]) for k in OTHER_FRICTION if k in t}}
                               for t in item.get("tests", [])],
                 "untested_goals": list(item.get("untested_goals", [])),
                 "also_addressed": [{k: g[k] for k in ("goal", "why")} for g in item.get("also_addressed", [])],
@@ -325,37 +356,19 @@ class Improvements:
         earlier = {t["plan_id"]: t for i in self.items.values() for t in i.get("tests", []) if t.get("plan_id")}
         sources, built_ids = {}, set()
         for key, items in groups.items():
-            # A goal tested again under a newer replay engine (how replays are judged): the newest test stands.
-            newest = {}
-            for i in sorted(items, key=lambda i: i["plan"]["baseline_plan"].get("replay_engine") or ""):
-                newest[self._goal(i["plan"]["evaluation_case_id"])] = i
-            items = list(newest.values())
-            improved = [i for i in items if i["status"] == "awaiting_review"]
-            if not improved:
+            improvement_id, existing = key[:16], self.items.get(key[:16])
+            # One that can't be built (a case it was tested on is gone: it can't be shown honestly) is left out. One
+            # that fails otherwise (a problem of the run's, set aside after failing run after run) stays as it was,
+            # never dropped as regrouped for a failure of its own; the others are built.
+            if aside("test", improvement_id, step=BUILD):
+                built_ids.add(improvement_id)
                 continue
-            improvement_id = key[:16]
-            plan = improved[-1]["plan"]
-            existing = self.items.get(improvement_id)
-            try:
-                derivations = [await self._test(i, earlier)
-                               for i in sorted(items, key=lambda i: i["plan"]["evaluation_case_id"])]
-            except CaseError:  # A case it was tested on is gone; it can't be shown honestly.
+            async with contained("test", improvement_id, step=BUILD, expected=(CaseError,)) as one:
+                built = await self._build(improvement_id, items, earlier, sources)
+            if one.failed or built is None:
+                if one.failed and not one.expected:
+                    built_ids.add(improvement_id)
                 continue
-            tests = [test for test, _ in derivations]
-            sources.update({test["plan_id"]: source for test, source in derivations if source is not None})
-            hypothesis = plan["hypothesis"]
-            built = {"id": improvement_id, "title": hypothesis.get("title") or "Improvement",
-                     "cause": hypothesis.get("cause") or "", "hypothesis": deepcopy(hypothesis),
-                     "changes": deepcopy(hypothesis["changes"]),
-                     "setup": {k: deepcopy(plan["setup"].get(k, {})) for k in
-                               ("scripts", "exposure", "aliases", "alias_removals", "household")},
-                     # What the replays started from: changed since, and the change is a conflict.
-                     "tested": {"scripts": {e.split(".", 1)[1]: deepcopy(d) for e, d in plan["definitions"].items()},
-                                "exposure": {e["entity_id"]: e["before"] for e in plan["edits"]}},
-                     "provider": {k: plan["baseline_plan"]["provider"].get(k) for k in
-                                  ("config_entry_id", "subentry_id", "title")},
-                     "user_id": tests[0].get("user_id"), "tests": tests,
-                     "untested_goals": self._untested(hypothesis, tests)}
             built_ids.add(improvement_id)
             if existing:
                 existing.update(built)
@@ -373,6 +386,40 @@ class Improvements:
         self._derived = sources
         await self._save()
         self._sync()
+
+    async def _build(self, improvement_id, items, earlier, sources):
+        """One improvement from its changes' tests (refresh), or None when none of them improved a goal. Each test's
+        source goes into sources."""
+        # A goal tested again under a newer replay engine (how replays are judged): the newest test stands.
+        newest = {}
+        for i in sorted(items, key=lambda i: i["plan"]["baseline_plan"].get("replay_engine") or ""):
+            newest[self._goal(i["plan"]["evaluation_case_id"])] = i
+        items = list(newest.values())
+        improved = [i for i in items if i["status"] == "awaiting_review"]
+        if not improved:
+            return None
+        plan = improved[-1]["plan"]
+        derivations = [await self._test(i, earlier) for i in sorted(items, key=lambda i: i["plan"]["evaluation_case_id"])]
+        tests = [test for test, _ in derivations]
+        hypothesis = plan["hypothesis"]
+        prompts = {}  # Each edited assistant's instructions as Home Assistant had them when it was tested.
+        for i in sorted(improved, key=lambda i: i["plan"]["evaluation_case_id"]):
+            prompts.update(i.get("instructions_at_test") or {})
+        built = {"id": improvement_id, "title": hypothesis.get("title") or "Improvement",
+                 "cause": hypothesis.get("cause") or "", "hypothesis": deepcopy(hypothesis),
+                 "changes": deepcopy(hypothesis["changes"]),
+                 "setup": {k: deepcopy(plan["setup"].get(k, {})) for k in
+                           ("scripts", "exposure", "aliases", "alias_removals", "household")},
+                 # What the replays started from: changed since, and the change is a conflict.
+                 "tested": {"scripts": {e.split(".", 1)[1]: deepcopy(d) for e, d in plan["definitions"].items()},
+                            "exposure": {e["entity_id"]: e["before"] for e in plan["edits"]},
+                            **({"prompts": prompts} if prompts else {})},
+                 "provider": {k: plan["baseline_plan"]["provider"].get(k) for k in
+                              ("config_entry_id", "subentry_id", "title")},
+                 "user_id": tests[0].get("user_id"), "tests": tests,
+                 "untested_goals": self._untested(hypothesis, tests)}
+        sources.update({test["plan_id"]: source for test, source in derivations if source is not None})
+        return built
 
     def _case(self, case_id):
         """A case, read in place (the casebook's get copies it): CaseError if it's gone."""
@@ -414,7 +461,8 @@ class Improvements:
         try:
             return digest({"code": VERSION, "plan": item["plan"]["id"], "status": item["status"],
                            "result": {k: result.get(k) for k in ("assessment", "followup_check", "turns")},
-                           "case": {k: case.get(k) for k in ("id", "recording_id", "turns", "title", "destination")},
+                           "case": {k: case.get(k) for k in ("id", "recording_id", "turns", "title", "destination",
+                                                             "unwanted", "follow_feedback")},
                            "recording": None if index is None else case["recording_id"] in index})
         except (TypeError, ValueError):
             return None
@@ -441,12 +489,29 @@ class Improvements:
                 "summary": case["destination"].get("summary") or case.get("title", ""), "user_id": user,
                 "turns_before": assessment.get("original_user_turns"), "turns_after": assessment.get("candidate_user_turns"),
                 "goal_newly_met": assessment.get("goal_newly_met"), "baseline_met": assessment.get("baseline_met"),
+                **self._other_friction(case, assessment, recording),
                 "followups_fit": (result.get("followup_check") or {}).get("all_fit"),
                 "before": _conversation(recording, first, last),
                 "after": [{"you": t["input"], "assistant": t["reply"]} for t in result.get("turns", [])],
                 # The steps that failed in each turn of those (cases.step), for the review to show where they happened.
                 "failed_steps": {"before": [t.get("failed", []) for t in transcript(recording)[first - 1:last]],
                                  "after": [t.get("failed", []) for t in replayed(result.get("turns", []))]}}, source
+
+    @staticmethod
+    def _other_friction(case, assessment, recording):
+        """A test's side effects to remove (each named as the household names the device, with how it started) and
+        which the replay left alone, and the feedback it was to follow and whether it did; none where there were
+        none."""
+        from .digest import _naming
+        out, unwanted = {}, case.get("unwanted") or {}
+        if unwanted:
+            source = (_turns(recording)[case["turns"][0] - 1:case["turns"][0]] or [{}])[0].get("source") or {}
+            out["side_effects"] = [{"entity_id": e, "name": _naming(source, e)[0] if source else e, "start": start}
+                                   for e, start in unwanted.items()]
+            out["side_effects_gone"] = list(assessment.get("side_effects_gone") or [])
+        if case.get("follow_feedback") and "feedback_followed" in assessment:  # Judged: the baseline didn't follow it.
+            out.update(feedback=list(case["follow_feedback"]), feedback_followed=assessment["feedback_followed"])
+        return out
 
     @staticmethod
     def _untested(hypothesis, tests):
@@ -517,7 +582,8 @@ class Improvements:
     async def auto_accept(self, improvement_ids):
         """Accept low-risk improvements as soon as they're written up (the "auto-accept low-risk changes" setting):
         each applied all or nothing, recorded as accepted automatically, with a notification to review or undo it.
-        Anything else, or one that can't be applied, stays up for review. Returns how many applied."""
+        Anything else, or one that can't be applied, stays up for review (one that fails unexpectedly too: a problem of
+        the run's, and the others go on). Returns how many applied."""
         from .panel import review_url
         applied = 0
         for improvement_id in improvement_ids:
@@ -525,11 +591,13 @@ class Improvements:
             if (not item or item["status"] not in PENDING or "accept" not in choices(item)
                     or not low_risk(self.hass, item)):
                 continue
-            if switched_off(self.hass) and any(c.get("kind") in ("preference", "prompt") for c in item["changes"]):
+            if switched_off(self.hass) and any(household_line(c) for c in item["changes"]):
                 continue  # Household knowledge is off: it waits for review (it can't apply now, and says why).
-            try:
+            # CaseError: the household decided it meanwhile (their decision held the lock first).
+            async with contained("write", improvement_id, step="accepting", expected=(CaseError,),
+                                 setback=False) as one:
                 result = await self.decide(improvement_id, "accept", note="Accepted automatically")
-            except CaseError:  # The household decided it meanwhile (their decision held the lock first).
+            if one.failed:
                 continue
             self.items[improvement_id]["decisions"][-1]["auto"] = True
             if result["status"] == "applied":
@@ -599,10 +667,26 @@ def display_title(item):
     return ((item.get("copy") or {}).get("headline") or item["title"]).strip()
 
 
+# What read_improvement shows of each test; a test of side effects or feedback also shows those (_other_friction).
+TESTED_ON = ("goal", "summary", "status", "turns_before", "turns_after", "goal_newly_met", "before", "after")
+OTHER_FRICTION = ("side_effects", "side_effects_gone", "feedback", "feedback_followed")
+
+
 def benefits(item):
     """(goals now met, turns no longer needed) across the tests that improved: what accepting gets the user."""
     improved = [t for t in item["tests"] if t["status"] == "awaiting_review"]
     enabled = [t["summary"] for t in improved if t.get("goal_newly_met")]
     removed = [f"\u201c{turn['you'].strip()}\u201d" for t in improved
-               if (t.get("turns_after") or 0) < (t.get("turns_before") or 0) for turn in t["before"][t["turns_after"]:]]
+               if (t.get("turns_after") or 0) < (t.get("turns_before") or 0)
+               for turn in t["before"][t["turns_after"]:t["turns_before"]]]  # Not the turns replayed past the goal.
     return enabled, removed
+
+
+def spared(item):
+    """(side effects gone, feedback followed) across the tests that improved, each once: the devices left as they
+    were ({name, start}), and what the household asked of Assist."""
+    improved = [t for t in item["tests"] if t["status"] == "awaiting_review"]
+    gone = {s["entity_id"]: {"name": s["name"], "start": s["start"]} for t in improved
+            for s in t.get("side_effects") or [] if s["entity_id"] in (t.get("side_effects_gone") or [])}
+    followed = list(dict.fromkeys(f for t in improved if t.get("feedback_followed") for f in t.get("feedback") or []))
+    return list(gone.values()), followed

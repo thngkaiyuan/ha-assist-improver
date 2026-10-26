@@ -51,10 +51,14 @@ class _Submit(_SessionTool):
 class SubmitHypotheses(_Submit):
     name = "submit_hypotheses"
     description = ("Submit your answer: one hypothesis per theme, each with the goals it fixes (session and goal "
-                   "turn, from goals_with_friction), its cause, its changes and the expected effect. A change's text "
-                   "is the line for Assist's instructions (preference, prompt; say who it's for: everyone, or "
-                   "this_user) or the script's description (script, which Assist reads to decide when to run it). A "
-                   "script change makes a new script (script_name, steps; exposed to Assist unless expose is false), "
+                   "turn, from goals_with_friction), its cause, its changes and the expected effect. A preference's "
+                   "text is a line for the household knowledge, which every assistant reads (say who it's for: "
+                   "everyone, or this_user). A prompt change edits one assistant's own instructions: assistant (its "
+                   "name, as read_assistant_instructions shows it), text to add, and replaces: lines of those "
+                   "instructions the text replaces, or removes when there's no text; it may use Home Assistant's "
+                   "template values ({{ user_name }}, {{ ha_name }}, llm_context) and functions, and Home Assistant "
+                   "must render it. A script's text is its description (which Assist reads to decide when to run "
+                   "it). A script change makes a new script (script_name, steps; exposed to Assist unless expose is false), "
                    "or edits an existing one when it gives that script's entity_id (a new description in text, "
                    "and/or new steps; editing doesn't expose it, so add an exposure change if Assist should run an "
                    "unexposed one); its steps may end with a stop step carrying the message Assist tells the "
@@ -63,6 +67,17 @@ class SubmitHypotheses(_Submit):
                    "hypothesis. It is checked against "
                    "the sessions and the household; if problems are reported, fix them and submit again.")
     parameters = HYPOTHESES
+
+    async def async_call(self, hass, tool_input, llm_context):
+        answer = self.parameters(tool_input.tool_args)
+        await self.sessions.render_edits(hass, answer.get("hypotheses"))  # The checks read whether each renders.
+        return llm.ToolResult(data=self.run(**answer))
+
+    def run(self, **answer):
+        """Kept with each edit of an assistant's instructions saying where Home Assistant keeps them (target)."""
+        answer = {**answer, "hypotheses": [{**h, "changes": self.sessions.with_targets(h.get("changes"))}
+                                           for h in answer.get("hypotheses") or []]} if "hypotheses" in answer else answer
+        return super().run(**answer)
 
     def check(self, answer):
         return problems(self.sessions, answer)
@@ -291,12 +306,13 @@ class AskReviewer(llm.Tool):
         checks = None
         if self.sessions.evidence:
             async with span("evidence.check"):
-                checks = await self.sessions.evidence.check(hypothesis)
+                checks = await self.sessions.evidence.check(hypothesis, hass)
         related = self.sessions.related([(g["session"], g["goal_turn"]) for g in hypothesis.get("goals", [])],
                                         change_devices(hypothesis.get("changes", [])))
         applies = self.sessions.where_it_applies_to(hypothesis)
         answer = await self.channel.ask({**args, **({"checks": checks} if checks else {}),
                                          **({"related_improvements": related} if related else {}),
+                                         "friction_it_targets": self.sessions.goal_friction(hypothesis),
                                          "sessions_where_it_would_apply": applies})
         self.reviews.append({"hypothesis": hypothesis, "responses": args.get("responses"), "review": answer,
                              "verdict": verdict(answer) if answer else None, "checks": checks})
@@ -334,7 +350,9 @@ class CheckHypothesis(llm.Tool):
                    "touch the change's devices, their names or areas) are replayed with it, listing those that now "
                    "resolve differently: signals to weigh, not proof of a regression. "
                    "Instruction lines (preference, prompt) don't change how Home Assistant resolves devices; their "
-                   "effect shows only when the conversation is replayed with the model, later.")
+                   "effect shows only when the conversation is replayed with the model, later. instructions: each "
+                   "assistant's instructions as a prompt change edits them, rendered by Home Assistant for its "
+                   "newest conversation (what Assist would read), or why they don't render.")
     parameters = probatio.Schema(_HYPOTHESIS)
     integration = "assist_improver"
     annotations = llm.ToolAnnotations(read_only=True, open_world=False)
@@ -344,31 +362,59 @@ class CheckHypothesis(llm.Tool):
 
     async def async_call(self, hass, tool_input, llm_context):
         hypothesis = dict(tool_input.tool_args)
-        return llm.ToolResult(data={**await self.sessions.evidence.check(hypothesis),
+        return llm.ToolResult(data={**await self.sessions.evidence.check(hypothesis, hass),
                                     "sessions_where_it_would_apply": self.sessions.where_it_applies_to(hypothesis)})
 
 
 class ReadAssistantInstructions(_SessionTool):
     name = "read_assistant_instructions"
-    description = ("Read Assist's current instructions (its prompt template, as configured), the household knowledge "
-                   "(the lines every assistant reads: for everyone, and for each person), and which assistant and "
-                   "model it uses. Preference and prompt changes add lines to the household knowledge.")
-    parameters = probatio.Schema({})
+    description = ("Read the assistants' own instructions (each assistant's template, which Home Assistant renders "
+                   "for every request) and the household knowledge (the lines every assistant reads: for everyone, "
+                   "and for each person). Give a session to see which assistant it used, the exact instructions it "
+                   "ran with and that assistant's current ones; give an assistant to read its current ones; give "
+                   "neither for every assistant. Each lists the recommended facts its instructions lack. Preference "
+                   "changes add lines to the household knowledge; a prompt change edits one assistant's "
+                   "instructions.")
+    parameters = probatio.Schema({probatio.Optional("session"): str, probatio.Optional("assistant"): str})
 
     def __init__(self, sessions):
         super().__init__(sessions.household)
         self.sessions = sessions
 
-    def run(self):
-        template, assistant = instructions(self.sessions)
-        if template is None:
-            return {"error": "No recorded session shows the assistant's instructions."}
+    async def async_call(self, hass, tool_input, llm_context):
+        args = self.parameters(tool_input.tool_args)
+        if args.get("session"):
+            await self.sessions.load(args["session"])
+        return llm.ToolResult(data=self.run(**args))
+
+    def run(self, session=None, assistant=None):
+        from ..instructions import ran_with
         knowledge = household_knowledge(self.sessions)
-        return {"assistant": assistant.get("title"), "model": assistant.get("options", {}).get("model"),
-                "instructions_template": template,
-                "household_knowledge": {"everyone": knowledge["everyone"],
-                                        "the_person_in_the_sessions": [l for mine in knowledge["people"].values()
-                                                                       for l in mine]}}
+        household = {"everyone": knowledge["everyone"],
+                     "the_person_in_the_sessions": [l for mine in knowledge["people"].values() for l in mine]}
+        if session:
+            view = self.sessions.views.get(session[:8])
+            record = self.sessions.assistant_of(session)
+            if view is None:
+                return {"error": f"There is no session {session!r}; list_sessions shows them."}
+            if record is None:
+                return {"error": f"Session {session} doesn't show which assistant it used."}
+            ran = (ran_with(view.recording) or {}).get("template")
+            return {**self.sessions.instructions_of(record, (session[:8], ran)), "household_knowledge": household}
+        if assistant:
+            record = self.sessions.assistant_named(assistant)
+            if record is None:
+                return {"error": f"There's no assistant {assistant!r}; the assistants are "
+                                 f"{self.sessions.assistant_names()}."}
+            return {**self.sessions.instructions_of(record), "household_knowledge": household}
+        records = sorted(self.sessions.assistants().values(), key=lambda r: -r["sessions"])
+        if not records:  # Recordings from before assistants were told apart: the newest one's instructions.
+            template, recorded = instructions(self.sessions)
+            if template is None:
+                return {"error": "No recorded session shows the assistant's instructions."}
+            return {"assistant": recorded.get("title"), "model": recorded.get("options", {}).get("model"),
+                    "instructions_template": template, "household_knowledge": household}
+        return {"assistants": [self.sessions.instructions_of(r) for r in records], "household_knowledge": household}
 
 
 class ReadScript(llm.Tool):
