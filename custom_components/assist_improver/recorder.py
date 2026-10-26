@@ -344,7 +344,8 @@ class Recorder:
         session = self.sessions.get(key)
         if session is None:
             return None
-        session["filed"] = {"at": utcnow().isoformat(), **({"note": note.strip()[:500]} if note and note.strip() else {}),
+        session["filed"] = {"at": utcnow().isoformat(), "via": "assist",
+                            **({"note": note.strip()[:500]} if note and note.strip() else {}),
                             **({"by": user_id} if user_id else {})}
         if key in self.index:
             self.index[key]["filed"] = session["filed"]
@@ -354,22 +355,26 @@ class Recorder:
             self._closed(key)
         return key
 
-    async def file_kept(self, keys, note=None, user_id=None, notify=True):
+    async def file_kept(self, keys, note=None, user_id=None, notify=True, again=()):
         """Mark kept conversations for improvement (the conversations view: the user sends them in), as file() does
         for one going on now; on disk too for those no longer in memory. notify: tell the pipeline of each that has
-        ended (on-demand improvements run then); off when a run follows anyway. The recording IDs marked."""
-        filed = {"at": utcnow().isoformat(), **({"note": note.strip()[:500]} if note and note.strip() else {}),
+        ended (on-demand improvements run then); off when a run follows anyway. again: those among them analysed
+        before (the quick check found them smooth, or no fix was found), sent in again (pipeline.deliberate). The
+        recording IDs marked."""
+        filed = {"at": utcnow().isoformat(), "via": "panel",
+                 **({"note": note.strip()[:500]} if note and note.strip() else {}),
                  **({"by": user_id} if user_id else {})}
-        marked = [key for key in dict.fromkeys(keys) if key in self.index]
+        marked, again = [key for key in dict.fromkeys(keys) if key in self.index], set(again)
         for key in marked:
-            self.index[key]["filed"] = dict(filed)
+            mark = {**filed, **({"again": True} if key in again else {})}
+            self.index[key]["filed"] = dict(mark)
             if (session := self.sessions.get(key)) is not None:
-                session["filed"] = dict(filed)
+                session["filed"] = dict(mark)
                 self.schedule(key, soon=True)
             else:
                 async with self.lock:
                     if (stored := await self.store(key).async_load()) is not None:
-                        await self.store(key).async_save({**stored, "filed": dict(filed)})
+                        await self.store(key).async_save({**stored, "filed": dict(mark)})
         if marked:
             await self.save_index()
             journal("info", f"{len(marked)} conversation(s) sent in for improvement", recording_ids=marked,

@@ -18,6 +18,7 @@ from homeassistant.components import websocket_api
 
 from . import trace
 from .const import CONF_DEVELOPER, DOMAIN, NO_FIX, VERSION
+from .pipeline import deliberate
 from .runtime import loaded
 
 MIN_PREFIX = 4  # Characters an ID prefix needs before lookup tries it.
@@ -98,8 +99,8 @@ class _Facts:
                 return "held"
             # Its last attempt failed (a provider's error or a bug): the next run tries again.
             return "failing" if attempts and attempts[-1].get("status") == "failed" else "waiting"
-        if analysis.get("triaged"):  # Sent in since: it waits for the full analysis.
-            return "waiting" if summary.get("filed") else "smooth"
+        if analysis.get("triaged"):  # Sent in again since (or with a note): it waits for the full analysis.
+            return "waiting" if deliberate(summary.get("filed")) else "smooth"
         goals = [f"{_short(rid)}:{turn}" for turn in self.friction(analysis)]
         if goals and all(g in self.settled for g in goals):
             if all(self.settled[g] == NO_FIX for g in goals):  # No fix found for any of them.

@@ -117,12 +117,16 @@ const rough = (n) => {
 export function cost(p, preview, b, blocked) {
   // The cost line; when this run analyses conversations and past runs say what one takes, a rough estimate under it,
   // one line per model: analysing this run's own count of them (all, those picked and waiting, or those waiting at
-  // Analyze for that step alone) on the model Analyze runs on now, then, for a full run, the quick check on its own
-  // (a picked run, the fast lane and one step skip it). Both steps on one model: one line.
+  // Analyze for that step alone) on the model Analyze runs on now, then the quick check on its own, for those the run
+  // takes in or finds waiting at Triage, less those sent in past it (straight: with a note, from Assist, or again
+  // after an analysis); one step skips it. Both steps on one model: one line. With Triage blocked, the new ones that
+  // need the quick check wait there, so only those sent in past it are analysed.
   const C = TEXT.confirm, S = C.spend, spend = preview.spend || {}, a = spend.analyze, q = spend.triage, only = p.only;
-  const n = only ? (only === "analyze" ? b.analyze || 0 : 0) : blocked.has("analyze") ? 0 : allConversations(b, blocked);
+  const held = blocked.has("triage") ? Math.max(0, (b.requests || 0) - (b.straight || 0)) : 0;
+  const n = only ? (only === "analyze" ? b.analyze || 0 : 0) : blocked.has("analyze") ? 0 : allConversations(b, blocked) - held;
   if (!a || !n) return `<p class="cost">${esc(C.cost)}</p>`;
-  const quick = !only && !p.picking && q && !blocked.has("triage") ? q.tokens * ((b.requests || 0) + (b.triage || 0)) : 0;
+  const checked = Math.max(0, (b.requests || 0) - (b.straight || 0)) + (b.triage || 0);
+  const quick = !only && q && !blocked.has("triage") ? q.tokens * checked : 0;
   const one = quick && q.model === a.model, s = n === 1 ? "" : "s";
   const lines = [fill(one ? S.both : S.analyze, {tokens: rough(a.tokens * n + (one ? quick : 0)), model: a.model, n, s}),
                  ...(quick && !one ? [fill(S.quick, {tokens: rough(quick), model: q.model})] : [])];

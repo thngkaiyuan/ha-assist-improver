@@ -39,8 +39,9 @@ class FileImprovement(llm.Tool):
         key = runtime.recorder.file(chat_log.conversation_id, tool_input.tool_args.get("what_to_improve"), user_id) \
             if runtime is not None and chat_log is not None else None
         if key is None:
-            return {"filed": False, "why": "This conversation isn't being recorded, so it can't be filed."}
-        return {"filed": True, "next": "The Assist Improver will study this conversation once it ends."}
+            return llm.ToolResult(data={"filed": False,
+                                        "why": "This conversation isn't being recorded, so it can't be filed."})
+        return llm.ToolResult(data={"filed": True, "next": "The Assist Improver will study this conversation once it ends."})
 
 
 @callback

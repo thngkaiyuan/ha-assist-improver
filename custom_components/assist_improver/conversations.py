@@ -1,9 +1,10 @@
 """The conversations view: find a kept conversation, read it, and send it in, hide it, or delete it for good.
 
 Sending a conversation in files it, as Assist's file_improvement tool does (llm.py): one the pipeline hasn't taken
-in yet goes straight to analysis at its next run, past the quick check, with the user's note; with on-demand
-improvements on, a run starts for it as soon as it has ended. Nothing is copied or run again: it's the same
-conversation, let in earlier.
+in yet goes in at its next run, with the user's note; with on-demand improvements on, a run starts for it as soon as
+it has ended. It gets the quick check first, as a full run's do, unless it came with a note or was analysed before
+(the quick check found it smooth, or no fix was found for it; pipeline.deliberate): those go straight to analysis.
+Nothing is copied or run again: it's the same conversation, let in earlier.
 
 Hiding one only takes it out of the list (the recorder index's hidden flag): it's kept, analysed, tested and
 replayed as before, so later changes are still checked against it. Deleting one (Recorder.forget) removes it, with
@@ -98,9 +99,9 @@ def decided(runtime):
 
 def standing(runtime, rid, at=None, tests=None, fixed=None, known=None):
     """Where a conversation stands: active (still going), sent (in, at the next run), improved (an improvement for
-    it was accepted), the stage a run took it to (stage), smooth (the quick check found it smooth: it can be sent in
-    or picked, one by one, for the full analysis), or waiting (it can be sent in: one a run took in that
-    still waits for the quick check can too, and then skips it)."""
+    it was accepted), the stage a run took it to (stage), smooth (the quick check found it smooth, sent in plainly or
+    not: it can be sent in again or picked, one by one, for the full analysis), or waiting (it can be sent in: one a
+    run took in that still waits for the quick check can too, and with a note then skips it)."""
     pipeline, summary = runtime.pipeline, runtime.recorder.index.get(rid) or {}
     runs = pipeline._runs()
     at = pipeline._at() if at is None else at
@@ -113,7 +114,7 @@ def standing(runtime, rid, at=None, tests=None, fixed=None, known=None):
     if (rid in at and at[rid] != "triage") or (rid in runs.analyzed and not smooth) or rid in runs.unreadable \
             or rid in tests:
         return stage(rid, runs, tests, decided(runtime) if known is None else known)
-    if summary.get("filed"):
+    if summary.get("filed") and (not smooth or pipeline.skips_check(rid)):  # Else the check answered that filing.
         return "sent"
     if smooth:
         return "smooth"
@@ -327,12 +328,12 @@ def listed(runtime, kept, query=None, days=None, order=None, offset=0, limit=PAG
         found.sort(key=lambda r: offs[r["id"]])
     if close:  # The most words matched first, each group in the chosen order.
         found.sort(key=lambda r: r["matched"], reverse=True)
-    # Those a run took in that wait for the quick check: sent in or picked, they skip it, so the confirmation
-    # counts them once.
+    # Those a run took in that wait for the quick check: the ones it checks, and how many were sent in so they skip
+    # it (counted at Analyze, as the backlog does).
     queued = [rid for rid, stage in at.items() if stage == "triage"]
     return {"conversations": found[offset:offset + limit], "total": len(found), "counts": counts, "close": close,
-            "closest": closest, "queued": {"ids": [rid for rid in queued if not pipeline.filed(rid)],
-                                           "sent": sum(1 for rid in queued if pipeline.filed(rid))},
+            "closest": closest, "queued": {"ids": [rid for rid in queued if not pipeline.skips_check(rid)],
+                                           "sent": sum(1 for rid in queued if pipeline.skips_check(rid))},
             "waiting": [r["id"] for r in found if r["status"] == "waiting"], "on_demand": pipeline.on_demand,
             "every": [{"id": r["id"], "status": r["status"], "hidden": r["hidden"]} for r in found],
             "hidden": out_of_view, "by_status": by_status}

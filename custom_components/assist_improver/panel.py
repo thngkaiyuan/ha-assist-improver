@@ -403,7 +403,8 @@ async def ws_run_start(hass, connection, msg):
             return
         # Never one the improver has, nor one with no fix found (it's sent in again one by one, with a note).
         fresh = [rid for rid in conversations if standing(runtime, rid) not in (*TAKEN, "nofix")]
-        await runtime.recorder.file_kept(fresh, user_id=connection.user.id, notify=False)
+        await runtime.recorder.file_kept(fresh, user_id=connection.user.id, notify=False,
+                                         again=[rid for rid in fresh if runtime.pipeline.sent_again(rid)])
     try:
         run = runtime.pipeline.start(trigger="manual", force=msg.get("force", False), only=msg.get("only"),
                                      picked=picked or bool(conversations))
@@ -623,9 +624,10 @@ async def ws_conversation(hass, connection, msg):
 @websocket_api.async_response
 async def ws_conversation_send(hass, connection, msg):
     """Send a conversation in: filed, as Assist's file_improvement tool does, so the pipeline takes it in (at its
-    next run, past the quick check; right away with on-demand improvements on). One it has, or an accepted
-    improvement covers, is already in. One with no fix found for its troubles goes in again: its goals are open once
-    more, each with a fresh tests-per-goal budget, and it's analysed again with the note."""
+    next run; right away with on-demand improvements on), past the quick check with a note, or sent in again after
+    an analysis: the quick check found it smooth, or no fix was found (pipeline.deliberate). One it has, or an
+    accepted improvement covers, is already in. One with no fix found for its troubles goes in again: its goals are
+    open once more, each with a fresh tests-per-goal budget, and it's analysed again with the note."""
     from .conversations import TAKEN, kept, standing
     from .sessions import short
     if (runtime := _runtime(hass, connection, msg)) is None:
@@ -639,7 +641,8 @@ async def ws_conversation_send(hass, connection, msg):
         return
     if now == "nofix":
         await runtime.improvements.reopen(short(rid))
-    await runtime.recorder.file_kept([rid], msg.get("note", ""), connection.user.id)
+    await runtime.recorder.file_kept([rid], msg.get("note", ""), connection.user.id,
+                                     again=[rid] if runtime.pipeline.sent_again(rid) else ())
     connection.send_result(msg["id"], {"status": standing(runtime, rid), "on_demand": runtime.pipeline.on_demand})
 
 

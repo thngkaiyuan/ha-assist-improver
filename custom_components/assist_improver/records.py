@@ -12,10 +12,13 @@ from typing import Any, TypedDict
 # The recordings: the index, and one recording (stored packed or compacted, retention.py; these are the unpacked form).
 
 class Filed(TypedDict, total=False):
-    """On-demand improvements: the user asked Assist to file the conversation."""
+    """The user filed the conversation for improvement: asked Assist to (on-demand improvements), or sent it in from
+    the panel (picked for a run, or Send this one in)."""
     at: str
     note: str  # What the user wants improved, in their words, if they said.
     by: str  # Who filed it (a user ID).
+    via: str  # assist or panel; absent on one filed before filings said where from (it reads as assist's).
+    again: bool  # Sent in from the panel again after an analysis: the quick check found it smooth, or no fix was found.
 
 
 class RecordingSummary(TypedDict, total=False):

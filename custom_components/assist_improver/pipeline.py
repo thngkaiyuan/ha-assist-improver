@@ -31,8 +31,11 @@ picked, or the schedule) takes in every finished conversation not analysed yet. 
 home page's Run with some picked: they're filed as it starts) takes in and works on only those sent in; others an
 earlier run took in wait for the next full run. On-demand improvements (a setting, on for a new install) add a fast lane: a conversation the user filed (Assist's
 file_improvement tool, llm.py) or sent in from the panel gets a run of its own as soon as it ends, or right after the
-one in progress; that run (trigger "filed") takes in and analyses only conversations sent in, so it stays cheap. A
-conversation sent in skips the quick check, whichever run takes it: the user already said it needs a closer look.
+one in progress; that run (trigger "filed") takes in and works on only conversations sent in, so it stays cheap.
+Whichever run takes it in, a conversation sent in gets the quick check first, as a full run's do, unless the user gave
+a clear sign it needs a closer look (deliberate): a note written as they sent it in, filing it from Assist, or sending
+in again one already analysed (the quick check found it smooth, or no fix was found for it). Those go straight to
+analysis, and the analyzer hears the user sent them in.
 """
 
 import asyncio
@@ -65,6 +68,15 @@ def editor_model(entry):
 CLOSED = ("session_expired", "interrupted", "capture_timed_out")
 
 
+def deliberate(filed):
+    """Whether a conversation was sent in with a clear sign it needs a closer look, so it goes straight to analysis,
+    past the quick check (filed: its marker, Recorder.file and file_kept): a note written as it was sent in, filed from
+    Assist, or sent in again after an analysis (the quick check found it smooth, or no fix was found for it). A marker
+    from before filings said where they came from reads as one from Assist, so nothing sent in then changes course.
+    One picked, or sent in from the panel without a note, gets the quick check, as a full run's conversations do."""
+    return bool(filed) and bool(filed.get("note") or filed.get("via") != "panel" or filed.get("again"))
+
+
 class Pipeline:
     def __init__(self, hass, entry, runtime):
         self.hass, self.entry, self.runtime, self.recorder = hass, entry, runtime, runtime.recorder
@@ -84,7 +96,17 @@ class Pipeline:
         return bool(self.entry.options.get(CONF_ON_DEMAND))
 
     def filed(self, rid):
+        """Sent in (filed): what a run on picked conversations and the fast lane take in and work on."""
         return bool(self.recorder.index.get(rid, {}).get("filed"))
+
+    def skips_check(self, rid):
+        """Sent in with a clear sign it needs a closer look (deliberate): straight to analysis, past the quick check."""
+        return deliberate(self.recorder.index.get(rid, {}).get("filed"))
+
+    def sent_again(self, rid):
+        """It has an analysis already, the quick check's smooth verdict or a full one (no fix was found for it): sent
+        in now, it's sent in again (file_kept's again), a clear sign (deliberate)."""
+        return rid in self._runs().analyzed
 
     @callback
     def request(self, _recording_id=None):
@@ -145,11 +167,12 @@ class Pipeline:
                 and not summary.get("deleting"))
 
     def _unanalysed(self, rid, runs):
-        """No analysis yet; or only the quick check's smooth verdict, and the user sent it in since: it gets the full
-        analysis then, once, as that analysis takes the verdict's place; or sent in again after its analysis (no fix
-        was found for it), so the analysis takes the user's note into account."""
+        """No analysis yet; or only the quick check's smooth verdict, and the user sent it in again since (or with a
+        note): it gets the full analysis then, once, as that analysis takes the verdict's place. One sent in plainly
+        that the quick check then found smooth is done with: it stands smooth, as a full run's would. Or sent in again
+        after its full analysis (no fix was found for it), so the analysis takes the user's note into account."""
         analysis = runs.analyzed.get(rid)
-        return analysis is None or bool(analysis.get("triaged") and self.filed(rid)) or self.resent(rid, runs)
+        return analysis is None or bool(analysis.get("triaged") and self.skips_check(rid)) or self.resent(rid, runs)
 
     def resent(self, rid, runs=None):
         """Sent in after its latest full analysis: it waits for another one, with the user's note."""
@@ -215,15 +238,19 @@ class Pipeline:
 
     def backlog(self, todo=None, tests=None):
         """What waits at each stage: {stage: count}, as the settings view shows it, and how many of those at Propose
-        are revisions. At the start (requests): what a full run takes in. sent: those sent in that a run on picked
-        conversations works on besides the picked ones (at the start or at a step; the panel adds the picks). todo,
-        tests: to_analyze() and _tests(), if known."""
+        are revisions. At the start (requests): what a full run takes in; straight: those of them that go past the
+        quick check (deliberate). sent: those sent in that a run on picked conversations works on besides the picked
+        ones (at the start or at a step; the panel adds the picks); sent_straight: those of them past the quick check
+        (deliberate, or waiting at Analyze already). The rough estimate gives the rest the quick check. todo, tests:
+        to_analyze() and _tests(), if known."""
         tests = self._tests() if tests is None else tests
         at, todo = self._at(), self.to_analyze(tests) if todo is None else todo
-        waiting = list(at.values())
-        sent = sum(1 for rid, stage in at.items() if stage == "triage" and self.filed(rid))  # They skip the quick check.
-        return {"requests": sum(1 for rid in todo if rid not in at), "sent": sum(1 for rid in todo if self.filed(rid)),
-                "triage": waiting.count("triage") - sent, "analyze": waiting.count("analyze") + sent,
+        waiting, sent = list(at.values()), [rid for rid in todo if self.filed(rid)]
+        past = sum(1 for rid, stage in at.items() if stage == "triage" and self.skips_check(rid))  # Counted at Analyze.
+        return {"requests": sum(1 for rid in todo if rid not in at),
+                "straight": sum(1 for rid in todo if rid not in at and self.skips_check(rid)), "sent": len(sent),
+                "sent_straight": sum(1 for rid in sent if at.get(rid) == "analyze" or self.skips_check(rid)),
+                "triage": waiting.count("triage") - past, "analyze": waiting.count("analyze") + past,
                 "propose": self._to_propose(tests), "revisions": self._revisions(),
                 "test": len(self._untested(copy=False)[0]),
                 "write": len(self.runtime.improvements.unwritten()),
@@ -367,24 +394,24 @@ class Pipeline:
             mine = self.filed if sent_only else (lambda _rid: True)
             if not only or only == "triage":  # A run takes in what waits at the start.
                 new = self._new(filed_only=sent_only)
-                # One the user filed skips the quick check: they already said it needs a closer look.
-                at.update({rid: "analyze" if self.filed(rid) else "triage" for rid in new})
+                # One sent in with a clear sign skips the quick check: the user already said it needs a closer look.
+                at.update({rid: "analyze" if self.skips_check(rid) else "triage" for rid in new})
                 run["progress"]["taken_in"] = len(new)
                 await self._save_at(at)
-            if sent := [rid for rid, stage in at.items() if stage == "triage" and self.filed(rid)]:
-                at.update(dict.fromkeys(sent, "analyze"))  # Sent in while it waited for the quick check: skips it too.
+            if sent := [rid for rid, stage in at.items() if stage == "triage" and self.skips_check(rid)]:
+                at.update(dict.fromkeys(sent, "analyze"))  # Sent in with a clear sign while it waited for the check.
                 await self._save_at(at)
             todo = [rid for rid, stage in at.items() if gate(stage) and mine(rid)]
             run["progress"].update(analyze_total=len(todo), analyzed=0, skipped_as_smooth=0, analyze_failed=0)
             checker, tried = role_model(self.entry, "triage"), set()
             # Which half of the stage is at work, for the panel: the quick check (each one it passes is analysed in
             # the same call), then analysis alone.
-            if checker and any(at.get(rid) == "triage" and not self.filed(rid) for rid in todo):
+            if checker and any(at.get(rid) == "triage" and not self.skips_check(rid) for rid in todo):
                 run["progress"]["phase"] = "triage"
             for recording_id in todo:  # Triage first: a quick check, or pass through without a triage model.
                 if at.get(recording_id) != "triage":
                     continue
-                if not checker or self.filed(recording_id):  # Sent in since the run began: no quick check either.
+                if not checker or self.skips_check(recording_id):  # Or sent in with a clear sign since it began.
                     at[recording_id] = "analyze"
                     continue
                 result = await self._analyze(recording_id, triage_only=not gate("analyze"))

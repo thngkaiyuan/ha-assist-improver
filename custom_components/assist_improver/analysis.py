@@ -6,6 +6,7 @@ from uuid import uuid4
 from . import analyzer, hypotheses, trace, triage
 from .cases import CaseError, digest as content_digest
 from .exploration import ListImprovements, ReadImprovement, SessionAPI, SessionView, related_improvements
+from .pipeline import deliberate
 from .records import Analysis
 from .reflective import index_of, run_role
 from .settings import role_model
@@ -54,7 +55,10 @@ async def analyze(hass, entry, runtime, recording_id, allow_paid_inference=False
     submit = analyzer.SubmitGoals(view, mark.THEN) if existing else analyzer.SubmitGoals(view)
     related = related_improvements(existing, view.devices_touched())
     tools = [submit] + ([ListImprovements(view, existing), ReadImprovement(view, existing), mark] if existing else [])
-    filed = (recorder.index.get(recording_id) or {}).get("filed")  # On-demand: the user filed it, maybe with a note.
+    # Sent in with a clear sign (pipeline.deliberate): the analyzer hears it, with the note if any. One picked, or sent
+    # in without a note, that passed the quick check is analysed as any other.
+    filed = (recorder.index.get(recording_id) or {}).get("filed")
+    filed = filed if deliberate(filed) else None
     result = await run_role(hass, role=analyzer.ROLE, entity_id=entity_id,
                             instructions=analyzer.INSTRUCTIONS + (analyzer.FILED if filed else "")
                             + (analyzer.DUPLICATES if existing else ""),

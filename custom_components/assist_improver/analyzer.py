@@ -42,7 +42,9 @@ If you cannot even tell which devices the user meant, write one short question f
 
 Answer only by calling submit_goals, with sub-goals in the same goals list. It checks your answer against the recording, including that every state is one the device has (device_details shows a device's modes and options). If it reports problems, fix them and submit again. When it accepts your answer, finish with one short sentence."""
 
-# Added when the user filed the conversation for improvement themselves (on-demand improvements).
+# Added when the user sent the conversation in with a clear sign it needs a closer look (pipeline.deliberate): a note,
+# filing it from Assist, or sending it in again after an analysis (the quick check found it smooth, or no fix was
+# found).
 FILED = """
 
 The user filed this conversation for improvement themselves (filed_by_user in your input), so something here didn't go the way they wanted; its note, when there is one, says what in their words. Take it into account, but still describe the goals as the conversation shows them."""

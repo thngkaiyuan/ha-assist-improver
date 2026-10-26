@@ -107,7 +107,7 @@ class SubmitCopy(llm.Tool):
         return {"accepted": True, "message": "Accepted. Finish with one short sentence."}
 
     async def async_call(self, hass, tool_input, llm_context):
-        return self.run(**self.parameters(tool_input.tool_args))
+        return llm.ToolResult(data=self.run(**self.parameters(tool_input.tool_args)))
 
     def best(self):
         """The last accepted answer, or None."""

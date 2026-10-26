@@ -105,7 +105,10 @@ async function send(p, cv, id) {
     if (cv.shown?.id === id) Object.assign(cv.shown, {status: result.status, note: cv.note || null});
     unpick(cv, [id]);
     cv.waiting = cv.waiting.filter((w) => w !== id);
-    if (cv.queued?.ids.includes(id)) cv.queued = {ids: cv.queued.ids.filter((q) => q !== id), sent: cv.queued.sent + 1};
+    // Waiting for the quick check, it skips it only with a note.
+    if (cv.note?.trim() && cv.queued?.ids.includes(id)) {
+      cv.queued = {ids: cv.queued.ids.filter((q) => q !== id), sent: cv.queued.sent + 1};
+    }
     // What a run would take now, for the Run bar and its confirmation; or the run it started, followed as it goes.
     p.setRun?.(await p.ws("run").catch(() => p.run));
     p.poll?.();
@@ -183,13 +186,17 @@ export function picking(p) {
 export function runPreview(p, preview) {
   // The numbers for a Run on picked conversations: it takes the picked ones and those sent in (at the start, or
   // waiting at a step; the preview counts those), said as one; those an earlier run took in that weren't picked or
-  // sent in stay for the next full run. which: what was said first in them, as listed: the picked ones, then those
-  // sent in (the confirmation names a few; one not in the list is counted in its "and N more").
+  // sent in stay for the next full run. straight: those of them past the quick check (picked ones it found smooth
+  // before, and those sent in that the preview counts so), so the estimate gives the rest the quick check, as a full
+  // run does. which: what was said first in them, as listed: the picked ones, then those sent in (the confirmation
+  // names a few; one not in the list is counted in its "and N more").
   const {picked} = picking(p), cv = state(p), b = preview.backlog || {};
   const runs = new Set(runnable(cv)), rows = cv.rows || [];
+  const again = [...runs].filter((id) => cv.known.get(id)?.status === "smooth").length;
   const going = [...rows.filter((r) => runs.has(r.id)), ...rows.filter((r) => r.status === "sent")];
   return {...preview, which: going.map((r) => r.said || TEXT.conversations.nothing),
-          backlog: {...b, requests: picked + (b.sent || 0), triage: 0, analyze: 0}};
+          backlog: {...b, requests: picked + (b.sent || 0), straight: again + (b.sent_straight || 0), triage: 0,
+                    analyze: 0}};
 }
 
 // Drawing.
