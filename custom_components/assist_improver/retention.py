@@ -5,14 +5,13 @@ closes it's packed, losslessly: later turns keep only what changed since the fir
 read), and chat-log copies nothing reads are dropped. Every day, older recordings nothing needs in full any more
 are compacted: they keep the conversation, its tool calls, and the devices it involved (their states, names, areas
 and exposure), not the rest of the home. A compacted recording is still read by every AI role, but no longer
-replayed. Kept in full: recordings an improvement or a case was built from, recent ones (KEEP_FULL_DAYS), and the
-newest KEEP_NEWEST, which seed the sandbox. Recordings with no turns (Home Assistant handled them itself) are
-deleted.
+replayed. Kept in full: recordings an improvement or a replay uses, or a round still needs (the daily tidy-up reads
+each conversation's flow record), recent ones (KEEP_FULL_DAYS), and the newest KEEP_NEWEST, which seed the sandbox.
+Recordings with no turns (Home Assistant handled them itself) are deleted.
 
 The log of runs and AI role calls (diagnostics and profiling) is tidied the same way: what the pipeline still reads
-stays (trimmed to those fields after KEEP_FULL_DAYS), runs with their stage timings and the test stages' tests per
-goal (what holds each goal to its tests-per-goal limit; trimmed to that after KEEP_FULL_DAYS) stay for
-KEEP_HISTORY_DAYS, and every other record is deleted after KEEP_FULL_DAYS.
+from it stays, runs stay for KEEP_HISTORY_DAYS, and every other record is deleted after KEEP_FULL_DAYS. What the
+stages found about a conversation is in its flow record, kept as long as the conversation.
 
 The developer view's traces (trace.py) are kept TRACE_DAYS after they were last written, and no more than
 TRACE_MAX_BYTES of them, the oldest deleted first; a trace still being written is never deleted.
@@ -30,13 +29,6 @@ KEEP_NEWEST = 20
 KEEP_HISTORY_DAYS = 365
 TRACE_DAYS = 7
 TRACE_MAX_BYTES = 20 * 1024 * 1024
-# What the pipeline reads from a record it still needs; the rest (raw replies, triage detail, token counts) is
-# diagnostics, trimmed after KEEP_FULL_DAYS. A held verdict keeps its triage: the next analysis reuses it.
-NEEDED_FIELDS = ("id", "kind", "role", "recording_id", "status", "answer_status", "analysis", "digest_sha256",
-                 "entity_id", "started", "finished", "seconds", "error", "tested", "test_attempts", "run_id",
-                 "trace_id")
-# What a test stage's record keeps after KEEP_FULL_DAYS, for a year: each goal's tests, against its tests-per-goal limit.
-TEST_FIELDS = ("id", "kind", "status", "started", "finished", "tried", "run_id", "trace_id")
 READ_EVENTS = ("created", "content_added", "deleted")  # The events cases._content reads; the rest are copies.
 CLOSED = ("session_expired", "interrupted", "capture_timed_out")
 
@@ -160,7 +152,7 @@ def compact(recording, also=()):
         if not source:
             continue
         devices = {e.get("device_id") for k, e in (source.get("entities") or {}).items() if k in keep}
-        for key in ("states", "entities", "exposure"):
+        for key in ("states", "entities", "exposure", "template_actions"):
             if isinstance(source.get(key), dict):
                 source[key] = {k: v for k, v in source[key].items() if k in keep}
         if isinstance(source.get("devices"), dict):
@@ -174,8 +166,9 @@ def compact(recording, also=()):
 
 async def prune(recorder, referenced, now=None, named=None):
     """The daily tidy-up: delete recordings with no turns, pack closed ones not packed yet, and compact older ones
-    nothing needs in full. referenced: recording IDs (or their first 8 characters) an improvement or a case uses;
-    named: {recording ID: devices its analysis named}, kept when compacting. Returns what it did, for diagnostics."""
+    nothing needs in full. referenced: the recording IDs that stay in full (what an improvement or a replay uses, or a
+    round still needs); named: {recording ID: devices its analysis named}, kept when compacting. Returns what it did,
+    for diagnostics."""
     now = now or utcnow()
     done = {"deleted": 0, "packed": 0, "compacted": 0}
     closed = sorted((k for k, s in recorder.index.items() if s.get("status") in CLOSED),
@@ -191,7 +184,7 @@ async def prune(recorder, referenced, now=None, named=None):
             continue
         started = parse_datetime(summary.get("started") or "")
         old = started is not None and now - started > timedelta(days=KEEP_FULL_DAYS)
-        due = old and not (key in referenced or key[:8] in referenced or key in newest)
+        due = old and not (key in referenced or key in newest)
         if summary.get("stored") == "compact" or (summary.get("stored") == "packed" and not due):
             continue  # The index says how it's stored: nothing to load.
         if (data := await recorder.store(key).async_load()) is None:
@@ -213,63 +206,32 @@ async def prune(recorder, referenced, now=None, named=None):
 
 
 def needed_runs(runs, recordings):
-    """Positions of the records the pipeline still reads, each with the fields it reads (None: the whole record).
-    Anything still running, each existing conversation's latest analysis, unreadable marker, failed
-    attempts (while it's not analysed) and held verdict, and the latest proposal with its hypotheses and the friction
-    and sessions it was given (Pipeline.seen, unseen)."""
-    needed, latest, analysed, settled = {}, {}, set(), set()
+    """Positions of the records the pipeline still reads from the run log: anything still running, and each kept
+    conversation's quick-check verdict while it waits for its analysis (analysis.kept_verdict reuses it). What the
+    stages found about a conversation is in its flow record (flow.py), kept as long as the conversation."""
+    needed, verdicts = set(), {}
     for n, run in enumerate(runs):
-        kind, status, rid = run.get("kind"), run.get("status"), run.get("recording_id")
-        if status == "running":
-            needed[n] = None
-        elif kind == "hypothesis_generator" and status == "completed":
-            latest["generator"] = n
-        elif kind == "journey_analyzer" and rid in recordings:
-            if status == "completed" and run.get("analysis"):
-                latest[("analysis", rid)] = n
-                analysed.add(rid)
-            elif run.get("answer_status") == "unreadable":
-                latest[("unreadable", rid)] = n
-                settled.add(rid)
-            elif status == "held":
-                latest[("held", rid)] = n
-    for key, n in latest.items():
-        if key == "generator":
-            needed[n] = NEEDED_FIELDS + ("output", "friction", "sessions")
-        elif key[0] != "held" or key[1] not in analysed:
-            needed[n] = None if key[0] == "held" else NEEDED_FIELDS
-    for n, run in enumerate(runs):  # Failed attempts count towards setting a conversation aside.
         rid = run.get("recording_id")
-        if run.get("answer_status") == "error" and rid in recordings and rid not in analysed | settled:
-            needed[n] = NEEDED_FIELDS
-    return needed
+        if run.get("status") == "running":
+            needed.add(n)
+        elif run.get("kind") == "journey_analyzer" and rid in recordings:
+            if run.get("status") == "held" and (run.get("triage") or {}).get("status") == "completed":
+                verdicts[rid] = n
+            elif run.get("status") == "completed" and run.get("analysis"):  # Analysed since: no longer needed.
+                verdicts.pop(rid, None)
+    return needed | set(verdicts.values())
 
 
 def prune_runs(runs, recordings, now=None):
-    """The daily tidy-up of the run log: (the records kept, in order, {"trimmed": n, "deleted": n})."""
+    """The daily tidy-up of the run log: (the records kept, in order, {"deleted": n})."""
     now = now or utcnow()
-    needed, kept, done = needed_runs(runs, recordings), [], {"trimmed": 0, "deleted": 0}
+    needed, kept = needed_runs(runs, recordings), []
     for n, run in enumerate(runs):
-        moment = parse_datetime(run.get("finished") or run.get("started") or "")
-        age = now - moment if moment else None  # No time: a record from before every record had one.
-        if n in needed:
-            fields = needed[n]
-            if fields and (age is None or age > timedelta(days=KEEP_FULL_DAYS)) and set(run) - set(fields):
-                run = {k: v for k, v in run.items() if k in fields}
-                done["trimmed"] += 1
+        moment = parse_datetime(run.get("finished") or run.get("started") or "")  # None: from before records had one.
+        days = KEEP_HISTORY_DAYS if run.get("kind") == "pipeline" else KEEP_FULL_DAYS
+        if n in needed or (moment is not None and now - moment <= timedelta(days=days)):
             kept.append(run)
-        elif run.get("kind") == "hypothesis_tests" and age is not None and age <= timedelta(days=KEEP_HISTORY_DAYS):
-            if age > timedelta(days=KEEP_FULL_DAYS) and set(run) - set(TEST_FIELDS):
-                from .reflective import tried
-                run = {**{k: v for k, v in run.items() if k in TEST_FIELDS}, "tried": tried(run)}
-                done["trimmed"] += 1
-            kept.append(run)
-        elif age is not None and age <= timedelta(
-                days=KEEP_HISTORY_DAYS if run.get("kind") == "pipeline" else KEEP_FULL_DAYS):
-            kept.append(run)
-        else:
-            done["deleted"] += 1
-    return kept, done
+    return kept, {"deleted": len(runs) - len(kept)}
 
 
 async def prune_traces(hass, active=(), now=None):

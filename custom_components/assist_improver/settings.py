@@ -24,7 +24,7 @@ ROLES = {
     "analyzer": {"key": "analyzer_ai_task_entity_id", "fallback": (CONF_AI_TASK,), "size": "large"},
     "generator": {"key": "generator_ai_task_entity_id", "fallback": (CONF_AI_TASK,), "size": "large"},
     "reviewer": {"key": "reviewer_ai_task_entity_id", "fallback": (CONF_AI_TASK,), "size": "large"},
-    "followup_check": {"key": CONF_CHECK_AI_TASK, "fallback": (), "size": "small"},
+    "feedback_check": {"key": CONF_CHECK_AI_TASK, "fallback": (), "size": "small"},
     "editor": {"key": "editor_ai_task_entity_id", "fallback": (CONF_TRIAGE_AI_TASK, CONF_CHECK_AI_TASK, CONF_AI_TASK),
                "size": "small"},
 }
@@ -32,11 +32,12 @@ OPTIONAL = {role for role, spec in ROLES.items() if not spec["fallback"]}  # Off
 LIVE = {spec["key"] for spec in ROLES.values()} | {CONF_AI_TASK, CONF_ACCEPTED_WEAK, CONF_TESTS_PER_GOAL, CONF_SCHEDULE,
                                                    CONF_PAUSED, CONF_AUTO_ACCEPT, CONF_ON_DEMAND,
                                                    CONF_RECORDING, CONF_OPT_OUT, CONF_HOUSEHOLD}  # Read when used.
-GATES = ("triage", "analyze", "propose", "test", "write")  # Stages that can be paused, in order.
-STAGE_ROLES = {"triage": ("triage",), "analyze": ("analyzer",), "propose": ("generator", "reviewer"),
-               "test": ("followup_check",), "write": ("editor",)}  # The roles each stage calls.
+GATES = ("triage", "analyze", "propose", "write")  # Stages that can be paused, in order.
+STAGE_ROLES = {"triage": ("triage",), "analyze": ("analyzer",),  # The roles each stage calls; Simulate's feedback
+               "propose": ("generator", "reviewer", "feedback_check"),  # check is Propose's stamp (P0.4).
+               "write": ("editor",)}
 TITLES = {"triage": "Triage", "analyzer": "Analyze", "generator": "Propose", "reviewer": "Review",
-          "followup_check": "Simulate", "editor": "Write up"}  # As the panel names the steps.
+          "feedback_check": "Simulate", "editor": "Write up"}  # As the panel names the steps.
 LARGE = tuple(role for role, spec in ROLES.items() if spec["size"] == "large")
 SMALL = ("triage", "editor")  # The quick steps the recommended setup gives a small model.
 SMALL_MODELS = (re.compile("haiku", re.I), re.compile("flash|mini|small|lite|nano", re.I))  # In order of preference.
@@ -176,7 +177,7 @@ def updated(hass, entry, *, role=None, entity_id=None, tests_per_goal=None, sche
             options[ROLES[role]["key"]] = entity_id
     if tests_per_goal is not None:
         if not 1 <= int(tests_per_goal) <= MAX_TESTS_PER_GOAL:
-            raise SettingsError(f"Tests per goal goes from 1 to {MAX_TESTS_PER_GOAL}.")
+            raise SettingsError(f"Tests per conversation, each round, go from 1 to {MAX_TESTS_PER_GOAL}.")
         options[CONF_TESTS_PER_GOAL] = int(tests_per_goal)
     if schedule is not None:
         if schedule not in SCHEDULES:

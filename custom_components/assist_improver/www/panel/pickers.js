@@ -1,5 +1,5 @@
 // The settings view's pickers, each under the chip that opened it (a sheet from the bottom on a phone): a step's AI
-// model, ranked by fit, with a new AI Task or the recommended setup a click away; Simulate's rounds and follow-up
+// model, ranked by fit, with a new AI Task or the recommended setup a click away; Simulate's tests and feedback
 // check; and the assistant Your Assist uses.
 
 const v = new URL(import.meta.url).search;  // ?v=<version>, passed on to every module this one loads.
@@ -20,7 +20,7 @@ function options(s, role, roleName) {
       why(t) ? `data-tip="${esc(why(t))}"` : ""}><div class="opt-main">
       <span class="check">${t.entity_id === role.entity_id ? "&#10003;" : ""}</span><span class="opt-label">${esc(t.label)}</span>${tag(t)}</div>
       ${t.title !== t.label ? `<div class="opt-sub">${esc(t.title)}</div>` : ""}</div>`).join("") +
-    (role.optional ? `<div class="opt" data-pick="" data-tip="${esc(roleName === "triage" ? TEXT.passThrough.tip : TEXT.followUpsOff)}"><div class="opt-main"><span class="check">${role.entity_id ? "" : "&#10003;"}</span>
+    (role.optional ? `<div class="opt" data-pick="" data-tip="${esc(roleName === "triage" ? TEXT.passThrough.tip : TEXT.feedbackOff)}"><div class="opt-main"><span class="check">${role.entity_id ? "" : "&#10003;"}</span>
       <span class="opt-label">${esc(roleName === "triage" ? TEXT.passThrough.label : "Off")}</span></div></div>` : "");
 }
 
@@ -48,8 +48,8 @@ const PICKERS = {
       <div class="stepper-row" data-tip="${esc(fill(TEXT.simulate.cost, {n}))}">
       <button class="round" id="t-minus" ${n <= 1 ? "disabled" : ""}>&#8722;</button>
       <span class="t-n">${n}</span><button class="round" id="t-plus" ${n >= 20 ? "disabled" : ""}>+</button></div>
-      <div class="pop-lead" style="text-align:center">${esc(TEXT.simulate.perGoal)}</div>
-      <div class="pop-head" data-tip="${esc(TEXT.followUpsOff)} when off">Check follow-ups with</div>${options(s, s.roles.followup_check, "followup_check")}`;
+      <div class="pop-lead" style="text-align:center">${esc(TEXT.simulate.per)}</div>
+      <div class="pop-head" data-tip="${esc(TEXT.feedbackOff)} when off">Check feedback with</div>${options(s, s.roles.feedback_check, "feedback_check")}`;
   },
   create(p, s, pop, step) {
     // A new AI Task for this step, added to an AI provider with the model the step needs suggested.
@@ -139,7 +139,7 @@ async function busy(p, call, done) {
 export const actions = {
   click: [
     ["[data-role]", (p, el) => open(p, {kind: "role", role: el.dataset.role, anchor: `[data-role="${el.dataset.role}"]`})],
-    ["[data-knob]", (p) => open(p, {kind: "test", role: "followup_check", anchor: "[data-knob]"})],
+    ["[data-knob]", (p) => open(p, {kind: "test", role: "feedback_check", anchor: "[data-knob]"})],
     ["[data-assist]", (p) => open(p, {kind: "assist", anchor: "[data-assist]"})],
     ["#backdrop", (p) => { p.pop = null; p.render(); }],
     ["[data-pick]", (p, el) => {

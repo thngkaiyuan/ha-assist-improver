@@ -16,7 +16,7 @@ for (const module of [common, home, review, settings, pickers, household, develo
   for (const [type, list] of Object.entries(module.actions)) (ACTIONS[type] ||= []).push(...list);
 }
 const TIPS = [["pointerover", true], ["pointerout", false], ["focusin", true], ["focusout", false]];
-const POLLED = ["home", "settings"];  // The views that show a run's progress.
+const POLLED = ["home", "settings"];  // The views that show runs, and a run's progress.
 
 export class PanelApp {
   constructor(host) {
@@ -154,15 +154,15 @@ export class PanelApp {
   }
 
   poll() {
-    // While a run is in progress, its progress every few seconds.
+    // Every few seconds: the run in progress, or one that started since (sent in from Assist, say, or on schedule).
     clearTimeout(this.pollTimer);
-    if (this.run?.run?.status === "running") this.pollTimer = setTimeout(() => this.refresh(), 3000);
+    this.pollTimer = setTimeout(() => this.refresh(), 3000);
   }
 
   async refresh() {
     if (!this.host.isConnected || !POLLED.includes(this.view)) return;
     if (this.pop) { this.poll(); return; }  // Not while a menu is open: it stays as it was opened.
-    const before = this.run.run.status;
+    const before = this.run?.run;
     let run;
     try {
       run = await this.ws("run");
@@ -172,7 +172,8 @@ export class PanelApp {
     }
     if (!POLLED.includes(this.view)) return;
     this.setRun(run);
-    if (before !== run.run?.status) { await this.load(); return; }  // Finished: new improvements may be in.
+    // Another run, or this one finished: what it moved, and new improvements, are read again.
+    if (before?.id !== run.run?.id || before?.status !== run.run?.status) { await this.load(); return; }
     this.render();
     this.poll();
   }

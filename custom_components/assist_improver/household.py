@@ -9,8 +9,8 @@ which assistant is asking, so it's every assistant or none.
 
 Up to 0.37 the lines came through a second LLM API, "Assist with household
 knowledge", chosen instead of Assist; an assistant could tick both and read every
-tool twice. migrations.py moves those assistants back to Assist, and only replays
-of conversations recorded through it still use it (LegacyAPI, in a sandbox). On
+tool twice. Only replays of conversations recorded through it still use it
+(LegacyAPI, in a sandbox). On
 uninstall, the lines are written into each assistant's own instructions, so
 nothing learned is lost (see async_remove).
 """
@@ -61,28 +61,37 @@ def as_text(knowledge, names=None):
 def edit(knowledge, changes, user_id, prompt=None):
     """(knowledge, prompt, problems) with the changes' instruction lines merged into the household knowledge.
 
-    A line for this_user goes in the speaking person's lines, any other in everyone's. A line a change replaces is
-    removed where it is: the household knowledge, or the assistant's own instructions (lines written there before).
-    One that's in neither has changed since the change was tested: a problem, unless the new line is there already."""
+    A line for this_user goes in the speaking person's lines (user_id; a list: each of those people's), any other in
+    everyone's; with no one speaking (None, or None among them) it goes in everyone's too, and with no one known (an
+    empty list: the conversations it was tested on are gone) it's a problem. A line a change replaces is removed where
+    it is: from each list the new line goes in that holds it; else, for a person's line, from everyone's, and for
+    everyone's, from each person's; else from the assistant's own instructions (lines written there before). One
+    that's in none of those has changed since the change was tested: a problem, unless the new line is there already."""
     from .instructions import household_line
     knowledge, problems = normalized(knowledge), []
+    people = list(user_id) if isinstance(user_id, (list, tuple)) else [user_id]
     for change in changes:
         if not household_line(change):  # An edit of one assistant's own instructions isn't a household line.
             continue
         text = (change.get("text") or "").strip()
-        mine = change.get("for") == "this_user" and user_id
-        target = knowledge["people"].setdefault(user_id, []) if mine else knowledge["everyone"]
+        if change.get("for") == "this_user" and not people:
+            problems.append("Who it's for isn't known: the conversations it was tested on are gone.")
+            continue
+        mine = change.get("for") == "this_user" and all(people)
+        targets = [knowledge["people"].setdefault(p, []) for p in people] if mine else [knowledge["everyone"]]
         for old in change.get("replaces") or []:
-            lists = [knowledge["everyone"], *knowledge["people"].values()]
-            holder = next((l for l in lists if old.strip() in l), None)
-            if holder is not None:
-                holder.remove(old.strip())
+            holders = [l for l in targets if old.strip() in l] or [
+                l for l in ([knowledge["everyone"]] if mine else knowledge["people"].values()) if old.strip() in l]
+            if holders:
+                for holder in holders:
+                    holder.remove(old.strip())
             elif prompt and old in prompt:
                 prompt = prompt.replace(old, "", 1)
-            elif text not in target:
+            elif any(text not in target for target in targets):
                 problems.append(f"The instruction line it replaces has changed since it was tested: {old!r}")
-        if text and text not in target:
-            target.append(text)
+        for target in targets:
+            if text and text not in target:
+                target.append(text)
     knowledge["people"] = {k: v for k, v in knowledge["people"].items() if v}
     return knowledge, prompt, problems
 
@@ -190,24 +199,6 @@ def assistants(hass):
             if sub.subentry_type == "conversation" and (API_ID in apis or llm.LLM_API_ASSIST in apis):
                 out.append((entry, sub))
     return out
-
-
-def back_to_assist(hass):
-    """Every assistant still on the household API (up to 0.37) uses Assist instead, once (migrations.py): Assist gives
-    the lines itself now, and an assistant that ticked both reads each tool once again. Also one that keeps its API in
-    its entry's options (an integration without assistants as subentries). How many changed."""
-    changed = 0
-    for entry, sub in assistants(hass):
-        if API_ID in api_ids(sub.data.get("llm_hass_api")):
-            hass.config_entries.async_update_subentry(
-                entry, sub, data={**sub.data, "llm_hass_api": as_assist(sub.data["llm_hass_api"])})
-            changed += 1
-    for entry in hass.config_entries.async_entries():
-        if API_ID in api_ids(entry.options.get("llm_hass_api")):
-            hass.config_entries.async_update_entry(
-                entry, options={**entry.options, "llm_hass_api": as_assist(entry.options["llm_hass_api"])})
-            changed += 1
-    return changed
 
 
 def pipelines(hass):

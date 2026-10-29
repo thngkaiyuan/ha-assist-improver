@@ -2,25 +2,19 @@
 
 DOMAIN = "assist_improver"
 NAME = "Assist Improver"
-VERSION = "0.39.3"
-# How replays run and are judged; changing it makes earlier baselines a different test (a new plan), not a resample.
-REPLAY_ENGINE = "2026-10-24.5"  # .2: a fix commanding what the baseline also changed isn't unintended. .3: baselines
-# are judged on the goal's devices. .4: a goal newly met counts, not only fewer turns. .5: controls the user would
-# accept being set aren't unintended.
+VERSION = "0.40.0"
+# How replays run and are judged; changing it makes earlier replays a different test (a new plan), not a resample.
+REPLAY_ENGINE = "2026-10-27.1"  # The whole conversation from its first turn, judged by P0.1.1's measures (measures.py).
 # Conversation providers whose replays are tested end to end; others replay with a "not yet tested" label.
 TESTED_PROVIDERS = {"anthropic", "open_router"}
 STORAGE_VERSION = 1
 CONF_AI_TASK = "ai_task_entity_id"
 CONF_ACCEPTED_WEAK = "ai_task_accepted_weak"  # Entity the user chose despite warnings.
-# The coarse cost control: how many replays with a fix (counterfactuals) one goal instance may get in a cycle: a goal
-# as it came up in one conversation (session and turn), since the same goal phrased differently must be fixed in
-# every conversation where it came up. Each replays
-# a conversation on the user's own assistant, so it's a multiplier on their normal assistant spend: 3 means
-# testing costs about 3 times those conversations, plus each goal's one baseline replay.
+# The coarse cost control: how many replays with a change (counterfactuals) a conversation gets each round (P0.9).
+# Each replays the conversation on the user's own assistant, so it's a multiplier on their normal assistant spend: 3
+# means testing costs about 3 times those conversations, plus each conversation's one replay without a change.
 CONF_TESTS_PER_GOAL, DEFAULT_TESTS_PER_GOAL = "tests_per_goal", 3
-# A goal's title once no fix was found for it (improvements.py): settled, like one with an improvement.
-NO_FIX = "No fix found"
-# A small model that checks the replay's scripted follow-ups still fit the replies around them; unset skips it.
+# A small model that checks whether a replay's replies follow the household's feedback; unset, the write-up model's.
 CONF_CHECK_AI_TASK = "check_ai_task_entity_id"
 # A small model that checks each session first; a session it's sure was smooth skips the analyzer. Unset analyses all.
 CONF_TRIAGE_AI_TASK = "triage_ai_task_entity_id"

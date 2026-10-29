@@ -1,23 +1,22 @@
-"""The conversations view: find a kept conversation, read it, and send it in, hide it, or delete it for good.
+"""The conversations view: find a kept conversation, read it, and send it in, archive it, or delete it for good.
 
-Sending a conversation in files it, as Assist's file_improvement tool does (llm.py): one the pipeline hasn't taken
-in yet goes in at its next run, with the user's note; with on-demand improvements on, a run starts for it as soon as
-it has ended. It gets the quick check first, as a full run's do, unless it came with a note or was analysed before
-(the quick check found it smooth, or no fix was found for it; pipeline.deliberate): those go straight to analysis.
-Nothing is copied or run again: it's the same conversation, let in earlier.
+Each conversation's chip, whether the list shows it, and what can be done with it come from its flow record (flow.py,
+P0.2): where it is, its outcome, its sent-in mark and the question it waits with (standing, row). Sending one in marks
+it on that record (flow.Flow.sent_in), as Assist's file_improvement tool does (llm.py): it goes in at the next run that
+admits it, with the user's note; with on-demand improvements on, a run starts for it as soon as it has ended.
 
-Archiving one only takes it out of the list: it's kept, analysed, tested and replayed as before, so later changes are
-still checked against it. One the improver is done with (SETTLED), or whose improvement waits for review at the top of
-the home page, is archived on its own (OFF_LIST), from where it stands, so it comes back once it stands otherwise (sent
-in again, a revision asked; a fix undone puts its improvement up for review again); the household's own choice wins (the recorder index's flags: hidden, archived by
-hand; unarchived, kept in the list whenever it stands as it did when unarchived). Deleting one (Recorder.forget)
-removes it, with what the improver derived from it, and it no longer counts for those checks.
+The list shows only conversations that may need the household (DETAILS P14.4): one archived, in Your household, or up
+for review (its improvement waits at the top of the home page) is left out, unless the household unarchived it where
+it stands now (flow.Flow.unarchived). Archiving one takes it out of the pipeline, to Your household (P0.12); it's kept,
+so later changes are still checked against it. Deleting one (Recorder.forget) removes it, with what the improver
+derived from it.
 
 What a conversation said (the user's words, and Assist's last reply to each) is read from its recording once and
 kept in a small store of its own, so listing, searching and reading conversations never reopens the recordings.
 """
 
 import asyncio
+from collections import Counter
 from datetime import timedelta
 import re
 
@@ -26,14 +25,11 @@ from homeassistant.util import dt as dt_util
 from homeassistant.util.dt import utcnow
 
 from .cases import failed_calls, transcript
-from .const import DOMAIN, NO_FIX, STORAGE_VERSION
-from .improvements import PENDING
-from .sessions import short
+from .const import DOMAIN, STORAGE_VERSION
 
 WORDS = 1000  # Characters kept of each message.
 SAID = 160  # Characters of the first thing said, for the list.
 PAGE = 30  # Conversations a page lists.
-SHAPE = 2  # What a kept transcript holds: 2 has each turn's failed steps.
 
 
 class Transcripts:
@@ -50,14 +46,12 @@ class Transcripts:
         """Every kept conversation's words; read from the recording only where it changed since (or is new)."""
         async with self.lock:
             if self.kept is None:
-                stored = (await self.store.async_load()) or {}
-                # Kept in an older shape (before the failed steps): read again from the recordings.
-                self.kept = stored.get("transcripts", {}) if stored.get("shape") == SHAPE else {}
+                self.kept = ((await self.store.async_load()) or {}).get("transcripts", {})
             index, changed = self.recorder.index, False
             for rid in [rid for rid in self.kept if rid not in index]:  # The tidy-up deleted it.
                 del self.kept[rid]
                 changed = True
-            for rid, summary in index.items():
+            for rid, summary in list(index.items()):  # The index can change while a recording is read.
                 if not summary.get("user_turns") or (rid in self.kept
                                                      and self.kept[rid].get("updated") == summary.get("updated")):
                     continue
@@ -71,109 +65,56 @@ class Transcripts:
                                              **({"failed": t["failed"]} if t.get("failed") else {})} for t in turns]}
                 changed = True
             if changed:
-                self.store.async_delay_save(lambda: {"transcripts": self.kept, "shape": SHAPE}, 5)
+                self.store.async_delay_save(lambda: {"transcripts": self.kept}, 5)
             return self.kept
 
 
-def improved(runtime):
-    """The conversations (their short IDs) an applied improvement covers."""
-    return {goal.split(":")[0] for item in runtime.improvements.items.values() if item["status"] == "applied"
-            for goal in runtime.improvements._covers(item)}
+# The chip of each outcome in Your household (P0.12), and of the stages between (P14.3).
+OUTCOMES = {"looked smooth": "smooth", "no trouble found": "fine", "no fix found": "nofix", "improved": "improved",
+            "declined": "declined", "marked as a test": "test", "couldn't be read": "unreadable",
+            "archived": "archived", "duplicate": "duplicate"}
+AT = {"Analyze": "queued", "Propose": "working", "Write up": "writing"}
 
 
-# Standings the improver has or is done with (stage, and improved): never sent in again, never picked.
-TAKEN = ("queued", "working", "retry", "review", "declined", "improved", "test", "unreadable")
-# Analysed, with nothing more to do: fine (no trouble found) and nofix (no fix found for any of its troubles) can be
-# sent in again, one by one, with a note (Pipeline.resent), as smooth can: never picked for a run.
-AGAIN = ("fine", "nofix")
-STANDINGS = ("waiting", "smooth", "sent", "active", *AGAIN, *TAKEN)  # Every standing, as the list counts them.
-# Standings that need nothing more from the household: out of the list on their own (archived), unless unarchived.
-SETTLED = ("smooth", "fine", "declined", "nofix", "improved", "test", "unreadable")
-# Off the list on their own: the settled ones, and those up for review, whose improvement waits at the top of the home
-# page (a row would only repeat it).
-OFF_LIST = SETTLED + ("review",)
-
-
-def archived(summary, status):
-    """Whether a conversation is out of the list: archived by hand (hidden), or off it on its own (settled, or up for
-    review), unless unarchived while it stood so (unarchived: that standing, kept in the list whenever it stands so
-    again; sending it in clears it)."""
-    return bool(summary.get("hidden")) or (status in OFF_LIST and summary.get("unarchived") != status)
-
-
-def decided(runtime):
-    """What the improvements say about the conversations: {short ID: [(status, improvement ID)]} of those covering
-    each, the goals ("short:turn") settled (Improvements.settled_goals: {goal: title}, NO_FIX for no fix found), and
-    the conversations whose analyses wait at Propose (since the last proposal, or with friction no proposal has had:
-    Pipeline.unseen)."""
-    improvements, covers = runtime.improvements, {}
-    for item in improvements.items.values():
-        for conversation in dict.fromkeys(goal.split(":")[0] for goal in improvements._covers(item)):
-            covers.setdefault(conversation, []).append((item["status"], item["id"]))
-    settled = improvements.settled_goals()
-    return {"covers": covers, "settled": settled,
-            "since": {rid for rid, _ in runtime.pipeline._runs().since} | set(runtime.pipeline.unseen(settled=settled))}
-
-
-def standing(runtime, rid, at=None, tests=None, fixed=None, known=None):
-    """Where a conversation stands: active (still going), sent (in, at the next run; sent in again after its
-    analysis too, until its fresh one), improved (an improvement for it was accepted), the stage a run took it to
-    (stage), smooth (the quick check found it smooth, sent in plainly or not: it can be sent in again or picked, one
-    by one, for the full analysis), or waiting (it can be sent in: one a run took in that still waits for the quick
-    check can too, and with a note then skips it)."""
-    pipeline, summary = runtime.pipeline, runtime.recorder.index.get(rid) or {}
-    runs = pipeline._runs()
-    at = pipeline._at() if at is None else at
-    tests = pipeline._tests() if tests is None else tests
-    if short(rid) in (improved(runtime) if fixed is None else fixed):
-        return "improved"
-    if pipeline.resent(rid, runs):  # Sent in again after its analysis: in, until it's analysed afresh with the note.
-        return "queued" if rid in at else "sent"
-    smooth = bool((runs.analyzed.get(rid) or {}).get("triaged"))
-    if (rid in at and at[rid] != "triage") or (rid in runs.analyzed and not smooth) or rid in runs.unreadable \
-            or rid in tests:
-        return stage(rid, runs, tests, decided(runtime) if known is None else known)
-    if summary.get("filed") and (not smooth or pipeline.skips_check(rid)):  # Else the check answered that filing.
+def standing(runtime, rid, place=None):
+    """Where a conversation stands, as its chip names it, from its flow record (place: flow.Flow.place, if read): at
+    Your Assist or Triage, sent if it was sent in (filed while still going too), else still going while recorded, else
+    waiting (New); at Your review, unclear while a question waits for the household, else review; in Your household,
+    by its outcome."""
+    flow = runtime.flow
+    place = place or flow.place(rid)
+    stage = place["stage"]
+    if stage == "Your household":
+        return OUTCOMES[place["outcome"]]
+    if stage == "Your review":
+        return "unclear" if flow.question(rid) else "review"
+    if stage in AT:
+        return AT[stage]
+    if flow.sent(rid):
         return "sent"
-    if smooth:
-        return "smooth"
-    return "active" if summary.get("status") == "active" else "waiting"
+    if stage == "Your Assist" and (runtime.recorder.index.get(rid) or {}).get("status") == "active":
+        return "active"
+    return "waiting"
 
 
-def standings(runtime, rids):
-    """{recording id: where it stands} of these conversations, with what standing() reads worked out once."""
-    pipeline = runtime.pipeline
-    at, tests, fixed, known = pipeline._at(), pipeline._tests(), improved(runtime), decided(runtime)
-    return {rid: standing(runtime, rid, at, tests, fixed, known) for rid in rids}
-
-
-def stage(rid, runs, tests, known):
-    """Where a run took a conversation, from the run log's index and the improvements (decided): test (the household
-    said it was one), unreadable (no role can read it), review (an improvement for it waits for the household's
-    review), queued (waiting for analysis: one the quick check found smooth, sent in for the full analysis, too),
-    fine (analysed: nothing to fix), working (trouble nothing settles yet, waiting at Propose: analysed since the last
-    proposal), retry (trouble a proposal had and no fix yet: the next proposal looks again, within its tests-per-goal
-    budget), nofix (no fix was found for any of its troubles: final, unless sent in again), or declined (every trouble
-    it had is settled, by improvements none of which was accepted: declined)."""
-    from .hypotheses import friction_by_goal
-    if rid in tests:
-        return "test"
-    if rid in runs.unreadable:
-        return "unreadable"
-    if any(status in PENDING for status, _ in known["covers"].get(short(rid), [])):
-        return "review"
-    if (analysis := runs.analyzed.get(rid)) is None or analysis.get("triaged"):
-        return "queued"
-    try:
-        trouble = {f"{short(rid)}:{turn}" for turn in friction_by_goal(analysis)}
-    except (KeyError, TypeError):  # An analysis in an older shape: read as the developer view reads it.
-        trouble = set()
-    if not trouble:
-        return "fine"
-    if trouble - known["settled"].keys():  # Waiting at Propose: analysed since the last proposal, or a revision asked.
-        revising = any(status == "revision_requested" for status, _ in known["covers"].get(short(rid), []))
-        return "working" if rid in known["since"] or revising else "retry"
-    return "nofix" if all(known["settled"][goal] == NO_FIX for goal in trouble) else "declined"
+def row(runtime, rid):
+    """Where a conversation stands, as the list and its page read it: its chip (status); hidden: left out of the list
+    (archived, in Your household, or up for review), unless unarchived where it stands now; sendable: it can be sent
+    in (from Your household, P0.12; at Your Assist, unheld; or as the answer to its question, P0.11); runnable: a
+    picked run can take it (new and waiting, or held anywhere, P0.7; or in Your household, sent in first when picked
+    by hand: the panel never picks those with Select all); archivable: it can be archived (not while an improvement of
+    it waits for the household, flow.Flow.waits); and its stage, hold, and the improvement a duplicate points to."""
+    flow = runtime.flow
+    place = flow.place(rid)
+    status, stage = standing(runtime, rid, place), place["stage"]
+    off = place["archived"] or stage == "Your household" or status == "review"
+    held = place["held"]
+    return {"status": status, "hidden": off and not flow.unarchived(rid),
+            "sendable": stage == "Your household" or (stage == "Your Assist" and not held) or status == "unclear",
+            "runnable": flow.waiting(rid) or bool(held) or stage == "Your household",
+            "archivable": not flow.waits(rid),
+            "stage": stage, "held": {"cause": held["cause"], "why": held["why"]} if held else None,
+            "covered_by": place["covered_by"]}
 
 
 ORDERS = {  # How a list can be sorted: newest, oldest, or the most effort first (more turns, then failed calls).
@@ -293,40 +234,35 @@ def listed(runtime, kept, query=None, days=None, order=None, offset=0, limit=PAG
     (a day, a part of the day, a time), and every other word, in any order, in what the user said or Assist replied
     (any case); if none has them all, those with the most of them (close: true). With a time said, the closest to it
     come first unless an order is chosen (closest: true), and each row says it was found by when (timed); otherwise
-    newest first unless chosen. Two words a conversation said that
-    name something with a part of the day in it ("night light", "good morning") are words to find together, not a
-    when; if none fits the when, the words are all looked for as said ("weather morning"). Sorted (ORDERS), with how
-    many match, the IDs of those among them that can be sent in (to pick them all), and how many of all the
-    conversations stand where. Archived ones (archived: by hand, or settled) are left out of the list, and not
-    counted as waiting, unless asked for (hidden); how many are archived is said (hidden). statuses: only those
-    standing so (all of them when None); by_status: how many of those matching the rest stand each way, for choosing
-    (only the standings some have: the settled ones only with the archived). every: each one that matches, past this
-    page too, with where it stands and whether it's archived (the home page's selection: Select all, and what its
-    actions apply to). stands: the same of each of ids still in view, whatever the filters (the selection's and the
-    opened one's: one a run has archived since leaves the selection)."""
-    pipeline, index = runtime.pipeline, runtime.recorder.index
-    at, tests, fixed, known = pipeline._at(), pipeline._tests(), improved(runtime), decided(runtime)
+    newest first unless chosen. Two words a conversation said that name something with a part of the day in it
+    ("night light", "good morning") are words to find together, not a when; if none fits the when, the words are all
+    looked for as said ("weather morning"). Sorted (ORDERS), with how many match. Each row says where it stands and
+    what can be done with it (row); one up for review names its improvement (review). Those the list leaves out
+    (row's hidden) are left out unless asked for (hidden); how many there are is said (hidden). statuses: only those
+    standing so (all of them when None); by_status: how many of those matching the rest stand each way, for choosing.
+    every: each one that matches, past this page too, with where it stands (its chip and stage), whether it's left
+    out, whether a run can take it and whether it can be archived (the home page's selection: Select all, what its
+    actions apply to, and what a picked run's confirmation counts). stands: the same of each of
+    ids still in view, whatever the filters (the selection's and the opened one's: one a run has moved out of the
+    list since leaves the selection)."""
+    index = runtime.recorder.index
     since = (utcnow() - timedelta(days=days)).isoformat() if days else None
     texts = {rid: "\n".join(t["you"] + "\n" + t["assist"] for t in (k or {}).get("turns", [])).casefold()
              for rid, k in kept.items()}
     said = {name for name in maybe_names(query or "") if any(name in text for text in texts.values())}
     at_time, words = (None, together((query or "").casefold().split(), said)) if plain \
         else when(query or "", names=said)
-    found, counts, offs, out_of_view, asked, stands = [], dict.fromkeys(STANDINGS, 0), {}, 0, set(ids), []
+    found, offs, out_of_view, asked, stands = [], {}, 0, set(ids), []
     for rid, summary in index.items():
         if not summary.get("user_turns") or summary.get("deleting"):  # Deleted during a run: gone from view.
             continue
-        status = standing(runtime, rid, at, tests, fixed, known)
-        out = archived(summary, status)
+        where = row(runtime, rid)
         if rid in asked:
-            stands.append({"id": rid, "status": status, "hidden": out})
-        if out:
+            stands.append({"id": rid, **where})
+        if where["hidden"]:
             out_of_view += 1
-            if not hidden:  # Still counted where it stands, but not among those to send in.
-                if status != "waiting":
-                    counts[status] += 1
+            if not hidden:
                 continue
-        counts[status] += 1
         if since and (summary.get("started") or "") < since:
             continue
         local = dt_util.as_local(dt_util.parse_datetime(summary["started"])) if at_time and summary.get("started") else None
@@ -341,16 +277,16 @@ def listed(runtime, kept, query=None, days=None, order=None, offset=0, limit=PAG
         found.append({"id": rid, "started": summary.get("started"), "turns": summary.get("user_turns"),
                       "said": (turns[0]["you"] if turns else "")[:SAID], "reply": (turns[0]["assist"] if turns else "")[:SAID],
                       "match": snippet(turns, words) if words else None,
-                      "status": status, "failed": (kept.get(rid) or {}).get("failed", 0), "timed": bool(at_time),
-                      "note": (summary.get("filed") or {}).get("note"), "matched": matched,
-                      "hidden": out, **({"review": review(known, rid)} if status == "review" else {})})
+                      "failed": (kept.get(rid) or {}).get("failed", 0), "timed": bool(at_time),
+                      "note": (runtime.flow.sent(rid) or {}).get("note"), "matched": matched, **where,
+                      **({"review": runtime.flow.review(rid)} if where["status"] == "review" else {})})
     if at_time and not found:
         return listed(runtime, kept, query, days, order, offset, limit, plain=True, hidden=hidden, statuses=statuses,
                       ids=ids)
     close = bool(words) and not any(r["matched"] == len(words) for r in found)
     if words and not close:
         found = [r for r in found if r["matched"] == len(words)]
-    by_status = {status: n for status in STANDINGS if (n := sum(1 for r in found if r["status"] == status))}
+    by_status = dict(Counter(r["status"] for r in found))
     if statuses is not None:
         found = [r for r in found if r["status"] in statuses]
     found.sort(key=ORDERS[order or "newest"], reverse=order != "oldest")
@@ -359,14 +295,9 @@ def listed(runtime, kept, query=None, days=None, order=None, offset=0, limit=PAG
         found.sort(key=lambda r: offs[r["id"]])
     if close:  # The most words matched first, each group in the chosen order.
         found.sort(key=lambda r: r["matched"], reverse=True)
-    # Those a run took in that wait for the quick check: the ones it checks, and how many were sent in so they skip
-    # it (counted at Analyze, as the backlog does).
-    queued = [rid for rid, stage in at.items() if stage == "triage"]
-    return {"conversations": found[offset:offset + limit], "total": len(found), "counts": counts, "close": close,
-            "closest": closest, "queued": {"ids": [rid for rid in queued if not pipeline.skips_check(rid)],
-                                           "sent": sum(1 for rid in queued if pipeline.skips_check(rid))},
-            "waiting": [r["id"] for r in found if r["status"] == "waiting"], "on_demand": pipeline.on_demand,
-            "every": [{"id": r["id"], "status": r["status"], "hidden": r["hidden"]} for r in found],
+    return {"conversations": found[offset:offset + limit], "total": len(found), "close": close, "closest": closest,
+            "on_demand": runtime.pipeline.on_demand,
+            "every": [{k: r[k] for k in ("id", "status", "stage", "hidden", "runnable", "archivable")} for r in found],
             "hidden": out_of_view, "by_status": by_status, "stands": stands}
 
 
@@ -376,15 +307,8 @@ def kept(runtime, rid):
     return summary is not None and not summary.get("deleting")
 
 
-def review(known, rid):
-    """The improvement waiting for the household's review that covers a conversation (the first, if several)."""
-    return next((item for status, item in known["covers"].get(short(rid), []) if status in PENDING), None)
-
-
 def shown(runtime, kept, rid):
-    """One conversation to read: what was said, turn by turn, where it stands, and whether it's archived (hidden)."""
-    summary, status = runtime.recorder.index[rid], standing(runtime, rid)
-    return {"id": rid, "started": summary.get("started"), "status": status,
-            "turns": (kept.get(rid) or {}).get("turns", []), "note": (summary.get("filed") or {}).get("note"),
-            "on_demand": runtime.pipeline.on_demand, "hidden": archived(summary, status)}
-
+    """One conversation to read: what was said, turn by turn, and where it stands (row)."""
+    return {"id": rid, "started": runtime.recorder.index[rid].get("started"), **row(runtime, rid),
+            "turns": (kept.get(rid) or {}).get("turns", []), "note": (runtime.flow.sent(rid) or {}).get("note"),
+            "on_demand": runtime.pipeline.on_demand}

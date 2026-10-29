@@ -52,7 +52,7 @@ def snapshot(hass):
     return {"at": utcnow().isoformat(), "time_zone": hass.config.time_zone,
             "home_name": hass.config.location_name, "states": states,
             "entities": entities, "devices": devices, "areas": areas, "exposure": exposure,
-            "scripts": plain(scripts), "automations": plain(automations),
+            "scripts": plain(scripts), "automations": plain(automations), "template_actions": template_actions(hass),
             # The household knowledge then, and whether Assist read it, so a replay rebuilds the same prompt.
             "household": plain(getattr(hass.data.get(f"{DOMAIN}_household"), "knowledge", None)),
             "household_on": bool(getattr(hass.data.get(f"{DOMAIN}_household"), "on", False)),
@@ -97,3 +97,40 @@ def live_definitions(hass):
             if getattr(entity, "raw_config", None):
                 automations.append(deepcopy(dict(entity.raw_config)))
     return scripts, automations
+
+
+def template_actions(hass):
+    """{template entity: the entities its own actions act on}, as Home Assistant's script engine finds them: what HA
+    itself switches, under the request, when the entity is commanded (a template light's helper)."""
+    from homeassistant.helpers.entity_platform import async_get_platforms
+    found = {}
+    for platform in async_get_platforms(hass, "template"):
+        for entity_id, entity in platform.entities.items():
+            acts_on = {e for script in getattr(entity, "_action_scripts", {}).values()
+                       for e in script.referenced_entities} - {entity_id}
+            if acts_on:
+                found[entity_id] = sorted(acts_on)
+    return found
+
+
+def live_script_definitions(hass, entities):
+    """Current UI/YAML script configs; later observations, never historical snapshots."""
+    from copy import deepcopy
+    from .cases import CaseError
+    component = hass.data.get("script")
+    definitions = {}
+    for entity in entities:
+        script = component.get_entity(entity) if component else None
+        if script is None or not getattr(script, "raw_config", None):
+            raise CaseError(f"Script {entity} has no readable configuration")
+        definitions[entity] = deepcopy(dict(script.raw_config))
+    return definitions
+
+
+def assist_config(source, setup=None):
+    """What Assist was set up with in a replay: the recorded scripts ({object id: config}) with a change's on top, and
+    the entities exposed to it (sorted), as the sandbox is seeded with them."""
+    setup = setup or {}
+    exposure = {**(source.get("exposure") or {}), **(setup.get("exposure") or {})}
+    return {"scripts": {**(source.get("scripts") or {}), **(setup.get("scripts") or {})},
+            "exposed": sorted(e for e, exposed in exposure.items() if exposed)}

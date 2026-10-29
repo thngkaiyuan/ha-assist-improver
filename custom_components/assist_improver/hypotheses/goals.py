@@ -1,7 +1,7 @@
 """What a session's analysis says, read the ways the roles need it: its friction by goal, the devices a goal names,
 the session as a script, and what Assist can do with a device."""
 
-from ..analyzer import side_effects_left, top_level
+from ..analyzer import root_turn, top_level
 
 def short(recording_id):
     return recording_id[:8]
@@ -15,6 +15,7 @@ UNANALYSED_NOTE = ("Not analysed, so its goals and friction weren't extracted; r
 
 FRICTION_KINDS = {  # What each kind of friction means, for the roles that read it.
     "extra turn": "a turn the user spent getting a goal done (served: what for)",
+    "unmet": "a goal Assist didn't meet: it guessed or missed what the user wanted",
     "ask": "settings the user's words left open, which the user then chose",
     "side effect": "a device Assist changed that no goal asked for and that didn't end as it started",
     "feedback": "what the household said about how Assist behaved (in a turn, or in the note it was sent in with)",
@@ -29,21 +30,15 @@ def last_turn(analysis):
     return analysis.get("turns") or max(named, default=1)
 
 
-def side_effects(analysis):
-    """The side effects left that count as friction: those whose start was known (an older analysis kept a sleeping
-    car's too), each with the turn whose change left it; an older analysis didn't keep that turn, so its side effects
-    go with its first goal (the proposer's script, and a test's case, read the turn from the recording)."""
-    from ..analyzer import UNKNOWN_STATES
-    first = min((g["turn"] for g in top_level(analysis.get("goals", []))), default=1)
-    return [{**item, "turn": item.get("turn") or first} for item in analysis.get("side_effects_left") or []
-            if item.get("start") not in (None, *UNKNOWN_STATES)]
-
-
 def friction(analysis):
     """The friction in one analysed session, by the turn where it happened: extra turns (with the sub-goals they
-    served), asks, side effects left (code-derived) and feedback (a note's at the session's last turn)."""
+    served), goals left unmet and asks, side effects left (code-derived) and feedback (a note's at the session's last
+    turn)."""
     goals = analysis.get("goals", [])
     out = []
+    for goal in top_level(goals):  # Assist guessed or missed what the user wanted (DETAILS P9.11.4).
+        if goal.get("reached") is False and goal["kind"] != "ask":
+            out.append({"turn": goal["turn"], "kind": "unmet", "summary": goal["summary"]})
     for turn in analysis.get("extra_turns", []):
         served = [g for g in goals if g.get("serves") is not None and g["turn"] == turn]
         out.append({"turn": turn, "kind": "extra turn",
@@ -52,7 +47,7 @@ def friction(analysis):
         if goal["kind"] == "ask" and goal.get("serves") is None:
             out.append({"turn": goal["turn"], "kind": "ask", "left_open": goal.get("entity_ids", []),
                         "summary": goal["summary"], "user_chose": goal.get("user_chose", [])})
-    for item in side_effects(analysis):
+    for item in analysis.get("side_effects_left") or []:
         out.append({"turn": item["turn"], "kind": "side effect",
                     **{k: item[k] for k in ("entity_id", "start", "end")}})
     for item in analysis.get("feedback") or []:
@@ -67,7 +62,8 @@ def goal_devices(analysis, turn):
     """The devices a goal (and the sub-goals serving it) wanted something from."""
     found = set()
     for goal in analysis.get("goals", []):
-        if goal["turn"] == turn or goal.get("serves") == turn:
+        serves = goal.get("serves")
+        if goal["turn"] == turn or (serves is not None and root_turn(analysis.get("goals", []), serves) == turn):
             found.update([goal["entity_id"]] if goal.get("entity_id") else goal.get("entity_ids") or [])
     return found
 
@@ -77,13 +73,13 @@ def friction_by_goal(analysis):
     turn belongs to the goal its sub-goal serves, or else to the latest goal before it; an ask is its own. A side
     effect belongs to the goal whose turn made the change (the goal a sub-goal there serves, or else the latest goal
     up to that turn). Feedback belongs to the goal it's about; general feedback is friction on its own, at its turn
-    (a note's: the session's last turn), and is tested on the goal before it (validation.targets)."""
+    (a note's: the session's last turn)."""
     goals = analysis.get("goals", [])
     tops = sorted({g["turn"] for g in top_level(goals)})
-    serving = {g["turn"]: g["serves"] for g in goals if g.get("serves") is not None}
+    serving = {g["turn"]: root_turn(goals, g["serves"]) for g in goals if g.get("serves") is not None}
     groups = {}
     for item in friction(analysis):
-        if item["kind"] == "ask":
+        if item["kind"] in ("ask", "unmet"):
             owner = item["turn"]
         elif item["kind"] == "feedback":
             about = item.get("about_goal_at_turn")
@@ -93,7 +89,7 @@ def friction_by_goal(analysis):
             owner = item["turn"] if item["turn"] in tops else serving.get(item["turn"]) or (
                 upto[-1] if upto else item["turn"])
         else:
-            served = [s["for_goal_at_turn"] for s in item["served"]]
+            served = [root_turn(goals, s["for_goal_at_turn"]) for s in item["served"]]
             earlier = [t for t in tops if t < item["turn"]]
             owner = served[0] if served else (earlier[-1] if earlier else item["turn"])
         groups.setdefault(owner, []).append(item)
@@ -106,16 +102,6 @@ def goal_summary(analysis, turn):
     said = said or dict.fromkeys(f"Feedback: {f['what']}" for f in friction_by_goal(analysis).get(turn, [])
                                  if f["kind"] == "feedback")
     return "; ".join(said)
-
-
-def feedback_goal(analysis, turn):
-    """The goal turn a test replays for friction at `turn`: the goal there, or, for general feedback on its own,
-    the latest goal before it (the replies the household reacted to); None if there's none."""
-    tops = sorted({g["turn"] for g in top_level(analysis.get("goals", []))})
-    if turn in tops:
-        return turn
-    earlier = [t for t in tops if t < turn]
-    return earlier[-1] if earlier else None
 
 
 def removes(sessions, hypothesis):
@@ -174,12 +160,8 @@ def scenario(analysis, view):
         out["not_analysed"] = TRIAGED_NOTE
     elif analysis.get("not_analysed"):
         out["not_analysed"] = UNANALYSED_NOTE
-    # An earlier version kept no turn with its side effects (they count on the first goal): the recording says which.
-    unknown = {s["entity_id"] for s in analysis.get("side_effects_left") or [] if not s.get("turn")}
-    made = {s["entity_id"]: s["turn"] for s in side_effects_left(view, goals)} if unknown else {}
-    left = [{**{k: f[k] for k in ("entity_id", "start", "end")},
-             "changed_in_turn": made.get(f["entity_id"], f["turn"]) if f["entity_id"] in unknown else f["turn"],
-             "for_goal_at_turn": t} for t, items in by_goal.items() for f in items if f["kind"] == "side effect"]
+    left = [{**{k: f[k] for k in ("entity_id", "start", "end")}, "changed_in_turn": f["turn"], "for_goal_at_turn": t}
+            for t, items in by_goal.items() for f in items if f["kind"] == "side effect"]
     if left:
         out["side_effects_left"] = sorted(left, key=lambda f: f["changed_in_turn"])
     return out

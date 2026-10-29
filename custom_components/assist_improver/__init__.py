@@ -1,7 +1,5 @@
 """Assist Improver: setup and unload, the household services, and the developer services (hidden unless on)."""
 
-from uuid import uuid4
-
 import probatio
 from homeassistant.const import EVENT_HOMEASSISTANT_STOP, EVENT_STATE_CHANGED
 from homeassistant.core import SupportsResponse, callback
@@ -10,41 +8,31 @@ from homeassistant.helpers import config_validation as cv, issue_registry as ir
 from homeassistant.helpers.start import async_at_started
 from homeassistant.helpers.service import async_register_admin_service
 
-from . import ai_setup, analysis, household, panel, practice, proposal, retention, settings, trace, triage
+from . import ai_setup, household, panel, practice, retention, settings, trace
 from .const import (CONF_ACCEPTED_WEAK, CONF_AI_TASK, CONF_DEVELOPER, CONF_HOUSEHOLD, CONF_OPT_OUT, CONF_RECORDING,
                     CONF_SCHEDULE, DOMAIN)
-from .casebook import CaseBook
-from .baseline import BaselineManager
-from .candidates import CandidateManager
 from .cases import CaseError
-from .exploration import SessionView
+from .flow import KEYS
 from .improvements import Improvements
 from .pipeline import Pipeline, schedule
 from .recorder import Recorder
-from .reflective import RoleRuns, run_role
+from .reflective import RoleRuns
 from .runtime import RuntimeData
 from .settings import role_model
+from .simulate import Replays
 
 PLATFORMS = ["switch"]
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 SERVICES = ("status", "export_recording")  # For bug reports: what the improver holds, and one recording.
-# Developer mode only (a hidden setting): run one AI role on chosen inputs, for debugging and evaluation rounds.
-# They skip the panel's run guard and confirmation, so households never get them.
-DEVELOPER_SERVICES = ("list_recordings", "list_improvements", "analyze_recording", "quick_check",
-                      "generate_hypotheses", "review_hypothesis", "test_hypotheses", "write_summaries",
-                      "check_replay_fidelity", "replay_recording")
+# Developer mode only (a hidden setting): what the improver holds, and a recording's replay, for debugging. They skip
+# the panel's run guard and confirmation, so households never get them.
+DEVELOPER_SERVICES = ("list_recordings", "list_improvements", "check_replay_fidelity", "replay_recording")
 
 
 async def async_setup(hass, config):
     """Household knowledge, once per run: Assist reads it (llm.py) even while the entry reloads."""
     await household.async_setup(hass)
     return True
-
-
-async def async_migrate_entry(hass, entry):
-    """What earlier versions left behind, upgraded once (migrations.py)."""
-    from .migrations import async_migrate
-    return await async_migrate(hass, entry)
 
 
 async def async_remove_entry(hass, entry):
@@ -57,21 +45,21 @@ async def async_remove_entry(hass, entry):
 
 
 async def tidy(hass, runtime):
-    """Retention (retention.py), daily: what an improvement or a case uses, and a conversation still waiting for
-    analysis, stay in full. Traced in today's trace."""
-    recorder, pipeline, improvements = runtime.recorder, runtime.pipeline, runtime.improvements
+    """Retention (retention.py), daily, from each conversation's flow record: what a replay or an improvement uses
+    stays in full, and so does a conversation a round still has to work on (at Triage to Write up, or held) or one
+    waiting for a run. Traced in today's trace."""
+    recorder, flow, pipeline = runtime.recorder, runtime.flow, runtime.pipeline
     with trace.today():
         async with trace.span("tidy"):
-            referenced = {c.get("recording_id") for c in runtime.casebook.cases.values()}
-            for item in improvements.items.values():
-                referenced |= {g.split(":")[0] for g in improvements._covers(item)}
-            # Waiting for analysis: with on-demand improvements on, only those sent in (the fast lane's); the rest are
+            referenced = runtime.replays.recordings() | {item.get("conversation")
+                                                         for item in runtime.improvements.items.values()}
+            # Waiting for a run: with on-demand improvements on, only those sent in (the fast lane's); the rest are
             # kept in full for 30 days, then condensed like any other (as the README says), schedule or not. A full run
             # still analyses a condensed one; it just can't replay it as a test.
-            referenced |= set(pipeline.to_analyze(filed_only=pipeline.on_demand)) | set(pipeline._at())
-            named = {rid: {e for g in analysis.get("goals", []) for e in [g.get("entity_id"),
-                                                                         *(g.get("entity_ids") or [])] if e}
-                     for rid, analysis in pipeline._analyzed().items()}
+            referenced |= {rid for rid in recorder.index if (conv := flow.record(rid))["stage"] in KEYS or conv["held"]
+                           or (flow.waiting(rid) and (pipeline.filed(rid) or not pipeline.on_demand))}
+            named = {rid: {e for g in found.get("goals", []) for e in [g.get("entity_id"), *(g.get("entity_ids") or [])]
+                           if e} for rid in recorder.index if (found := flow.analysis(rid))}  # Its latest analysis's.
             done = await retention.prune(recorder, referenced, named=named)
             done["runs"] = await runtime.role_runs.prune(set(recorder.index))
             done["traces"] = await retention.prune_traces(hass, trace.active_ids())
@@ -95,41 +83,36 @@ async def async_setup_entry(hass, entry):
     except Exception:
         await trace.async_unload()
         raise
-    casebook = CaseBook(hass, recorder)
+    runtime = RuntimeData(recorder=recorder, role_runs=RoleRuns(hass), replays=Replays(hass),
+                          improvements=Improvements(hass, recorder))
     try:
-        await casebook.start()
-    except Exception:
-        await recorder.stop()
-        await trace.async_unload()
-        raise
-    candidates = CandidateManager(hass, casebook)
-    runtime = RuntimeData(recorder=recorder, role_runs=RoleRuns(hass), casebook=casebook,
-                          baselines=BaselineManager(hass, casebook), candidates=candidates,
-                          improvements=Improvements(hass, recorder, casebook, candidates))
-    try:
-        await candidates.start()
+        await runtime.replays.start()
         await runtime.role_runs.start()
         await runtime.improvements.start()  # Recovers a change HA stopped in the middle of.
         # The review panel, with how many improvements wait for review in its sidebar title.
         runtime.panel = await panel.async_setup_panel(hass, len(runtime.improvements.pending()))
+        from .flow import Flow
+        runtime.flow = Flow(hass, entry, runtime)  # Where each conversation is, round by round (SPEC.md P0).
+        await runtime.flow.load()
         runtime.pipeline = pipeline = Pipeline(hass, entry, runtime)  # Run now, and the schedule (off by default).
-        await pipeline.load()
         pipeline.current = next((dict(r) for r in reversed(runtime.role_runs.runs) if r.get("kind") == "pipeline"),
                                 None)
-        recorder.on_filed_closed = pipeline.request  # On-demand: a filed conversation runs once it ends.
+        # Filed from Assist: sent in, as the panel sends one in (flow.sent_in).
+        recorder.on_filed = lambda rid, note, user_id: runtime.flow.sent_in(rid, note, via="assist", by=user_id)
+
+        def closed(rid):  # On-demand: one sent in gets a run of its own once it ends.
+            if pipeline.filed(rid):
+                pipeline.request(rid)
+        recorder.on_filed_closed = closed
         from .conversations import Transcripts
         runtime.transcripts = Transcripts(hass, recorder)
         async def forgotten(keys):
-            # What was derived from deleted conversations goes with them: their run-log records, their words, and
-            # their cases and the tests on them, except those an improvement shows as its tests.
+            # What was derived from deleted conversations goes with them: their flow records, run-log records, words
+            # and replays (an improvement keeps its own copy of its test).
+            await runtime.flow.forget(keys)
             await runtime.role_runs.drop(keys)
             await runtime.transcripts.all()  # Drops what's no longer in the index.
-            shown = [t for item in runtime.improvements.items.values() for t in item.get("tests", [])]
-            cases = {cid for cid, case in runtime.casebook.cases.items() if case.get("recording_id") in keys}
-            plans = {pid for pid, c in runtime.candidates.items.items() if c["plan"].get("evaluation_case_id") in cases}
-            await runtime.candidates.drop(plans - {t.get("plan_id") for t in shown})
-            await runtime.casebook.drop(cases - {t.get("case_id") for t in shown})
-            await runtime.improvements.forget({key[:8] for key in keys})  # No fix found for its goals, and budgets.
+            await runtime.replays.drop(keys)
         recorder.on_forgotten = forgotten
         # Deleted during a run that a restart cut off: they go now.
         hass.async_create_task(recorder.forget_queued(), "assist_improver_forget_queued")
@@ -162,12 +145,10 @@ async def async_setup_entry(hass, entry):
     entry.async_on_unload(async_at_started(hass, recover))
 
     async def started(_hass):
-        # Once HA has started: analyses an earlier version kept are upgraded by code first (their side effects), then
-        # conversations filed before a restart run (on-demand).
-        if upgraded := await pipeline.upgrade_side_effects():
-            trace.journal("info", f"Side effects recomputed for {upgraded} stored analyses")
-        if pipeline.on_demand and pipeline.to_analyze(filed_only=True):
-            pipeline.request()
+        # Once HA has started: each conversation sent in before a restart and still waiting gets its fast lane, in turn.
+        if pipeline.on_demand and (sent := [rid for rid in recorder.index
+                                            if runtime.flow.waiting(rid) and pipeline.filed(rid)]):
+            pipeline.request(*sent)
 
     entry.async_on_unload(async_at_started(hass, started))
 
@@ -229,62 +210,14 @@ async def async_setup_entry(hass, entry):
     async def replay_recording(call):
         if not call.data.get("allow_paid_inference"):
             raise HomeAssistantError("Paid inference has not been authorized")
-        from .baseline import replay_recording as replay
+        from .simulate import replay_recording as replay
         try:
             return await replay(hass, recorder, call.data["recording_id"], call.data["last_turn"])
         except (CaseError, ValueError) as err:
             raise HomeAssistantError(str(err)) from err
 
-    async def test_hypotheses(call):
-        from .validation import test_hypotheses as run
-        try:
-            report = await run(hass, entry, runtime, **call.data)
-        except (CaseError, ValueError) as err:
-            raise HomeAssistantError(str(err)) from err
-        await runtime.improvements.refresh()  # Improvements the tests showed go up for review.
-        return report
-
-    async def quick_check(call):
-        """The quick check alone on some recordings, with a given model (for calibrating it); nothing else runs."""
-        if not call.data.get("allow_paid_inference"):
-            raise HomeAssistantError("Paid inference has not been authorized")
-        checker = call.data.get("entity_id") or role_model(entry, "triage")
-        answers = {}
-        for recording_id in call.data["recording_ids"]:
-            try:
-                view = SessionView(await recorder.export(recording_id))
-            except (CaseError, ValueError) as err:
-                answers[recording_id] = {"status": "unreadable", "error": str(err)}
-                continue
-            check = await run_role(hass, role=triage.ROLE, entity_id=checker, instructions=triage.INSTRUCTIONS,
-                                   payload=triage.payload(view), structure=triage.STRUCTURE, allow_paid_inference=True)
-            answers[recording_id] = {k: check.get(k) for k in ("status", "output", "error", "usage")}
-        report = {"id": uuid4().hex, "kind": "quick_check", "status": "completed", "entity_id": checker,
-                  "output": answers}
-        await runtime.role_runs.record(report)  # Kept, so a lost page or connection loses nothing.
-        return report
-
-    async def write_summaries(call):
-        """The editor writes the headline and what-you-get for improvements (those without, or the ones given)."""
-        if not call.data.get("allow_paid_inference"):
-            raise HomeAssistantError("Paid inference has not been authorized")
-        from .pipeline import editor_model
-        ids = set(call.data["improvement_ids"]) if call.data.get("improvement_ids") else None
-        return {"copy": await runtime.improvements.write_copy(call.data.get("entity_id") or editor_model(entry), ids)}
-
     async def list_improvements(call):
         return {"improvements": runtime.improvements.listed()}
-
-
-    async def developer_action(call):
-        try:
-            if call.service == "analyze_recording":
-                return await analysis.analyze(hass, entry, runtime, **call.data)
-            return await proposal.propose(hass, entry, runtime, call.service, **call.data)
-        except (CaseError, ValueError) as err:
-            raise HomeAssistantError(str(err)) from err
-
-    paid = {probatio.Optional("allow_paid_inference", default=False): bool}
 
     developer = bool(entry.options.get(CONF_DEVELOPER))
     for name, handler, schema in (
@@ -292,28 +225,11 @@ async def async_setup_entry(hass, entry):
         ("export_recording", export, probatio.Schema({probatio.Required("recording_id"): str})),
         ("list_recordings", list_recordings, probatio.Schema({})),
         ("list_improvements", list_improvements, probatio.Schema({})),
-        ("write_summaries", write_summaries, probatio.Schema({
-            probatio.Optional("improvement_ids"): [str], probatio.Optional("entity_id"): str, **paid})),
-        ("quick_check", quick_check, probatio.Schema({
-            probatio.Required("recording_ids"): probatio.All([str], probatio.Length(min=1)),
-            probatio.Optional("entity_id"): str, **paid})),
         ("check_replay_fidelity", check_replay_fidelity, probatio.Schema({probatio.Required("recording_id"): str})),
         ("replay_recording", replay_recording, probatio.Schema({
             probatio.Required("recording_id"): str,
-            probatio.Optional("last_turn", default=1): probatio.All(int, probatio.Range(min=1, max=20)), **paid})),
-        ("test_hypotheses", test_hypotheses, probatio.Schema({
-            probatio.Required("hypotheses"): probatio.All([dict], probatio.Length(min=1)),
-            probatio.Required("analyses"): probatio.All([dict], probatio.Length(min=1)),
-            probatio.Optional("per_goal"): probatio.All(int, probatio.Range(min=1, max=20)), **paid})),
-        ("analyze_recording", developer_action, probatio.Schema({
-            probatio.Required("recording_id"): str, probatio.Optional("full", default=False): bool, **paid})),
-        ("generate_hypotheses", developer_action, probatio.Schema({
-            probatio.Required("analyses"): probatio.All([dict], probatio.Length(min=1)),
-            probatio.Optional("seeded"): [{probatio.Required("name"): str, probatio.Required("hypothesis"): dict}],
-            **paid})),
-        ("review_hypothesis", developer_action, probatio.Schema({
-            probatio.Required("hypothesis"): dict,
-            probatio.Required("analyses"): probatio.All([dict], probatio.Length(min=1)), **paid})),
+            probatio.Optional("last_turn", default=1): probatio.All(int, probatio.Range(min=1, max=20)),
+            probatio.Optional("allow_paid_inference", default=False): bool})),
     ):
         if name in SERVICES or developer:
             async_register_admin_service(hass, DOMAIN, name, handler, schema,

@@ -4,8 +4,8 @@ A trace is a pipeline run's (its id is the run's id) or a day's ("day_YYYYMMDD",
 starting, closing and changing storage, the daily tidy-up, decisions, apply and undo, notifications, practice
 sessions and settings changes. Each trace has its own private store, saved about every SAVE_DELAY seconds while
 active, and for good at the end of a run, on unload and when Home Assistant stops. Only active traces stay in
-memory; readers load the rest. The daily tidy-up deletes them (retention.prune_traces); the run log keeps stage
-timings for a year, so nothing long-term needs a trace.
+memory; readers load the rest. The daily tidy-up deletes them (retention.prune_traces); the run log keeps each run's
+record for a year, so nothing long-term needs a trace.
 
 Data shapes (stable: devview.py and the panel read them; treat what the readers return as read-only):
 
@@ -22,20 +22,18 @@ Data shapes (stable: devview.py and the panel read them; treat what the readers 
           section since Home Assistant started, by name (in memory only)
 
 Times are UTC ISO strings. A span is added when it closes, so it comes after its children: order by "at" to draw
-a waterfall. Tags merge the context's (CONTEXT_TAGS: run_id, recording_id, improvement_id, case_id, role, goal),
+a waterfall. Tags merge the context's (CONTEXT_TAGS: run_id, recording_id, improvement_id, plan_id, role, goal),
 which everything opened inside inherits, tasks started inside included, with the span's or entry's own. Span names
 are few and fixed (ids go in tags), as HOT adds up by name. Beyond MAX_SPANS spans or MAX_JOURNAL entries a trace
 counts what it drops instead.
 
 The spans, nested as they run (own tags in brackets):
 
-    run [trigger, only, force, outcome] > stage.analyze, stage.propose, stage.test, stage.write
+    run [trigger, only, outcome] > the spans below, as the flow moves each conversation (flow.py)
     conversation [recording_id, steps, triage, status, answer_status] > ai.triage, ai.journey_analyzer
     propose [sessions, status, generator_run] > evidence.load, ai.hypothesis_generator, ai.hypothesis_reviewer
-    test.hypothesis [hypothesis, goals] > test.goal [goal, case_id, status] > baseline [status],
-        candidate [plan_id, status], ai.followup_check
-    replay.turn [replay: "baseline" | "candidate", turn] > replay.tool [tool]; sandbox.start, sandbox.seed,
-        sandbox.stop > sandbox.teardown
+    replay [kind: "before" | "after", plan_id, status] > replay.turn [replay: "before" | "after", turn] >
+        replay.tool [tool]; sandbox.start, sandbox.seed, sandbox.stop > sandbox.teardown; ai.feedback_check
     write [improvement_id, status] > ai.editor
     ai.<role> [role, model, input_chars, status, tokens] > tool.<name> [accepted, or answer: "error"]
         (tool.ask_reviewer > evidence.check)
@@ -87,7 +85,7 @@ MAX_SPANS, MAX_JOURNAL = 20000, 5000  # Per trace.
 SAVE_DELAY = 15  # Seconds between saves of an active trace.
 BLOCK_MS = 100  # A synchronous section holding the event loop longer than this is journaled.
 MAX_TEXT = 4000  # A journal message or traceback is cut to this many characters.
-CONTEXT_TAGS = ("run_id", "recording_id", "improvement_id", "case_id", "role", "goal")
+CONTEXT_TAGS = ("run_id", "recording_id", "improvement_id", "plan_id", "role", "goal")
 LEVELS = {"debug": 10, "info": 20, "warning": 30, "error": 40, "critical": 50}
 STORE_PREFIX = f"{DOMAIN}.trace_"
 _ID = re.compile(r"[A-Za-z0-9_-]{1,64}")

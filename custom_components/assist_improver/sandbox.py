@@ -13,10 +13,19 @@ filter that comes off with the last sandbox; its entries in HA's memo caches go 
 it took over is recomputed for the real instance on its next call); and the time zone is its own config's only. In
 the replay worker's own process (OWN_PROCESS) nothing else shares it, so the process's default time zone is the
 home's there too, as the real instance has it.
+
+What Assist reads and sets off is as of the conversation: seeded as the home at a recorded turn, and moved on to each
+later one, the sandbox renders Assist's instructions (their now()) and runs Assist's tool calls at that turn's time
+(HA's date and time tool, and the scripts and automations a call sets off, their time conditions included), as HA's
+own tests freeze time where they need to. Only there: while sandboxes run, HA's dt_util.now reads the recorded time
+inside those, and Home Assistant's own time everywhere else. HA's scheduler reads utcnow and the system clock, which
+stay real (timed automations aren't all due at once).
 """
 
 import asyncio
-from contextlib import suppress
+from contextlib import contextmanager, suppress
+from contextvars import ContextVar
+from datetime import datetime
 import functools
 import gc
 import logging
@@ -170,6 +179,40 @@ def _thread_ended(sandbox):
         for handler in _FILTERED:
             handler.removeFilter(_LOG_FILTER)
         _FILTERED.clear()
+        _recorded_clocks(False)
+
+
+_AS_RECORDED = ContextVar("assist_improver_as_recorded", default=None)  # The recorded time, where Assist reads it.
+_NOW = dt_util.now  # Home Assistant's own.
+
+
+def _now(time_zone=None):
+    """dt_util.now while sandboxes run: the recorded turn's time where Assist reads it in a sandbox (_as_recorded),
+    Home Assistant's own everywhere else."""
+    at = _AS_RECORDED.get()
+    return _NOW(time_zone) if at is None else at.astimezone(time_zone or dt_util.get_default_time_zone())
+
+
+@contextmanager
+def _as_recorded(hass):
+    """In a sandbox's loop: what runs inside reads the time of the recorded turn the sandbox is at."""
+    token = _AS_RECORDED.set(hass.data[SANDBOX_KEY].at)
+    try:
+        yield
+    finally:
+        _AS_RECORDED.reset(token)
+
+
+def _run_at(hass, source):
+    """In a sandbox's loop: the recorded turn it's now at is the one of this snapshot (its at)."""
+    if source.get("at"):
+        hass.data[SANDBOX_KEY].at = datetime.fromisoformat(source["at"]).astimezone(dt_util.UTC)
+
+
+def _recorded_clocks(running):
+    """On HA's loop: while sandboxes run, dt_util.now can read a recorded time (only inside _as_recorded); after the
+    last, it's HA's own again."""
+    dt_util.now = _now if running else _NOW
 
 
 STATS = {"started": 0, "start_seconds": 0.0, "slowest_start": 0.0, "stopped": 0, "stop_seconds": 0.0,
@@ -202,7 +245,9 @@ class Sandbox:
         self.time_zone = time_zone
         self.hass = self.loop = self.thread = None
         self.commands, self.unsimulated, self.transitions = [], [], []
+        self.moving = set()  # Devices the recording shows reporting their movement (simulation.reports_movement).
         self.observing = False  # True while recorded changes are applied, which aren't the replay's own.
+        self.at = None  # The time of the recorded turn it's at, which Assist reads (_as_recorded).
         self.log = []  # What HA logged inside the sandbox; kept here, out of the real instance's log.
         self.device_ids = {}  # Recorded device ID -> its ID in the sandbox.
         self._dir = None  # Made and removed on the sandbox's own thread, never blocking HA's loop.
@@ -244,6 +289,7 @@ class Sandbox:
                 sandbox._end(outer)
 
         _keep_logs_in_sandboxes(sandbox)
+        _recorded_clocks(True)
         sandbox.thread = threading.Thread(target=run, name=THREAD_NAME, daemon=True)
         sandbox.thread.start()
         RUNNING.add(sandbox)
@@ -375,7 +421,18 @@ class Sandbox:
             if result is None or result[0] is None:
                 self.unsimulated.append(f"{call.domain}.{call.service} {entity_id}")
                 continue
-            self.hass.states.async_set(entity_id, result[0], result[1], context=call.context)
+            # A device that reports its movement reports it on its way, as it did when recorded, then gets there
+            # right after (its travel time isn't emulated), both under the command, as HA's own device reports.
+            between = devices.underway(call.domain, call.service, state, *result) if entity_id in self.moving else None
+            self.hass.states.async_set(entity_id, between or result[0], result[1], context=call.context)
+            if between is not None:
+                self.hass.async_create_task(self._arrive(entity_id, between, result[0], call.context),
+                                            "assist_improver_sandbox_arrive", eager_start=False)
+
+    async def _arrive(self, entity_id, between, end, context):
+        """A device on its way gets there, unless it's been sent elsewhere since."""
+        if (state := self.hass.states.get(entity_id)) is not None and state.state == between:
+            self.hass.states.async_set(entity_id, end, dict(state.attributes), context=context)
 
 
 # Tool prefixes that aren't an integration to set up: HA's core sets these up, and the improver's own (its
@@ -394,21 +451,24 @@ def seed_options(turn):
 
 
 async def seed(hass, source, *, user_name=None, integrations=(), timer_device=None, scripts=None, automations=None,
-               exposure_changes=None, alias_changes=None, alias_removals=None):
+               exposure_changes=None, alias_changes=None, alias_removals=None, moving=()):
     """Make the sandbox the recorded home: its areas, devices, entities (names, aliases, areas), states and what
     Assist could see; the integrations whose Assist tools the request had; then its scripts and automations,
     which create their own entities. exposure_changes ({entity_id: exposed}) and alias_changes ({entity_id:
-    [aliases added]}, alias_removals {entity_id: [aliases removed]}) apply on top of the recorded setup. Runs in the sandbox's loop."""
+    [aliases added]}, alias_removals {entity_id: [aliases removed]}) apply on top of the recorded setup. moving: the
+    devices that report their movement (simulation.reports_movement). Runs in the sandbox's loop."""
     from homeassistant.components.homeassistant.exposed_entities import async_expose_entity
     from homeassistant.components.intent import async_register_timer_handler
     from homeassistant.core import CoreState
     from homeassistant.helpers import area_registry as ar, entity_registry as er
     from homeassistant.setup import async_setup_component
+    _run_at(hass, source)
     hass.config.location_name = source.get("home_name") or hass.config.location_name
     # HA's chat log names the signed-in person; the sandbox has no accounts, only the recorded person.
     hass.auth = SimpleNamespace(async_get_user=_user(user_name))
     # Scripts and automations create their own entities once loaded; everything else is seeded here.
     own = {domain for domain, loaded in (("script", scripts), ("automation", automations)) if loaded}
+    hass.data[SANDBOX_KEY].moving = set(moving)
     for integration in integrations:  # Their Assist tools (lights, media, timers, ...), without their devices.
         if integration in own:
             continue  # Set up below with the household's own; set up empty first, it would never load them.
@@ -501,17 +561,28 @@ def sandbox_context(hass, llm_context):
 
 
 async def system_prompt(hass, llm_context, api_id, prompt):
-    """Assist's system prompt and tools, as HA builds them for this request in the sandbox."""
+    """Assist's system prompt and tools, as HA builds them for this request in the sandbox, at the recorded turn's
+    time."""
     from homeassistant.components.conversation.chat_log import ChatLog
     chat_log = ChatLog(hass, "assist-improver-sandbox-prompt")
-    await chat_log.async_provide_llm_data(sandbox_context(hass, llm_context), user_llm_hass_api=api_id,
-                                          user_llm_prompt=prompt)
+    with _as_recorded(hass):
+        await chat_log.async_provide_llm_data(sandbox_context(hass, llm_context), user_llm_hass_api=api_id,
+                                              user_llm_prompt=prompt)
     return chat_log.content[0].content, chat_log.llm_api
 
 
+async def call_tool(hass, api, tool_input):
+    """One of Assist's tools, called in the sandbox at the recorded turn's time: HA's date and time tool answers with
+    it, and what the call sets off (a script, the automations its changes trigger) reads it."""
+    with _as_recorded(hass):
+        return await api.async_call_tool(tool_input)
+
+
 async def observe(hass, source, exclude=()):
-    """Move entities the replay never changed to their next recorded values (others in the home moved them).
-    exclude: entities the recorded assistant changed, whose next values are the original run's, not others'."""
+    """Move on to the next recorded turn: its time, and entities the replay never changed at their recorded values
+    (others in the home moved them). exclude: entities the recorded assistant changed, whose next values are the
+    original run's, not others'."""
+    _run_at(hass, source)
     sandbox = hass.data[SANDBOX_KEY]
     touched = {c["entity_id"] for c in sandbox.commands} | {t["entity_id"] for t in sandbox.transitions} | set(exclude)
     sandbox.observing = True
@@ -526,11 +597,13 @@ async def observe(hass, source, exclude=()):
         sandbox.observing = False
 
 
-async def snapshot(hass):
-    """The sandbox's home now: states, the replay's state changes and its device commands."""
+async def snapshot(hass, attributes=()):
+    """The sandbox's home now: states, the replay's state changes and its device commands; the attributes of the
+    entities named (a light's brightness a goal asks for)."""
     from copy import deepcopy
     sandbox = hass.data[SANDBOX_KEY]
     await hass.async_block_till_done()
     return {"states": {s.entity_id: s.state for s in hass.states.async_all()},
+            "attributes": {e: dict(state.attributes) for e in attributes if (state := hass.states.get(e)) is not None},
             "transitions": deepcopy(sandbox.transitions), "commands": deepcopy(sandbox.commands),
             "unsimulated": list(sandbox.unsimulated)}

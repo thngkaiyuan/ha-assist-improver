@@ -32,7 +32,7 @@ from .trace import span
 
 _LOGGER = logging.getLogger(__name__)
 
-IDLE_SECONDS = 120  # Stopped after this long with nothing to do.
+IDLE_SECONDS = 120  # Stopped after this long with nothing to do: no call, and no sandbox open.
 CALL_SECONDS = 600  # One call longer than this means the worker is stuck: it's stopped, and the call fails.
 LIMIT = 1 << 30  # The longest message line: a recording is a few MB.
 INLINE = False  # Tests: serve in this process, through the same JSON.
@@ -63,6 +63,7 @@ class Worker:
         self.pending, self.ids = {}, itertools.count(1)
         self.stderr = deque(maxlen=50)  # The worker's last log lines, for when it stops unexpectedly.
         self.busy = 0
+        self.open = set()  # The sandboxes started and not yet stopped: a worker with one in use isn't idle.
         self._idle = self._reading = None
         self._before = dict.fromkeys(SANDBOX_STATS, 0)  # Statistics of the workers that have stopped, summed.
         self._now = dict(self._before)  # The running worker's own, as of its last answer.
@@ -81,9 +82,13 @@ class Worker:
                 answer = json.loads(json.dumps(await self._server.answer(json.loads(json.dumps(message)))))
             else:
                 answer = await self._send(message)
+            if op == "home.start" and "result" in answer:
+                self.open.add(answer["result"])
         finally:
+            if op == "home.stop":
+                self.open.discard(args.get("session"))
             self.busy -= 1
-            if not self.busy and not INLINE:
+            if not self.busy and not self.open and not INLINE:
                 self._idle = asyncio.get_running_loop().call_later(IDLE_SECONDS, self._stop_soon)
         self._count(answer.get("stats"))
         if "error" in answer:
@@ -127,6 +132,7 @@ class Worker:
             if self.process is not None and self.process.returncode is None:
                 return
             self._restarted()
+            self.open.clear()  # A worker that stopped stopped its sandboxes too.
             self.process = await asyncio.create_subprocess_exec(
                 sys.executable, "-c", BOOT, str(self.root), stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, limit=LIMIT)
@@ -154,7 +160,7 @@ class Worker:
 
     def _stop_soon(self):
         self._idle = None
-        if not self.busy:
+        if not self.busy and not self.open:
             asyncio.get_running_loop().create_task(self.stop(), name="assist_improver_worker_stop")
 
     async def stop(self):
@@ -166,6 +172,7 @@ class Worker:
             server, self._server = self._server, None
             await server.stop()
         process, self.process = self.process, None
+        self.open.clear()
         if process is None or process.returncode is not None:
             return
         with suppress(Exception):
@@ -284,12 +291,13 @@ class Server:
         return session
 
     async def op_home_seed(self, session, source, options, user_name=None, scripts=None, automations=None,
-                           exposure_changes=None, alias_changes=None, alias_removals=None):
+                           exposure_changes=None, alias_changes=None, alias_removals=None, moving=()):
         from .sandbox import seed
         home = self._home(session)
         await home.sandbox.run(lambda hass: seed(
             hass, source, user_name=user_name, **options, scripts=scripts, automations=automations,
-            exposure_changes=exposure_changes, alias_changes=alias_changes, alias_removals=alias_removals))
+            exposure_changes=exposure_changes, alias_changes=alias_changes, alias_removals=alias_removals,
+            moving=moving))
         return self._reported(home)
 
     async def op_home_household(self, session, knowledge, legacy=False):
@@ -322,12 +330,13 @@ class Server:
 
     async def op_home_tool(self, session, tool_name, tool_args, call_id=None, external=False):
         from homeassistant.helpers import llm
+        from .sandbox import call_tool
         home = self._home(session)
         if home.api is None:
             raise WorkerError("The sandbox has no Assist tools yet")
         tool_input = llm.ToolInput(tool_name=tool_name, tool_args=tool_args, external=external,
                                    **({"id": call_id} if call_id else {}))
-        result = await home.sandbox.run(lambda hass: home.api.async_call_tool(tool_input))
+        result = await home.sandbox.run(lambda hass: call_tool(hass, home.api, tool_input))
         return self._reported(home, {"data": result.data, "error": result.error})
 
     async def op_home_observe(self, session, source, exclude=()):
@@ -336,10 +345,10 @@ class Server:
         await home.sandbox.run(lambda hass: observe(hass, source, exclude))
         return self._reported(home)
 
-    async def op_home_snapshot(self, session):
+    async def op_home_snapshot(self, session, attributes=()):
         from .sandbox import snapshot
         home = self._home(session)
-        return self._reported(home, await home.sandbox.run(snapshot))
+        return self._reported(home, await home.sandbox.run(lambda hass: snapshot(hass, attributes)))
 
     async def op_home_stop(self, session):
         home = self.sessions.pop(session, None)

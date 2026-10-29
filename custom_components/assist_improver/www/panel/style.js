@@ -274,7 +274,8 @@ export const STYLE = `
   .cs-reply { font-size: 13px; color: var(--secondary-text-color); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .cs-close { font-size: 13px; color: var(--secondary-text-color); margin: 0 0 8px; }
   .cs-last { font-size: 13px; color: var(--secondary-text-color); margin: -6px 0 12px; }
-  .chip.cs-waiting, .chip.cs-sent, .chip.cs-queued, .chip.cs-working, .chip.cs-retry { border-color: var(--primary-color); color: var(--primary-color); }
+  .chip.cs-waiting, .chip.cs-sent, .chip.cs-queued, .chip.cs-working, .chip.cs-writing,
+  .chip.cs-unclear { border-color: var(--primary-color); color: var(--primary-color); }
   button.chip.cs-review { align-self: center; flex: none; margin-right: 16px; font: inherit; font-size: 12px; cursor: pointer;
     border-color: var(--primary-color); background: color-mix(in srgb, var(--primary-color) 14%, transparent); color: var(--primary-color); }
   button.chip.cs-review:hover { background: color-mix(in srgb, var(--primary-color) 24%, transparent); }
@@ -447,8 +448,10 @@ export const STYLE = `
   .stream-label { position: absolute; transform: translate(-50%, -50%); white-space: nowrap; font-size: 12px; font-weight: 500;
     letter-spacing: .02em; color: var(--secondary-text-color); }
   .stream-label.vertical { transform: translate(-50%, -50%) rotate(-90deg); font-size: 11px; }
-  .track.vertical .stn { flex-direction: row; align-items: center; gap: 10px; }
-  .track.vertical .s-head { flex: 1; } .track.vertical .s-title { flex: 0 1 auto; }
+  /* Vertical: the title in full, its controls beside it, or below it when they don't fit (the card grows to fit). */
+  .track.vertical .stn { flex-direction: row; flex-wrap: wrap; align-items: center; justify-content: flex-end;
+    gap: 6px 10px; }
+  .track.vertical .s-head { flex: 1 0 auto; } .track.vertical .s-title { flex: none; }
   .track.vertical .chip-row { flex: 0 1 auto; max-width: 62%; } .track.vertical .chip-row .chip-model { max-width: none; }
   .chip-row .chip-model { max-width: none; flex: 0 1 auto; min-width: 0; }
   .track.vertical .chip-model { align-self: center; max-width: 46%; }
@@ -596,13 +599,6 @@ export const STYLE = `
   .dv-run-top .dv-right { margin-left: auto; font-family: var(--mono); font-size: 12.5px; }
   .dv-run-sub { display: flex; align-items: baseline; flex-wrap: wrap; gap: 2px 8px; font-size: 12.5px; color: var(--secondary-text-color); margin-top: 3px; }
   .dv-err { color: var(--del-fg); font-size: 12.5px; margin-top: 4px; overflow-wrap: anywhere; }
-  .dv-stages { display: flex; height: 6px; border-radius: 3px; overflow: hidden; margin-top: 8px; background: var(--divider-color); }
-  .dv-stages i { display: block; height: 100%; min-width: 2px; }
-  .s-analyze { background: var(--dv-blue); } .s-propose { background: var(--dv-purple); } .s-test { background: var(--dv-amber); }
-  .s-write { background: var(--dv-teal); }
-  .dv-legend { display: flex; flex-wrap: wrap; gap: 2px 12px; margin-top: 5px; font-size: 12px; color: var(--secondary-text-color); }
-  .dv-legend span { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
-  .dv-legend i { width: 8px; height: 8px; border-radius: 2px; display: inline-block; }
   .dv-back { display: inline-block; margin: 0 0 10px; font-weight: 500; }
   .dv-bar { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 12px; margin-bottom: 10px; }
   .dv-bar input { flex: 1 1 220px; }

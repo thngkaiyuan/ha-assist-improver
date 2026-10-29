@@ -5,11 +5,10 @@
 const v = new URL(import.meta.url).search;  // ?v=<version>, passed on to every module this one loads.
 const [{esc, bytes, dur, num, stamp, ago, between, devUrl}, {svg}, common, parts] = await Promise.all(
   ["format", "icons", "common", "devparts"].map((name) => import(`./${name}.js${v}`)));
-const {idLink, ids, kv, chip, statusChip, stageChip, timeline, journal, stageBar, waterfall, problemCount, WF_DEPTH} = parts;
+const {idLink, ids, kv, chip, statusChip, stageChip, heldChip, timeline, journal, waterfall, problemCount, WF_DEPTH} = parts;
 
 const TABS = [["find", "Find"], ["conversations", "Conversations"], ["runs", "Runs"], ["health", "Health"], ["logs", "Logs"]];
-const STAGES = ["active", "waiting", "held", "failing", "set_aside", "analysed", "improvement", "duplicate", "no_fix", "smooth", "test",
-                "empty"];
+const STAGES = ["Your Assist", "Triage", "Analyze", "Propose", "Write up", "Your review", "Your household"];  // flow.py's.
 const LEVELS = ["debug", "info", "warning", "error", "critical"];
 const LOG_PAGE = 100;
 const NO_FILTERS = {level: "", text: "", run: "", recording: ""};
@@ -171,7 +170,7 @@ function find(dev, p, state) {
     spellcheck="false" autocapitalize="off" placeholder="Any ID, or its first 4+ characters" aria-label="ID"><button class="btn" type="submit">Find</button></form>`;
   if (!dev.q) {
     return box + `<p class="dv-hint">Runs, role calls, recordings (full ID or 8-character short ID), Home Assistant conversation_ids,
-      improvements, cases and day traces (day_YYYYMMDD). Every ID in this view links here.</p>`;
+      improvements, replays (by plan ID) and day traces (day_YYYYMMDD). Every ID in this view links here.</p>`;
   }
   if (state || !f) return box + state;
   if (f.matches) {
@@ -185,10 +184,10 @@ function find(dev, p, state) {
   }
   const m = f.match, record = {...(f.record || {})}, progress = {...(record.progress || {})};
   delete record.id; delete record.progress;
-  // A run's progress: its stage timings as a bar, its counts, and the stages that failed.
-  const timings = progress.timings, failed = Array.isArray(progress.problems) ? progress.problems : [];
-  delete progress.timings; delete progress.problems;
-  const more = stageBar(timings) + (Object.keys(progress).length
+  // A run's progress: its counts, and the stages that failed.
+  const failed = Array.isArray(progress.problems) ? progress.problems : [];
+  delete progress.problems;
+  const more = (Object.keys(progress).length
     ? `<div class="dv-card-title" style="margin:12px 0 6px">Progress</div>${kv(progress)}` : "")
     + failed.map((x) => `<div class="dv-err">${esc(x.stage)}${x.item ? ` · ${esc(x.item)}` : ""}: ${esc(x.error)}</div>`).join("");
   const head = `<div class="card dv-card"><div class="dv-head">${chip(m.kind, "c-primary")}${idLink(m.id, true)}</div>
@@ -228,24 +227,25 @@ function conversations(dev, p, state) {
     `<button class="dv-fchip ${conv.stage === value ? "on" : ""}" data-stage="${esc(value)}">${esc(label)}<b>${n}</b></button>`).join("");
   const sort = (k, label) => `<button data-sort="${k}" class="${conv.sort === k ? "on" : ""}">${label}${
     conv.sort === k ? (conv.desc ? " &#9662;" : " &#9652;") : ""}</button>`;
-  const head = `<thead><tr><th class="sticky">Recording</th><th>Stage</th><th class="n">${sort("bytes", "Size")}</th>
+  const head = `<thead><tr><th class="sticky">Recording</th><th>Stage</th><th class="n">Round</th><th class="n">${sort("bytes", "Size")}</th>
     <th class="n">${sort("user_turns", "Turns")}</th><th>${sort("started", "Started")}</th><th class="n">Goals</th>
-    <th class="n">Friction</th><th class="n">Strikes</th><th>Status</th><th>Stored</th><th>Improvements</th><th>Cases</th><th>Runs</th></tr></thead>`;
+    <th class="n">Friction</th><th class="n">Failed</th><th>Status</th><th>Stored</th><th>Improvements</th><th>Replays</th><th>Runs</th></tr></thead>`;
   const needle = conv.search.trim().toLowerCase();
   let shown = 0, size = 0;
   const body = rows.map((r) => {
-    const text = [r.id, r.stage, r.status, r.stored, r.waiting_at, r.practice && "practice", ...(r.improvements || []),
-                  ...(r.cases || []), ...(r.runs || [])].filter(Boolean).join(" ").toLowerCase();
+    const text = [r.id, r.stage, r.outcome, r.held && `held ${r.held.cause}`, r.status, r.stored, r.practice && "practice",
+                  r.covered_by, ...(r.improvements || []), ...(r.replays || []), ...(r.runs || [])].filter(Boolean).join(" ").toLowerCase();
     const hit = (!conv.stage || r.stage === conv.stage) && (!needle || text.includes(needle));
     if (hit) { shown += 1; size += Number(r.bytes) || 0; }
     return `<tr data-stage="${esc(r.stage)}" ${hit ? "" : "hidden"}>
       <td class="sticky">${idLink(r.id)}</td>
-      <td>${stageChip(r.stage)}${r.waiting_at ? ` <span class="dv-dim">at ${esc(r.waiting_at)}</span>` : ""}${
+      <td>${stageChip(r.stage)}${r.held ? ` ${heldChip(r.held)}` : ""}${r.outcome ? ` <span class="dv-dim">${esc(r.outcome)}</span>` : ""}${
+        r.covered_by ? ` <span class="dv-tag">covered_by ${idLink(r.covered_by)}</span>` : ""}${
         r.practice ? ` <span class="dv-tag">practice</span>` : ""}${r.filed ? ` <span class="dv-tag">filed</span>` : ""}</td>
-      <td class="n">${bytes(r.bytes)}</td><td class="n">${num(r.user_turns)}</td>
+      <td class="n">${r.round ? num(r.round) : ""}</td><td class="n">${bytes(r.bytes)}</td><td class="n">${num(r.user_turns)}</td>
       <td><span title="${esc(r.started)}">${esc(stamp(r.started, "min"))}</span></td>
-      <td class="n">${num(r.goals)}</td><td class="n">${num(r.friction)}</td><td class="n">${r.strikes ? num(r.strikes) : ""}</td>
-      <td>${esc(r.status)}</td><td>${esc(r.stored)}</td><td>${ids(r.improvements)}</td><td>${ids(r.cases)}</td>
+      <td class="n">${num(r.goals)}</td><td class="n">${num(r.friction)}</td><td class="n">${r.failed ? num(r.failed) : ""}</td>
+      <td>${esc(r.status)}</td><td>${esc(r.stored)}</td><td>${ids(r.improvements)}</td><td>${ids(r.replays)}</td>
       <td>${ids(r.runs)}</td></tr>`;
   }).join("");
   const count = rows.length ? `${shown === rows.length ? rows.length : `${shown} of ${rows.length}`} · ${bytes(size)}` : "";
@@ -275,7 +275,7 @@ function runRow(r) {
     <div class="dv-run-top">${statusChip(r.status)}<span class="dv-time" title="${esc(r.started)}">${esc(stamp(r.started))}</span>${
       recent ? `<span class="dv-dim" style="font-size:12.5px">${esc(ago(r.started))}</span>` : ""}<span class="dv-right">${dur(took)}</span></div>
     <div class="dv-run-sub">${idLink(r.id)}${sub.map((s) => `<span>${s}</span>`).join("")}</div>
-    ${stageBar(r.timings)}${r.error ? `<div class="dv-err">${esc(r.error)}</div>` : ""}</div>`;
+    ${r.error ? `<div class="dv-err">${esc(r.error)}</div>` : ""}</div>`;
 }
 
 function run(dev, p, r) {
@@ -288,12 +288,12 @@ function run(dev, p, r) {
   const head = `<div class="card dv-card"><div class="dv-head">${statusChip(r.status)}<span class="dv-title">Run</span>${
     idLink(r.id, true)}${live ? `<span class="dv-live">Refreshing every 5 s</span>` : ""}</div>
     ${kv({trigger: r.trigger, only: r.only, stage: live ? r.stage : null, started: r.started, finished: r.finished,
-          took: dur(took), trace: r.trace_available ? "kept" : "not kept", error: r.error})}${stageBar(r.timings)}</div>`;
+          took: dur(took), trace: r.trace_available ? "kept" : "not kept", error: r.error})}</div>`;
   const counts = Object.keys(r.counts || {}).length
     ? `<div class="card dv-card"><div class="dv-card-title">Progress</div>${kv(r.counts)}</div>` : "";
   const t = dev.trace;
   const wf = t ? waterfall(dev, t, live) : `<div class="dv-note">${esc(dev.traceError || (r.trace_available ? "No trace."
-    : "No trace for this run: traces are kept for a week, and runs from before tracing have none. The stage timings above come from the run log."))}</div>`;
+    : "No trace for this run: traces are kept for a week, and runs from before tracing have none."))}</div>`;
   const spans = `<div class="card dv-card flush"><div class="dv-card-title">Waterfall</div>${wf}</div>`;
   const failed = r.problems?.length ? `<div class="card dv-card"><div class="dv-card-title">Problems <span class="dv-dim">${r.problems.length}</span></div>
     ${r.problems.map((x) => `<div class="dv-log lv-error"><div class="dv-log-head"><span class="dv-level lv-error">${esc(x.stage)}</span>${x.item ? `<span class="dv-dim">${esc(x.item)}</span>` : ""}</div>

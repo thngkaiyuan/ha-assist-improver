@@ -14,6 +14,10 @@ COLOUR_MODES = {"hs", "xy", "rgb", "rgbw", "rgbww"}
 ASLEEP = {"off", "unknown", "unavailable"}
 # Read-only queries; practice passes them to the real service. Everything else is emulated.
 QUERY_PREFIXES = ("get_", "search_")
+# What a device that reports its movement shows on its way to each end, as Home Assistant's covers, valves and locks
+# report it: a garage door is "closing" until it's down.
+UNDERWAY = {"open": "opening", "closed": "closing", "locked": "locking", "unlocked": "unlocking"}
+MOVERS = ("cover", "valve", "lock")
 
 
 def is_query(service):
@@ -136,6 +140,19 @@ def _cover_like(service, state, attrs, data, position_key):
         return ("closed" if attrs[position_key] == 0 else "open"), attrs
     if service.startswith("stop"):
         return state, attrs
+    return None
+
+
+def underway(domain, service, before, state, attrs):
+    """What a device that reports its movement shows on its way to (state, attrs) after a command, from before (its
+    State); None when the command doesn't move it (already there, a stop, the slats only)."""
+    if domain not in MOVERS or service.startswith("stop") or "tilt" in service:
+        return None
+    if state != before.state:
+        return UNDERWAY.get(state)
+    was, now = before.attributes.get("current_position"), attrs.get("current_position")
+    if domain != "lock" and was is not None and now is not None and was != now:  # Open, to another position.
+        return "opening" if now > was else "closing"
     return None
 
 

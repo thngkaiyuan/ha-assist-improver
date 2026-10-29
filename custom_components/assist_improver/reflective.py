@@ -6,7 +6,7 @@ Usage is what the provider reports through HA's conversation trace, if any.
 """
 
 import asyncio
-from collections import Counter, deque
+from collections import deque
 from contextlib import contextmanager
 from contextvars import ContextVar
 from copy import deepcopy
@@ -26,7 +26,7 @@ from homeassistant.util.dt import parse_datetime, utcnow
 from .cases import CaseError, digest
 from .const import DOMAIN, STORAGE_VERSION
 from .failures import closing
-from .records import PipelineRun, RoleCall, TestReport
+from .records import PipelineRun, RoleCall
 from .serialization import plain
 from .trace import ids, span, timed
 
@@ -80,9 +80,13 @@ async def run_role(hass, *, role, entity_id, instructions, payload, structure, l
                     record.update(status="failed", error={"type": type(err).__name__,
                                                           "message": explained(str(err))[:500]})
                     section.fail(f"{type(err).__name__}: {err}")
-            stats = [plain(e["data"]["stats"]) for e in trace.as_dict()["events"]
-                     if e["event_type"] == ConversationTraceEventType.AGENT_DETAIL
-                     and isinstance(e["data"], dict) and "stats" in e["data"]]
+            try:  # The usage the provider reported, if it can be read: never the call's outcome.
+                stats = [plain(e["data"]["stats"]) for e in trace.as_dict()["events"]
+                         if e["event_type"] == ConversationTraceEventType.AGENT_DETAIL
+                         and isinstance(e["data"], dict) and "stats" in e["data"]]
+            except Exception:  # noqa: BLE001 - whatever stops the read, the usage is unavailable.
+                _LOGGER.debug("%s: its usage couldn't be read from the conversation trace", role, exc_info=True)
+                stats = []
             section.tag(status=record["status"], tokens=tokens(stats) or None)
         record["usage"] = {"status": "provider_reported_partial" if stats else "unavailable", "events": stats,
                            "billing_total": None,
@@ -107,43 +111,6 @@ def tokens(stats):
 RECENT = 50  # Analyses (and quick checks) the run confirmation's rough token estimate goes by.
 
 
-# A goal's test outcomes that say something about the goal, and count against its tests-per-goal limit: its fix judged,
-# or the fix or the conversation itself that can't be replayed (a baseline that isn't reproduced stays so). A failure
-# of the machinery (the provider, the sandbox, a bug) isn't the goal's, so it doesn't count.
-TRIED = ("awaiting_review", "not_improved", "unsupported", "baseline_not_reproducible", "baseline_unsupported")
-
-
-# Why a test couldn't run that was the replay engine's own gap, since closed (cases.lead_in replays those from turn 1):
-# such a test said nothing about its goal, so it doesn't count against it.
-ENGINE_GAPS = ("provider_native_history_missing_at_cutoff",)
-
-
-def counts_as_tried(test):
-    """Whether a goal's test counts against its tests-per-goal limit (TRIED), unless only the replay engine's own
-    gap, since closed, stopped it (ENGINE_GAPS)."""
-    return test.get("status") in TRIED and not _engine_gap(test)
-
-
-def _engine_gap(test):
-    why = " ".join(str(test.get(key) or "") for key in ("why", "error"))
-    return any(gap in why for gap in ENGINE_GAPS)
-
-
-def tried(run):
-    """{goal ("session:turn"): tests} a test stage's record tried a fix on, against each goal's tests-per-goal limit:
-    its own count, else (a record from before it kept one) each test whose fix was tried (counts_as_tried). A record
-    with a test only the engine's own gap stopped is counted from its tests, without that one."""
-    results = (run.get("output") or {}).get("results") or []
-    if isinstance(run.get("tried"), dict) and not any(_engine_gap(t) for r in results for t in r.get("tests") or []):
-        return dict(run["tried"])
-    out = Counter()
-    for result in results:
-        for test in result.get("tests") or []:
-            if counts_as_tried(test) and test.get("goal"):
-                out[test["goal"]] += 1
-    return dict(out)
-
-
 class Recent:
     """The last few values added, with their sum: an average kept as they come, without a scan."""
 
@@ -161,23 +128,14 @@ class Recent:
 
 
 class RunIndex:
-    """What the pipeline reads from the run log, gathered in one pass: each recording's latest accepted analysis (and
-    when), the recordings no role can read, unexpected failures, each recording's latest held quick-check verdict,
-    records by id (the pipeline's state), the last completed proposal with the analyses since, when each goal was
-    tested (its tests-per-goal budget), and the tokens recent analyses and quick checks used. Kept current as records are added; taking out one an answer rests on (rare: a record replaced
-    by one with its id) means building it again."""
+    """What the pipeline reads from the run log, gathered in one pass: each recording's latest held quick-check verdict,
+    records by id, and the tokens recent analyses and quick checks used. Kept current as records are added; taking out
+    one an answer rests on (rare: a record replaced by one with its id) means building it again."""
 
     def __init__(self, runs=()):
-        self.analyzed = {}  # {recording id: its latest accepted analysis}, in the order each was first analysed.
-        self.analyzed_at = {}  # {recording id: when its latest accepted analysis finished}
-        self.tried = {}  # {goal ("session:turn"): [when each test on it finished]}, oldest first.
-        self.unreadable = Counter()  # {recording id: records saying no role can read it}
-        self.strikes = Counter()  # {recording id: runs that failed on it for an unexpected reason}
         self.held = {}  # {recording id: its latest held record with a completed quick check}
         self.ids = {}  # {record id: the first record with it}
         self.repeated = set()  # Ids more than one record has (only an old log's): replacing those rebuilds.
-        self.generator = (-1, None)  # The last completed proposal, with its position in the log.
-        self.since = []  # [(recording id, analysis)]: accepted analyses after it, in order.
         # Provider-reported tokens (input plus output) each recent analysis and quick check used: a rough guide only.
         self.spent = {"analyze": Recent(), "triage": Recent()}
         self.size = 0
@@ -200,57 +158,30 @@ class RunIndex:
 
     def add(self, run):
         """A record appended to the log."""
-        position, self.size = self.size, self.size + 1
+        self.size += 1
         if (key := run.get("id")) in self.ids:
             self.repeated.add(key)
         else:
             self.ids[key] = run
-        rid = run.get("recording_id")
-        if run.get("kind") == "hypothesis_generator" and run.get("status") == "completed":
-            self.generator, self.since = (position, run), []
-        elif run.get("kind") == "hypothesis_tests" and run.get("status") == "completed":
-            for goal, n in tried(run).items():
-                self.tried.setdefault(goal, []).extend([run.get("finished") or ""] * n)
-        elif run.get("kind") == "journey_analyzer":
-            if self._analysis(run):
-                self.analyzed[rid] = run["analysis"]
-                self.analyzed_at[rid] = run.get("finished") or ""
-                self.since.append((rid, run["analysis"]))
-                if run.get("answer_status") != "triaged_smooth" and (used := self._tokens(run.get("usage"))):
-                    self.spent["analyze"].add(used)
-            elif self._verdict(run):
-                self.held[rid] = run
-            check = run.get("triage") or {}  # A verdict kept from an earlier check cost nothing this time.
-            if ((self._analysis(run) or self._verdict(run)) and check.get("status") == "completed"
-                    and not check.get("kept") and (used := self._tokens(check.get("usage")))):
-                self.spent["triage"].add(used)
-            if run.get("answer_status") == "unreadable":
-                self.unreadable[rid] += 1
-            elif run.get("answer_status") == "error":
-                self.strikes[rid] += 1
+        if run.get("kind") != "journey_analyzer":
+            return
+        if self._analysis(run):
+            if run.get("answer_status") != "triaged_smooth" and (used := self._tokens(run.get("usage"))):
+                self.spent["analyze"].add(used)
+        elif self._verdict(run):
+            self.held[run.get("recording_id")] = run
+        check = run.get("triage") or {}  # A verdict kept from an earlier check cost nothing this time.
+        if ((self._analysis(run) or self._verdict(run)) and check.get("status") == "completed"
+                and not check.get("kept") and (used := self._tokens(check.get("usage")))):
+            self.spent["triage"].add(used)
 
-    def remove(self, run, position):
-        """A record taken out of the log at this position. False when an answer rested on it: build again."""
+    def remove(self, run):
+        """A record taken out of the log. False when an answer rested on it: build again."""
         key = run.get("id")
-        if (key in self.repeated or self.ids.get(key) is not run or self._analysis(run) or self._verdict(run)
-                or position == self.generator[0]):
+        if key in self.repeated or self.ids.get(key) is not run or self._analysis(run) or self._verdict(run):
             return False
         del self.ids[key]
         self.size -= 1
-        if position < self.generator[0]:
-            self.generator = (self.generator[0] - 1, self.generator[1])
-        if run.get("kind") == "hypothesis_tests" and run.get("status") == "completed":
-            for goal, n in tried(run).items():
-                for _ in range(n):
-                    self.tried[goal].remove(run.get("finished") or "")
-                if not self.tried[goal]:
-                    del self.tried[goal]
-        if run.get("kind") == "journey_analyzer":
-            counter = {"unreadable": self.unreadable, "error": self.strikes}.get(run.get("answer_status"))
-            if counter is not None:
-                counter[run.get("recording_id")] -= 1
-                if counter[run.get("recording_id")] <= 0:
-                    del counter[run.get("recording_id")]
         return True
 
 
@@ -285,7 +216,7 @@ class RoleRuns:
     def __init__(self, hass):
         self.store = Store(hass, STORAGE_VERSION, f"{DOMAIN}.role_runs", private=True, atomic_writes=True,
                            serialize_in_event_loop=False)
-        self.runs: list[RoleCall | PipelineRun | TestReport] = []  # By kind: records.RUN_LOG.
+        self.runs: list[RoleCall | PipelineRun] = []  # By kind: records.RUN_LOG.
         self.lock = asyncio.Lock()
         self._index = self._indexed = None  # The index, and the list of runs it was built for.
         self._json, self._json_for = [], None  # Each record's JSON, in order, and the list of runs it's for.
@@ -310,20 +241,11 @@ class RoleRuns:
         saved = await self.store.async_load()
         self.runs = saved.get("runs", []) if saved else []
         for run in self.runs:
-            if run["status"] == "running":
-                run.update(status="interrupted", error={"message": "Reload during the call; not repeated"})
+            if run["status"] == "running":  # A pipeline run's error is text (records.PipelineRun): none to add.
+                run.update(status="interrupted", error=None if run.get("kind") == "pipeline" else
+                           {"message": "Reload during the call; not repeated"})
         self._index, self._indexed = RunIndex(self.runs), self.runs
         await self._save()
-
-    async def amend(self, changed):
-        """Change kept records in place ({record id: the record as it should be}), keeping their order: a code-only
-        upgrade of what an earlier version kept (record would move each to the end, as if new)."""
-        if not changed:
-            return
-        async with self.lock:
-            self.runs = [deepcopy(changed[r["id"]]) if r.get("id") in changed else r for r in self.runs]
-            self._index, self._indexed = RunIndex(self.runs), self.runs
-            await self._save()
 
     async def record(self, run):
         """Keep a record (replacing the one with its id). One a pipeline run creates names the run and its trace."""
@@ -337,7 +259,7 @@ class RoleRuns:
             n = _position(runs, old) if old is not None and run["id"] not in index.repeated else None
             if n is not None:  # It replaces the one with its id: out of its place, and in at the end.
                 runs, frozen = runs[:n] + runs[n + 1:], frozen[:n] + frozen[n + 1:]
-                if not index.remove(old, n):
+                if not index.remove(old):
                     index = None
             elif old is not None:  # Several records with its id (an old log's): it replaces them all.
                 kept_pairs = [(r, f) for r, f in zip(runs, frozen) if r.get("id") != run["id"]]
@@ -369,9 +291,9 @@ class RoleRuns:
         from .retention import prune_runs
         async with self.lock:
             runs, done = prune_runs(self.runs, recordings, now)
-            if done["trimmed"] or done["deleted"]:
-                before = {id(r): f for r, f in zip(self.runs, self._frozen_runs())}  # Untouched records keep theirs.
-                self._json = [before[id(r)] if id(r) in before else _frozen(r) for r in runs]
+            if done["deleted"]:
+                before = {id(r): f for r, f in zip(self.runs, self._frozen_runs())}  # Kept records keep theirs.
+                self._json = [before[id(r)] for r in runs]
                 self.runs = self._json_for = runs
                 await self._save()
         return done

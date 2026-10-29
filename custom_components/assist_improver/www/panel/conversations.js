@@ -3,8 +3,9 @@
 // (conversations.py). Found with assist_improver/conversations, read with .../conversation, sent with
 // .../conversation/send; a Run on picked ones is assist_improver/run/start with them (common.js). An opened one can
 // also be archived, out of the list (.../conversation/hide: the improver keeps using it), or deleted from Assist
-// Improver (.../conversation/delete). One the improver is done with is archived on its own (conversations.SETTLED),
-// until it stands otherwise; Unarchive keeps it in the list.
+// Improver (.../conversation/delete). Where each stands, whether the list shows it, and whether it can be sent in or
+// picked for a run come with each row, from its flow record (conversations.row): one in Your household or up for
+// review is left out on its own until it stands otherwise; Unarchive keeps it in the list.
 
 const v = new URL(import.meta.url).search;  // ?v=<version>, passed on to every module this one loads.
 const [{esc, when, plural, fill}, {TEXT}, {svg}, common] = await Promise.all(
@@ -18,11 +19,11 @@ const errText = (err) => err?.message || String(err);
 
 export function state(p) {
   // order: the one chosen, or null: newest first, or the closest to a time searched for (closest).
-  // showArchived: archived ones are listed too; archivedCount: how many are archived (by hand, or settled).
+  // showArchived: archived ones are listed too; archivedCount: how many the list leaves out (archived, or settled).
   // picked: the selection, any row, kept through searches, filters and Show more; byHand: those ticked one by one;
-  // known: where each one listed so far stands ({status, hidden}); every: the IDs of all that match now. A row with
-  // stays: the opened one, kept in view though it no longer matches (list).
-  return p.cv || (p.cv = {query: "", days: "", order: null, rows: null, total: 0, waiting: [], counts: {},
+  // known: where each one listed so far stands ({status, stage, hidden, runnable, archivable}); every: the IDs of all
+  // that match now. A row with stays: the opened one, kept in view though it no longer matches (list).
+  return p.cv || (p.cv = {query: "", days: "", order: null, rows: null, total: 0,
                           opened: null, shown: null, note: "", sent: {}, picked: new Set(), byHand: new Set(),
                           known: new Map(), every: [], error: null, showArchived: false, archivedCount: 0,
                           only: null, byStatus: {}, statusMenu: false,
@@ -30,11 +31,11 @@ export function state(p) {
 }
 
 function runnable(cv) {
-  // The selected ones a Run takes in: those not sent in yet; one the quick check found smooth only if ticked by hand
-  // (never by Select all: each is a full analysis).
+  // The selected ones a Run takes in: those a run can take (runnable: new, or held); one in Your household (sent in
+  // again, for a new round) only if ticked by hand (never by Select all: each is a paid run).
   return [...cv.picked].filter((id) => {
-    const status = cv.known.get(id)?.status;
-    return status === "waiting" || (status === "smooth" && cv.byHand.has(id));
+    const known = cv.known.get(id);
+    return known?.runnable && (known.stage !== "Your household" || cv.byHand.has(id));
   });
 }
 
@@ -71,21 +72,24 @@ async function list(p, cv, more, draw = true) {
     // or took it past the statuses chosen); it goes once it's closed and the list is read again.
     const was = !more && cv.opened && (cv.rows || []).find((r) => r.id === cv.opened);
     if (was && stands.has(was.id) && !rows.some((r) => r.id === was.id)) {
-      const {status, hidden} = stands.get(was.id), at = Math.min(cv.rows.indexOf(was), rows.length);
-      rows = [...rows.slice(0, at), {...was, status, hidden, stays: true}, ...rows.slice(at)];
+      const at = Math.min(cv.rows.indexOf(was), rows.length);
+      rows = [...rows.slice(0, at), {...was, ...stands.get(was.id), stays: true}, ...rows.slice(at)];
     }
-    Object.assign(cv, {rows, total: found.total,
-                       waiting: found.waiting || [], counts: found.counts || {}, close: !!found.close, closest: !!found.closest,
-                       queued: found.queued || {ids: [], sent: 0}, archivedCount: found.hidden || 0,
-                       every: (found.every || []).map((r) => r.id), byStatus: found.by_status || {}, onDemand: found.on_demand,
-                       error: null});
-    for (const r of [...(found.every || []), ...stands.values()]) cv.known.set(r.id, {status: r.status, hidden: r.hidden});
+    Object.assign(cv, {rows, total: found.total, close: !!found.close, closest: !!found.closest,
+                       archivedCount: found.hidden || 0, every: (found.every || []).map((r) => r.id),
+                       byStatus: found.by_status || {}, onDemand: found.on_demand, error: null});
+    if (!cv.archivedCount) cv.showArchived = false;  // None archived any more: nothing to show them by.
+    for (const r of [...(found.every || []), ...stands.values()]) {
+      cv.known.set(r.id, {status: r.status, stage: r.stage, hidden: r.hidden, runnable: r.runnable,
+                          archivable: r.archivable});
+    }
     // Selected ones archived since (a run settled them) are out of view: none of them stays picked.
     const inView = new Set(rows.map((r) => r.id));
     if (!cv.showArchived) unpick(cv, [...stands.values()].filter((r) => r.hidden && !inView.has(r.id)).map((r) => r.id));
     // The opened one stands where its row now does (a run may have taken it in since it was opened).
     const row = cv.shown && !cv.shown.error && cv.rows.find((r) => r.id === cv.opened);
-    if (row) Object.assign(cv.shown, {status: row.status, note: row.note, hidden: row.hidden});
+    if (row) Object.assign(cv.shown, {status: row.status, note: row.note, hidden: row.hidden, sendable: row.sendable,
+                                      archivable: row.archivable});
   } catch (err) {
     if (seq !== cv.seq) return;
     cv.error = errText(err);
@@ -128,19 +132,16 @@ async function send(p, cv, id) {
       cv.archivedCount = Math.max(0, cv.archivedCount - 1);
       if (!cv.archivedCount) cv.showArchived = false;
     }
-    for (const row of cv.rows || []) if (row.id === id) Object.assign(row, {status: result.status, note: cv.note || null, hidden});
+    // Sent again without a note, it keeps the one it had (DETAILS P8.9.4).
+    const note = cv.note?.trim() || cv.shown?.note || null;
+    for (const row of cv.rows || []) if (row.id === id) Object.assign(row, {status: result.status, note, hidden});
     cv.known.set(id, {...cv.known.get(id), status: result.status, hidden});
-    if (cv.shown?.id === id) Object.assign(cv.shown, {status: result.status, note: cv.note || null, hidden});
+    if (cv.shown?.id === id) Object.assign(cv.shown, {status: result.status, note, hidden});
+    cv.note = "";
     unpick(cv, [id]);
-    cv.waiting = cv.waiting.filter((w) => w !== id);
-    // Waiting for the quick check, it skips it only with a note.
-    if (cv.note?.trim() && cv.queued?.ids.includes(id)) {
-      cv.queued = {ids: cv.queued.ids.filter((q) => q !== id), sent: cv.queued.sent + 1};
-    }
     // What a run would take now, for the Run bar and its confirmation; or the run it started, followed as it goes.
     p.setRun?.(await p.ws("run").catch(() => p.run));
     p.poll?.();
-    cv.counts = {...cv.counts, waiting: Math.max(0, (cv.counts.waiting || 1) - 1), sent: (cv.counts.sent || 0) + 1};
   } catch (err) {
     cv.sent[id] = {text: errText(err), error: true};
   }
@@ -149,48 +150,38 @@ async function send(p, cv, id) {
 }
 
 function drop(cv, row) {
-  // A conversation gone from the list (archived, or deleted): closed, no longer picked, and no longer counted as waiting.
+  // A conversation gone from the list (archived, or deleted): closed, and no longer picked.
   cv.rows = cv.rows.filter((r) => r.id !== row.id);
   if (!row.stays) cv.total = Math.max(0, cv.total - 1);
-  cv.waiting = cv.waiting.filter((w) => w !== row.id);
   cv.every = cv.every.filter((w) => w !== row.id);
   unpick(cv, [row.id]);
   if (cv.opened === row.id) Object.assign(cv, {opened: null, shown: null});
 }
 
 async function archive(p, cv, id, hidden) {
-  // Out of the list (unless archived ones are shown), kept all the same for the improver; or back in the list.
+  // Out of the list (unless archived ones are shown), kept all the same for the improver; or back in the list. Where
+  // it stands then (its chip, its ⋮) and what the list shows are read again, from its record.
   Object.assign(cv, {tidying: id, tidyError: null});
   p.render();
   try {
     await p.ws("conversation/hide", {recording_id: id, hidden});
-    cv.archivedCount = Math.max(0, cv.archivedCount + (hidden ? 1 : -1));
-    cv.known.set(id, {...cv.known.get(id), hidden});
-    const row = cv.rows.find((r) => r.id === id);
-    if (hidden && !cv.showArchived && row) {
-      if (row.status === "waiting") cv.counts = {...cv.counts, waiting: Math.max(0, (cv.counts.waiting || 1) - 1)};
-      drop(cv, row);
-    } else {
-      if (row) row.hidden = hidden;
-      if (cv.shown?.id === id) cv.shown.hidden = hidden;
-    }
-    if (!cv.archivedCount) cv.showArchived = false;
+    if (hidden && !cv.showArchived && cv.opened === id) Object.assign(cv, {opened: null, shown: null});  // Out of view.
+    p.setRun?.(await p.ws("run").catch(() => p.run));  // What a run would take now: none archived.
   } catch (err) {
     cv.tidyError = {id, text: errText(err)};
   }
   cv.tidying = null;
-  p.render();
+  await list(p, cv, false);
 }
 
 async function remove(p, cv, id) {
-  // Deleted for good, with what the improver derived from it: gone from the list, its counts, and what a run takes.
+  // Deleted for good, with what the improver derived from it: gone from the list, and from what a run takes.
   Object.assign(cv, {tidying: id, tidyError: null});
   p.render();
   try {
     await p.ws("conversation/delete", {recording_id: id});
     const row = cv.rows.find((r) => r.id === id);
     if (row) {
-      cv.counts = {...cv.counts, [row.status]: Math.max(0, (cv.counts[row.status] || 1) - 1)};
       if (row.hidden) cv.archivedCount = Math.max(0, cv.archivedCount - 1);
       drop(cv, row);
     }
@@ -204,36 +195,40 @@ async function remove(p, cv, id) {
   p.render();
 }
 
-// What a Run on the home page takes: the picked conversations, the ones sent in earlier, and what the improver has.
+// What a Run on the home page takes: the picked conversations a run can take.
 
 export function picking(p) {
-  const cv = state(p);
-  return {picked: runnable(cv).length, sent: cv.counts.sent || 0};
+  return {picked: runnable(state(p)).length};
 }
 
+const KEYS = {Triage: "triage", Analyze: "analyze", Propose: "propose", "Write up": "write"};  // flow.KEYS.
+
 export function runPreview(p, preview) {
-  // The numbers for a Run on picked conversations: it takes the picked ones and those sent in (at the start, or
-  // waiting at a step; the preview counts those), said as one; those an earlier run took in that weren't picked or
-  // sent in stay for the next full run. straight: those of them past the quick check (picked ones it found smooth
-  // before, and those sent in that the preview counts so), so the estimate gives the rest the quick check, as a full
-  // run does. which: what was said first in them, as listed: the picked ones, then those sent in (the confirmation
-  // names a few; one not in the list is counted in its "and N more").
-  const {picked} = picking(p), cv = state(p), b = preview.backlog || {};
-  const runs = new Set(runnable(cv)), rows = cv.rows || [];
-  const again = [...runs].filter((id) => cv.known.get(id)?.status === "smooth").length;
-  const going = [...rows.filter((r) => runs.has(r.id)), ...rows.filter((r) => r.status === "sent")];
-  return {...preview, which: going.map((r) => r.said || TEXT.conversations.nothing),
-          backlog: {...b, requests: picked + (b.sent || 0), straight: again + (b.sent_straight || 0), triage: 0,
-                    analyze: 0}};
+  // The numbers for a Run on picked conversations, as Pipeline.preview gives a full run's: it moves only the picked
+  // ones it can (P0.7), nothing else, less those that would stop at a blocked step. The new ones it admits start at
+  // Triage, or at Analyze past the quick check (one it found smooth before, sent in again; one sent in with a note);
+  // the held ones it releases go on from the step holding them. which: what was said first in each of them, as listed
+  // (the confirmation names a few; one not in the list is counted in its "and N more"). quick and analyses: what the
+  // cost line's estimate counts.
+  const cv = state(p), blocked = new Set(preview.paused || []);
+  const rows = new Map((cv.rows || []).map((r) => [r.id, r])), moved = [], releases = {};
+  let admits = 0, quick = 0, analyses = 0;
+  for (const id of runnable(cv)) {
+    const known = cv.known.get(id), held = KEYS[known?.stage];
+    // One sent in again from Your household skips the quick check (an earlier round looked at it), as one with a note.
+    const start = held || (known?.stage === "Your household" || (known?.status === "sent" && rows.get(id)?.note) ? "analyze" : "triage");
+    if (blocked.has(start)) continue;
+    moved.push(id);
+    if (held) releases[held] = (releases[held] || 0) + 1; else admits += 1;
+    quick += start === "triage" ? 1 : 0;
+    analyses += ["triage", "analyze"].includes(start) ? 1 : 0;
+  }
+  return {...preview, admits, releases, quick: preview.spend?.triage ? quick : 0,
+          analyses: blocked.has("analyze") ? 0 : analyses,
+          which: moved.filter((id) => rows.has(id)).map((id) => rows.get(id).said || TEXT.conversations.nothing)};
 }
 
 // Drawing.
-
-// One the quick check found smooth can be picked or sent in too, one by one (never by Select all: each is a full
-// analysis), for the full analysis. One with no trouble or no fix found can be sent in again, opened, with a note
-// (never picked): a fresh full analysis that reads the note.
-const pickable = (status) => status === "waiting" || status === "smooth";
-const sendable = (status) => pickable(status) || status === "active" || status === "nofix" || status === "fine";
 
 function marked(text, query) {
   // The text, with the words searched for marked.
@@ -250,8 +245,11 @@ function marked(text, query) {
 
 function badge(row) {
   // Where it stands; one up for review is its own button beside the row (reviewLink), so it can open that review.
-  const C = TEXT.conversations, tips = {smooth: C.smoothTip, retry: C.retryTip, nofix: C.nofixTip, fine: C.fineTip};
-  const tip = tips[row.status] ? ` title="${esc(tips[row.status])}"` : "";
+  // Its tooltip says what comes next, or, held, why (flow.py's words).
+  const C = TEXT.conversations, tips = {smooth: C.smoothTip, nofix: C.nofixTip, fine: C.fineTip, unclear: C.unclearTip,
+                                        duplicate: C.duplicateTip};
+  const text = row.held ? fill(C.heldTip, {why: row.held.why}) : tips[row.status];
+  const tip = text ? ` title="${esc(text)}"` : "";
   return row.status === "review" && row.review ? ""
     : `<span class="chip cs-${row.status}"${tip}>${esc(C.status[row.status] || row.status)}</span>`;
 }
@@ -287,12 +285,12 @@ function reading(p, cv, row) {
   // What sending it in did: while it's sent in (not once the improver has taken it), or what went wrong.
   const sent = cv.sent[row.id] && (cv.sent[row.id].error || shown.status === "sent") ? cv.sent[row.id] : null;
   // Sending it in starts a run for it (on demand), so it looks like Run: the note and the button stay in view while
-  // it's read. Archive and Delete wait behind the ⋮ beside it, so the row stays calm.
-  const send = sendable(shown.status)
+  // it's read, unless it was just sent in. Archive and Delete wait behind the ⋮ beside it, so the row stays calm.
+  const send = shown.sendable && !(sent && !sent.error)
     ? `<div class="cs-send"><input class="cs-note" id="cs-note" maxlength="500" placeholder="${esc(C.note)}" value="${esc(cv.note)}">
         <button class="btn play" id="cs-send" data-id="${esc(row.id)}" ${cv.sending ? "disabled" : ""}>${svg("send")}${
           esc(cv.sending === row.id ? C.sending : C.send)}</button>${dots(cv, row, shown)}</div>` : "";
-  const note = !send && shown.note ? `<div class="cs-sub">${esc(C.yourNote)} ${esc(shown.note)}</div>` : "";
+  const note = shown.note ? `<div class="cs-sub">${esc(C.yourNote)} ${esc(shown.note)}</div>` : "";
   const error = cv.tidyError?.id === row.id ? `<div class="conflict" role="status">${esc(cv.tidyError.text)}</div>` : "";
   const alone = !send && cv.deleting !== row.id ? `<div class="cs-tidy">${dots(cv, row, shown)}</div>` : "";
   return `<div class="cs-read">${turns}${note}${send}${alone}${confirm(cv, row)}${
@@ -300,11 +298,12 @@ function reading(p, cv, row) {
 }
 
 function dots(cv, row, shown) {
-  // The ⋮ beside Send: Archive (it stays kept for the improver), or Delete from Assist Improver, after asking.
+  // The ⋮ beside Send: Archive (it stays kept for the improver), or Delete from Assist Improver, after asking. Not
+  // Archive while its improvement waits for the household (archivable): deciding it is the way out.
   const P = TEXT.privacy, busy = cv.tidying ? "disabled" : "", id = esc(row.id), open = cv.menu === row.id;
   const menu = open ? `<div class="backdrop" id="cs-menu-close"></div><div class="menu cs-menu" role="menu">${shown.hidden
       ? `<button role="menuitem" id="cs-unarchive" data-id="${id}" ${busy}>${svg("unarchive")}${esc(P.unarchive)}</button>`
-      : `<button role="menuitem" id="cs-archive" data-id="${id}" ${busy}>${svg("archive")}${esc(P.archive)}</button>`}
+      : shown.archivable ? `<button role="menuitem" id="cs-archive" data-id="${id}" ${busy}>${svg("archive")}${esc(P.archive)}</button>` : ""}
       <button role="menuitem" class="danger" id="cs-delete-ask" data-id="${id}" ${busy}>${svg("trash")}${esc(P.delete)}</button></div>` : "";
   return `<span class="cs-actions"><button class="cs-dots" id="cs-actions" aria-haspopup="menu" aria-expanded="${open}"
       aria-label="${esc(P.more)}" title="${esc(P.more)}">${svg("dots")}</button>${menu}</span>`;
@@ -366,8 +365,8 @@ export function section(p) {
 }
 
 // The Status filter's choices, in the order a conversation moves through them.
-const STATUSES = ["waiting", "sent", "active", "smooth", "queued", "fine", "working", "retry", "review", "declined", "nofix",
-                  "improved", "test", "unreadable"];
+const STATUSES = ["waiting", "sent", "active", "smooth", "queued", "fine", "unclear", "working", "writing", "review",
+                  "declined", "nofix", "duplicate", "improved", "test", "unreadable", "archived"];
 // The standings to choose from: those some conversation matching the rest has, and any chosen.
 const choosable = (cv) => STATUSES.filter((s) => cv.byStatus[s] || cv.only?.has(s));
 
@@ -395,23 +394,21 @@ export function after(p) {
 }
 
 function runButton(p, preview, running) {
-  // Run, naming how many conversations it runs on (it means what it says): with some selected, those that can
-  // still be sent in and those sent in earlier; with none, a full run on every new one, as Settings' Run. With no
-  // conversation but other work waiting (a revision, a write-up), Run says so. "" with nothing to run (or only at a
-  // blocked step), or while a run goes.
+  // Run, naming how many conversations it moves (it means what it says): with some selected, those of them a run can
+  // take; with none, all a full run moves, as Settings' Run. "" with nothing to run (or only at a blocked step), or
+  // while a run goes.
   if (running || !preview) return "";
-  const C = TEXT.conversations, {picked} = picking(p), blocked = new Set(preview.paused || []);
-  const taken = (picked ? runPreview(p, preview) : preview).backlog || {};
-  const n = common.allConversations(taken, blocked);
-  if (!n && !common.waiting(taken, blocked).length) return "";
-  return `<button class="btn play" id="cs-run">${svg("play")}${esc(n ? fill(C.runOn, {n, s: n === 1 ? "" : "s"}) : C.runWaiting)}</button>`;
+  const {picked} = picking(p), n = common.moves(picked ? runPreview(p, preview) : preview);
+  if (!n) return "";
+  return `<button class="btn play" id="cs-run">${svg("play")}${esc(fill(TEXT.conversations.runOn, {n, s: n === 1 ? "" : "s"}))}</button>`;
 }
 
 function chosen(cv) {
-  // What the selection's actions apply to: archive (those not archived; or, while archived ones are shown, unarchive
-  // those archived), and delete (every one selected).
+  // What the selection's actions apply to: archive (those not archived that can be; or, while archived ones are
+  // shown, unarchive those archived), and delete (every one selected).
   const ids = [...cv.picked], archived = ids.filter((id) => cv.known.get(id)?.hidden);
-  return cv.showArchived ? {unarchive: archived, delete: ids} : {archive: ids.filter((id) => !cv.known.get(id)?.hidden), delete: ids};
+  return cv.showArchived ? {unarchive: archived, delete: ids}
+    : {archive: ids.filter((id) => cv.known.get(id)?.archivable && !cv.known.get(id).hidden), delete: ids};
 }
 
 export function bar(p, preview, running) {
@@ -441,10 +438,8 @@ async function bulk(p, cv, ids, call, change) {
     await p.ws(call, change);
     unpick(cv, ids);
     if (ids.includes(cv.opened)) Object.assign(cv, {opened: null, shown: null});
-    if (call === "conversations/delete") {
-      for (const id of ids) cv.known.delete(id);
-      p.setRun?.(await p.ws("run").catch(() => p.run));  // What a run would take now.
-    }
+    if (call === "conversations/delete") for (const id of ids) cv.known.delete(id);
+    p.setRun?.(await p.ws("run").catch(() => p.run));  // What a run would take now (archived ones: none).
   } catch (err) {
     alert(errText(err));
   }
@@ -490,7 +485,7 @@ export const actions = {
     ["#cs-many-delete", (p) => { const ids = chosen(p.cv).delete; bulk(p, p.cv, ids, "conversations/delete", {recording_ids: ids}); }],
     ["#cs-delete", (p, el) => remove(p, p.cv, el.dataset.id)],
     // With some selected, a run on those; with none, a full run, as Settings' Run.
-    ["#cs-run", (p) => { p.picking = picking(p).picked > 0; p.only = null; p.force = false; p.confirming = true; p.render(); }],
+    ["#cs-run", (p) => { p.picking = picking(p).picked > 0; p.only = null; p.confirming = true; p.render(); }],
   ],
   change: [
     ["[data-cs-pick]", (p, el) => {

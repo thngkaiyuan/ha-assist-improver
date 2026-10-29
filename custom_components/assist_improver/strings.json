@@ -34,7 +34,7 @@
   "services": {
     "status": {
       "name": "Recording status",
-      "description": "Show recording status and compatibility limits."
+      "description": "Show recording status."
     },
     "list_recordings": {
       "name": "List recordings",
@@ -47,60 +47,6 @@
         "recording_id": {
           "name": "Recording ID",
           "description": "ID returned by List recordings."
-        }
-      }
-    },
-    "analyze_recording": {
-      "name": "Analyze recording (journey analyzer)",
-      "description": "Opt-in paid evaluation: sends one recording's compact digest to the configured AI Task and returns the journeys it finds, in the label format. One call, never retried. Nothing in the house changes.",
-      "fields": {
-        "recording_id": {
-          "name": "Recording ID",
-          "description": "ID returned by List recordings."
-        },
-        "allow_paid_inference": {
-          "name": "Allow paid inference",
-          "description": "Off by default. Normal API charges apply."
-        },
-        "full": {
-          "name": "Full analysis",
-          "description": "Skip the quick check and always run the full analysis."
-        }
-      }
-    },
-    "generate_hypotheses": {
-      "name": "Generate hypotheses (hypothesis generator)",
-      "description": "Opt-in paid evaluation: sends analyzed sessions to the configured AI Task, which groups their friction into themes and proposes one change per theme. One call, never retried. Nothing in the house changes.",
-      "fields": {
-        "analyses": {
-          "name": "Analyzes",
-          "description": "Analyzed sessions, as Analyze recording returns them."
-        },
-        "allow_paid_inference": {
-          "name": "Allow paid inference",
-          "description": "Off by default. Normal API charges apply."
-        },
-        "seeded": {
-          "name": "Seeded cases",
-          "description": "Optional, for testing the reviewer: named hypotheses it reviews after the generator finishes."
-        }
-      }
-    },
-    "review_hypothesis": {
-      "name": "Review hypothesis (reviewer)",
-      "description": "Opt-in paid evaluation: the configured AI Task keeps, revises or drops one hypothesis and flags likely regressions. One call, never retried. Nothing in the house changes.",
-      "fields": {
-        "hypothesis": {
-          "name": "Hypothesis",
-          "description": "One hypothesis, as Generate hypotheses returns them."
-        },
-        "analyses": {
-          "name": "Analyzes",
-          "description": "The analyzed sessions the review checks against."
-        },
-        "allow_paid_inference": {
-          "name": "Allow paid inference",
-          "description": "Off by default. Normal API charges apply."
         }
       }
     },
@@ -132,68 +78,10 @@
         }
       }
     },
-    "test_hypotheses": {
-      "name": "Test hypotheses",
-      "description": "Replay recorded conversations with each hypothesis's changes, on every goal it names, in a sandbox where devices are simulated; up to the tests-per-goal setting for each goal. Can cost money with your AI providers.",
-      "fields": {
-        "hypotheses": {
-          "name": "Hypotheses",
-          "description": "The hypothesis generator's hypotheses."
-        },
-        "analyses": {
-          "name": "Analyzes",
-          "description": "The journey analyzes the hypotheses were built from."
-        },
-        "allow_paid_inference": {
-          "name": "Allow paid inference",
-          "description": "Required: replays call your assistant's AI model."
-        },
-        "per_goal": {
-          "name": "Tests per goal",
-          "description": "How many fixes each goal may be tested with, in each conversation where it came up; defaults to the tests-per-goal setting."
-        }
-      }
-    },
     "list_improvements": {
       "name": "List improvements",
       "description": "The tested improvements, with their status, tests and decisions. Makes no AI requests and changes nothing.",
       "fields": {}
-    },
-    "quick_check": {
-      "name": "Quick check (calibration)",
-      "description": "Run only the quick check on some recordings, with a chosen model, to calibrate it. Can cost a little with your AI provider; nothing else runs.",
-      "fields": {
-        "recording_ids": {
-          "name": "Recordings",
-          "description": "Recording IDs to check."
-        },
-        "entity_id": {
-          "name": "Model",
-          "description": "The AI Task to check with; defaults to the quick-check model in Settings."
-        },
-        "allow_paid_inference": {
-          "name": "Allow paid inference",
-          "description": "Required: each recording is one call to the model."
-        }
-      }
-    },
-    "write_summaries": {
-      "name": "Write summaries",
-      "description": "A small AI model writes each improvement's headline and what you get, in plain words (those without one, or the ones given). Can cost a little with your AI provider.",
-      "fields": {
-        "improvement_ids": {
-          "name": "Improvements",
-          "description": "Improvement IDs; leave empty for every improvement without a summary."
-        },
-        "entity_id": {
-          "name": "Model",
-          "description": "The AI Task to write with; defaults to the quick-check model, else the follow-up check model, else the main one."
-        },
-        "allow_paid_inference": {
-          "name": "Allow paid inference",
-          "description": "Required: each improvement is one short call to the model."
-        }
-      }
     }
   },
   "options": {

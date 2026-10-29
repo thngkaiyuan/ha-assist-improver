@@ -6,20 +6,10 @@ model's answer, Home Assistant's own states and registries) are plain dicts. fix
 fixture's stores, and the household's own where present, against these.
 """
 
-from typing import Any, TypedDict
+from typing import Any, Literal, TypedDict
 
 
 # The recordings: the index, and one recording (stored packed or compacted, retention.py; these are the unpacked form).
-
-class Filed(TypedDict, total=False):
-    """The user filed the conversation for improvement: asked Assist to (on-demand improvements), or sent it in from
-    the panel (picked for a run, or Send this one in)."""
-    at: str
-    note: str  # What the user wants improved, in their words, if they said.
-    by: str  # Who filed it (a user ID).
-    via: str  # assist or panel; absent on one filed before filings said where from (it reads as assist's).
-    again: bool  # Sent in from the panel again after an analysis: the quick check found it smooth, or no fix was found.
-
 
 class RecordingSummary(TypedDict, total=False):
     """An entry in the recordings index (Recorder.index): what's known without reading the recording."""
@@ -29,9 +19,6 @@ class RecordingSummary(TypedDict, total=False):
     status: str  # active, session_expired, interrupted or capture_timed_out.
     user_turns: int
     stored: str  # packed or compact (retention.py); absent while kept in full.
-    filed: Filed
-    hidden: bool  # Out of the conversations list (Archive); kept, analysed and tested all the same.
-    unarchived: str  # Kept in the conversations list (Unarchive) whenever it stands so, though settled (conversations).
     deleting: bool  # Deleted during a run: out of view, and deleted once the run ends (Recorder.forget_later).
 
 
@@ -59,16 +46,254 @@ class Recording(TypedDict, total=False):
     limitations: list[str]  # What the recording may be missing, and why.
     chat_log: dict  # The chat log at the end.
     practice: dict  # Sandbox mode: simulated_changes, unsimulated_actions.
-    filed: Filed
 
 
-# The run log (RoleRuns): one record per AI role call, per pipeline run, and per test of hypotheses.
+# What one stage hands the next (SPEC-CORE.md 3): typed here, checked where it's made (contracts.py, with the fields
+# each stage must hand on), and read by the next stage through these shapes alone.
+
+class Goal(TypedDict, total=False):
+    """A goal the user had in a turn: a device state, a sequence, a fact, controls they chose (ask), or a thanks."""
+    turn: int
+    summary: str
+    kind: str  # state, sequence, fact, ask or thanks.
+    entity_id: str
+    entity_ids: list[str]
+    state: str
+    states: list[str]
+    brightness_pct: int
+    fact: str
+    serves: int | None  # A sub-goal: the turn of the goal it serves.
+    reached: bool | None  # Code's verdict from the recording.
+    user_chose: list[dict]
+    because: str  # Only from earlier versions.
+
+
+class FeedbackItem(TypedDict, total=False):
+    """What the household said about how Assist behaved: in a turn, or (turn None) in the note it was sent in with."""
+    turn: int | None
+    about_turn: int | None  # The goal it's about; None: Assist in general.
+    what: str
+    improvement: str | None  # An applied improvement that makes Assist do it.
+
+
+class SideEffect(TypedDict, total=False):
+    """A device Assist changed that no goal asked for, that didn't end as it started."""
+    entity_id: str
+    start: str | None
+    end: str | None
+    turn: int | None  # The turn of Assist's change.
+
+
+class AnalysisResult(TypedDict, total=False):
+    """Analyze → Propose and Simulate: one conversation's goals and the trouble on each (analyzer.to_analysis)."""
+    recording_id: str
+    goals: list[Goal]
+    not_requests: list[dict]
+    feedback: list[FeedbackItem]
+    extra_turns: list[int]
+    pending_turns: list[int]
+    side_effects_left: list[SideEffect]
+    question_for_user: str | None  # It couldn't tell what the user wanted.
+    turns: int
+    problems: list[str]  # What the checks found in an answer kept though none was accepted.
+    duplicates: list[dict]  # Goals an existing improvement already fixes (marked by the analyzer).
+    triaged: dict  # The quick check found it smooth (no goals extracted).
+    journeys: list  # Only from earlier versions, as the three below.
+    not_journeys: list
+    notes: Any
+    wants: list
+
+
+GoalRef = TypedDict("GoalRef", {"session": str, "goal_turn": int}, total=False)
+Change = TypedDict("Change", {  # One change a hypothesis makes (hypotheses.schema._CHANGE).
+    "kind": str, "text": str, "for": str, "replaces": list[str], "assistant": str, "target": str, "entity_id": str,
+    "alias": str, "expose": bool, "script_name": str, "steps": list[dict]}, total=False)
+
+
+class TriageVerdict(TypedDict, total=False):
+    """Triage → Analyze: the quick check's verdict on one conversation (triage.py). Only a sure smooth ends it there
+    (Looked smooth); anything else goes on to the full analysis."""
+    smooth: bool
+    sure: bool
+    why: str
+
+
+class TriageCheck(TypedDict, total=False):
+    """The quick check as kept with its conversation's record (analysis.analyze): its verdict once it completed."""
+    status: str
+    output: TriageVerdict | None
+    error: dict | None
+    usage: dict
+    entity_id: str | None
+    kept: bool  # A verdict kept from an earlier check of the same conversation: nothing paid again.
+
+
+class Hypothesis(TypedDict, total=False):
+    """Propose → Simulate: one idea, the goals it fixes, and its changes."""
+    title: str
+    goals: list[GoalRef]
+    cause: str
+    changes: list[Change]
+    support: list[dict]
+    conflicts: list[dict]
+    expected: str
+    friction: Any  # Only from earlier versions.
+
+
+class ReviewResponse(TypedDict, total=False):
+    """The generator's answer to one blocking comment, asking again about the same idea."""
+    comment: int
+    resolution: str  # resolved or wont_fix.
+    note: str
+
+
+class GoalFriction(TypedDict, total=False):
+    """One goal a draft names, with its trouble (hypotheses.goal_friction)."""
+    session: str
+    goal_turn: int
+    summary: str
+    friction: list[dict]
+
+
+class DraftFriction(TypedDict, total=False):
+    """The trouble of each goal a draft names, and what each kind of trouble means."""
+    goals: list[GoalFriction]
+    kinds: dict[str, str]
+
+
+class WhereItApplies(TypedDict, total=False):
+    """The other conversations a draft's changes would reach (hypotheses.where_it_applies_to)."""
+    sessions: list[dict]
+    count: int
+    more: str
+
+
+class Draft(Hypothesis, total=False):
+    """Propose → Review: an idea the generator asks the reviewer about (hypotheses.AskReviewer), with what code found
+    about it."""
+    responses: list[ReviewResponse]
+    checks: dict  # What its changes do, checked against the household (evidence.check).
+    related_improvements: list[dict]  # Existing improvements on the same devices.
+    friction_it_targets: DraftFriction
+    sessions_where_it_would_apply: WhereItApplies
+
+
+class Evidence(TypedDict, total=False):
+    """What a review comment rests on: a session and turn, a device, or a pattern (note)."""
+    session: str
+    turn: int
+    entity_id: str
+    note: str
+
+
+class ReviewComment(TypedDict, total=False):
+    label: str  # hypotheses.LABELS.
+    decorations: list[str]  # blocking or non-blocking (one).
+    subject: str
+    discussion: str
+    evidence: list[Evidence]
+
+
+class ReviewAnswer(TypedDict, total=False):
+    """Review → its loop: the reviewer's accepted review of one draft (hypotheses.ChannelSubmitReview): its comments
+    and, when it knows a better version, that one."""
+    comments: list[ReviewComment]
+    revised: Hypothesis
+
+
+class NumberedComment(ReviewComment, total=False):
+    comment: int  # Its number, for the generator's responses.
+
+
+class ReviewResult(TypedDict, total=False):
+    """Review → Propose: what the generator gets back (hypotheses.review_result): the outcome the comments decide,
+    each comment numbered, the reviewer's version if any, the next step while a blocking comment stands, and what
+    code found about the draft."""
+    outcome: str  # approve or request_changes.
+    comments: list[NumberedComment]
+    revised: Hypothesis
+    next_step: str
+    checks: dict
+
+
+class ProposalAnswer(TypedDict, total=False):
+    """The proposal's answer: its ideas, goals outside the assistant's control, goals already addressed."""
+    hypotheses: list[Hypothesis]
+    not_fixed: list[dict]
+    already_addressed: list[dict]
+
+
+class FailedStep(TypedDict, total=False):
+    step: str  # What Assist tried, in plain words, and on what.
+    error: str  # Home Assistant's error.
+
+
+class Said(TypedDict, total=False):
+    you: str  # What the user said.
+    assist: str  # Assist's last reply to it.
+    failed: list[FailedStep]  # The steps that failed in between, where any did.
+
+
+class Replay(TypedDict, total=False):
+    """One replay of a conversation, as its test keeps it (simulate.test): how it went, and how it fulfilled the goals
+    by P0.1.1's measures (measures.judge)."""
+    plan: str  # The id of the replays store's entry it was judged from (ReplayEntry).
+    status: str  # reproduced (without the change) or done (with it).
+    said: list[int]  # The conversation's turns it said, in order.
+    replies: list[dict]  # Each turn said: turn, you, assistant, and failed (the steps that failed) where any did.
+    goals: dict[str, str]  # {goal key: met, unmet or indeterminate}.
+    goals_met: list[str]
+    turns_per_root_goal: dict[str, int]
+    counted: dict[str, list[int]]  # {root goal key: the turns it took}.
+    side_effects_left: list[dict]  # entity_id, name (as the household names it), start, end, turn.
+    started_from: dict  # The home and time it started from (cases.started_from).
+    config: dict  # The scripts and the exposure it ran on (snapshot.assist_config).
+    feedback: dict[str, bool]  # {feedback text: whether its replies followed it}.
+
+
+class Test(TypedDict, total=False):
+    """Simulate → Propose and the improvements: one test of an idea on its conversation (simulate.test), kept with
+    its round's Propose record."""
+    idea: str | None
+    changes: str  # The digest of the idea's changes.
+    hypothesis: dict
+    at: str
+    judged: dict  # {goal key: summary, turn, root, devices, feedback}: every goal it judged.
+    before: Replay
+    after: Replay
+    gains: list[str]  # The measures the change made strictly better (measures.gains).
+    validated: bool  # Strictly better (measures.easier).
+    setup: dict  # The change as the sandbox ran it (changes.setup_from_changes).
+    tested: dict  # What it was tested against: scripts, exposure, and prompts (the instructions it edits, now).
+    provider: dict  # The assistant it ran on.
+    reused: bool  # Its replay with the change was an earlier round's, kept: not paid for again (never resampled).
+    user_id: str | None  # The person speaking.
+    recorded: list[Said]  # The conversation as it went.
+    notes: list[str]
+
+
+class ReplayEntry(TypedDict, total=False):
+    """One replay as the replays store keeps it, by its plan's id (simulate.Replays)."""
+    plan: dict  # What it replays and how (simulate.before_plan, after_plan); its id is their digest.
+    recording_id: str
+    at: str
+    status: str  # running, reproduced, not_reproducible, done, unsupported, infrastructure_failure, interrupted or
+    # cancelled.
+    error: dict | None
+    notes: list[str]
+    usage: dict | None
+    said: list[int]
+    steps: list[dict]  # Each turn said: turn, input, reply, output, transitions, brightness, external_calls, ...
+    verdicts: dict  # {digest of the feedback texts checked: the check}: whether its replies follow them.
+
+
+# The run log (RoleRuns): one record per AI role call, and per pipeline run.
 
 class RoleCall(TypedDict, total=False):
     """An AI role's call (reflective.run_role, then the stage that asked): what went in, what came back, what it
     cost."""
     id: str
-    kind: str  # journey_analyzer, hypothesis_generator, hypothesis_reviewer or quick_check.
+    kind: str  # journey_analyzer or hypothesis_generator.
     role: str
     entity_id: str  # The AI Task it ran on.
     status: str  # running, completed, failed, held or interrupted.
@@ -95,229 +320,98 @@ class Analysis(RoleCall, total=False):
     recording_id: str
     digest_sha256: str  # Of what the analyzer read: a held verdict is reused only for the same.
     agentic: bool
-    triage: dict  # The quick check's status, output, error, usage and entity_id.
-    analysis: dict  # The goals, with their friction, as the pipeline reads them.
+    triage: TriageCheck
+    analysis: AnalysisResult  # The goals, with their friction, as the pipeline reads them.
 
 
 class Proposal(RoleCall, total=False):
     """hypothesis_generator (proposal.propose): the proposed changes, and the reviewer's verdict on each."""
     sessions: list  # The conversations it was given.
-    friction: list[str]  # The goals with open friction it was given ("session:turn").
-    reviews: list[dict]
-    seeded_reviews: dict
+    reviews: list[dict]  # On one conversation, its round's (Flow): an earlier attempt's too.
     reviewer_run: dict  # The reviewer's own call: status, error, usage, output.
-    tested: bool  # Whether the test stage is done with its hypotheses.
-    test_attempts: int
-
-
-class Review(RoleCall, total=False):
-    """hypothesis_reviewer, run alone on one hypothesis (a developer service)."""
-    sessions: list
+    # Only from earlier versions: the goals with open friction it was given ("session:turn"), whether the test stage
+    # was done with its ideas, and the ideas cleared to test.
+    friction: list[str]
+    tested: bool
+    to_test: list[Hypothesis]
 
 
 class PipelineRun(TypedDict, total=False):
-    """One run of the pipeline (pipeline.py), kept as it goes."""
+    """One run of the pipeline (pipeline.py), kept as it goes, with the progress the flow publishes (flow.Flow.run)."""
     id: str
     kind: str  # pipeline.
-    trigger: str  # manual, scheduled or filed.
+    trigger: str  # manual, scheduled, filed (the fast lane), revision or conflict.
     status: str  # running, done, failed, cancelled or interrupted.
     started: str
     finished: str
-    stage: str | None
-    progress: dict  # Per stage: counts, timings and problems.
+    stage: str | None  # The stage at work on the conversation it's on (flow.KEYS).
+    # total and done (conversations), the one it's on (conversation), taken_in, analyzed, new_improvements, duplicates,
+    # unreadable, held (with the first one's why), and problems (failures.py).
+    progress: dict
     error: str | None
-    force: bool
     only: str | None  # A run of one step.
+    picked: list[str]  # The conversations a picked run (or the fast lane) admits only.
+    conversation: str  # The one a revision's or a conflict's run takes in at Propose.
+    admitted: list[str]  # The new ones it took in,
+    released: list[str]  # the held ones it released,
+    moved: list[str]  # and both, in the order it moved them.
+    results: dict  # {recording id: {stage, outcome, held}}, for each whose round stopped in it.
     note: str | None
     trace_id: str
 
 
-class TestReport(TypedDict, total=False):
-    """hypothesis_tests: what testing hypotheses found (validation.test_hypotheses)."""
-    id: str
-    kind: str
-    status: str
-    started: str
-    finished: str
-    output: dict
-    tried: dict  # {goal: tests it had}: kept after output (retention), for each goal's tests-per-goal limit.
-    run_id: str
-    trace_id: str
+# The improvements (improvements.py).
 
-
-# Cases and their baselines (casebook.py, baseline.py).
-
-class Transition(TypedDict, total=False):
-    entity_id: str
-    old: str
-    new: str
-
-
-class BaselineStep(TypedDict, total=False):
-    """One replayed turn of a baseline."""
-    turn: int
-    input: str
-    output: list  # The chat log content the replay added.
-    original_reply: str
-    ha_effects_match: bool  # The goal's devices got the recorded effects.
-    same_tool_calls: bool
-    differences_elsewhere: dict
-    transitions: list[Transition]
-    recorded_transitions: list[Transition]
-    prompt_matches_recording: bool
-    external_calls: list  # When the turn failed: what it tried to reach.
-    incomplete: bool
-    ha_action_trace_matches: bool  # Earlier versions.
-    semantic_review: str  # Earlier versions: the manual pilot's review.
-
-
-class Baseline(TypedDict, total=False):
-    """A case's conversation replayed without a fix, to check it reproduces (BaselineTrial.export)."""
-    status: str  # not_run, running, reproduced, not_reproducible, unsupported, infrastructure_failure, cancelled,
-    # interrupted, or failed (an error outside the replay: failures.closing).
-    plan: dict  # What it replays and how; its id is their digest.
-    steps: list[BaselineStep]
+class Copy(TypedDict, total=False):
+    """Write-up → Review: the editor's headline and what-you-get for one improvement (editor.write), or why it failed
+    (it goes up with the proposer's title)."""
+    status: str  # written or failed.
+    entity_id: str | None
+    headline: str
+    benefit: str
     error: dict | None
-    destination_met: bool | None  # Whether the replay met the goal without a fix.
-    usage: dict
-    # Whether its replies follow the case's feedback (validation.check_baseline_feedback): a fix is judged on it only
-    # where they don't. status, verdicts, followed, error, usage, and the feedback it judged.
-    feedback_check: dict
-    attempts: int  # Earlier versions (and a case not run yet).
-    run_id: str  # Earlier versions.
-    next_turn: int  # Earlier versions.
-    reviews: list[dict]  # Earlier versions: the manual pilot's review between turns.
-    effect_boundary: str  # Earlier versions.
 
 
-class Case(TypedDict, total=False):
-    """A goal in a recorded conversation that tests replay (cases.create_case)."""
-    format: int
-    id: str
-    recording_id: str
-    recording_digest: str
-    title: str
-    question: str | None
-    turns: list  # The user turns the goal spans.
-    original_user_turns: int
-    intervention_turns: list
-    goal_unmet: bool
-    acceptable_devices: list
-    unwanted: dict  # {device: its start}: side effects the original left, which a fix must not repeat.
-    replay_through: int  # The last turn that made one, past the goal's own: a fix's replay goes on to it.
-    follow_feedback: list[str]  # What the household said about how Assist behaved, which a fix's replies must follow.
-    destination: dict  # status, summary, criteria, evidence: when the goal counts as met.
-    feedback: list[dict]
-    revision: int
-    audit: dict | None
-    baseline: Baseline
-    baseline_history: list[Baseline]  # Baselines under earlier plans.
-
-
-# Changes tested on a case (candidates.py) and the improvements built from them (improvements.py).
-
-class CandidatePlan(TypedDict, total=False):
-    """What a change's test replays: the hypothesis, its edits, and the baseline it's compared with."""
-    format: int
-    id: str  # The digest of the rest.
-    kind: str  # hypothesis_changes.
-    hypothesis: dict | str
-    evaluation_case_id: str
-    baseline_plan: dict
-    baseline_digest: str
-    judge: dict  # What the result is judged by: destination, acceptable devices, original turns, baseline met.
-    coverage: list[dict]
-    user_inputs: list
-    setup: dict
-    definitions: dict
-    definition_evidence: dict
-    compiled_scripts: dict
-    edits: list
-    added_tools: list[dict]
-    limits: list
-    provider_option_changes: dict
-    system_prompt_change: bool
-    counterfactual_allowance_used_by_this_plan: int
-    retained_turns: list
-    theme: dict  # Earlier versions, as are the rest.
-    proposal_origin: str
-    semantic_review: str
-    regression_review: str
-    application: str
-
-
-class CandidateResult(TypedDict, total=False):
-    """What a change's test found (CandidateTrial.run)."""
-    status: str
-    plan_id: str
-    evaluation_case_id: str
-    evidence_kind: str
-    input: str
-    output: list
-    turns: list[dict]  # Each replayed turn: turn, input, output, reply.
-    followups: list[dict]
-    followup_check: dict | None
-    transitions: list[Transition]
-    simulated_calls: list[dict]
-    external_calls: list
-    real_device_actions: int
-    assessment: dict  # How it compares with the baseline: turns, goal met, unintended targets.
-    coverage: list[dict]
-    usage: dict
-    error: dict | None
-    run_id: str
-    theme_id: str  # Earlier versions, as are the rest.
-    validated_improvement: bool
-    application: str
-
-
-class Candidate(TypedDict, total=False):
-    """A change tested on a case: its plan, and once it ran, its result."""
-    plan: CandidatePlan
-    status: str  # running, awaiting_review (it improved the goal), not_improved, ..., failed or interrupted (an error
-    # or a cancellation before its result: failures.closing).
-    result: CandidateResult | None
-    error: dict | None  # Why it failed before its result: type and message.
-    evidence: list  # Earlier versions, as are the rest.
-    reviews: list
-    application: None
+class Decision(TypedDict, total=False):
+    """Review (the household's) → the improvement: one decision and what came of it (Improvements.decide)."""
+    decision: str  # accept, decline, revise or undo.
+    note: str
+    reason: str  # Given with it: declined as not_an_issue.
+    by: str | None
+    at: str
+    outcome: str  # done, recorded, conflict, ...
+    auto: bool  # Accepted automatically (auto-accept).
 
 
 class Improvement(TypedDict, total=False):
-    """What goes to the household for review: a set of changes, the tests that showed what it gets them, and what
+    """What goes to the household for review: a set of changes, the test that showed what it gets them, and what
     they decided."""
     id: str
     title: str
     cause: str
-    status: str  # awaiting_review, applied, declined, revision_requested, ignored, needs_attention, ...
+    status: str  # awaiting_review, needs_attention, applied, declined, conflict or revised.
     created: str
     hypothesis: dict
     changes: list[dict]
     setup: dict
-    tested: dict  # The scripts and exposure the tests ran with.
+    tested: dict  # What its test ran against (Test.tested): changed since, accepting it meets a conflict.
     provider: dict  # The assistant it was tested on.
-    user_id: str | None  # The person it's for, when it's personal.
-    tests: list[dict]
-    untested_goals: list
-    also_addressed: list[dict]  # Goals found already fixed by it.
-    copy: dict | None  # The editor's headline and what-you-get.
-    decisions: list[dict]
+    user_ids: list  # The people it was tested for: a line for the person speaking goes to each (None: everyone).
+    test: Test  # The test that validated it, as its round kept it.
+    round: int  # The round of its conversation it was built in.
+    fixes: list[str]  # The root goals its test helped ("session:turn").
+    devices: list[str]  # The devices those goals want something from.
+    copy: Copy | None
+    decisions: list[Decision]
     application: dict | None  # How it was applied, to undo it.
     last_outcome: dict
     history: list[dict]
-    revises: dict  # The improvement it revises.
+    revises: dict  # The improvement it revises: {id, title, note}.
     revised_by: str
-
-
-class FailedStep(TypedDict, total=False):
-    step: str  # What Assist tried, in plain words, and on what.
-    error: str  # Home Assistant's error.
-
-
-class Said(TypedDict, total=False):
-    you: str  # What the user said.
-    assist: str  # Assist's last reply to it.
-    failed: list[FailedStep]  # The steps that failed in between, where any did.
+    conflicts: list[dict]  # What stood in the way when an accept met a conflict (sent back, the proposer hears it).
+    conversation: str  # The one conversation it came from and was tested on (SPEC.md P0.10).
+    reach: list[dict]  # What each change applies to: the household, one assistant, or one person (SPEC.md P0.10).
+    checked_on: list[str]  # The conversations the proposer had in view when it made it (short ids).
 
 
 class Transcript(TypedDict, total=False):
@@ -327,22 +421,66 @@ class Transcript(TypedDict, total=False):
     failed: int  # Assist's tool calls that failed in it.
 
 
-class Setback(TypedDict, total=False):
-    """An item that failed in runs in a row (failures.Collector), by "stage:item" or "stage:step:item"."""
-    runs: int  # Runs in a row it failed in.
-    run: str  # The last of them.
-    error: str
-    at: str
-    version: str  # The integration's version then: a new one tries again.
-    aside: str  # Why it's set aside (MAX_ATTEMPTS runs in a row), once it is.
-
-
-class Waiting(TypedDict, total=False):
-    """Where the pipeline's taken-in conversations wait (Pipeline.store), and the items failing run after run."""
-    at: dict[str, str]  # Recording ID: triage or analyze.
-    setbacks: dict[str, Setback]
-
-
 RUN_LOG: dict[str, Any] = {  # The run log's record type for each kind.
-    "journey_analyzer": Analysis, "hypothesis_generator": Proposal, "hypothesis_reviewer": Review,
-    "quick_check": RoleCall, "pipeline": PipelineRun, "hypothesis_tests": TestReport}
+    "journey_analyzer": Analysis, "hypothesis_generator": Proposal, "pipeline": PipelineRun}
+
+
+# The handoffs between stages (SPEC.md P0.4): what each move hands the stage it enters. Unlike the stored records
+# above, every field is required, and a field that steers what happens next takes only its fixed set of values.
+
+OUTCOMES = Literal["looked smooth", "no trouble found", "duplicate", "couldn't be read", "no fix found", "improved",
+                   "declined", "archived", "marked as a test"]
+
+
+class Admitted(TypedDict):  # Your Assist → Triage or Analyze: a run took it in.
+    conversation: str
+    round: int
+
+
+class Checked(TypedDict):  # Triage → Analyze: the quick check found it needs a full analysis.
+    conversation: str
+    round: int
+    smooth: bool
+
+
+class Analysed(TypedDict):  # Analyze → Propose: the goals it carries, and its question for the household, if any.
+    conversation: str
+    round: int
+    goals: list[str]
+    question: str | None
+
+
+class Proposed(TypedDict):  # Propose → Write up: the improvements it sent on (or the one still waiting), or the question.
+    conversation: str
+    round: int
+    improvements: list[str]
+    question: str | None
+
+
+class Written(TypedDict):  # Write up → Your review: what waits there for the household.
+    conversation: str
+    round: int
+    improvements: list[str]
+    question: str | None
+
+
+class SentBack(TypedDict):  # Your review → Propose: a new round, for a revision or a conflict the household agreed to.
+    conversation: str
+    round: int
+    improvement: str
+    why: Literal["revision", "conflict"]
+
+
+class Undone(TypedDict):  # Your household → Your review: its applied improvement undone, up for review again.
+    conversation: str
+    round: int
+    improvement: str
+
+
+class Ended(TypedDict):  # Any stage → Your household: how its round ended.
+    conversation: str
+    round: int
+    outcome: OUTCOMES
+
+
+HANDOFFS = {kind.__name__: kind for kind in (Admitted, Checked, Analysed, Proposed, Written, SentBack, Undone, Ended)}

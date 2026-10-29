@@ -135,8 +135,8 @@ async def replay_calls(recording, definitions, setup=None):
 
 async def recorded_call_effects(recording, definitions):
     """Each turn's effects on the home when today's engine runs that turn's recorded tool calls: {turn: changes}.
-    For a practice recording, this is what a baseline is compared with: its notes come from the practice engine of
-    the day it was recorded, which may have emulated less (a sleeping car's climate, say)."""
+    For a practice recording, this is what a replay without a change is compared with: its notes come from the
+    practice engine of the day it was recorded, which may have emulated less (a sleeping car's climate, say)."""
     found = await worker().call("evidence", job="replay", recording=recording, definitions=definitions)
     return found and {int(turn): changes for turn, changes in found[1].items()}  # JSON keys are text.
 
@@ -281,15 +281,13 @@ class Evidence:
                 continue
             # A goal HA couldn't check is said so (a problem of the run's, unless it's a case it can't replay); the
             # other facts still come.
-            async with contained("propose", f"{session}:{turn_no}", step="script check", expected=(CaseError,),
-                                 setback=False) as one:
+            async with contained("propose", f"{session}:{turn_no}", step="script check", expected=(CaseError,)) as one:
                 facts.append(await self._try_scripts(view.recording, turns[turn_no - 1], setup, scripts, targets,
                                                      f"{session}:{turn_no}"))
             if one.failed:
                 facts.append({"goal": f"{session}:{turn_no}", "reaches_goal": None, "note": UNCHECKED + one.error})
         for entity_id, aliases in setup["aliases"].items():
-            async with contained("propose", entity_id, step="alias match", expected=(CaseError,),
-                                 setback=False) as one:
+            async with contained("propose", entity_id, step="alias match", expected=(CaseError,)) as one:
                 facts.append(await self._match_aliases(setup, entity_id, aliases))
             if one.failed:
                 facts.append({"alias_for": entity_id, "matches": None, "note": UNCHECKED + one.error})
@@ -339,8 +337,7 @@ class Evidence:
                     cached = session in self._baselines
                 # A session HA couldn't replay is skipped, with why (a problem of the run's, unless it's one it
                 # can't replay); the others go on.
-                async with contained("propose", session, step="replay", expected=(CaseError,),
-                                     setback=False) as attempt:
+                async with contained("propose", session, step="replay", expected=(CaseError,)) as attempt:
                     if not cached:
                         before = await replay_calls(view.recording, self.definitions)
                         async with self._lock:

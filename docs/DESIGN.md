@@ -24,23 +24,23 @@ Assist Improver should need almost no explanation: not because it does little, b
 - **Safe by default.** Nothing in your home changes without your review; a run says what it will spend before it starts; changes apply all or nothing and can be undone.
 - **Never repeats itself.** A run leaves out goals that already have an improvement, and the same change is never shown twice. Asking for a revision brings back a new version, linked to your note.
 - **Takes care of itself.** Household knowledge reaches every assistant without setup; an assistant added later is offered in the panel and in Repairs.
-- **Settings you can see.** The panel's settings draw the pipeline as a track: requests merge onto the improvement loop, the proposer and reviewer go round their own small loop, revisions go round again, and what you accept peels off to the household. Each step has a glyph; each AI step names its model (one click to change it or add a new AI Task) and shows its backlog; a step can be blocked, or run on its own from the Run now menu. Your Assist names the assistant Assist uses by default, with household knowledge as a toggle on it; Your household opens what the household knowledge holds. Auto-accept (off by default) applies each improvement as soon as it's written up. A history below lists runs, improvements going up for review, and decisions. Text is kept to a minimum: explanations are tooltip bubbles, there when you hover.
+- **Settings you can see.** The panel's settings draw the pipeline as a track: requests merge onto the improvement loop, the proposer and reviewer go round their own small loop, revisions go round again, and what you accept peels off to the household. Each step has a glyph; each AI step names its model (one click to change it or add a new AI Task) and shows its backlog; a step can be blocked, or run on its own from the Run now menu. Your Assist names the assistant Assist uses by default; Your household opens what the household knowledge holds, beside its one switch (on by default). Auto-accept (off by default) applies each improvement as soon as it's written up. A history below lists runs, improvements going up for review, and decisions. Text is kept to a minimum: explanations are tooltip bubbles, there when you hover.
 
 ### The stories
 
 1. **Set up once.** Install, add the integration, keep the recommended AI model, done. The confirmation says what happens next. Every setting after that lives in the panel (Configure links there).
-2. **Live as usual.** Use Assist as you always do; the conversations where you had to repeat, correct or clarify yourself are what it learns from.
+2. **Live as usual.** Use Assist as you always do; the conversations where you had to repeat, correct or clarify yourself, where it changed something you didn't ask for, or where you told it how to behave, are what it learns from.
 3. **Run.** The panel shows how many new conversations are waiting and offers **Run now**, saying what the run will do and that it costs money. One click, then progress you can leave and come back to.
 4. **Review.** A notification lists what passed its tests, each linking to its review. Read the headline, open what you want to check, accept with one click, and go straight to the next one, until you're all caught up.
 5. **Change your mind.** An applied improvement can be undone from its page.
-6. **Steer.** Ask for a revision with a note, decline, or say things were fine as they were; the next run takes it into account and never proposes a declined idea again.
-7. **Add an assistant.** It's offered household knowledge in the panel and in Repairs, in one click.
+6. **Steer.** Ask for a revision with a note, or decline, saying if you like that it wasn't an issue; the next run takes it into account and never proposes a declined idea again.
+7. **Add an assistant.** It reads the household knowledge from its first request: nothing to set up.
 
 ## Models judge; code derives
 
 AI models are used only for judgement calls: what the user meant, what caused the friction, what change would help. Anything settled or deterministic is computed by code, for example:
 
-- how many extra turns a goal took, whether it was reached, and the side effects left behind;
+- how many extra turns a goal took, whether it was reached, the side effects left behind, and whether a fix left them alone;
 - the time between turns, and which device states changed;
 - whether a proposal names real devices, states they can take, and the sessions it claims to fix.
 
@@ -58,13 +58,14 @@ Models answer through tools that validate their answer against the household and
 - **The simplest rule consistent with every session.** A rule is tested against every session where it would apply, not only the one that prompted it. Special cases and rules built on a single session need a reason.
 - **Evidence, both ways.** Each proposal lists the sessions that support it and any that contradict it.
 - **Fix the real cause.** Speech recognition mishearing the user is in scope, but only when the sessions show it happened.
+- **Each assistant's own instructions.** The proposer and reviewer see which assistant each conversation used, the instructions it ran with and the ones it has now. A fault in one assistant's instructions (a fact they don't give, such as who's speaking, or a rule that's wrong) is fixed there, and only that assistant's conversations are replayed with the edit; a household fact goes in the household knowledge. A short list of facts every assistant's instructions should give (who's speaking, the device the request came from, the date and time, the household's time zone) is offered where they're missing, never twice: code checks each isn't there already.
 
 ## Testing changes
 
 - **Home Assistant's own engine, in a sandbox.** Each replay gets a separate Home Assistant instance, seeded from the recording: areas, devices, names and aliases, states, what the assistant could see, scripts and automations. Home Assistant's own intents, tools, scripts and automations run there; only commands to devices are emulated. Before trusting a replay, the sandbox's version of the assistant's instructions and tools is compared with the recorded one.
-- **Friction is measured two ways:** goals that went unmet (the assistant guessed or missed what the user wanted), and extra turns. A fix improves a goal when it meets a goal the original conversation didn't, in no more turns, or meets it in fewer turns.
-- **The baseline comes first.** The original conversation is replayed without the change; it reproduces when, every turn, the goal's devices behave as recorded, so the friction still happens. A model's other variations are kept as notes.
-- **The user's own words, in order.** After the first message, the replay continues with the user's recorded follow-ups until the goal is met, so a fix that still needs a follow-up counts its turns.
+- **Friction is measured four ways:** goals that went unmet (the assistant guessed or missed what the user wanted), extra turns, side effects left (a device the assistant changed that no goal asked for, and that didn't end as it started), and your feedback on how the assistant behaved (in the conversation, or in the note you send it in with). A fix improves a goal when it removes some of that friction and leaves none of the rest: it meets the goal in no more turns, without any of its side effects (judged by code), with replies that follow your feedback (judged by a small model), and it meets a goal the original conversation didn't, takes fewer turns, removes a side effect or follows your feedback.
+- **The baseline comes first.** The original conversation is replayed without the change; it reproduces when, every turn, the devices the assistant changed behave as recorded and every goal ends as it did, and its replies don't already follow the feedback a fix is to follow, so the friction still happens. A model's other variations are kept as notes.
+- **The user's own words, in order.** The whole conversation is replayed from its first message, with the user's recorded turns, unchanged and in order; with the change, a turn is left out only when what it asked for is already done, so a fix that still needs a follow-up counts its turns.
 - **Facts for the AI roles.** Before any model replay, code runs each proposed script from the state its goal started in, matches new names the way Assist does, and replays every recorded tool call with the change; calls that now resolve differently are signals to weigh, not proof of a regression.
 - **No resampling.** A test is never repeated hoping for a better result; a different plan (a change in how replays are judged, say) is a different test.
 
@@ -73,15 +74,15 @@ Models answer through tools that validate their answer against the household and
 - **A separate reviewer** reads each idea with read-only access to the same sessions and devices. It writes [Conventional Comments](https://conventionalcomments.org/) (each labelled, marked blocking or non-blocking, and backed by session evidence).
 - **The verdict follows from the comments:** any blocking comment means changes are requested; otherwise the idea is approved.
 - **Every blocking comment gets an answer:** the generator marks it resolved, or won't fix with a reason.
-- **One reviewer per run.** The reviewer keeps a single conversation across all the drafts of a run, so it remembers what it already approved and asked for.
-- **Bounded back-and-forth:** at most 15 reviews per run and 5 per idea, tuned from observed runs.
+- **One reviewer per round.** The reviewer keeps a single conversation across all the drafts of a round, so it remembers what it already approved and asked for.
+- **Bounded back-and-forth:** at most 15 reviews per round and 5 per idea, tuned from observed runs.
 
 ## Asking you, and applying what you accept
 
 - **Reviewed like a pull request.** Each tested improvement has its own page in the Assist Improver panel: what it gets you, the goals it enables and the turns it saves, the changeset as files with line-numbered diffs, and the conversations it was tested on, with what's only expected. The notification links straight to each one.
-- **Your choices:** accept, ask for a revision, decline, "things were fine as they were", or "ignore, that was a test". An applied improvement can be undone.
+- **Your choices:** accept, ask for a revision (with a note on what should change), or decline, with an optional note; tick "Not an issue" when it went fine or you were only trying Assist out. An applied improvement can be undone.
 - **All of it or none of it.** Every change is checked before anything is written: a value you changed since the improvement was tested is a conflict, reported instead of overwritten, and Home Assistant validates scripts and instructions first. Changes then go in a safe order (scripts, saved but not exposed; aliases; exposure; instruction lines last), with a journal saved before each write. A failure undoes the steps already done; if Home Assistant stops midway, the next start undoes them and tells you. Every value is read back before the improvement counts as applied.
-- **Household knowledge, shared by every assistant.** Instruction lines go into one place, the household knowledge: lines for everyone, and lines for one person that only their requests see. Assistants read it through **Assist with household knowledge**, Home Assistant's own Assist (the same tools and instructions) with the household's lines added. An improvement with household lines also switches every assistant that controls the home to it, each shown in its changeset; the panel offers to turn it on for assistants added later. Code finds these from Home Assistant's own list of assistants. A line already there isn't added twice.
+- **Household knowledge, shared by every assistant.** Household lines go into one place, the household knowledge: lines for everyone, and lines for one person that only their requests see. Every assistant that controls the home reads it: the lines come with Home Assistant's own Assist, so there's no second option to choose, nothing to turn on for each assistant, and no tool offered twice. One switch in the settings turns them off for every assistant (on by default). A line already there isn't added twice.
 
 ## Shared knowledge
 
@@ -96,13 +97,13 @@ Models answer through tools that validate their answer against the household and
 
 ## Cost and data
 
-- **Triage before the deep analysis.** With a triage model chosen in Settings (a small model, set up by default), each conversation is checked first, however many turns it has; one it's sure went smoothly skips the journey analyzer. It's told what a later turn usually means (the user repeating, correcting or answering a question). Unsure means a full analysis. The check is calibrated on labelled conversations: it must never skip one that had friction.
+- **Triage before the deep analysis.** With a triage model chosen in Settings (a small model, set up by default), each conversation is checked first, however many turns it has; one it's sure went smoothly skips the journey analyzer. It's told what a later turn usually means (the user repeating, correcting, answering a question, or telling the assistant how it behaved). Unsure means a full analysis. The check is calibrated on labelled conversations: it must never skip one that had friction.
 - **A goal that's already fixed stops early.** The analyzer sees the existing improvements on the devices its conversation touched (found by code) and can read any of them; a goal one of them already fixes is marked as a duplicate, checked by code, and goes no further.
 - **Every conversation stays visible.** The generator and reviewer see all recordings, analysed, skipped as smooth, or not analysed yet: the ones with friction upfront, the rest through their session tools, and all of them in the regression replays. Filtering only saves the deep analysis.
 
 
 - **Your conversations stay in your Home Assistant.** Analysis sends what it needs to the AI model you chose, through Home Assistant's own AI Task.
-- **Paid analysis runs only when you allow it.** Cost controls are coarse on purpose, not per-call accounting: the **tests per goal** setting caps how many fixes each goal is tested with, in each conversation where it came up. Each test replays a conversation on the household's own assistant, so it works as a multiplier on what the assistant normally costs.
+- **Paid analysis runs only when you allow it.** Cost controls are coarse on purpose, not per-call accounting: the **tests per conversation** setting caps how many fixes each conversation is tested with, each round. Each test replays a conversation on the household's own assistant, so it works as a multiplier on what the assistant normally costs.
 
 ## How the AI roles are tested
 

@@ -4,7 +4,6 @@ import re
 
 import probatio
 
-from ..const import NO_FIX
 from ..exploration import applied_too_early
 from ..instructions import FACTS, carried, edit, effective, is_edit
 from .goals import friction_by_goal, goal_summary
@@ -30,11 +29,6 @@ def problems(sessions, answer, schema=HYPOTHESES):
             elif ref["goal_turn"] not in friction_by_goal(analysis):
                 found.append(f"{where}: session {ref['session']} has no goal with friction at turn {ref['goal_turn']}; "
                              f"its goals with friction start at turns {sorted(friction_by_goal(analysis)) or 'none'}.")
-            elif (title := sessions.settled.get((ref["session"], ref["goal_turn"]))) == NO_FIX:
-                found.append(f"{where}: no fix was found for {ref['session']}:{ref['goal_turn']} before; leave it out.")
-            elif title is not None:
-                found.append(f"{where}: {ref['session']}:{ref['goal_turn']} already has an improvement ({title!r}); "
-                             "leave it out.")
         if not hypothesis["goals"]:
             found.append(f"{where}: name the goals it fixes (session and goal turn).")
         if not hypothesis["support"]:
@@ -82,8 +76,7 @@ def open_goals(sessions, answer):
     addressed |= {(r["session"], r["goal_turn"]) for r in answer.get("not_fixed") or [] if r["why"].strip()}
     addressed |= {(r["session"], r["goal_turn"]) for r in answer.get("already_addressed") or [] if r["why"].strip()}
     return [(s, turn) for s, analysis in sorted(sessions.analyses.items())
-            for turn in sorted(friction_by_goal(analysis))
-            if (s, turn) not in addressed and (s, turn) not in getattr(sessions, "handled", sessions.settled)]
+            for turn in sorted(friction_by_goal(analysis)) if (s, turn) not in addressed]
 
 
 def _open_goals(sessions, answer):

@@ -1,6 +1,6 @@
 // The panel's words: TEXT, and the tables that name a run's stages, the pipeline's steps and each improvement's status.
 
-export const STAGES = [["analyze", "Analyze"], ["propose", "Propose"], ["test", "Simulate"], ["write", "Write up"]];
+export const STAGES = [["triage", "Triage"], ["analyze", "Analyze"], ["propose", "Propose"], ["write", "Write up"]];
 // Every label and tooltip the settings view shows, in one place: edit the words here. {name}-style parts are filled
 // in when shown.
 export const TEXT = {
@@ -27,20 +27,22 @@ export const TEXT = {
                   archiveMany: "Archive ({n})", unarchiveMany: "Unarchive ({n})", deleteMany: "Delete ({n})",
                   deleteAsk: "Delete {n} conversation{s} from Assist Improver? The improver can no longer check changes against {them}.",
                   clearSearch: "Clear search",
-                  runOn: "Run on {n} new conversation{s}", runWaiting: "Run what's waiting", failedStep: "failed step", failedStepLabel: "Failed step:",
+                  runOn: "Run on {n} conversation{s}", failedStep: "failed step", failedStepLabel: "Failed step:",
                   you: "You", assist: "Assist", send: "Send this one in", sending: "Sending…",
                   note: "What should have happened? (optional)", yourNote: "Your note:",
                   sentNow: "Sent in. The improver is looking at it now.", sentLater: "Sent in. It goes in with your next run.",
-                  // Where each stands; past the quick check, the stage a run took it to (conversations.stage).
+                  // Where each stands: the stage its flow record names, or its outcome (conversations.standing).
                   status: {waiting: "New", active: "Still going", sent: "Sent in", smooth: "Looked smooth", queued: "To analyze",
-                           fine: "No trouble found", working: "Looking for a fix", retry: "No fix yet", review: "Up for review",
-                           declined: "Declined", nofix: "No fix found", improved: "Improved", test: "Marked as a test",
-                           unreadable: "Couldn't be read"},
+                           fine: "No trouble found", unclear: "Needs your note", working: "Looking for a fix",
+                           writing: "Writing it up", review: "Up for review",
+                           declined: "Declined", nofix: "No fix found", duplicate: "Already covered", improved: "Improved",
+                           test: "Marked as a test", unreadable: "Couldn't be read", archived: "Archived"},
                   smoothTip: "Nothing to improve, at a quick look. Send it in for a full analysis.",
-                  // A chip's tooltip, where it says what comes next.
-                  retryTip: "The next proposal looks for another fix.",
+                  // A chip's tooltip, where it says what comes next; held, why (flow.py's words).
                   nofixTip: "No fix worked. Send it in again with a note for one more look.",
                   fineTip: "Nothing went wrong, as far as it could tell. Send it in again with a note if something did.",
+                  unclearTip: "It couldn't tell what you wanted. Send it in again with a note.",
+                  duplicateTip: "Another conversation's improvement covers it.", heldTip: "Held: {why}",
                   // The Status filter's button: everything, or what it shows (one status's name, or how many).
                   statusAll: "Status", statusSome: "Status: {n}",
                   more: "Show more", none: "No conversations match.", allArchived: "Nothing needs you right now.", nothing: "(nothing said)",
@@ -74,12 +76,13 @@ export const TEXT = {
                on: "Turn on"},
   revise: {label: "Revisions", short: "Revisions"},
   block: {tip: "Stop this stage.", blocked: "Resume this stage."},
-  badges: {new: "{n} new: the next run takes them in", waiting: "{n} waiting", held: "{n} held while blocked", review: "{n} to review", applied: "{n} applied"},
+  badges: {new: "{n} new: the next run takes them in", waiting: "{n} held", held: "{n} held while blocked", review: "{n} to review", applied: "{n} applied"},
   assistant: {tip: "The assistant Assist uses by default", none: "Add an assistant in Settings → Voice assistants first."},
-  simulate: {label: "Your assistant", tip: "At most {n} simulations per goal, in all, on your assistant.", perGoal: "simulations per goal",
-             cost: "Each simulation replays one of your conversations with a fix, on your own assistant: {n} per goal costs a maximum of about {n} times those conversations"},
+  simulate: {label: "Your assistant", tip: "At most {n} tests of a conversation each round, on your assistant.",
+             per: "tests per conversation, each round",
+             cost: "Each test replays one of your conversations with a fix, on your own assistant: {n} each round costs at most about {n} times that conversation, plus one replay of it without the fix"},
   passThrough: {label: "Pass through", tip: "No triage model: conversations pass straight on to analysis."},
-  followUpsOff: "Follow-ups aren't checked",
+  feedbackOff: "Feedback is checked with the write-up model",
   models: {large: "Needs judgement: a strong model works best.", small: "A small, quick model is enough.",
            missing: {label: "Not available", tip: "This AI model is gone from Home Assistant. Choose another."},
            unavailable: "This AI model is unavailable right now.", none: {label: "Choose…", tip: "This step needs an AI model."},
@@ -90,12 +93,12 @@ export const TEXT = {
   // A full run (Settings' Run now, the schedule) takes in every conversation not analyzed yet; Run now says how many.
   schedule: {off: "Only when you run it", daily: "Every day at 3:00, on new conversations",
              weekly: "Every Sunday at 3:00, on new conversations"},
-  runNow: "Run now", runAll: "Run on {n} new conversations", runOne: "Run on 1 new conversation", runOneStep: "Run one step",
+  runNow: "Run now", runAll: "Run on {n} conversations", runOne: "Run on 1 conversation", runOneStep: "Run one step",
   failure: {details: "Details", settings: "Open settings"},  // The home page's notice only when the household must act.
-  confirm: {title: "Run Assist Improver?", all: "Run on {n} new conversations?", one: "Run on 1 new conversation?",
-            on: "Run on {n} new conversation{s}?", step: "Run {step}?", run: "Run", notNow: "Not now",
-            // A run with conversations names which, by their first words: up to three, then how many more; and any
-            // other work it does, in the items' words.
+  confirm: {title: "Run Assist Improver?", all: "Run on {n} conversations?", one: "Run on 1 conversation?",
+            on: "Run on {n} conversation{s}?", step: "Run {step}?", run: "Run", notNow: "Not now",
+            // A run with new conversations names which, by their first words: up to three, then how many more; and
+            // the held ones it releases, by the step that holds them, in the items' words.
             quoted: "“{said}”", which: "{names} and {n} more", also: "Also: {items}",
             cost: "Runs use your AI models, so they cost money.", waiting: "{items} {are} waiting.", more: "{items} and more are waiting.",
             // The cost line with a rough estimate from past runs under it (common.cost): one line per model, the
@@ -105,17 +108,16 @@ export const TEXT = {
                     quick: "{tokens} tokens on {model}, for the quick check",
                     both: "{tokens} tokens on {model}, to analyse {n} conversation{s}, quick check included",
                     more: "More if it finds fixes to propose and test."},
-            nothing: "Nothing is waiting right now.", again: "Nothing new is waiting; this proposes again from what's already analyzed.",
+            nothing: "Nothing is waiting right now.",
             blocked: "{steps} {is} blocked.", models: "{steps} can't run: {its} available. Choose another first.",
             its: "its AI model isn't", their: "their AI models aren't",
-            pickedRun: "Runs on {items}.", andMore: "{items} and more",
-            items: {revisions: "{n} revision{s} you asked for", triage: "{n} conversation{s} to triage", analyze: "{n} conversation{s} to analyze", propose: "new findings to propose from",
-                    test: "{n} idea{s} to simulate", write: "{n} write-up{s}"},
-            steps: {triage: "Takes in {n} new conversation{s} and triages them.", triageNone: "Nothing is waiting for triage.",
-                    analyze: "Analyzes {n} conversation{s}.", analyzeNone: "Nothing is waiting for analysis.",
-                    propose: "Proposes fixes from what's new.", proposeNone: "Nothing new to propose from.",
-                    test: "Simulates {n} idea{s}.", testNone: "Nothing is waiting to be simulated.",
-                    write: "Writes up {n} improvement{s}.", writeNone: "Nothing is waiting to be written up."}},
+            items: {triage: "{n} conversation{s} to triage", analyze: "{n} conversation{s} to analyze",
+                    propose: "{n} conversation{s} to propose fixes for", write: "{n} write-up{s}"},
+            // Run one step: what's held at that step (it takes in nothing new).
+            steps: {triage: "Triages {n} conversation{s} held there.", triageNone: "Nothing is held at Triage.",
+                    analyze: "Analyzes {n} conversation{s}.", analyzeNone: "Nothing is held at Analyze.",
+                    propose: "Proposes fixes for {n} conversation{s}.", proposeNone: "Nothing is held at Propose.",
+                    write: "Writes up improvements for {n} conversation{s}.", writeNone: "Nothing is held at Write up."}},
   knowledge: {chip: "{n} learned", chipShort: "{n}", tip: "What your assistants know about your household. Accepted improvements add to it.",
               title: "Household knowledge", everyone: "Everyone", empty: "Nothing learned yet: accepted improvements add lines here.",
               search: "Search", none: "Nothing matches.", more: "Read more", less: "Show less", add: "Add a line",
@@ -124,38 +126,41 @@ export const TEXT = {
               // The one switch: whether every assistant on Assist reads the lines (settings.js, the Your household step).
               label: "Household knowledge", on: "Household knowledge on: your assistants read the {lines} learned so far.",
               off: "Household knowledge off: your assistants don't read what's learned."},
-  // A run in progress, by which it is (common.runTitle).
-  progress: {working: "Improving your assistant", all: "Running on {n} new conversations", one: "Running on 1 new conversation",
-             picked: "Running on the conversations you picked", sent: "Running on what you sent in", step: "Running {step} only"},
-  history: {title: "History", triggers: {scheduled: "scheduled", filed: "on demand", picked: "picked"}, more: "Show more", empty: "Nothing yet: runs and your decisions show up here.",
+  // A run in progress, by which it is (common.runTitle), and where it is: the conversation it's on, and its stage.
+  progress: {working: "Improving your assistant", all: "Running on {n} conversations", one: "Running on 1 conversation",
+             picked: "Running on the conversations you picked", sent: "Running on what you sent in", step: "Running {step} only",
+             revision: "Revising an improvement", conflict: "Resolving a conflict", at: "Conversation {k} of {total}, at {stage}."},
+  history: {title: "History", triggers: {scheduled: "scheduled", filed: "on demand", picked: "picked", revision: "revision", conflict: "conflict"},
+            more: "Show more", empty: "Nothing yet: runs and your decisions show up here.",
             run: {done: "Run finished", failed: "Run stopped early", cancelled: "Run cancelled", interrupted: "Run interrupted"},
-            stopped: "Nothing was lost: the next run tries again.", unfinished: "{steps} couldn't finish",
-            setAside: "{n} conversation{s} set aside",
-            failed: "{n} couldn't be analyzed: {why}", addressed: "{n} already addressed by an improvement", posted: "Up for review", decisions: {accept: "Accepted", decline: "Declined", revise: "Asked for a revision",
-            needs_improvement: "Said it needs improvement", fine_as_is: "Declined: not an issue", was_test: "Marked as a test",
-            undo: "Undid", ignore: "Ignored"}, auto: "Accepted automatically"},
+            stopped: "Nothing was lost: what it didn't finish is held for your next run.", unfinished: "{steps} couldn't finish",
+            setAside: "{n} couldn't be read",
+            failed: "{n} held: {why}", addressed: "{n} already addressed by an improvement", posted: "Up for review", decisions: {accept: "Accepted", decline: "Declined", revise: "Asked for a revision",
+            // A decision given with a reason reads by its reason.
+            not_an_issue: "Declined: not an issue", undo: "Undid"}, auto: "Accepted automatically"},
 };
 
-// The settings view draws the pipeline as a track: requests merge onto the improvement loop (analyze, propose, test,
-// write up), a small loop joins the proposer and its reviewer, and you review at the far end; revisions go round
-// again and what you accept peels off to the household. Each AI step names its model; the ones with a gate can be
-// blocked (a run then stops there and what reaches it waits).
+// The settings view draws the pipeline as a track: requests merge onto the improvement loop (triage, analyze,
+// propose, write up), a small loop joins the proposer and its reviewer, Simulate stamps what the proposer sends on,
+// and you review at the far end; revisions go round again and what you accept peels off to the household. Each AI
+// step names its model; the ones with a gate can be blocked (a run then stops there and what reaches it is held).
 export const STEPS = {
   requests: {...TEXT.steps.requests, icon: "mdi:comment-processing-outline"},
   triage: {...TEXT.steps.triage, role: "triage", gate: "triage", icon: "mdi:filter-outline"},
   analyze: {...TEXT.steps.analyze, role: "analyzer", gate: "analyze", icon: "mdi:text-search"},
   propose: {...TEXT.steps.propose, role: "generator", gate: "propose", icon: "mdi:lightbulb-on-outline"},
   review: {...TEXT.steps.review, role: "reviewer", icon: "mdi:scale-balance"},
-  test: {...TEXT.steps.test, gate: "test", icon: "mdi:flask-outline"},
+  test: {...TEXT.steps.test, icon: "mdi:flask-outline"},
   write: {...TEXT.steps.write, role: "editor", gate: "write", icon: "mdi:feather"},
   you: {...TEXT.steps.you, icon: "mdi:account-circle-outline"},
   household: {...TEXT.steps.household, icon: "mdi:home-heart"},
 };
-export const AT_WORK = {analyze: ["triage", "analyze"], propose: ["propose", "review"], test: ["test"], write: ["write"]};
-export const BACKLOG = {requests: "requests", triage: "triage", analyze: "analyze", propose: "propose", test: "test",
-                        write: "write", you: "review"};
+// The cards at work while a run's stage works (run.stage): Propose with its reviewer and its Simulate stamp (P0.4).
+export const AT_WORK = {triage: ["triage"], analyze: ["analyze"], propose: ["propose", "review", "test"], write: ["write"]};
+// The flow stage each card counts (the run preview's stages).
+export const COUNTS = {requests: "Your Assist", triage: "Triage", analyze: "Analyze", propose: "Propose", write: "Write up",
+                       you: "Your review"};
 export const SCHEDULE = Object.entries(TEXT.schedule);
-export const GATE_NAMES = Object.fromEntries(["triage", "analyze", "propose", "test", "write"].map((g) => [g, STEPS[g].title]));
+export const GATE_NAMES = Object.fromEntries(["triage", "analyze", "propose", "write"].map((g) => [g, STEPS[g].title]));
 export const STATUS = {awaiting_review: "To review", needs_attention: "Needs attention", applied: "Applied", undone: "Undone",
-  declined: "Declined", revision_requested: "Revision requested", revised: "Replaced by a revision", ignored: "Ignored",
-  conflict: "Changed since tested"};
+  declined: "Declined", revised: "Replaced by a revision", conflict: "Changed since tested"};

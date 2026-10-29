@@ -13,6 +13,7 @@ from homeassistant.helpers import llm
 
 from .cases import recording_turns
 from .digest import ACTION_DOMAINS, NOISE_DOMAINS, _clip, _entity_card, _naming, _text, background, build_digest
+from .simulation import template_follow_ons
 from .trace import traced_tool
 
 API_ID = "assist_improver_session"
@@ -21,6 +22,24 @@ MAX_MATCHES = 25
 INTERNAL_NOTES = ("provider_native_history_omitted",)
 LATE = 30  # Seconds after the assistant's reply beyond which a change is flagged as late.
 FOLLOW_ON = 10  # Seconds within which a same-device change counts as a follow-on of an assistant change.
+SETTLES = {("opening", "open"), ("closing", "closed"), ("locking", "locked"), ("unlocking", "unlocked")}
+BRIGHTNESS_TOLERANCE = 5  # Percent: the brightness a goal asked for, or Assist set, as a light reports it.
+
+
+def _brightness(change):
+    return ((change.get("attributes_changed") or {}).get("brightness_pct") or [None, None])[1]
+
+
+def _carries(assists, later):
+    """Whether a later change on an entity Assist changed only carries Assist's change through (assists: Assist's
+    changes to it before, oldest first): the state Assist's latest set, or settling from it, with the brightness
+    Assist last set kept."""
+    assist = assists[-1]
+    if later["new"] != assist["new"] and (assist["new"], later["new"]) not in SETTLES:
+        return False
+    set_to = next((b for b in map(_brightness, reversed(assists)) if b is not None), None)
+    now = _brightness(later)
+    return set_to is None or now is None or abs(now - set_to) <= BRIGHTNESS_TOLERANCE
 
 
 class SessionView:
@@ -35,11 +54,13 @@ class SessionView:
         self.replies = [max((m["created"] for m in t["messages"][1:] if m.get("role") == "assistant"), default=None)
                         for t in turns]
         self.contexts = [((t.get("prepared") or {}).get("context") or {}).get("context") or {} for t in turns]
+        self.sources = [t["source"] for t in turns]
         self.heard_by = [((t.get("prepared") or {}).get("context") or {}).get("device_id") for t in turns]
         # The assistant's configuration as of this session (its instructions template among it), where recorded.
         self.assistant = next(((t["prepared"].get("provider_config") or [None])[0] for t in turns
                                if t.get("prepared") and t["prepared"].get("provider_config")), None)
         practice = recording.get("practice")
+        self._by_results = set()  # (entity, at) of changes only Assist's results named as its (_who).
         self.changes = self._changes(practice["simulated_changes"] if practice else recording.get("state_changes", []))
 
     def _turn_of(self, at):
@@ -57,7 +78,7 @@ class SessionView:
                           if before.get(k) != after.get(k) and k != "friendly_name"}
             turn = self._turn_of(change["at"])
             entry = {"at": change["at"], "during_turn": turn, "old": old.get("state"), "new": new.get("state"),
-                     "by": self._who(entity_id, turn, new.get("context") or {})}
+                     "by": self._who(entity_id, turn, new.get("context") or {}, change["at"])}
             if attributes:
                 if entity_id.startswith("light.") and "brightness" in attributes:
                     attributes["brightness_pct"] = [_pct(v) for v in attributes["brightness"]]
@@ -73,24 +94,55 @@ class SessionView:
         return (self.source.get("entities", {}).get(entity_id) or {}).get("device_id")
 
     def _mark_follow_ons(self, changes):
-        """A change right after an assistant change on the same physical device is a follow-on, not someone else."""
-        by_assistant = [(self._device(e), datetime.fromisoformat(c["at"])) for e, cs in changes.items() for c in cs
-                        if c["by"] == "assistant" and self._device(e)]
-        for entity_id, cs in changes.items():
-            device = self._device(entity_id)
-            for c in cs:
-                if c["by"] != "assistant" and device and any(
-                        d == device and 0 <= (datetime.fromisoformat(c["at"]) - at).total_seconds() <= FOLLOW_ON
-                        for d, at in by_assistant):
+        """Assist's own follow-ons, and its results read rightly. A change by no one signed in, within FOLLOW_ON seconds
+        of Assist's change, is Assist's when it only carries that change through: on an entity Assist changed (ever
+        before it in the session), the state it set, reported again or settling (a blind opening, then open), with
+        the brightness it set kept; on another entity of the same physical device, one Assist never changed, the
+        device's own reaction (a fan's climate turning off with it). Anything else is someone's, a correction above
+        all. One only Assist's results named (no context of its) that puts the entity back where Assist's own change
+        found it is a correction too. What a template entity Assist changed switches with its own actions, under the
+        same request (a template light's helper), is that entity's follow-on (simulation.template_follow_ons)."""
+        for turn, source in enumerate(self.sources, 1):
+            mine = {e: [c for c in cs if c["during_turn"] == turn and c["by"] == "assistant"]
+                    for e, cs in changes.items()}
+            for entity_id in template_follow_ons(source, {e for e, cs in mine.items() if cs}):
+                for c in mine[entity_id]:
                     c["by"] = "follow-on of an assistant change on the same physical device"
+        stamped = sorted(((datetime.fromisoformat(c["at"]), e, c) for e, cs in changes.items() for c in cs),
+                         key=lambda x: x[0])
+        assists = {}  # {entity: Assist's changes to it so far, oldest first}
+        near = []  # [(device, when)] of Assist's changes so far
+        for at, entity_id, c in stamped:
+            device, own = self._device(entity_id), assists.get(entity_id, [])
+            if c["by"] == "assistant" and (entity_id, c["at"]) in self._by_results and own and \
+                    own[-1]["by"] == "assistant" and (entity_id, own[-1]["at"]) not in self._by_results \
+                    and c["new"] == own[-1]["old"] and c["new"] != own[-1]["new"]:
+                c["by"] = "not the assistant (a person at the device or app, an automation, or the device itself)"
+            if c["by"] == "assistant":
+                assists.setdefault(entity_id, []).append(c)
+                if device:
+                    near.append((device, at))
+                continue
+            if c["by"] == "a person (signed in to Home Assistant)":
+                continue
+            if own:  # Assist changed this entity: only carrying that through is its follow-on.
+                follows = (at - datetime.fromisoformat(own[-1]["at"])).total_seconds() <= FOLLOW_ON and _carries(own, c)
+            else:
+                follows = bool(device) and any(d == device and 0 <= (at - t).total_seconds() <= FOLLOW_ON
+                                               for d, t in near)
+            if follows:
+                c["by"] = "follow-on of an assistant change on the same physical device"
 
-    def _who(self, entity_id, turn, context):
+    def _who(self, entity_id, turn, context, at=None):
         """Assist, a signed-in person, or something else; recordings before identity capture use Assist's results."""
         turn_context = self.contexts[turn - 1] if 0 < turn <= len(self.contexts) else {}
         if turn_context.get("id") and turn_context["id"] in (context.get("id"), context.get("parent_id")):
             return "assistant"
+        if context.get("user_id") and not context.get("parent_id"):  # A person's own action, in the app or panel.
+            return "a person (signed in to Home Assistant)"
         found = next((t for t in self.digest["turns"] if t["turn"] == turn), None)
         if found and any(entity_id in str(step.get("result", "")) for step in found["assistant"]):
+            self._by_results.add((entity_id, at))  # Only its results say so (_mark_follow_ons reads them again).
             return "assistant"
         if context.get("user_id"):
             return "a person (signed in to Home Assistant)"
@@ -193,11 +245,13 @@ class SessionView:
                     pass
             steps.append(step)
         changed, drift = [], []
+        acted = {e for e, cs in self.changes.items() for c in cs if c["during_turn"] == turn and c["by"] == "assistant"}
         for e, cs in self.changes.items():
             for c in cs:
                 if c["during_turn"] != turn:
                     continue
-                if c["old"] == c["new"] and c["by"] != "assistant":
+                if (c["old"] == c["new"] and c["by"] != "assistant" and e not in acted
+                        and c["by"] != "a person (signed in to Home Assistant)"):
                     drift.append(e)  # Readings ticking over on devices nobody acted on.
                 else:
                     changed.append({"entity_id": e, "name": _naming(self.source, e)[0], **c})
@@ -281,18 +335,29 @@ def _match(texts, query):
     return some, ("any word (nothing had all of them)" if some else "nothing")
 
 
-class _SessionTool(llm.Tool):
+class RoleTool(llm.Tool):
+    """Every tool the improver's AI roles get. Home Assistant hands a tool the model's arguments unchecked, and hands
+    back to the model only an argument error (probatio.Invalid) or a HomeAssistantError: anything else a tool raises
+    ends the model's whole generation. So the arguments are checked first. Its conversation trace deep-copies every
+    tool a model is given: a tool is shared, never copied (one holding the flow, and so Home Assistant, can't be)."""
     integration = "assist_improver"
     annotations = llm.ToolAnnotations(read_only=True, open_world=False)
 
     def __init__(self, view):
         self.view = view
 
+    def __deepcopy__(self, memo):
+        return self
+
     async def async_call(self, hass, tool_input, llm_context):
-        return llm.ToolResult(data=self.run(**self.parameters(tool_input.tool_args)))
+        return llm.ToolResult(data=await self.answer(hass, self.parameters(tool_input.tool_args)))
+
+    async def answer(self, hass, args):
+        """What the model gets back for arguments its schema took."""
+        return self.run(**args)
 
 
-class ReadTurn(_SessionTool):
+class ReadTurn(RoleTool):
     name = "read_turn"
     description = ("Read turns of the session: what the user said, what the assistant said and every tool it called "
                    "with the result, and the state changes during the turn, each with who made it (the assistant or "
@@ -305,7 +370,7 @@ class ReadTurn(_SessionTool):
         return self.view.read_turn(turn or 1)
 
 
-class ListAreas(_SessionTool):
+class ListAreas(RoleTool):
     name = "list_areas"
     description = "List the household's areas (rooms), their aliases and how many devices each has."
     parameters = probatio.Schema({})
@@ -314,7 +379,7 @@ class ListAreas(_SessionTool):
         return {"areas": self.view.list_areas()}
 
 
-class DevicesInArea(_SessionTool):
+class DevicesInArea(RoleTool):
     name = "devices_in_area"
     description = ("List the devices in an area with their state at the start of the session (and at the end, if it "
                    "changed), what they can do, and whether the assistant may use them (exposed). Sensors only on "
@@ -325,7 +390,7 @@ class DevicesInArea(_SessionTool):
         return self.view.devices_in_area(area, include_sensors)
 
 
-class FindDevices(_SessionTool):
+class FindDevices(RoleTool):
     name = "find_devices"
     description = ("Find devices whose name, alias, area or entity ID contains all the given words (plurals match "
                    "too). Sensors and diagnostics only on request.")
@@ -335,7 +400,7 @@ class FindDevices(_SessionTool):
         return self.view.find_devices(query, include_sensors)
 
 
-class DeviceDetails(_SessionTool):
+class DeviceDetails(RoleTool):
     name = "device_details"
     description = ("One device in detail: its state and attributes at the start, what it can do, whether the "
                    "assistant may use it, every change to it during the session (with who made it), and the other "
@@ -346,7 +411,7 @@ class DeviceDetails(_SessionTool):
         return self.view.device_details(entity_id)
 
 
-class ListScriptsAndScenes(_SessionTool):
+class ListScriptsAndScenes(RoleTool):
     name = "list_scripts_and_scenes"
     description = ("List scripts, scenes and automations, optionally filtered by words, with whether the "
                    "assistant may use each (exposed).")
@@ -392,10 +457,11 @@ def related_improvements(existing, devices, goals=None):
     return out
 
 
-class ListImprovements(_SessionTool):
+class ListImprovements(RoleTool):
     name = "list_improvements"
     description = ("List the improvements that already exist: those waiting for the household's review, and those "
-                   "applied (with when). Each has its cause, its changes, and the goals (session:goal turn) it covers. "
+                   "applied (with when). Each has its cause, its changes, the conversation it came from, and the goals "
+                   "(session:goal turn) its test fixed there. "
                    "Check it before proposing a fix: an improvement may already address the friction.")
     parameters = probatio.Schema({})
 
@@ -409,12 +475,12 @@ class ListImprovements(_SessionTool):
             "improvements": [], "note": "No improvements yet: every goal's friction is new."}
 
 
-class ReadImprovement(_SessionTool):
+class ReadImprovement(RoleTool):
     name = "read_improvement"
     description = ("Read one existing improvement in full: what it changes and was expected to do, the sessions it "
                    "agrees and disagrees with, each test (the goal, the conversation before, the replay with the "
-                   "change after, the result), and goals already found addressed by it. Use it when the list "
-                   "doesn't settle whether it addresses a goal.")
+                   "change after, the result), and the household's decisions on it. Use it when the list doesn't "
+                   "settle whether it addresses a goal.")
     parameters = probatio.Schema({probatio.Required("improvement"): str})
 
     def __init__(self, view, existing):

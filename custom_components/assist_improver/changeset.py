@@ -31,6 +31,10 @@ ORDER = ("script", "alias", "exposure", "household", "prompt", "assistant_api")
 SCRIPTS_FILE = "scripts.yaml"  # Where HA's script editor keeps scripts (homeassistant.config.SCRIPT_CONFIG_PATH).
 
 
+CHANGED_SINCE = "It was changed in Home Assistant after the improvement was tested."  # A conflict on the tested base.
+BASES = {"script": "scripts", "exposure": "exposure", "prompt": "prompts"}  # Where tested keeps each kind's base.
+
+
 class Conflict(Exception):
     """HA's value isn't the one the step was planned against."""
 
@@ -113,10 +117,11 @@ async def write(hass, kind, target, value):
 # Planning: every step, checked before anything is written.
 
 async def plan_steps(hass, proposal):
-    """(steps, already, conflicts) for a proposal: {changes, setup, tested: {scripts, exposure}, provider, user_id}.
+    """(steps, already, conflicts) for a proposal: {changes, setup, tested: {scripts, exposure}, provider, user_ids}.
 
     tested holds the values the replays started from (the recorded home); a live value that's neither that nor
-    the proposed one was changed by the user since, and is a conflict."""
+    the proposed one was changed by the user since, and is a conflict. user_ids: the people it was tested for (a line
+    for the person speaking goes to each)."""
     from homeassistant.components.script.config import async_validate_config_item
     from homeassistant.exceptions import HomeAssistantError
     from homeassistant.helpers.template import Template
@@ -129,7 +134,7 @@ async def plan_steps(hass, proposal):
             already.append({"kind": kind, "target": target, "what": what})
         elif base is not _ANY and not _same(before, base):
             conflicts.append({"kind": kind, "target": target, "what": what,
-                              "why": "It was changed in Home Assistant after the improvement was tested."})
+                              "why": CHANGED_SINCE})
         else:
             steps.append({"kind": kind, "target": target, "before": before, "after": after, "what": what})
 
@@ -183,8 +188,7 @@ async def plan_steps(hass, proposal):
         else:
             live_prompt = await read(hass, "prompt", target)
             live = await read(hass, "household", "household")
-            knowledge, prompt, problems = household.edit(live, proposal["changes"], proposal.get("user_id"),
-                                                         live_prompt)
+            knowledge, prompt, problems = household.edit(live, proposal["changes"], proposal["user_ids"], live_prompt)
             if prompt != live_prompt:
                 try:
                     Template(prompt, hass).ensure_valid()
@@ -223,7 +227,7 @@ async def plan_steps(hass, proposal):
         if problems:
             changed = base is not _ANY and not _same(live_prompt, base)
             conflicts += [{"kind": "prompt", "target": target, "what": f"{title}'s instructions", "why": p} for p in (
-                ["It was changed in Home Assistant after the improvement was tested."] if changed else problems)]
+                [CHANGED_SINCE] if changed else problems)]
             continue
         prompts[target] = [before, after, base, title]
     for target, (before, after, base, title) in prompts.items():
@@ -359,13 +363,150 @@ class Changesets:
         return undone, stuck
 
 
-def undo_steps(applied, live):
-    """Steps that undo an applied changeset: each applied step reversed, newest first. A value that's no longer the
-    one applied (the user changed it again) is left alone and reported. live: {(kind, target): current value}."""
+def undo_steps(applied, live, kept=None):
+    """Steps that undo an applied changeset: each applied step reversed, newest first. A value several improvements
+    share (the household knowledge, an assistant's instructions, a device's names) that changed since has only this
+    one's own part taken out (taken_back), while that part is as it left it. Otherwise a value that's no longer the one
+    applied (the user changed it again) is left alone and reported. live: {(kind, target): current value}. kept:
+    {(kind, target): {line or name: {id, title} of the other applied improvement that adds it too}} (a household line
+    as (whose, line), whose: "everyone" or a user ID): it stays, and is reported with that improvement (used_by, owner)
+    and where it is (kind, target, whose), so it can be handed over to it (its undo takes it out then)."""
     steps, left = [], []
     for step in reversed(applied):
-        if _same(live[(step["kind"], step["target"])], step["after"]):
+        key = (step["kind"], step["target"])
+        now, keep = live[key], (kept or {}).get(key) or {}
+        if _same(now, step["after"]) and not keep:
             steps.append({**step, "before": step["after"], "after": step["before"]})
-        elif not _same(live[(step["kind"], step["target"])], step["before"]):
-            left.append({"what": step["what"], "why": "It was changed again after the improvement was applied."})
+            continue
+        if _same(now, step["before"]):
+            continue
+        taken = taken_back(step, now, keep)
+        if taken is None:
+            if _same(now, step["after"]):
+                steps.append({**step, "before": step["after"], "after": step["before"]})
+            else:
+                left.append({"what": step["what"], "why": "It was changed again after the improvement was applied."})
+            continue
+        back, still = taken
+        left += [{"what": step["what"], "kept": k[1] if isinstance(k, tuple) else k,
+                  "why": "Another applied improvement adds it too.", "used_by": keep[k]["title"],
+                  "owner": keep[k]["id"], "kind": step["kind"], "target": step["target"],
+                  **({"whose": k[0]} if isinstance(k, tuple) else {})} for k in still]
+        if not _same(back, now):
+            steps.append({**step, "before": now, "after": back})
     return steps, left
+
+
+def readable(hass, steps, left):
+    """(steps, left): undo steps checked as applying checks them (plan_steps): instructions Home Assistant can't read
+    are left as they are and reported, and nothing is kept there for another improvement."""
+    from homeassistant.helpers.template import Template
+    out = []
+    for step in steps:
+        if step["kind"] == "prompt" and step["after"]:
+            try:
+                Template(step["after"], hass).ensure_valid()
+            except Exception as err:  # A template HA can't parse never reaches the assistant.
+                left = [l for l in left if (l.get("kind"), l.get("target")) != (step["kind"], step["target"])] + [
+                    {"what": step["what"], "why": f"Home Assistant can't read the edited instructions: {err}"}]
+                continue
+        out.append(step)
+    return out, left
+
+
+def without(kind, value, keys):
+    """A shared value without these lines or names (keys as undo_steps' kept has them): what an improvement's undo
+    takes out as its own once another's undo handed them over."""
+    if kind == "household":
+        from .household import normalized
+        value = normalized(value)
+        for whose, line in keys:
+            lines = value["everyone"] if whose == "everyone" else value["people"].get(whose, [])
+            if line in lines:
+                lines.remove(line)
+        return normalized(value)
+    if kind == "alias":
+        return [a for a in value or [] if a not in keys]
+    if kind == "prompt" and value:  # Each key a whole text, its lines together.
+        lines = value.split("\n")
+        for text in keys:
+            run = text.split("\n")
+            if (at := _run_at(lines, run)) is not None:
+                del lines[at:at + len(run)]
+        return "\n".join(lines)
+    return value
+
+
+def _run_at(lines, run):
+    """Where these lines come together in lines, first; None if they don't."""
+    return next((n for n in range(len(lines) - len(run) + 1) if lines[n:n + len(run)] == run), None)
+
+
+def taken_back(step, live, keep=()):
+    """(value, kept) for a shared value as it is now with only this step's own part taken out: what it added gone,
+    what it replaced or removed back where it was. The household knowledge line by line (everyone's, and each
+    person's), a device's names, an assistant's instructions line by line. What it added that's in keep stays, and
+    is in kept. None when that part isn't as the step left it, or for any other kind."""
+    kind, before, after = step["kind"], step["before"], step["after"]
+    if kind == "household":
+        from .household import normalized
+        before, after, live = normalized(before), normalized(after), normalized(live)
+        lists = {"everyone": (before["everyone"], after["everyone"], live["everyone"])} | {
+            user_id: tuple(value["people"].get(user_id, []) for value in (before, after, live))
+            for user_id in dict.fromkeys([*live["people"], *after["people"], *before["people"]])}
+        backs = {whose: _lines_back(*values, {line for who, line in keep if who == whose})
+                 for whose, values in lists.items()}
+        if None in backs.values():
+            return None
+        people = {whose: back for whose, (back, _) in backs.items() if whose != "everyone"}
+        return (normalized({"everyone": backs["everyone"][0], "people": people}),
+                [(whose, line) for whose, (_, still) in backs.items() for line in still])
+    if kind == "alias" and live is not None:  # No aliases: Assist knows it by its own name (plan_steps).
+        return _lines_back(before or [None], after, live or [None], keep)
+    if kind == "prompt" and live is not None:
+        from .instructions import effective
+        base = effective(before)  # Empty instructions are Home Assistant's default ones, which an edit started from.
+        taken = _lines_back(base.split("\n"), after.split("\n"), live.split("\n"), keep)
+        if taken is None:
+            return None
+        text = "\n".join(taken[0])
+        return (before if text == base else text), taken[1]
+    return None
+
+
+def _lines_back(before, after, live, keep=()):
+    """(lines, kept): live with the edit before → after taken back, block by block: each block the edit wrote goes
+    back to what was there, found in live where the edit left it (lines it took out go back after the line before
+    them). What it wrote that's in keep stays (kept): a line, or a whole text of several lines, all of them together
+    (never one line of it: a template's {% endif %} alone breaks the instructions). None when a block isn't in live as
+    the edit left it."""
+    from difflib import SequenceMatcher
+    found = {}  # A line of after: where live has it, when live kept it.
+    for a, b, size in SequenceMatcher(None, after, live, autojunk=False).get_matching_blocks():
+        found.update({a + k: b + k for k in range(size)})
+    edits, kept = [], []
+    for tag, i1, i2, j1, j2 in SequenceMatcher(None, after, before, autojunk=False).get_opcodes():
+        if tag == "equal":
+            continue
+        if i1 < i2:  # Lines the edit wrote: each still there, together.
+            spots = [found.get(i) for i in range(i1, i2)]
+            if None in spots or spots != list(range(spots[0], spots[0] + len(spots))):
+                return None
+            start, end = spots[0], spots[-1] + 1
+        elif i1 == 0:
+            start = end = 0
+        elif (prior := found.get(i1 - 1)) is not None:
+            start = end = prior + 1
+        else:
+            return None
+        written, staying = after[i1:i2], set()
+        for text in keep:
+            run = text.split("\n")
+            if (at := _run_at(written, run)) is not None:
+                staying.update(range(at, at + len(run)))
+                kept.append(text)
+        edits.append((start, end, before[j1:j2] + [written[n] for n in sorted(staying)]))
+    out = list(live)
+    for start, end, lines in sorted(edits, key=lambda e: e[0], reverse=True):
+        out[start:end] = lines
+    return out, kept

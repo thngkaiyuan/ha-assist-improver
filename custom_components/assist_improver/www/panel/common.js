@@ -37,26 +37,22 @@ export const errorPage = {render: (p) => ({bar: toolbar("Assist Improver", true)
                                            page: `<div class="page"><div class="conflict">${esc(p.error)}</div></div>`})};
 
 export function runTitle(run) {
-  // Which run this is: one step, what was sent in (on-demand's own run), the conversations picked on the home page, or
-  // a full run on all of them (with how many, once it has taken them in).
-  const P = TEXT.progress, n = run.progress?.analyze_total || 0;
+  // Which run this is: one step, what was sent in (on-demand's own run), a revision's or a conflict's own run, the
+  // conversations picked on the home page, or a full run on all it moves (how many, once it has admitted them).
+  const P = TEXT.progress, n = run.progress?.total || 0;
   return run.only ? fill(P.step, {step: GATE_NAMES[run.only] || run.only}) : run.trigger === "filed" ? P.sent
+    : run.trigger === "revision" ? P.revision : run.trigger === "conflict" ? P.conflict
     : run.picked ? P.picked : n > 1 ? fill(P.all, {n}) : n ? P.one : P.working;
 }
 
 export function progress(run, cancelling) {
-  // A run in progress: which it is and where, with live counts; it can be left and come back to.
-  const p = run.progress || {};
-  const at = STAGES.findIndex(([key]) => key === run.stage);
-  const detail = {
-    analyze: p.analyze_total != null ? `Analyzing conversations: ${p.analyzed || 0} of ${p.analyze_total}` +
-      (p.skipped_as_smooth ? ` (${p.skipped_as_smooth} went smoothly, skipped).` : ".") : "Finding conversations to analyze…",
-    // The conversations whose trouble it's proposing fixes for (troubled); a run from before counted every one read.
-    propose: `Proposing fixes for ${plural(p.troubled ?? p.sessions ?? 0, "conversation")}, with a reviewer checking each…`,
-    test: `Testing ${plural(p.hypotheses || 0, "fix")} in a sandboxed copy of your home…`,
-    write: `Writing up ${plural(p.writing || 0, "improvement")}…`}[run.stage];
+  // A run in progress: which it is, the conversation it's on (of all it moves) and that one's stage, marked on the
+  // stepper; it can be left and come back to.
+  const p = run.progress || {}, at = STAGES.findIndex(([key]) => key === run.stage);
+  const detail = p.total && at >= 0
+    ? fill(TEXT.progress.at, {k: Math.min((p.done || 0) + 1, p.total), total: p.total, stage: STAGES[at][1]}) : "";
   return `<div class="run"><div class="run-head"><div class="what"><div class="title">${esc(runTitle(run))}</div>
-      <div class="sub">${esc(detail)} You can leave this page; it keeps going.</div></div>
+      <div class="sub">${esc([detail, "You can leave this page; it keeps going."].filter(Boolean).join(" "))}</div></div>
       <button class="btn ghost" id="cancel-run" ${cancelling ? "disabled" : ""}>${cancelling ? "Cancelling…" : "Cancel"}</button></div>
       <div class="stepper">${STAGES.map(([key, label], n) =>
         `<div class="step ${n < at ? "done" : n === at ? "now" : ""}"><div class="bar"></div>${label}</div>`).join("")}</div></div>`;
@@ -96,26 +92,23 @@ export function askAutoAccept() {
       <button class="btn" id="ask-ok">${esc(A.on)}</button></div></div></div>`;
 }
 
-// How many conversations a full run (Settings' Run now) works on: every one not analyzed yet, the new ones and those
-// an earlier run took in, less those waiting at a blocked step (new ones go in whatever is blocked). Its button and
-// the confirmation's title say it.
-export const allConversations = (b, blocked) =>
-  (b.requests || 0) + ["triage", "analyze"].reduce((n, gate) => n + (blocked.has(gate) ? 0 : b[gate] || 0), 0);
+// How many conversations a run moves (Pipeline.preview, or a picked run's: conversations.runPreview): the new ones it
+// admits and the held ones it releases, less those that would stop at a blocked step. Its button and the
+// confirmation's title say it.
+const sum = (counts) => Object.values(counts || {}).reduce((n, x) => n + x, 0);
+export const moves = (preview) => (preview.admits || 0) + sum(preview.releases);
+
+// What's held at a step (Run one step releases it, and takes in nothing new).
+export const heldAt = (preview, gate) => sum((preview.held || {})[gate]);
 
 export const runLabel = (n) => n > 1 ? fill(TEXT.runAll, {n}) : n ? TEXT.runOne : TEXT.runNow;
 
 const count = (n, text) => fill(text, {n, s: n === 1 ? "" : "s"});
 
-export function waiting(b, blocked) {
-  // What waits past the start, step by step, as items of a sentence ("2 conversations to analyze"), leaving out what
-  // waits at a blocked step: the confirmation's sentence, and the home page's Run bar. The revisions asked for come
-  // first; the proposer's count holds them too, so its findings are named only when there's more to propose from.
-  const C = TEXT.confirm;
-  const order = [["revisions", "propose"], ["triage", "triage"], ["analyze", "analyze"], ["propose", "propose"],
-                 ["test", "test"], ["write", "write"]];
-  const n = (key) => key === "propose" ? (b.propose || 0) - (b.revisions || 0) : b[key] || 0;
-  return order.filter(([key, gate]) => n(key) > 0 && !blocked.has(gate))
-    .map(([key]) => key === "propose" ? C.items.propose : count(b[key], C.items[key]));
+export function released(preview) {
+  // The held conversations a run releases, step by step, as items of a sentence ("2 conversations to analyze").
+  const C = TEXT.confirm, r = preview.releases || {};
+  return ["triage", "analyze", "propose", "write"].filter((gate) => r[gate] > 0).map((gate) => count(r[gate], C.items[gate]));
 }
 
 // A token count to two significant figures, with thousands separators: 123,456 is "120,000".
@@ -124,19 +117,16 @@ const rough = (n) => {
   return (Math.round(n / step) * step).toLocaleString("en-US");
 };
 
-export function cost(p, preview, b, blocked) {
+export function cost(p, preview) {
   // The cost line; when this run analyses conversations and past runs say what one takes, a rough estimate under it,
-  // one line per model: analysing this run's own count of them (all, those picked and waiting, or those waiting at
-  // Analyze for that step alone) on the model Analyze runs on now, then the quick check on its own, for those the run
-  // takes in or finds waiting at Triage, less those sent in past it (straight: with a note, from Assist, or again
-  // after an analysis); one step skips it. Both steps on one model: one line. With Triage blocked, the new ones that
-  // need the quick check wait there, so only those sent in past it are analysed.
+  // one line per model: analysing the run's own count of them (preview.analyses: those it moves that reach Analyze,
+  // or those held at Analyze for that step alone) on the model Analyze runs on now, then the quick check on its own
+  // (preview.quick: the new ones not sent in past it, and those released at Triage); one step skips it. Both steps on
+  // one model: one line.
   const C = TEXT.confirm, S = C.spend, spend = preview.spend || {}, a = spend.analyze, q = spend.triage, only = p.only;
-  const held = blocked.has("triage") ? Math.max(0, (b.requests || 0) - (b.straight || 0)) : 0;
-  const n = only ? (only === "analyze" ? b.analyze || 0 : 0) : blocked.has("analyze") ? 0 : allConversations(b, blocked) - held;
+  const n = only ? (only === "analyze" ? heldAt(preview, "analyze") : 0) : preview.analyses || 0;
   if (!a || !n) return `<p class="cost">${esc(C.cost)}</p>`;
-  const checked = Math.max(0, (b.requests || 0) - (b.straight || 0)) + (b.triage || 0);
-  const quick = !only && q && !blocked.has("triage") ? q.tokens * checked : 0;
+  const quick = !only && q ? q.tokens * (preview.quick || 0) : 0;
   const one = quick && q.model === a.model, s = n === 1 ? "" : "s";
   const lines = [fill(one ? S.both : S.analyze, {tokens: rough(a.tokens * n + (one ? quick : 0)), model: a.model, n, s}),
                  ...(quick && !one ? [fill(S.quick, {tokens: rough(quick), model: q.model})] : [])];
@@ -149,28 +139,29 @@ const WHICH = 3, WORDS = 40;  // Conversations a confirmation names, and how muc
 const firstWords = (said) => said.length <= WORDS ? said : `${said.slice(0, WORDS + 1).replace(/\s+\S*$/, "")}…`;
 
 export function confirm(p, preview) {
-  // What helps decide at a glance: the title says how many conversations the run takes; under it, which (up to
-  // three by their first words, and how many more), any other work it does ("Also: …"), the warnings when they
-  // matter, and the cost. One step, and a run with no conversations to take, say what they do in a sentence instead.
-  // In a modal, so the page stays put; a click outside or Esc is "Not now".
-  const b = preview.backlog || {}, only = p.only, C = TEXT.confirm, blocked = new Set(only ? [] : preview.paused || []);
-  const all = only ? 0 : allConversations(b, blocked);
+  // What helps decide at a glance: the title says how many conversations the run moves; under it, the new ones it
+  // admits (up to three by their first words, and how many more), the held ones it releases ("Also: …", by the step
+  // holding them), the warnings when they matter, and the cost. A picked run names the picks themselves, and nothing
+  // else (it moves nothing else). With no new one, what a full run releases is a sentence; one step says what it does
+  // in a sentence instead. In a modal, so the page stays put; a click outside or Esc is "Not now".
+  const only = p.only, C = TEXT.confirm, blocked = new Set(only ? [] : preview.paused || []);
+  const all = only ? 0 : moves(preview);
   let lead;
   if (only) {
-    const n = only === "triage" ? (b.requests || 0) + (b.triage || 0) : b[only] || 0;
+    const n = heldAt(preview, only);
     lead = `<p class="c-what">${esc(count(n, C.steps[n ? only : `${only}None`]))}</p>`;
   } else if (!all) {
-    const items = waiting(b, blocked), shown = items.slice(0, 2).join(" and ");
-    lead = `<p class="c-what">${esc(p.picking && items.length ? fill(C.pickedRun, {items: items.length > 2 ? fill(C.andMore, {items: items.slice(0, 2).join(", ")}) : shown})
-      : !items.length ? (p.force ? C.again : C.nothing)
-      : items.length > 2 ? fill(C.more, {items: items.slice(0, 2).join(", ")})
+    lead = `<p class="c-what">${esc(C.nothing)}</p>`;
+  } else if (!preview.admits && !p.picking) {
+    const items = released(preview), shown = items.slice(0, 2).join(" and ");
+    lead = `<p class="c-what">${esc(items.length > 2 ? fill(C.more, {items: items.slice(0, 2).join(", ")})
       : fill(C.waiting, {items: shown, are: items.length === 1 && /^1 /.test(items[0]) ? "is" : "are"}))}</p>`;
   } else {
-    // Which, adding up to the title's count; then what it does besides conversations, at the later steps.
+    // Which, adding up to how many it admits (a picked run's: all it moves); then the held ones a full run releases.
     const names = (preview.which || []).slice(0, WHICH).map((said) => fill(C.quoted, {said: firstWords(said)}));
-    const more = Math.max(0, all - names.length);
+    const more = Math.max(0, (p.picking ? all : preview.admits) - names.length);
     const which = !names.length ? "" : more ? fill(C.which, {names: names.join(", "), n: more}) : listed(names);
-    const also = waiting({...b, triage: 0, analyze: 0}, blocked);
+    const also = p.picking ? [] : released(preview);
     lead = (which ? `<p class="c-which">${esc(which)}</p>` : "")
       + (also.length ? `<p class="c-also">${esc(fill(C.also, {items: also.join(" · ")}))}</p>` : "");
   }
@@ -179,8 +170,8 @@ export function confirm(p, preview) {
   const broken = [...new Set(stages.flatMap((g) => (preview.blocked_models || {})[g] || []))];
   const modelsLine = broken.length ? fill(C.models, {steps: broken.join(" and "), its: broken.length === 1 ? C.its : C.their}) : "";
   const blockedLine = held.length ? fill(C.blocked, {steps: held.join(", "), is: held.length === 1 ? "is" : "are"}) : "";
-  // How many conversations it runs on, as its button says: those not analyzed yet from the settings, those picked
-  // (and waiting) from the home page.
+  // How many conversations it moves, as its button says: all a full run would from the settings, those picked from
+  // the home page.
   const title = only ? fill(C.step, {step: GATE_NAMES[only]}) : p.picking && all ? count(all, C.on)
     : all > 1 ? fill(C.all, {n: all}) : all ? C.one : C.title;
   return `<div class="modal-shade" id="confirm-shade"></div><div class="modal confirm-modal" role="dialog" aria-modal="true" aria-label="${esc(title)}">
@@ -188,7 +179,7 @@ export function confirm(p, preview) {
         <button class="modal-close" id="cancel-confirm" aria-label="${esc(C.notNow)}">&#10005;</button></div>
       <div class="modal-body confirm">${lead}
       ${blockedLine ? `<p class="cost">${esc(blockedLine)}</p>` : ""}${modelsLine ? `<p class="c-warn">&#9888; ${esc(modelsLine)}</p>` : ""}
-      ${cost(p, preview, b, blocked)}
+      ${cost(p, preview)}
       <div class="actions"><button class="btn ghost" id="cancel-confirm-2">${esc(C.notNow)}</button>
       <button class="btn" id="start-run" ${modelsLine || p.starting ? "disabled" : ""}>${esc(p.starting ? "Starting…" : C.run)}</button></div></div></div>`;
 }
@@ -197,11 +188,9 @@ async function startRun(p) {
   p.starting = true;
   p.render();
   try {
-    // A Run on the home page takes the selected conversations that can still be sent in, and only conversations sent
-    // in; those leave the selection.
+    // A Run on the home page with some selected takes those a run can take, and only those; they leave the selection.
     const runs = p.picking ? p.cv?.runnable() || [] : [];
-    await p.ws("run/start", {confirmed: true, force: !!p.force, ...(p.only ? {only: p.only} : {}),
-                             ...(p.picking ? {picked: true, conversations: runs} : {})});
+    await p.ws("run/start", {confirmed: true, ...(p.only ? {only: p.only} : {}), ...(p.picking ? {conversations: runs} : {})});
     for (const id of runs) { p.cv.picked.delete(id); p.cv.byHand.delete(id); }
     p.host.scrollIntoView?.({block: "start", behavior: "smooth"});  // Up to the run's progress.
   } catch (err) {
@@ -225,15 +214,14 @@ async function cancelRun(p) {
   setTimeout(() => p.load(), 800);  // Long enough for the run to stop; sooner than the next refresh.
 }
 
-const ask = (p, force) => { p.confirming = true; p.force = force; p.only = null; p.picking = false; p.render(); };
+const ask = (p) => { p.confirming = true; p.only = null; p.picking = false; p.render(); };
 
 export const actions = {
   click: [
     ["#back", (p) => p.go(null)],
     ["#open-settings, .go-settings", (p) => p.nav(SETTINGS_URL)],
     ["#open-developer", (p) => p.nav(devUrl("find"))],
-    ["#run-now", (p) => ask(p, false)],
-    ["#run-anyway", (p) => ask(p, true)],
+    ["#run-now", (p) => ask(p)],
     ["#cancel-confirm, #cancel-confirm-2, #confirm-shade", (p) => { p.confirming = false; p.picking = false; p.render(); }],
     ["#start-run", (p) => startRun(p)],
     ["#cancel-run", (p) => cancelRun(p)],

@@ -19,11 +19,10 @@ from homeassistant.core import Context
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import llm
 
-from .cases import CaseError, recording_turns, replayed_turns
+from .cases import CaseError, recording_turns
 from .sandbox import seed_options
-from .snapshot import live_definitions
 from .serialization import plain
-from .simulation import UnsupportedSimulation, recorded_transitions
+from .simulation import UnsupportedSimulation, recorded_transitions, reports_movement
 from .trace import span, tag
 from .worker import RemoteSandbox, WorkerError, context_data
 
@@ -87,12 +86,13 @@ class RecordedAPIInstance(llm.APIInstance):
 class SandboxHome(llm.API):
     """One replay's sandbox, started on first use from the recording's first turn, and what it did.
 
-    world holds the sandbox's states, the replay's state changes (transitions) and device commands (calls),
-    refreshed after every tool call.
+    scripts ({object id: config}) and automations are those the sandbox runs: the recorded ones, with a change's on
+    top. world holds the sandbox's states, the replay's state changes (transitions) and device commands (calls),
+    refreshed after every tool call, and the attributes of the entities whose attributes it's judged on (watch).
     """
 
-    def __init__(self, hass, recording, turn, run_id, *, scripts=None, automations=None, exposure_changes=None,
-                 alias_changes=None, alias_removals=None, prompt_template=None, household=None):
+    def __init__(self, hass, recording, turn, run_id, *, scripts, automations, exposure_changes=None,
+                 alias_changes=None, alias_removals=None, prompt_template=None, household=None, watch=()):
         super().__init__(hass=hass, id=run_id, name="Recorded home")
         self.recording, self.first_turn = recording, turn
         self.scripts, self.automations, self.exposure_changes = scripts, automations, exposure_changes or {}
@@ -102,22 +102,14 @@ class SandboxHome(llm.API):
         self.sandbox = None
         self.tools = None  # Assist's tools in the sandbox, once it built them.
         self.unsupported, self.dispatched = [], []
-        self.world = SimpleNamespace(states={}, transitions=[], calls=[])
+        self.watch = sorted(watch)
+        self.world = SimpleNamespace(states={}, transitions=[], calls=[], attributes={})
         self.prompt = None  # The system prompt HA builds in the sandbox, for comparison with the recorded one.
 
     async def start(self):
         if self.sandbox is not None:
             return
         source, prepared = self.first_turn["source"], self.first_turn["prepared"]
-        # As recorded; a recording made before definitions were kept replays with today's (nothing else to use).
-        recorded = "scripts" in source
-        scripts = self.scripts if self.scripts is not None else (source["scripts"] if recorded else None)
-        automations = self.automations if self.automations is not None else source.get("automations")
-        if scripts is None or automations is None:
-            live_scripts, live_automations = live_definitions(self.hass)
-            scripts = live_scripts if scripts is None else scripts
-            automations = live_automations if automations is None else automations
-        self.definitions_recorded = recorded
         user_name = None
         if (user_id := prepared["context"].get("context", {}).get("user_id")) and getattr(self.hass, "auth", None):
             user = await self.hass.auth.async_get_user(user_id)
@@ -126,9 +118,10 @@ class SandboxHome(llm.API):
         try:
             async with span("sandbox.seed"):
                 await self.sandbox.call(
-                    "seed", source=source, user_name=user_name, options=seed_options(self.first_turn), scripts=scripts,
-                    automations=automations, exposure_changes=self.exposure_changes,
-                    alias_changes=self.alias_changes, alias_removals=self.alias_removals)
+                    "seed", source=source, user_name=user_name, options=seed_options(self.first_turn),
+                    scripts=self.scripts, automations=self.automations, exposure_changes=self.exposure_changes,
+                    alias_changes=self.alias_changes, alias_removals=self.alias_removals,
+                    moving=reports_movement(self.recording))
         except Exception as err:
             await self.stop()
             raise UnsupportedSimulation(f"The sandbox could not be seeded as the recorded home: {err}") from err
@@ -165,9 +158,9 @@ class SandboxHome(llm.API):
         await self.refresh()
 
     async def refresh(self):
-        found = await self.sandbox.call("snapshot")
+        found = await self.sandbox.call("snapshot", **({"attributes": self.watch} if self.watch else {}))
         self.world.states, self.world.transitions = found["states"], found["transitions"]
-        self.world.calls = found["commands"]
+        self.world.calls, self.world.attributes = found["commands"], found.get("attributes", {})
 
     async def stop(self):
         if self.sandbox is not None:
@@ -194,55 +187,58 @@ async def register(hass, api):
 
 
 class FrozenTurnLog(conversation.ChatLog):
-    """Use the exact prepared prefix, never later user turns or today's context."""
-    def __init__(self, hass, case, recording, *, turn_number=None, scripts=None, automations=None,
-                 exposure_changes=None, alias_changes=None, alias_removals=None, prompt_template=None,
-                 use_sandbox_prompt=False, household=None):
-        turns = replayed_turns(case, recording)
-        turn = next((t for t in turns if t["number"] == (turn_number or turns[0]["number"])), None)
-        if turn is None:
-            raise CaseError("Turn is outside this journey")
+    """A recorded conversation replayed from its first turn: each turn in the context it was recorded in (its prompt
+    and identity), never later user turns or today's context; the history is the replay's own (its replies and the
+    provider's native history), never the recorded replies. say() moves on to a later recorded turn."""
+    def __init__(self, hass, recording, *, scripts, automations, exposure_changes=None, alias_changes=None,
+                 alias_removals=None, prompt_template=None, use_sandbox_prompt=False, household=None):
+        turns = recording_turns(recording)
+        turn = turns[0]
+        history = turn["history"]
+        if [m["role"] for m in history] != ["system", "user"]:
+            raise CaseError("The first turn's recorded context isn't the instructions and the user's words alone")
+        run_id = f"improver-replay-{uuid4()}"
+        super().__init__(hass, run_id, content=[conversation.SystemContent(content=history[0]["content"])])
+        self.replay_api = SandboxHome(hass, recording, turn, run_id, scripts=scripts, automations=automations,
+                                      exposure_changes=exposure_changes, alias_changes=alias_changes,
+                                      alias_removals=alias_removals, prompt_template=prompt_template,
+                                      household=household,
+                                      watch=[e for e in turn["source"]["states"] if e.startswith("light.")])
+        # A change that shows in Assist's instructions (a preference, an alias) uses the prompt HA builds in the
+        # sandbox with the change; otherwise the model sees exactly the recorded prompt.
+        self.use_sandbox_prompt = use_sandbox_prompt
+        self.turn, self.pending_source = None, None
+        # What the recorded assistant changed: the replay's own run decides those, not the recording's snapshots.
+        self.assistant_entities = {t["entity_id"] for recorded in turns
+                                   for t in recorded_transitions(recording, recorded)}
+        self.turn_start_attributes = {}  # The watched lights' attributes as the current turn began.
+        self.external_calls = []
+        self.usage_events = []
+        self._said(turn)
+
+    def say(self, turn):
+        """The user's next words: a later recorded turn (a replay with a change may skip some), in the context it was
+        recorded in. Whatever the replay did so far stays; others' moves in the home since apply as it starts."""
+        if turn["number"] <= self.turn["number"]:
+            raise CaseError("A replay says the recorded turns in order")
+        if self.unresponded_tool_results or self.replay_api.unsupported:
+            raise CaseError("Cannot continue an incomplete or unsupported replay")
+        self.pending_source = turn["source"]
+        self._said(turn)
+
+    def _said(self, turn):
         ctx = turn["prepared"]["context"]
         identity = ctx.get("context", {})
         if not identity.get("id") or not {"id", "user_id", "parent_id"} <= identity.keys():
             raise CaseError("Cannot backfill missing historical identity")
-        history = turn["history"]
-        if any("provider_native_history_omitted" in x for x in recording.get("limitations", [])) and any(m["role"] == "assistant" for m in history):
-            raise CaseError("Provider-native history is missing at this cutoff")
-        content = []
-        for m in history:
-            if m["role"] == "system":
-                content.append(conversation.SystemContent(content=m["content"]))
-            elif m["role"] == "user":
-                content.append(conversation.UserContent(content=m["content"]))
-            elif m["role"] == "assistant" and not (m.get("thinking_content") or m.get("native")):
-                content.append(conversation.AssistantContent(agent_id=m["agent_id"], content=m.get("content"),
-                    tool_calls=[llm.ToolInput(**c) for c in m.get("tool_calls", [])] or None))
-            elif m["role"] == "tool_result":
-                content.append(conversation.ToolResultContent(agent_id=m["agent_id"],
-                    tool_call_id=m["tool_call_id"], tool_name=m["tool_name"], result=llm.ToolResult(**m["result"])))
-            else:
-                raise CaseError("Unsupported historical content")
-        run_id = f"improver-replay-{uuid4()}"
-        super().__init__(hass, run_id, content=content)
-        self.replay_api = SandboxHome(hass, recording, turns[0], run_id, scripts=scripts,
-                                      automations=automations, exposure_changes=exposure_changes,
-                                      alias_changes=alias_changes, alias_removals=alias_removals,
-                                      prompt_template=prompt_template, household=household)
-        # A candidate whose change shows in Assist's instructions (a preference, an alias) uses the prompt HA builds
-        # in the sandbox with the change; otherwise the model sees exactly the recorded prompt.
-        self.use_sandbox_prompt = use_sandbox_prompt
-        self.turn, self.pending_source = turn, None
-        # What the recorded assistant changed: the replay's own run decides those, not the recording's snapshots.
-        self.assistant_entities = {t["entity_id"] for case_turn in turns
-                                   for t in recorded_transitions(recording, case_turn)}
+        self.turn = turn
         self.recorded_context = llm.LLMContext(**{**ctx, "context": Context(**identity)})
-        self.input = conversation.ConversationInput(text=history[-1]["content"],
-            context=Context(**identity), conversation_id=run_id, device_id=ctx.get("device_id"),
+        if not self.use_sandbox_prompt:
+            self.content[0] = conversation.SystemContent(content=turn["history"][0]["content"])
+        self.async_add_user_content(conversation.UserContent(content=turn["messages"][0]["content"]))
+        self.input = conversation.ConversationInput(text=turn["messages"][0]["content"],
+            context=Context(**identity), conversation_id=self.conversation_id, device_id=ctx.get("device_id"),
             satellite_id=None, language=ctx.get("language") or "en", agent_id="conversation.replay")
-        self.turn_number = turn["number"]
-        self.external_calls = []
-        self.usage_events = []
 
     def async_trace(self, agent_details):
         # Capture the provider-neutral statistics HA already emits. Providers
@@ -263,6 +259,7 @@ class FrozenTurnLog(conversation.ChatLog):
             await self.replay_api.observe(self.pending_source, self.assistant_entities)
             self.pending_source = None
         self.llm_api = await self.replay_api.api_instance(self.turn, self.recorded_context)
+        self.turn_start_attributes = deepcopy(self.replay_api.world.attributes)
         if self.use_sandbox_prompt:
             self.content[0] = conversation.SystemContent(content=self.replay_api.prompt)
         self.llm_input_provided_index = len(self.content)
@@ -274,53 +271,6 @@ class FrozenTurnLog(conversation.ChatLog):
 
     async def close(self):
         await self.replay_api.stop()
-
-    def advance(self, turn, check_sources=True):
-        """Retain this trial's actual responses/native history, never paste old replies. check_sources compares the
-        replay's devices with the next recorded snapshot; a practice session's snapshots hold the practice engine
-        of the recording day, so its baseline relies on the per-turn comparison with today's engine instead."""
-        if turn["number"] != self.turn_number + 1:
-            raise CaseError("Baseline continuation must use the next original input")
-        if self.unresponded_tool_results or self.replay_api.unsupported:
-            raise CaseError("Cannot continue an incomplete or unsupported replay")
-        world = self.replay_api.world
-        for entity in ({c["entity_id"] for c in world.calls} if check_sources else ()):
-            if entity not in turn["source"]["states"] or world.states.get(entity) != turn["source"]["states"][entity]["state"]:
-                raise CaseError("Trial effects differ from the next recorded source state")
-        # Unrelated observations move to their recorded values when the next turn starts, while the sandbox keeps
-        # its own controlled-state trajectory.
-        self.pending_source, self.turn = turn["source"], turn
-        ctx = turn["prepared"]["context"]
-        identity = ctx["context"]
-        if not {"id", "user_id", "parent_id"} <= identity.keys():
-            raise CaseError("Cannot backfill missing historical identity")
-        self.recorded_context = llm.LLMContext(**{**ctx, "context": Context(**identity)})
-        self.content[0] = conversation.SystemContent(content=turn["history"][0]["content"])
-        self.async_add_user_content(conversation.UserContent(content=turn["messages"][0]["content"]))
-        self.input = conversation.ConversationInput(text=turn["messages"][0]["content"],
-            context=Context(**identity), conversation_id=self.conversation_id,
-            device_id=ctx.get("device_id"), satellite_id=None,
-            language=ctx.get("language") or "en", agent_id="conversation.replay")
-        self.turn_number = turn["number"]
-
-    def continue_with(self, turn):
-        """A candidate's next turn: the user's next recorded message, whatever the candidate changed so far."""
-        if turn["number"] != self.turn_number + 1:
-            raise CaseError("A follow-up must be the next original input")
-        if self.unresponded_tool_results or self.replay_api.unsupported:
-            raise CaseError("Cannot continue an incomplete or unsupported replay")
-        self.pending_source, self.turn = turn["source"], turn
-        ctx = turn["prepared"]["context"]
-        identity = ctx["context"]
-        self.recorded_context = llm.LLMContext(**{**ctx, "context": Context(**identity)})
-        if not self.use_sandbox_prompt:
-            self.content[0] = conversation.SystemContent(content=turn["history"][0]["content"])
-        self.async_add_user_content(conversation.UserContent(content=turn["messages"][0]["content"]))
-        self.input = conversation.ConversationInput(text=turn["messages"][0]["content"],
-            context=Context(**identity), conversation_id=self.conversation_id,
-            device_id=ctx.get("device_id"), satellite_id=None,
-            language=ctx.get("language") or "en", agent_id="conversation.replay")
-        self.turn_number = turn["number"]
 
     async def async_add_delta_content_stream(self, agent_id, stream):
         async def observed_stream():
@@ -353,7 +303,9 @@ async def check_fidelity(hass, recording, turn_number=1):
     if not identity.get("id") or not {"id", "user_id", "parent_id"} <= identity.keys():
         raise CaseError("Cannot backfill missing historical identity")
     started = monotonic()
-    home = SandboxHome(hass, recording, turn, f"improver-fidelity-{uuid4()}")
+    source = turn["source"]
+    home = SandboxHome(hass, recording, turn, f"improver-fidelity-{uuid4()}", scripts=source.get("scripts") or {},
+                       automations=source.get("automations") or [])
     try:
         instance = await home.api_instance(turn, llm.LLMContext(**{**ctx, "context": Context(**identity)}))
         seeded = round(monotonic() - started, 2)

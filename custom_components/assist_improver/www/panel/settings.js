@@ -2,32 +2,34 @@
 // knowledge (household.js), the switches, one run control, and the history of what the improver did.
 
 const v = new URL(import.meta.url).search;  // ?v=<version>, passed on to every module this one loads.
-const [{esc, plural, fill, listed, ago}, {TEXT, STAGES, STEPS, AT_WORK, BACKLOG, SCHEDULE, GATE_NAMES}, {svg, glyph},
+const [{esc, plural, fill, listed, ago}, {TEXT, STAGES, STEPS, AT_WORK, COUNTS, SCHEDULE, GATE_NAMES}, {svg, glyph},
        track, common, pickers, household] = await Promise.all(
   ["format", "text", "icons", "track", "common", "pickers", "household"].map((name) => import(`./${name}.js${v}`)));
 
 const IDS = ["requests", "triage", "analyze", "propose", "review", "test", "write", "you", "household"];
 
 function step(p, id, L, s) {
-  // One step's card: its title and what it does (a bubble), its model or setting, its gate, and what waits at it.
+  // One step's card: its title and what it does (a bubble), its model or setting, its gate, and how many conversations
+  // are at it: new at Your Assist, held at a step between (held there while it was blocked, else for another cause,
+  // the why on each conversation's chip), up for your review.
   const station = STEPS[id], box = L.at[id], run = p.run?.run, preview = p.run?.preview || {};
-  const backlog = preview.backlog || {}, paused = new Set(s.paused);
+  const paused = new Set(s.paused), B = TEXT.badges;
   const isPaused = station.gate && paused.has(station.gate);
-  // At work: the run's stage; within analysis, only the half it's in (the quick check, then analysis alone).
-  const working = run?.stage === "analyze" && run.progress?.phase === "analyze" ? ["analyze"] : AT_WORK[run?.stage] || [];
-  const atWork = run?.status === "running" && working.includes(id);
-  const n = backlog[BACKLOG[id]] || 0;
+  const atWork = run?.status === "running" && (AT_WORK[run.stage] || []).includes(id);  // The run's stage at work.
+  const n = (preview.stages || {})[COUNTS[id]] || 0;
   let badge = "";
-  if (n && id !== "household") {
-    const kind = isPaused ? "held" : id === "requests" ? "in" : id === "you" ? "out" : "";
-    const what = fill(TEXT.badges[isPaused ? "held" : id === "you" ? "review" : id === "requests" ? "new" : "waiting"], {n});
+  if (n) {
+    const blocked = ((preview.held || {})[station.gate] || {}).blocked || 0;
+    const kind = isPaused || blocked ? "held" : id === "requests" ? "in" : id === "you" ? "out" : "";
+    const what = id === "requests" ? fill(B.new, {n}) : id === "you" ? fill(B.review, {n})
+      : [blocked && fill(B.held, {n: blocked}), n > blocked && fill(B.waiting, {n: n - blocked})].filter(Boolean).join(" · ");
     badge = `<span class="badge ${kind}" data-tip="${what}">${n}</span>`;
   }
   let chip = "";
   if (station.role) {
     const role = s.roles[station.role], task = pickers.task(s, role.entity_id), M = TEXT.models;
     const warn = !!role.problem || (role.size === "large" && task?.weak);
-    const off = role.problem === "none" ? M.none : id === "triage" ? TEXT.passThrough : {label: "Off", tip: TEXT.followUpsOff};
+    const off = role.problem === "none" ? M.none : id === "triage" ? TEXT.passThrough : {label: "Off"};
     const label = role.problem === "missing" ? M.missing.label : role.entity_id ? (task?.label || role.entity_id) : off.label;
     const tip = role.problem === "missing" ? M.missing.tip : role.problem === "unavailable" ? M.unavailable
       : role.entity_id ? (warn ? M.weak : "") : off.tip;
@@ -46,14 +48,14 @@ function step(p, id, L, s) {
     chip = `<div class="chip-row">${common.toggle("household-knowledge", on, `aria-label="${esc(K.label)}" data-tip="${esc(tip)}"`)}<button
       class="chip-model ${on ? "" : "off"}" data-knowledge="1" data-tip="${esc(K.tip)}">${
       glyph("mdi:book-heart-outline", "in-chip")}${esc(fill(K[L.vertical ? "chipShort" : "chip"], {n: plural(lines, "line")}))}</button>${
-      backlog.household ? `<span class="done-count" data-tip="${esc(fill(TEXT.badges.applied, {n: backlog.household}))}">${svg("check")}${backlog.household}</span>` : ""}</div>`;
+      preview.applied ? `<span class="done-count" data-tip="${esc(fill(B.applied, {n: preview.applied}))}">${svg("check")}${preview.applied}</span>` : ""}</div>`;
   }
   const gate = station.gate ? `<button class="gate ${isPaused ? "paused" : ""}" data-gate="${station.gate}"
     data-tip="${esc(fill(TEXT.block[isPaused ? "blocked" : "tip"], {step: station.title.toLowerCase()}))}"
     aria-label="${isPaused ? "Unblock" : "Block"} ${esc(station.title)}" aria-pressed="${!!isPaused}">${svg("block")}</button>` : "";
   const info = `<span class="info-tip" data-tip="${esc(station.tip)}" tabindex="0" aria-label="About ${esc(station.title)}">${svg("info")}</span>`;
   const cls = [id === "review" && "sub", id === "you" && "you", atWork && "now", isPaused && "paused"].filter(Boolean).join(" ");
-  const place = L.vertical ? `left:${box.x}px;top:${box.y}px;width:${box.w}px;height:${box.h}px`
+  const place = L.vertical ? `left:${box.x}px;top:${box.y}px;width:${box.w}px;min-height:${box.min}px`
     : `left:${box.cx}px;top:${box.cy}px${box.fixed ? `;width:${box.w}px` : ""}`;
   return `<div class="stn ${cls}" data-step="${id}" style="${place}">
     <div class="s-head">${glyph(station.icon)}<span class="s-title">${esc(station.title)}</span>${info}${L.vertical ? "" : gate}</div>
@@ -61,15 +63,13 @@ function step(p, id, L, s) {
 }
 
 function head(p, s) {
-  // The switches, and one run control: Run now, and its menu for when it runs on its own and for running one step.
+  // The switches, and one run control: Run now (on all a full run moves), and its menu for when it runs on its own
+  // and for running one step (on what's held there).
   const running = p.run?.run?.status === "running";
-  const backlog = p.run?.preview?.backlog || {};
+  const preview = p.run?.preview || {};
   const last = esc(common.lastRun(p.run?.run) || "No runs yet");
-  // A full run: on all of them; with no conversation but other work waiting (a proposal, tests, a write-up), Run says
-  // so, as the home page's does.
-  const blocked = new Set(s.paused), all = common.allConversations(backlog, blocked);
-  const runWords = !all && common.waiting(backlog, blocked).length ? TEXT.conversations.runWaiting : common.runLabel(all);
-  const waits = (gate) => gate === "triage" ? (backlog.requests || 0) + (backlog.triage || 0) : backlog[gate] || 0;  // Triage takes in the new ones.
+  const runWords = common.runLabel(common.moves(preview));
+  const waits = (gate) => common.heldAt(preview, gate);
   const when = SCHEDULE.find(([value]) => value === s.schedule) || SCHEDULE[0];
   const menu = p.runMenu ? `<div class="menu">${SCHEDULE.map(([value, label]) =>
     `<div data-schedule="${value}" class="row-ic ${s.schedule === value ? "on" : ""}">${value === "off" ? `<span class="ic-space"></span>` : svg("clock")}<span class="lbl">${label}</span>${
@@ -95,25 +95,28 @@ function history(p) {
   const icon = {run: "mdi:play-circle-outline", posted: "mdi:feather", accept: "mdi:check-circle-outline",
                 undo: "mdi:undo-variant", decline: "mdi:close-circle-outline", revise: "mdi:pencil-outline"};
   const runText = (e) => {
-    const x = e.progress || {}, parts = [x.taken_in && `${x.taken_in} taken in`, x.analyzed && `${x.analyzed} analyzed`,
-      x.new_improvements && plural(x.new_improvements, "new improvement"), x.auto_accepted && `${x.auto_accepted} accepted automatically`,
-      x.already_addressed && fill(H.addressed, {n: x.already_addressed})];
-    const failed = x.analyze_failed && fill(H.failed, {n: x.analyze_failed, s: x.analyze_failed === 1 ? "" : "s", why: x.problem || ""});
+    // What the run did, from the results it published (flow.Flow.run): taken in, analysed, new improvements, already
+    // covered, held (with the first one's why), couldn't be read.
+    const x = e.progress || {};
+    const parts = [x.taken_in && `${x.taken_in} taken in`, x.analyzed && `${x.analyzed} analyzed`,
+      x.new_improvements && plural(x.new_improvements, "new improvement"), x.duplicates && fill(H.addressed, {n: x.duplicates})];
+    const held = x.held && fill(H.failed, {n: x.held, why: x.why || ""});
     // A step that couldn't finish: its own failure (one item's stays with that item, listed under Details only).
     const stopped = (x.problems || []).filter((y) => !y.item);
     const unfinished = stopped.length && fill(H.unfinished, {steps: listed([...new Set(stopped.map((y) => GATE_NAMES[y.stage] || y.stage))])});
-    const aside = x.unreadable && fill(H.setAside, {n: x.unreadable, s: x.unreadable === 1 ? "" : "s"});
-    const which = H.triggers[e.picked ? "picked" : e.trigger];  // A full run from here says nothing more.
+    const unreadable = x.unreadable && fill(H.setAside, {n: x.unreadable});
+    const which = H.triggers[e.picked ? "picked" : e.trigger];  // A manual full run says nothing more.
     // What went wrong, for a bug report: the error, or each step that couldn't finish (no longer on the home page).
     const lines = e.error && !/ can't run: /.test(e.error) ? [e.error]
       : (x.problems || []).map((y) => `${GATE_NAMES[y.stage] || y.stage}${y.item ? ` · ${y.item}` : ""}: ${y.error}`);
     return [`${H.run[e.status] || "Run"}${e.only ? ` · ${GATE_NAMES[e.only]} only` : ""}${which ? ` · ${which}` : ""}`,
-            e.error ? (/ can't run: /.test(e.error) ? e.error : H.stopped) : [...parts, failed, unfinished, aside].filter(Boolean).join(" · "),
+            e.error ? (/ can't run: /.test(e.error) ? e.error : H.stopped) : [...parts, held, unfinished, unreadable].filter(Boolean).join(" · "),
             lines.length ? common.details(p, `history:${e.at}`, lines) : ""];
   };
   const rows = shown.map((e) => {
     const [title, sub, more = ""] = e.kind === "run" ? runText(e) : e.kind === "posted" ? [H.posted, e.title]
-      : [e.auto ? H.auto : H.decisions[e.decision] || e.decision, e.title + (e.by && !e.auto ? ` · ${e.by}` : "")];
+      : [e.auto ? H.auto : H.decisions[e.reason || e.decision] || e.decision,
+         e.title + (e.by && !e.auto ? ` · ${e.by}` : "")];
     const glyphName = e.kind === "decision" ? icon[e.decision] || "mdi:account-check-outline" : icon[e.kind];
     return `<div class="h-row ${e.id ? "h-link" : ""}" ${e.id ? `data-open="${esc(e.id)}"` : ""}>${glyph(glyphName)}
       <div class="h-text"><div>${esc(title)}</div>${sub ? `<div class="h-sub">${esc(sub)}</div>` : ""}${more}</div>
@@ -126,7 +129,7 @@ function history(p) {
 export function render(p) {
   const s = p.settings;
   const width = p.trackWidth || Math.max(300, Math.min(p.host.clientWidth || 1000, 1180) - 64);
-  const L = track.layout(width, p.sizes);
+  const L = track.layout(width, p.sizes, p.heights);
   const running = p.run?.run?.status === "running";
   const preview = p.run?.preview;
   const label = `<span class="stream-label ${L.labelVertical ? "vertical" : ""}" style="left:${L.label[0]}px;top:${L.label[1]}px">${
@@ -152,8 +155,9 @@ export function relayout(p) {
 }
 
 function measure(p) {
-  // Each card's own size in the wide layout, measured on a hidden copy (so it works whichever layout shows), for the
-  // next layout; drawn again only if one changed.
+  // Each card's own size in the wide layout, measured on a hidden copy (so it works whichever layout shows), and in
+  // the vertical layout, each card's height as drawn (two lines when its title and controls don't fit on one), for
+  // the next layout; drawn again only if one changed.
   const page = p.root.querySelector(".page");
   if (!page || !p.settings) return;
   const zero = {cx: 0, cy: 0, x: 0, y: 0, w: 0, h: 0}, L = {vertical: false, at: Object.fromEntries(IDS.map((id) => [id, zero]))};
@@ -171,7 +175,13 @@ function measure(p) {
     changed = changed || !old || Math.abs(old.w - size.w) > 1 || Math.abs(old.h - size.h) > 1;
   });
   probe.remove();
-  if (changed) { p.sizes = sizes; p.render(); }
+  if (changed) p.sizes = sizes;
+  const drawn = [...p.root.querySelectorAll(".track.vertical > .stn")];
+  if (drawn.some((el) => el.offsetHeight !== p.heights?.[el.dataset.step])) {
+    p.heights = Object.fromEntries(drawn.map((el) => [el.dataset.step, el.offsetHeight]));
+    changed = true;
+  }
+  if (changed) p.render();
 }
 
 export function after(p) {
@@ -223,7 +233,7 @@ export const actions = {
     [".ask-cancel", (p) => { p.asking = null; p.render(); }],
     ["#run-menu", (p) => { p.runMenu = !p.runMenu; p.render(); }],
     ["[data-schedule]", (p, el) => { p.runMenu = false; p.saveSetting({schedule: el.dataset.schedule}); }],
-    ["[data-only]", (p, el) => { Object.assign(p, {runMenu: false, only: el.dataset.only, force: false, confirming: true}); p.render(); }],
+    ["[data-only]", (p, el) => { Object.assign(p, {runMenu: false, only: el.dataset.only, confirming: true}); p.render(); }],
     ["[data-gate]", (p, el) => p.saveSetting({stage: el.dataset.gate, pause: !p.settings.paused.includes(el.dataset.gate)})],
     ["#history-more", (p) => { p.historyAll = true; p.render(); }],
     ["[data-open]", (p, el) => p.go(el.dataset.open)],

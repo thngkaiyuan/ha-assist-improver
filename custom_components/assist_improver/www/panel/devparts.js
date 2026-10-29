@@ -1,5 +1,5 @@
 // The developer view's building blocks: IDs (a link to Find, and a copy button), values, tags, chips, timelines,
-// journal entries, a run's stage bar, and the waterfall of a trace's spans. Journal text and tags are untrusted:
+// journal entries, and the waterfall of a trace's spans. Journal text and tags are untrusted:
 // every value goes through esc().
 
 const v = new URL(import.meta.url).search;  // ?v=<version>, passed on to every module this one loads.
@@ -7,11 +7,10 @@ const [{esc, plural, ago, cls, bytes, dur, num, isIso, stamp, devUrl}, {svg}] = 
   ["format", "icons"].map((name) => import(`./${name}.js${v}`)));
 
 // The keys whose values are IDs (each a link to Find).
-const ID_KEYS = new Set(["id", "run_id", "recording_id", "improvement_id", "case_id", "trace_id", "generator_run", "role_call",
-                         "run", "recording", "improvement", "case", "conversation_id"]);
-const RUN_STAGES = ["analyze", "propose", "test", "write"];
+const ID_KEYS = new Set(["id", "run_id", "recording_id", "improvement_id", "plan_id", "trace_id", "generator_run", "role_call",
+                         "run", "recording", "improvement", "replay", "plan", "conversation_id"]);
 export const WF_DEPTH = 2;  // Waterfall levels shown open at first; deeper ones start collapsed.
-const WF_HINTS = ["recording_id", "goal", "improvement_id", "case_id", "hypothesis", "replay", "turn", "tool", "role"];  // First beside a span's name.
+const WF_HINTS = ["recording_id", "goal", "improvement_id", "plan_id", "kind", "replay", "turn", "tool", "role"];  // First beside a span's name.
 const WF_ROWS = 1500;  // Waterfall rows drawn at most (a day's trace can hold thousands of spans).
 
 export function idLink(id, full = false, label = null) {
@@ -64,15 +63,23 @@ export function statusChip(status) {
 }
 
 export function stageChip(stage) {
-  const color = {active: "c-primary", waiting: "c-amber", held: "c-amber", failing: "c-red", set_aside: "c-red",
-                 analysed: "c-blue", improvement: "c-green"};
+  // A stage of the flow record (flow.py STAGES): the middle ones blue, waiting for the household primary, ended green.
+  const color = {Triage: "c-blue", Analyze: "c-blue", Propose: "c-blue", "Write up": "c-blue", "Your review": "c-primary",
+                 "Your household": "c-green"};
   return chip(stage, Object.hasOwn(color, stage) ? color[stage] : "");
+}
+
+export function heldChip(held) {
+  // A hold (its cause, with why on hover): failures red, the rest amber.
+  return held ? `<span class="dv-chip ${held.cause === "failures" ? "c-red" : "c-amber"}" title="${esc(held.why)}">held: ${
+    esc(held.cause)}</span>` : "";
 }
 
 export function timeline(events) {
   if (!events?.length) return `<div class="dv-empty">Nothing recorded.</div>`;
   const color = {run: "c-primary", finished: "c-primary", analysis: "c-blue", proposal: "c-blue", role_call: "c-blue",
-                 problem: "c-red", case: "c-amber", test: "c-amber", improvement: "c-green", decision: "c-green"};
+                 problem: "c-red", replay: "c-amber", untestable: "c-red", test: "c-amber", improvement: "c-green", decision: "c-green",
+                 stage: "c-primary", held: "c-amber"};
   return events.map((e) => `<div class="dv-tl-row"><span class="dv-time" title="${esc(e.at)}">${esc(stamp(e.at))}</span>
     ${chip(e.kind, Object.hasOwn(color, e.kind) ? color[e.kind] : "")}
     <div class="dv-what">${esc(e.what)}${Object.keys(e.ids || {}).length ? `<div class="dv-tags">${tags(e.ids)}</div>` : ""}</div></div>`).join("");
@@ -94,16 +101,6 @@ function entry(p, e, key) {
 export function journal(p, entries, prefix) {
   if (!entries?.length) return `<div class="dv-empty">No journal entries.</div>`;
   return entries.map((e, i) => entry(p, e, `${prefix}:${e.at}:${i}`)).join("");
-}
-
-export function stageBar(timings) {
-  // A run's seconds per stage (from the run log, kept a year): a bar and its legend.
-  const parts = [...RUN_STAGES.filter((s) => timings?.[s] != null).map((s) => [s, Number(timings[s]) || 0]),
-                 ...Object.entries(timings || {}).filter(([s]) => !RUN_STAGES.includes(s)).map(([s, x]) => [s, Number(x) || 0])];
-  if (!parts.length) return "";
-  const total = parts.reduce((sum, [, x]) => sum + x, 0);
-  return `<div class="dv-stages">${parts.map(([s, x]) => `<i class="s-${cls(s)}" style="width:${total ? (100 * x / total).toFixed(2) : 0}%"></i>`).join("")}</div>
-    <div class="dv-legend">${parts.map(([s, x]) => `<span><i class="s-${cls(s)}"></i>${esc(s)} ${dur(x * 1000)}</span>`).join("")}</div>`;
 }
 
 export const problemCount = (list) => `<span style="color:var(--del-fg)">${plural(list.length, "problem")}</span>`;

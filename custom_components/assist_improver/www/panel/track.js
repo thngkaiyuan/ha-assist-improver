@@ -3,8 +3,8 @@
 // again and what you accept peels off to the household. layout() says where each step's card sits and the track runs
 // (left to right when wide, top to bottom when narrow); trackSvg() draws the track under the cards.
 
-export function layout(W, sizes) {
-  return W < 820 ? layoutVertical(W) : layoutWide(W, sizes);
+export function layout(W, sizes, heights) {
+  return W < 820 ? layoutVertical(W, heights) : layoutWide(W, sizes);
 }
 
 function layoutWide(W, sizes) {
@@ -52,29 +52,32 @@ function layoutWide(W, sizes) {
                [pc - mw / 2, gapY, "down"], [pc + mw / 2, gapY, "up"]]};
 }
 
-function layoutVertical(W) {
+function layoutVertical(W, heights) {
   // On a phone: one wide band straight down through the steps; the proposer and reviewer go back and forth along the
   // left edge, and a revision goes back up the right edge to the proposer.
   // The side lanes run midway between the panel's edge (its 16px padding outside the track) and the cards' sides.
+  // Each card is one line high (min), or as high as its content when that takes two lines (its title, then its
+  // controls): heights, measured once it's drawn (see the settings view's measure()).
   const g = 14, h = 52, hs = 46, pad = 16, cx = 32, cw = W - 2 * cx, eL = (cx - pad) / 2, eR = W - eL;
-  const at = {}, place = (id, gap, inset = 0, height = h) => {
-    at[id] = {x: cx + inset, y, w: cw - 2 * inset, h: height}; y += height + gap;
+  const at = {}, place = (id, gap, inset = 0, min = h) => {
+    const height = Math.max(min, heights?.[id] || 0);
+    at[id] = {x: cx + inset, y, w: cw - 2 * inset, h: height, min}; y += height + gap;
   };
   let y = 0;
   place("requests", g); place("triage", g); place("analyze", g); place("propose", 24); place("review", 24, 0, hs);
   place("test", g); place("write", g); place("you", g); place("household", 0);
-  const mid = cx + cw / 2, centre = (id) => at[id].y + at[id].h / 2;
+  const mid = cx + cw / 2, centre = (id) => at[id].y + at[id].h / 2, end = at.household.y + at.household.h;
   const pc = centre("propose"), rc = centre("review"), yc = centre("you");
   const side = (x, from, to, inner) => {  // A return lane: out of one card's edge, up the side, into another's.
     const s = Math.sign(inner - x), r = 12;
     return `M${inner},${from}H${x + s * r}Q${x},${from} ${x},${from - r}V${to + r}Q${x},${to} ${x + s * r},${to}H${inner}`;
   };
-  return {W, H: at.household.y + h + 4, at, vertical: true,
-    paths: [{d: `M${mid},${at.requests.y + 10}V${at.household.y + h - 10}`, w: Math.min(150, cw * 0.44), cap: "butt"},
+  return {W, H: end + 4, at, vertical: true,
+    paths: [{d: `M${mid},${at.requests.y + 10}V${end - 10}`, w: Math.min(150, cw * 0.44), cap: "butt"},
             {d: side(eL, rc, pc, at.review.x + 6), w: 18}, {d: side(eR, yc, pc, cx + cw - 6), w: 18}],
     flow: `M${mid},${centre("requests")}V${centre("household")}`,
     label: [eR, (pc + yc) / 2], labelVertical: true,
-    chevrons: [[mid, (at.propose.y + h + at.review.y) / 2, "down"], [eL, (pc + rc) / 2, "up"],
+    chevrons: [[mid, (at.propose.y + at.propose.h + at.review.y) / 2, "down"], [eL, (pc + rc) / 2, "up"],
                [eR, pc + (yc - pc) * 0.22, "up"], [eR, pc + (yc - pc) * 0.78, "up"]]};
 }
 

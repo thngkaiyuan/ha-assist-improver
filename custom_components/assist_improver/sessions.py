@@ -21,12 +21,12 @@ from homeassistant.helpers.storage import Store
 
 from .cases import CaseError, replayable_turns
 from .const import DOMAIN, STORAGE_VERSION
-from .failures import aside, contained
+from .failures import contained
 
 LOADED = 12  # Full recordings loaded at once, besides the household's and the assistant's.
 PAGE = 20  # Sessions per list_sessions page.
 APPLIES_SHOWN = 12  # Sessions where a change applies, listed with a draft; the count covers the rest.
-STATES = ("open_friction", "friction_handled", "without_friction", "not_analysed")
+STATES = ("open_friction", "without_friction", "not_analysed")
 BRIEF_FORMAT = 2  # A brief made by an earlier format is made again (2: which assistant the session used).
 
 
@@ -120,8 +120,6 @@ async def catalog(recorder, recording_ids):
         cache = recorder.brief_cache = BriefCache(recorder.hass)
     briefs, kept = [], {}
     for recording_id in recording_ids:
-        if aside("propose", short(recording_id)):  # Unreadable here run after run (failures.py).
-            continue
         # Still being recorded, or not a conversation the tools can read (expected): left out. Anything else is a
         # problem of the run's, and the others go on.
         async with contained("propose", short(recording_id), expected=(CaseError, ValueError, KeyError)) as one:
@@ -218,19 +216,18 @@ class SessionSet:
             self._loaded.popitem(last=False)
         return view
 
-    def state(self, session, settled):
-        """open_friction, friction_handled, without_friction or not_analysed."""
+    def state(self, session):
+        """open_friction, without_friction or not_analysed."""
         from .hypotheses import friction_by_goal
         analysis = self.analyses.get(session) or {}
-        goals = friction_by_goal(analysis)
-        if goals:
-            return "friction_handled" if all((session, t) in settled for t in goals) else "open_friction"
+        if friction_by_goal(analysis):
+            return "open_friction"
         return "not_analysed" if analysis.get("not_analysed") else "without_friction"
 
-    def counts(self, settled):
-        return dict(Counter(self.state(s, settled) for s in self.briefs))
+    def counts(self):
+        return dict(Counter(self.state(s) for s in self.briefs))
 
-    def page(self, settled, *, page=1, state=None, device=None, area=None, words=None, names=None):
+    def page(self, *, page=1, state=None, device=None, area=None, words=None, names=None):
         """One page of sessions, newest first, filtered: by state, a device (its entity_id, or a name: names maps
         entity ids to their names and aliases), an area, or words in the user's requests."""
         wanted = []
@@ -238,7 +235,7 @@ class SessionSet:
         device_ids = _matching_devices(device, names) if device else None
         place = (area or "").casefold().strip()
         for session, b in sorted(self.briefs.items(), key=lambda kv: kv[1]["started"] or "", reverse=True):
-            if state and state != "all" and self.state(session, settled) != state:
+            if state and state != "all" and self.state(session) != state:
                 continue
             if device_ids is not None and not (device_ids & set(b["entities"]) or any(
                     n in w for n in _names_of(device_ids, names) for w in b["words"])):
@@ -250,19 +247,19 @@ class SessionSet:
             wanted.append(session)
         pages = max(1, -(-len(wanted) // PAGE))
         page = min(max(1, page), pages)
-        rows = [self.row(s, settled) for s in wanted[(page - 1) * PAGE:page * PAGE]]
+        rows = [self.row(s) for s in wanted[(page - 1) * PAGE:page * PAGE]]
         return {"sessions": rows, "page": page, "pages": pages, "total": len(wanted),
                 **({"next": f"list_sessions with page {page + 1} (same filters)"} if page < pages else {})}
 
-    def row(self, session, settled):
+    def row(self, session):
         b = self.briefs[session]
         requests = b["requests"]
         return {"session": session, "started": (b["started"] or "")[:16], "turns": b["turns"],
                 "first_request": requests[0][:160] if requests else "",
                 **({"more_requests": len(requests) - 1} if len(requests) > 1 else {}),
-                "state": self.state(session, settled)}
+                "state": self.state(session)}
 
-    def where_it_applies(self, footprint, settled, exclude=()):
+    def where_it_applies(self, footprint, exclude=()):
         """The sessions a change would apply to, without friction first, then newest: (rows, how many in all)."""
         found = []
         for session, b in self.briefs.items():
@@ -270,10 +267,10 @@ class SessionSet:
                 continue
             why = applies(b, footprint)
             if why:
-                found.append((self.state(session, settled) == "open_friction", b["started"] or "", session, why))
+                found.append((self.state(session) == "open_friction", b["started"] or "", session, why))
         found.sort(key=lambda f: f[1], reverse=True)  # Newest first...
         found.sort(key=lambda f: f[0])  # ...within: sessions without open friction, then those with it.
-        rows = [{**self.row(s, settled), "touches": why} for _, _, s, why in found[:APPLIES_SHOWN]]
+        rows = [{**self.row(s), "touches": why} for _, _, s, why in found[:APPLIES_SHOWN]]
         return rows, len(found)
 
 

@@ -1,11 +1,11 @@
 """The sessions a role works over (sessions.py), and what the generator and the reviewer get upfront."""
 
+from copy import deepcopy
 import json
 
 from ..cases import CaseError
-from ..const import NO_FIX
 from ..exploration import related_improvements
-from ..failures import aside, contained
+from ..failures import contained
 from ..sessions import SessionSet, footprint
 from .assistants import Assistants
 from .goals import (FRICTION_KINDS, capabilities, friction, friction_by_goal, goal_devices, goal_summary, scenario,
@@ -25,11 +25,8 @@ class Sessions(Assistants, SessionSet):
         super().__init__(analyses, views, **lazy)
         self.evidence, self.capability_facts = None, None
         self.feedback = []  # The household's decisions on earlier improvements.
-        # {(session, goal turn): title} of settled goals: an improvement's title, or NO_FIX (no fix was found for it).
-        self.settled = {}
-        # {(session, goal turn): why} of trouble this proposal isn't asked to fix (archived by hand, or not in a run on
-        # picked conversations): those sessions are still read, to check rules against, as ones without friction.
-        self.later = {}
+        self.sent_back = None  # What the household sent back for this round: a revision or a conflict (flow.py).
+        self.so_far = {}  # The round's tests and reviews, for a proposer picking it up (stamps.so_far).
         self.existing = []  # Improvements waiting for review or applied (Improvements.catalog), for list_improvements.
         self._upfront = None  # The open friction the generator gets in full (prepare).
 
@@ -41,22 +38,15 @@ class Sessions(Assistants, SessionSet):
         from ..evidence import Evidence, capabilities as probe
         self.evidence, self.capability_facts = Evidence(self, definitions), {}
         session = short(self.household.recording["id"])
-        if aside("propose", session, step=PROBE):
-            return
         async with contained("propose", session, step=PROBE, expected=(CaseError,)):  # CaseError: it can't.
             self.capability_facts = await probe(self.household.recording, self._entities_in_friction(), definitions)
 
-    @property
-    def handled(self):
-        """The goals not this proposal's to fix: settled (an improvement, or no fix found), or left for later."""
-        return {**self.later, **self.settled}
-
     def open_friction(self):
-        """[(session, its goal turns with friction no improvement handles)], newest first: what the generator has
-        to place, each goal in a hypothesis, already_addressed or not_fixed."""
+        """[(session, its goal turns with friction)], newest first: what the generator has to place, each goal in a
+        hypothesis, already_addressed or not_fixed."""
         out = []
         for session in sorted(self.analyses, key=lambda s: (self.briefs.get(s) or {}).get("started") or "", reverse=True):
-            turns = [t for t in sorted(friction_by_goal(self.analyses[session])) if (session, t) not in self.handled]
+            turns = sorted(friction_by_goal(self.analyses[session]))
             if turns:
                 out.append((session, turns))
         return out
@@ -92,27 +82,25 @@ class Sessions(Assistants, SessionSet):
 
     def overview(self):
         """Background; the newest open friction as scripts (within a budget) and the rest of it one line per goal;
-        what's settled and decided; counts, and how to reach every other session."""
+        what the household decided and sent back; the round's tests and reviews so far, with what's left; counts,
+        and how to reach every other session."""
         upfront = self._upfront if self._upfront is not None else self._select(
             {s: v for s, _ in self.open_friction() if (v := self.views.get(s)) is not None})
         shown = {u["session"] for u in upfront}
         more = [{"session": s, "started": ((self.briefs.get(s) or {}).get("started") or "")[:16],
                  "goals_with_friction": [self._goal_line(s, t) for t in turns]}
                 for s, turns in self.open_friction() if s not in shown]
-        counts = self.counts(self.handled)
+        counts = self.counts()
         return {"home": self.household.digest["home"], "time_zone": self.household.digest["time_zone"],
                 "areas": self.household.list_areas(), "assist_tools": self.assist_tools(),
                 **({"assistants": rows} if (rows := self.assistant_rows()) else {}),
                 "devices_in_friction": self.devices_in_friction(),
                 "friction_scenarios": upfront,
                 **({"more_friction": more} if more else {}),
-                "other_sessions": (f"{counts.get('friction_handled', 0)} sessions whose friction already has an "
-                                   f"improvement (or no fix), {counts.get('without_friction', 0)} without friction, "
+                "other_sessions": (f"{counts.get('without_friction', 0)} sessions without friction, "
                                    f"{counts.get('not_analysed', 0)} not analysed: list_sessions finds them"),
                 **({"household_decisions": decisions(self.feedback)} if self.feedback else {}),
-                **({"already_handled": handled} if (handled := [
-                    {"session": s, "goal_turn": t, "improvement": title} for (s, t), title in sorted(self.settled.items())
-                    if title != NO_FIX]) else {}),
+                **({"sent_back": deepcopy(self.sent_back)} if self.sent_back else {}), **deepcopy(self.so_far),
                 **({"related_improvements": related} if (related := self.related(
                     [(s, t) for s, turns in self.open_friction() for t in turns])) else {})}
 
@@ -126,7 +114,7 @@ class Sessions(Assistants, SessionSet):
 
     def listing(self, **filters):
         """One page of sessions (list_sessions), newest first."""
-        return self.page(self.handled, names=self._names(), **filters)
+        return self.page(names=self._names(), **filters)
 
     def _names(self):
         from ..sessions import device_names
@@ -169,7 +157,7 @@ class Sessions(Assistants, SessionSet):
         """The sessions a draft's changes would apply to, besides its own goals' (sessions.where_it_applies)."""
         mine = {g["session"][:8] for g in hypothesis.get("goals") or []}
         rows, total = self.where_it_applies(footprint(self.with_targets(hypothesis.get("changes")), self.household),
-                                            self.handled, exclude=mine)
+                                            exclude=mine)
         out = {"sessions": rows, "count": total}
         if total > len(rows):
             out["more"] = f"{total - len(rows)} more: list_sessions filtered by a device or area finds them"
@@ -177,16 +165,18 @@ class Sessions(Assistants, SessionSet):
 
     def summary(self):
         """For the reviewer: the home, how many sessions there are by state, the user's known choices (newest
-        first) and the household's decisions. Each draft brings the sessions where it would apply."""
+        first), the household's decisions and what they sent back for this round, as the generator gets them. Each
+        draft brings the sessions where it would apply."""
         chosen = [{"session": s, "started": ((self.briefs.get(s) or {}).get("started") or "")[:16],
                    **{k: f[k] for k in ("summary", "user_chose")}}
                   for s, a in self.analyses.items() for f in friction(a) if f["kind"] == "ask"]
         chosen.sort(key=lambda c: c["started"], reverse=True)
-        return {"home": self.household.digest["home"], "sessions": self.counts(self.handled),
+        return {"home": self.household.digest["home"], "sessions": self.counts(),
                 **({"assistants": rows} if (rows := self.assistant_rows()) else {}),
                 "known_choices": chosen[:CHOICES_SHOWN],
                 **({"more_known_choices": len(chosen) - CHOICES_SHOWN} if len(chosen) > CHOICES_SHOWN else {}),
-                **({"household_decisions": decisions(self.feedback)} if self.feedback else {})}
+                **({"household_decisions": decisions(self.feedback)} if self.feedback else {}),
+                **({"sent_back": deepcopy(self.sent_back)} if self.sent_back else {})}
 
 
 PROBE = "capability probe"  # What load_evidence tries on the household's conversation (failures.contained's step).
@@ -195,14 +185,15 @@ PROBE = "capability probe"  # What load_evidence tries on the household's conver
 def scenario_of(analysis, view):
     """A session as a script (goals.scenario), or None when its analysis and recording don't read together: a
     problem of the run's, and the generator gets the session one line per goal instead."""
-    with contained("propose", short(analysis.get("recording_id") or ""), step="scenario", setback=False):
+    with contained("propose", short(analysis.get("recording_id") or ""), step="scenario"):
         return scenario(analysis, view)
     return None
 
 
 def decisions(feedback):
     """The household's decisions, as the roles need them to respect them: what was decided on which change (the
-    lines in full, the target of anything else), with the note; read_improvement shows an improvement in full."""
+    lines in full, the target of anything else), with the note and reason; the improvement sent back for this round
+    comes in full (sent_back)."""
     out = []
     for item in feedback:
         changes = []
@@ -213,5 +204,5 @@ def decisions(feedback):
                     what[key] = change[key]
             changes.append(what)
         out.append({"title": item.get("title"), "decision": item.get("decision"), "status": item.get("status"),
-                    **({"note": item["note"]} if item.get("note") else {}), "changes": changes})
+                    **{key: item[key] for key in ("note", "reason") if item.get(key)}, "changes": changes})
     return out

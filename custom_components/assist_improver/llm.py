@@ -36,8 +36,8 @@ class FileImprovement(llm.Tool):
         from homeassistant.components.conversation.chat_log import current_chat_log
         runtime, chat_log = loaded(hass), current_chat_log.get()
         user_id = getattr(getattr(llm_context, "context", None), "user_id", None)
-        key = runtime.recorder.file(chat_log.conversation_id, tool_input.tool_args.get("what_to_improve"), user_id) \
-            if runtime is not None and chat_log is not None else None
+        key = await runtime.recorder.file(chat_log.conversation_id, tool_input.tool_args.get("what_to_improve"),
+                                          user_id) if runtime is not None and chat_log is not None else None
         if key is None:
             return llm.ToolResult(data={"filed": False,
                                         "why": "This conversation isn't being recorded, so it can't be filed."})

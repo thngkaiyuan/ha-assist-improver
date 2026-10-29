@@ -10,7 +10,6 @@ address, so the notification links straight to it; settings are at
 
 import difflib
 import json
-import re
 from pathlib import Path
 
 import probatio
@@ -20,17 +19,14 @@ from homeassistant.core import callback
 from .cases import CaseError
 from .changeset import plan_steps
 from .const import DOMAIN, VERSION
-from .improvements import DECISIONS, KINDS, PENDING, benefits, choices, display_title, reasons, reply_words, spared
+from .improvements import (DECISIONS, KINDS, PENDING, PHYSICAL, benefits, choices, display_title, physical, reasons,
+                           reply_words, row, spared)
 from .runtime import loaded
 
 URL_PATH = "assist-improver"  # The panel's address: /assist-improver?id=<improvement>.
 STATIC = f"/{DOMAIN}_static"
 CONTEXT = 2  # Unchanged lines shown around each change.
 PANEL_KEY = f"{DOMAIN}_panel"  # Set while the panel is registered.
-# A door or valve: a cover or valve, or anything named after a door, gate, garage or valve (as a switch that runs a
-# garage door).
-PHYSICAL = re.compile(r"\b(?:cover|valve)\.\w+"  # Covers and valves, and what drives a door or valve:
-                      r"|\b(?:switch|script|button)\.(?:\w+_)?(?:doors?|gates?|garage|valves?)(?:_\w+)?\b")
 
 
 def review_url(improvement_id):
@@ -84,19 +80,19 @@ def change_rows(step, names=None):
 
 
 def test_result(test):
-    """A test's outcome in a few words: the goal now met, fewer turns, a side effect gone, your feedback followed (as
-    many as it showed), or just improved."""
-    if test.get("status") != "awaiting_review":
+    """A test's outcome in a few words, from its row (improvements.row): the goal now met, fewer turns, a side effect
+    gone, your feedback followed (as many as it showed), or just improved."""
+    if not test["improved"]:
         return "not improved"
     shown = []
-    if test.get("goal_newly_met"):
+    if test["newly_met"]:
         shown.append("goal now met")
-    before, after = test.get("turns_before"), test.get("turns_after")
-    if not shown and isinstance(before, int) and isinstance(after, int) and after < before:
+    before, after = test["turns_before"], test["turns_after"]
+    if not shown and after < before:
         shown.append(f"{before} \u2192 {after} turns")
-    if gone := test.get("side_effects_gone"):
+    if gone := test["side_effects_gone"]:
         shown.append("side effect gone" if len(gone) == 1 else "side effects gone")
-    if test.get("feedback_followed"):
+    if test["feedback"]:
         shown.append("follows your feedback")
     return " \u00b7 ".join(shown) or "improved"
 
@@ -108,23 +104,22 @@ def more_words(test):
 
 
 def said(test):
-    """A test's conversation as it went (the turns it covers) and its replay with the change, turn by turn, as the home
-    page reads a conversation: what was said, Assist's reply, and the steps that failed in between."""
+    """A test's conversation as it went and its replay with the change, turn by turn, from its row
+    (improvements.row), as the home page reads a conversation: what was said, Assist's reply, and the steps that failed
+    in between."""
     shown = {}
     for side in ("before", "after"):
-        failed = (test.get("failed_steps") or {}).get(side) or []  # None in tests derived by earlier versions.
-        shown[side] = [{"you": t.get("you") or "", "assist": t.get("assistant") or "",
+        failed = test["failed_steps"][side]
+        shown[side] = [{"you": t["you"] or "", "assist": t["assistant"] or "",
                         **({"failed": failed[n]} if n < len(failed) and failed[n] else {})}
-                       for n, t in enumerate(test.get(side) or [])]
+                       for n, t in enumerate(test[side])]
     return shown
 
 
-def safety(item, steps, already):
-    """Why it's safe, stated by code from the tests and the changeset (never written by a model)."""
-    facts = []
-    if item.get("tests"):
-        facts.append("Tested on your own conversations, replayed in a sandboxed copy of your home: nothing in your "
-                     "home moved.")
+def safety(steps):
+    """Why it's safe, stated by code from its test and the changeset (never written by a model)."""
+    facts = ["Tested on your own conversations, replayed in a sandboxed copy of your home: nothing in your home "
+             "moved."]
     counts = {}
     for step in steps:
         kind = step["kind"]
@@ -153,10 +148,13 @@ def safety(item, steps, already):
     return facts
 
 
-def review(item, planned=None, names=None):
-    """Everything the panel shows for one improvement, built by code. names: {user id: name} for household lines."""
+def review(item, planned=None, names=None, hass=None, revising=False):
+    """Everything the panel shows for one improvement, built by code. names: {user id: name} for household lines.
+    hass: to tell a device that drives a door by its name in Home Assistant too (improvements.physical). revising: its
+    revision's round runs (improvements.choices)."""
     enabled, removed = benefits(item)
     gone, followed = spared(item)
+    shown = row(item["test"])
     steps, already, conflicts = planned or ((item.get("application") or {}).get("steps") or [], [], [])
     changes = []
     for step in steps:
@@ -179,21 +177,23 @@ def review(item, planned=None, names=None):
             recent_ok = last.get("status") in ("done", "recorded")
     copy = item.get("copy") or {}
     return {"id": item["id"], "title": display_title(item), "benefit": copy.get("benefit"),
-            "safety": safety(item, steps, already), "status": item["status"], "enabled": enabled,
+            "safety": safety(steps), "status": item["status"], "enabled": enabled,
             "recent_outcome": recent, "recent_outcome_ok": recent_ok, "revises": item.get("revises"),
             "removed": removed, "conflicts": conflicts, "changes": changes, "cause": item["cause"],
             # Side effects it no longer leaves (each device, left as it was) and the feedback it follows.
             "spared": [f"{g['name']} stays {g['start']}" for g in gone], "followed": followed,
-            # A door's or valve's motion isn't simulated: said where the improvement involves one.
-            "physical": bool(PHYSICAL.search(json.dumps([item.get(k) for k in ("changes", "tests", "cause")],
-                                                        default=str))),
-            "tests": [{"summary": t["summary"], "improved": t["status"] == "awaiting_review",
-                       "result": test_result(t), **said(t), **more_words(t)} for t in item["tests"]],
-            "wordier": sum(1 for t in item["tests"] if more_words(t)),
-            "untested": len(item["untested_goals"]),
+            # A door's or valve's motion isn't simulated: said where the improvement involves one (its changes, cause
+            # and test as the review shows it: not every script and exposed device its replays ran with).
+            "physical": bool(PHYSICAL.search(json.dumps([item.get("changes"), item.get("cause"), shown], default=str)))
+            or any(physical(hass, e) for c in item.get("changes") or []
+                   for e in [c.get("entity_id"), *(s.get("entity_id") for s in c.get("steps") or [])]
+                   if isinstance(e, str)),
+            "tests": [{"summary": shown["summary"], "improved": shown["improved"], "result": test_result(shown),
+                       **said(shown), **more_words(shown)}],
+            "wordier": 1 if more_words(shown) else 0,
             # Each decision open now, with the reasons it can be given with (Decline: not an issue).
-            "choices": [{"value": d, "label": DECISIONS[d][1], **({"reasons": r} if (r := reasons(d)) else {})}
-                        for d in choices(item)]}
+            "choices": [{"value": d, "label": DECISIONS[d], **({"reasons": r} if (r := reasons(d)) else {})}
+                        for d in choices(item, revising)]}
 
 
 def outcome_text(item):
@@ -202,17 +202,21 @@ def outcome_text(item):
     status = outcome["status"]
     if status == "recorded":
         decision = (item.get("decisions") or [{}])[-1].get("decision")
-        if decision in ("revise", "needs_improvement"):
-            return "Thanks. Your next run proposes a revised version."
-        if decision in ("decline", "fine_as_is"):
-            return "Thanks. The improver won't propose this again."
+        if decision == "revise":
+            return "Thanks. The improver is revising it now."
+        if decision == "decline":
+            return "Thanks. Declined, and its conversation is archived."
         return "Thanks, your decision is recorded."
     if status == "done":
         script = any(c.get("kind") == "script" for c in item.get("changes") or [])
         applied = ("Applied. Assist uses it from your next request; no script was run." if script
                    else "Applied. Assist uses it from your next request.")
+        changed = [l for l in outcome.get("left") or [] if not l.get("used_by")]
+        kept = [l for l in outcome.get("left") or [] if l.get("used_by")]  # Another applied improvement adds it too.
         return (applied if item["status"] == "applied" else "Undone: what was there before is back.") + (
-            " Left as you changed it: " + "; ".join(l["what"] for l in outcome["left"]) if outcome.get("left") else "")
+            " Left as you changed it: " + "; ".join(l["what"] for l in changed) if changed else "") + (
+            " Kept, as another improvement uses it: " + "; ".join(f"“{l['kept']}” ({l['used_by']})" for l in kept)
+            if kept else "")
     if status == "conflict":
         return "Nothing was changed: " + "; ".join(f"{c['what']}: {c['why']}" for c in outcome["conflicts"])
     if status == "rolled_back":
@@ -300,7 +304,7 @@ async def ws_get(hass, connection, msg):
             for user_id in {*step["before"]["people"], *step["after"]["people"]}:
                 user = await hass.auth.async_get_user(user_id) if getattr(hass, "auth", None) else None
                 names[user_id] = getattr(user, "name", None) or user_id
-    result = review(item, planned, names)
+    result = review(item, planned, names, hass, runtime.flow.revising(item["id"]))
     if item["status"] not in PENDING:  # Decided: the next one waiting is one click away.
         nxt = next((i for i in improvements.pending() if i["id"] != item["id"]), None)
         result["next_pending"] = {"id": nxt["id"], "title": display_title(nxt)} if nxt else None
@@ -317,12 +321,62 @@ async def ws_decide(hass, connection, msg):
         return
     try:
         item = await runtime.improvements.decide(msg["improvement_id"], msg["decision"], note=msg["note"],
-                                                  user_id=connection.user.id, reason=msg.get("reason"))
+                                                  user_id=connection.user.id, reason=msg.get("reason"),
+                                                  revising=runtime.flow.revising(msg["improvement_id"]))
     except CaseError as err:
         connection.send_error(msg["id"], "decision", str(err))
         return
+    # Where its conversation goes (flow.py); a revision goes straight back in at Propose, on a run of its own.
+    _send_back(runtime, await runtime.flow.decided(item, msg["decision"], msg["note"]), "revision")
+    conflict = item["outcome"]["status"] == "conflict"  # It says so, and asks before going back in (P0.7).
     connection.send_result(msg["id"], {"result": outcome_text(item), "status": item["status"],
-                                       "ok": item["outcome"]["status"] in ("done", "recorded")})
+                                       "ok": item["outcome"]["status"] in ("done", "recorded"),
+                                       **({"asks": {"about": "conflict", "improvement_id": item["id"],
+                                                    "conflicts": item["outcome"].get("conflicts") or []}}
+                                          if conflict else {})})
+
+
+def _send_back(runtime, rids, trigger):
+    """A run of its own for each conversation sent back to Propose (a revision, or a conflict the household agreed
+    to resolve): now, or right after the run in progress."""
+    for rid in rids:
+        runtime.pipeline.send_back(rid, trigger)
+
+
+@websocket_api.websocket_command({probatio.Required("type"): f"{DOMAIN}/conversation/test",
+                                  probatio.Required("recording_id"): str})
+@websocket_api.require_admin
+@websocket_api.async_response
+async def ws_conversation_test(hass, connection, msg):
+    """The household marks a conversation as only a test: it ends in Your household as marked as a test; not while an
+    improvement of it waits for the household (flow.Flow.waits). Whether it was marked."""
+    from .conversations import kept
+    if (runtime := _runtime(hass, connection, msg)) is None:
+        return
+    if not kept(runtime, msg["recording_id"]):
+        connection.send_error(msg["id"], "not_found", "That conversation isn't kept.")
+        return
+    connection.send_result(msg["id"], {"marked": await runtime.flow.mark_test(msg["recording_id"])})
+
+
+@websocket_api.websocket_command({probatio.Required("type"): f"{DOMAIN}/conflict/resolve",
+                                  probatio.Required("improvement_id"): str})
+@websocket_api.require_admin
+@websocket_api.async_response
+async def ws_conflict_resolve(hass, connection, msg):
+    """The household agrees to send an improvement whose accept met a conflict back in at Propose, to resolve it."""
+    if (runtime := _runtime(hass, connection, msg)) is None:
+        return
+    try:
+        item = runtime.improvements.get(msg["improvement_id"])
+    except CaseError as err:
+        connection.send_error(msg["id"], "not_found", str(err))
+        return
+    if item["status"] != "conflict":
+        connection.send_error(msg["id"], "decision", "That improvement didn't meet a conflict.")
+        return
+    _send_back(runtime, await runtime.flow.resolve(item), "conflict")
+    connection.send_result(msg["id"], {"sent_back": True})
 
 
 @websocket_api.websocket_command({probatio.Required("type"): f"{DOMAIN}/household"})
@@ -407,33 +461,34 @@ def ws_run_status(hass, connection, msg):
 
 
 @websocket_api.websocket_command({probatio.Required("type"): f"{DOMAIN}/run/start",
-                                  probatio.Required("confirmed"): True, probatio.Optional("force", default=False): bool,
-                                  probatio.Optional("only"): probatio.In(("triage", "analyze", "propose", "test", "write")),
-                                  probatio.Optional("picked", default=False): bool,
-                                  probatio.Optional("conversations", default=[]): probatio.All([str], probatio.Length(max=1000))})
+                                  probatio.Required("confirmed"): True,
+                                  probatio.Optional("only"): probatio.In(("triage", "analyze", "propose", "write")),
+                                  probatio.Optional("conversations"): probatio.All([str], probatio.Length(max=1000))})
 @websocket_api.require_admin
 @websocket_api.async_response
 async def ws_run_start(hass, connection, msg):
-    """Start a run; the panel asks the user to confirm what it will spend first. picked (the home page's Run): the
-    given conversations are sent in first, and the run takes in only conversations sent in."""
-    from .conversations import AGAIN, TAKEN, kept, standing
+    """Start a run; the panel asks the user to confirm what it will spend first. only: Run one step. conversations
+    (the home page's Run with some picked): a picked run, which admits only those it can take (conversations.row:
+    runnable); one picked from Your household is sent in first (flow.Flow.sent_in), for a new round.
+    Neither: a manual full run."""
+    from .conversations import kept, row
     if (runtime := _runtime(hass, connection, msg)) is None:
         return
-    picked, conversations = msg.get("picked", False), msg.get("conversations") or []
+    picked = msg.get("conversations")  # None: not a picked run.
     if runtime.pipeline.running:
         connection.send_error(msg["id"], "busy", "A run is already in progress")
         return
-    if conversations:
-        if missing := [rid for rid in conversations if not kept(runtime, rid)]:
-            connection.send_error(msg["id"], "not_found", f"{len(missing)} of those conversations aren't kept.")
-            return
-        # Never one the improver has, nor one with nothing more to do (it's sent in again one by one, with a note).
-        fresh = [rid for rid in conversations if standing(runtime, rid) not in (*TAKEN, *AGAIN)]
-        await runtime.recorder.file_kept(fresh, user_id=connection.user.id, notify=False,
-                                         again=[rid for rid in fresh if runtime.pipeline.sent_again(rid)])
+    if reason := runtime.pipeline.refusal(msg.get("only")):  # Before anything is sent in.
+        connection.send_error(msg["id"], "busy", reason)
+        return
+    if missing := [rid for rid in picked or [] if not kept(runtime, rid)]:
+        connection.send_error(msg["id"], "not_found", f"{len(missing)} of those conversations aren't kept.")
+        return
+    for rid in picked or []:
+        if runtime.flow.place(rid)["stage"] == "Your household" and row(runtime, rid)["runnable"]:
+            await runtime.flow.sent_in(rid, by=connection.user.id)
     try:
-        run = runtime.pipeline.start(trigger="manual", force=msg.get("force", False), only=msg.get("only"),
-                                     picked=picked or bool(conversations))
+        run = runtime.pipeline.start(trigger="manual", only=msg.get("only"), picked=picked)
     except CaseError as err:
         connection.send_error(msg["id"], "busy", str(err))
         return
@@ -579,7 +634,8 @@ async def ws_practice(hass, connection, msg):
 @websocket_api.require_admin
 @websocket_api.async_response
 async def ws_log(hass, connection, msg):
-    """What the improver did, newest first: runs, improvements going up for review, and decisions on them."""
+    """What the improver did, newest first: runs (by trigger; picked: a manual run on picked conversations),
+    improvements going up for review, and decisions on them."""
     if (runtime := _runtime(hass, connection, msg)) is None:
         return
     names = {}
@@ -594,14 +650,16 @@ async def ws_log(hass, connection, msg):
         if run.get("kind") == "pipeline" and run.get("status") != "running":
             events.append({"at": run.get("finished") or run.get("started"), "kind": "run", "status": run.get("status"),
                            "trigger": run.get("trigger"), "only": run.get("only"), "progress": run.get("progress") or {},
-                           "error": run.get("error"), **({"picked": True} if run.get("picked") else {})})
+                           "error": run.get("error"),
+                           **({"picked": True} if run.get("trigger") == "manual" and "picked" in run else {})})
     for item in runtime.improvements.items.values():
         title = display_title(item)
         if item.get("copy"):
             events.append({"at": item.get("created"), "kind": "posted", "id": item["id"], "title": title})
         for decision in item.get("decisions", []):
             events.append({"at": decision.get("at"), "kind": "decision", "id": item["id"], "title": title,
-                           "decision": decision["decision"], "outcome": decision.get("outcome"),
+                           "decision": decision["decision"], "reason": decision.get("reason"),
+                           "outcome": decision.get("outcome"),
                            "auto": decision.get("auto", False), "by": await name(decision.get("by"))})
     events.sort(key=lambda e: e.get("at") or "", reverse=True)
     connection.send_result(msg["id"], {"events": events[:100]})
@@ -650,30 +708,27 @@ async def ws_conversation(hass, connection, msg):
 @websocket_api.require_admin
 @websocket_api.async_response
 async def ws_conversation_send(hass, connection, msg):
-    """Send a conversation in: filed, as Assist's file_improvement tool does, so the pipeline takes it in (at its
-    next run; right away with on-demand improvements on), past the quick check with a note, or sent in again after
-    an analysis (pipeline.deliberate). One it has, or an accepted improvement covers, is already in. One already
-    analysed with nothing more to do goes in again (Pipeline.resent): looked smooth, no trouble found, or no fix found
-    (its goals open once more, each with a fresh tests-per-goal budget); it gets one fresh full analysis that reads
-    the note as feedback, and is back in the list, unless archived by hand (hidden says whether it's archived now)."""
-    from .conversations import TAKEN, archived, kept, standing
-    from .sessions import short
+    """Send a conversation in (flow.Flow.sent_in), as Assist's file_improvement tool does, so the pipeline takes it in
+    (at its next run; right away with on-demand improvements on), past the quick check with a note, or sent in again
+    after an earlier round looked at it (flow.deliberate). One in the pipeline already isn't sent in again. One in
+    Your household goes in again: it gets one fresh full analysis that reads the note as feedback, and a new round
+    with fresh tests. It answers where it stands now (status), and whether the list leaves it out (hidden)."""
+    from .conversations import kept, row
     if (runtime := _runtime(hass, connection, msg)) is None:
         return
     rid = msg["recording_id"]
     if not kept(runtime, rid):
         connection.send_error(msg["id"], "not_found", "That conversation isn't kept.")
         return
-    if (now := standing(runtime, rid)) in TAKEN:
+    if not row(runtime, rid)["sendable"]:  # In the pipeline already (Your household, or new, can be sent in).
         connection.send_error(msg["id"], "already_in", "The improver already has that conversation.")
         return
-    if now == "nofix":
-        await runtime.improvements.reopen(short(rid))
-    await runtime.recorder.file_kept([rid], msg.get("note", ""), connection.user.id,
-                                     again=[rid] if runtime.pipeline.sent_again(rid) else ())
-    now = standing(runtime, rid)
-    connection.send_result(msg["id"], {"status": now, "on_demand": runtime.pipeline.on_demand,
-                                       "hidden": archived(runtime.recorder.index[rid], now)})
+    await runtime.flow.sent_in(rid, msg.get("note", ""), by=connection.user.id)
+    if runtime.recorder.index[rid].get("status") != "active":  # Ended: on-demand, it gets its run now.
+        runtime.pipeline.request(rid)
+    now = row(runtime, rid)
+    connection.send_result(msg["id"], {"status": now["status"], "on_demand": runtime.pipeline.on_demand,
+                                       "hidden": now["hidden"]})
 
 
 @websocket_api.websocket_command({probatio.Required("type"): f"{DOMAIN}/conversation/hide",
@@ -682,16 +737,18 @@ async def ws_conversation_send(hass, connection, msg):
 @websocket_api.require_admin
 @websocket_api.async_response
 async def ws_conversation_hide(hass, connection, msg):
-    """Archive a conversation, out of the list, or (hidden: false) unarchive it: back in the list, and kept there though
-    settled (Recorder.hide). It's kept, analysed and tested as before."""
-    from .conversations import kept
+    """Archive a conversation, out of the pipeline and the list, or (hidden: false) unarchive it: back in the list,
+    and kept there while it stands where it does (flow.Flow.archive). It's kept, to check later changes against. One
+    an improvement of which waits for the household isn't archived (flow.Flow.waits). Whether the list leaves it out
+    now (hidden)."""
+    from .conversations import kept, row
     if (runtime := _runtime(hass, connection, msg)) is None:
         return
     if not kept(runtime, msg["recording_id"]):
         connection.send_error(msg["id"], "not_found", "That conversation isn't kept.")
         return
-    await _hide(runtime, [msg["recording_id"]], msg.get("hidden", True))
-    connection.send_result(msg["id"], {"hidden": msg.get("hidden", True)})
+    await runtime.flow.archive(msg["recording_id"], archived=msg.get("hidden", True))
+    connection.send_result(msg["id"], {"hidden": row(runtime, msg["recording_id"])["hidden"]})
 
 
 @websocket_api.websocket_command({probatio.Required("type"): f"{DOMAIN}/conversation/delete",
@@ -719,21 +776,14 @@ async def ws_conversation_delete(hass, connection, msg):
 @websocket_api.async_response
 async def ws_conversations_hide(hass, connection, msg):
     """Archive many conversations at once (the home page's selection), or (hidden: false) unarchive them; those no
-    longer kept are left out. How many changed."""
+    longer kept are left out, and so are those an improvement of which waits for the household, from an archive
+    (flow.Flow.waits). How many changed."""
     from .conversations import kept
     if (runtime := _runtime(hass, connection, msg)) is None:
         return
     keys = [rid for rid in dict.fromkeys(msg["recording_ids"]) if kept(runtime, rid)]
-    if keys:
-        await _hide(runtime, keys, msg.get("hidden", True))
-    connection.send_result(msg["id"], {"changed": len(keys)})
-
-
-async def _hide(runtime, keys, hidden):
-    """Archive kept conversations, or unarchive them: those settled are then kept in the list (Recorder.hide)."""
-    from .conversations import SETTLED, standings
-    settled = None if hidden else {rid: now for rid, now in standings(runtime, keys).items() if now in SETTLED}
-    await runtime.recorder.hide(*keys, hidden=hidden, settled=settled)
+    changed = await runtime.flow.archive(*keys, archived=msg.get("hidden", True)) if keys else []
+    connection.send_result(msg["id"], {"changed": len(changed)})
 
 
 @websocket_api.websocket_command({probatio.Required("type"): f"{DOMAIN}/conversations/delete",
@@ -758,7 +808,8 @@ def register_commands(hass):
                     ws_run_cancel, ws_settings, ws_settings_set, ws_settings_models, ws_settings_create,
                     ws_settings_recommended, ws_practice, ws_assistant_prefer, ws_log, ws_household_edit,
                     ws_conversations, ws_conversation, ws_conversation_send, ws_conversation_hide,
-                    ws_conversation_delete, ws_conversations_hide, ws_conversations_delete):
+                    ws_conversation_delete, ws_conversations_hide, ws_conversations_delete, ws_conflict_resolve,
+                    ws_conversation_test):
         websocket_api.async_register_command(hass, handler)
     from .devview import COMMANDS  # The developer view's: they answer only in developer mode.
     for handler in COMMANDS:

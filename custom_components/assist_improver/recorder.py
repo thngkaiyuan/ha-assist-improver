@@ -80,7 +80,8 @@ class Recorder:
         self.last_error = None
         self.capture_error = None
         self.running = False
-        self.on_filed_closed = None  # Called with a filed recording's ID once it ends (on-demand: the pipeline runs).
+        self.on_filed = None  # Awaited with (recording ID, note, user ID) as Assist files one (flow.sent_in).
+        self.on_filed_closed = None  # Called with each recording's ID once it ends: one sent in gets its run.
         self.answering = {}  # Recording ID -> the subentry of the assistant answering it, once it has.
         self.brief_cache = None  # Each recording's brief (sessions.BriefCache), loaded when a proposal first needs it.
         self.on_forgotten = None  # Awaited with a forgotten recording's ID: what was derived from it goes too.
@@ -163,6 +164,7 @@ class Recorder:
         for key, log in list(self.logs.items()):
             current = plain(log.as_dict())
             session = self.sessions[key]
+            self._pin(key, _agent(None, current))  # A first reply without a tool call shows its assistant only here.
             if any(getattr(c, "native", None) is not None for c in log.content):
                 limitation = "provider_native_history_omitted; replay adapter must check compatibility"
                 if limitation not in session["limitations"]:
@@ -229,8 +231,8 @@ class Recorder:
         for key in keys:
             if key not in self.dirty and self.sessions[key]["status"] != "active":
                 self.sessions.pop(key)
-                self.logs.pop(key, None)
-                self.saved.pop(key, None)
+                for kept in (self.logs, self.saved, self.answering):
+                    kept.pop(key, None)
 
     async def stop(self):
         self.running = False
@@ -247,8 +249,12 @@ class Recorder:
 
     @callback
     def on_chat(self, conversation_id, kind, data):
-        # The improver's own replays and AI-role calls are never household sessions.
-        if not self.running or conversation_id.startswith("improver-replay-") or ROLE_ACTIVE.get():
+        if not self.running or conversation_id.startswith("improver-replay-"):
+            return
+        if kind == "deleted":  # HA's cleanup, minutes later, in whatever context set its timer (an AI role's, say).
+            if self.keys.get(conversation_id) not in self.sessions:
+                return  # It ended unrecorded (an AI Task's chat log, say): nothing to keep.
+        elif ROLE_ACTIVE.get():  # The improver's own AI-role calls are never household sessions.
             return
         if conversation_id in self.ignored or (conversation_id not in self.keys and not self.recording_on()):
             return  # Recording is off (new conversations aren't kept), or the speaker's switch is.
@@ -281,17 +287,14 @@ class Recorder:
             journal("info", "Recording started", recording_id=key, conversation_id=conversation_id,
                     mid_session=kind != "created")
         session = self.sessions[key]
+        if kind == "updated" and not any(c.get("role") == "user" for c in (data.get("chat_log") or {}).get("content", [])):
+            self._not_assist(key)
+            return
         session["last_activity"] = now
         session["events"].append({"at": now, "type": kind, "data": plain(data)})
         content = data.get("content", {})
         turn_added = kind == "content_added" and content.get("role") == "user"
-        if key not in self.answering and (agent_id := _agent(content, data.get("chat_log"))):
-            # Now it's known which of the provider's assistants answers: its configuration is the one kept.
-            if (subentry := subentry_of(self.hass, agent_id)) is not None:
-                self.answering[key] = subentry
-                for turn in session["turns"]:
-                    if "prepared" in turn:
-                        turn["prepared"]["provider_config"] = answering(turn["prepared"]["provider_config"], subentry)
+        self._pin(key, _agent(content, data.get("chat_log")))
         if turn_added:
             with span("recorder.snapshot", recording_id=key):  # The whole home, on the event loop: watched.
                 source = snapshot(self.hass)
@@ -331,65 +334,45 @@ class Recorder:
                     user_turns=len(session["turns"]))
         self.index[key] = {"id": key, "started": session["started"], "updated": now,
                            "status": session["status"], "user_turns": len(session["turns"]),
-                           **({"filed": session["filed"]} if session.get("filed") else {}),
-                           **{flag: value for flag in ("hidden", "unarchived", "deleting")
-                              if (value := (self.index.get(key) or {}).get(flag))}}
+                           **({"deleting": True} if (self.index.get(key) or {}).get("deleting") else {})}
         self.schedule(key, soon=turn_added)
         if kind == "deleted":
             self._closed(key)
 
-    def file(self, conversation_id, note=None, user_id=None):
-        """Mark a conversation for improvement (on-demand improvements: Assist's file_improvement tool, when the user
-        asks): the pipeline takes it in once it ends. Its recording ID, or None if it isn't being recorded."""
+    def _pin(self, key, agent_id):
+        """Now it's known which of the provider's assistants answers: its configuration is the one kept (P8.2.3)."""
+        if key in self.answering or not agent_id or (subentry := subentry_of(self.hass, agent_id)) is None:
+            return
+        self.answering[key] = subentry
+        for turn in self.sessions[key]["turns"]:
+            if "prepared" in turn:
+                turn["prepared"]["provider_config"] = answering(turn["prepared"]["provider_config"], subentry)
+        self.dirty.add(key)
+
+    def _not_assist(self, key):
+        """A chat log prepared with no words in it: Home Assistant adds the user's words as it opens the log for an
+        Assist request, while an AI Task (another integration's, say) prepares its prompt first. It isn't one of the
+        household's Assist conversations (P8.1), so it isn't kept, and the conversation isn't recorded again."""
+        self.ignored.add(self.sessions[key]["conversation_id"])
+        journal("info", "Recording dropped: not an Assist conversation", recording_id=key)
+        self.hass.async_create_task(self.delete(key), "assist_improver_drop")
+
+    async def file(self, conversation_id, note=None, user_id=None):
+        """Assist's file_improvement tool, when the user asks: the conversation it's in is sent in (on_filed), and the
+        pipeline takes it in once it ends. Its recording ID, or None if it isn't being recorded."""
         key = self.keys.get(conversation_id)
         session = self.sessions.get(key)
         if session is None:
             return None
-        session["filed"] = {"at": utcnow().isoformat(), "via": "assist",
-                            **({"note": note.strip()[:500]} if note and note.strip() else {}),
-                            **({"by": user_id} if user_id else {})}
-        if key in self.index:
-            self.index[key]["filed"] = session["filed"]
-        self.schedule(key, soon=True)
-        journal("info", "Conversation filed for improvement", recording_id=key, note=session["filed"].get("note"))
+        await self.on_filed(key, note, user_id)
+        journal("info", "Conversation filed for improvement", recording_id=key, note=note)
         if session["status"] != "active":
             self._closed(key)
         return key
 
-    async def file_kept(self, keys, note=None, user_id=None, notify=True, again=()):
-        """Mark kept conversations for improvement (the conversations view: the user sends them in), as file() does
-        for one going on now; on disk too for those no longer in memory. notify: tell the pipeline of each that has
-        ended (on-demand improvements run then); off when a run follows anyway. again: those among them analysed
-        before (the quick check found them smooth, or no fix was found), sent in again (pipeline.deliberate). The
-        recording IDs marked."""
-        filed = {"at": utcnow().isoformat(), "via": "panel",
-                 **({"note": note.strip()[:500]} if note and note.strip() else {}),
-                 **({"by": user_id} if user_id else {})}
-        marked, again = [key for key in dict.fromkeys(keys) if key in self.index], set(again)
-        for key in marked:
-            mark = {**filed, **({"again": True} if key in again else {})}
-            self.index[key]["filed"] = dict(mark)
-            self.index[key].pop("unarchived", None)  # In again: once it settles again, it leaves the list on its own.
-            self.index[key].pop("hidden", None)  # Sent in: back in the list and the pipeline, archived or not.
-            if (session := self.sessions.get(key)) is not None:
-                session["filed"] = dict(mark)
-                self.schedule(key, soon=True)
-            else:
-                async with self.lock:
-                    if (stored := await self.store(key).async_load()) is not None:
-                        await self.store(key).async_save({**stored, "filed": dict(mark)})
-        if marked:
-            await self.save_index()
-            journal("info", f"{len(marked)} conversation(s) sent in for improvement", recording_ids=marked,
-                    note=filed.get("note"))
-        for key in marked if notify else ():
-            if self.index[key].get("status") != "active":
-                self._closed(key)
-        return marked
-
     def _closed(self, key):
-        """A recording ended: a filed one goes to the pipeline (on_filed_closed)."""
-        if (self.index.get(key) or {}).get("filed") and self.on_filed_closed is not None:
+        """A recording ended: one sent in goes to the pipeline (on_filed_closed)."""
+        if self.on_filed_closed is not None:
             self.on_filed_closed(key)
 
     def practice(self, conversation_id):
@@ -435,9 +418,8 @@ class Recorder:
     async def delete(self, key):
         """Remove a recording and its index entry for good."""
         async with self.lock:  # After a save in progress, and with nothing left to save, so none lands after this.
-            self.sessions.pop(key, None)
-            self.logs.pop(key, None)
-            self.saved.pop(key, None)
+            for kept in (self.sessions, self.logs, self.saved, self.answering):
+                kept.pop(key, None)
             self.dirty.discard(key)
             self.urgent.discard(key)
             await self.store(key).async_remove()
@@ -447,22 +429,6 @@ class Recorder:
     def _conversations(self, keys):
         """The Assist conversation IDs of these recordings, while this run of Home Assistant knows them."""
         return {cid for cid, key in self.keys.items() if key in keys}
-
-    async def hide(self, *keys, hidden=True, settled=None):
-        """Take kept conversations out of the conversations list (Archive), or put them back (Unarchive); the index is
-        saved once. settled: {key: standing} of those out of it on their own (conversations.SETTLED), kept in it once
-        put back while they stand so (unarchived). Nothing else changes: they're kept, analysed, tested and replayed
-        as before."""
-        for key in keys:
-            summary = self.index[key]
-            summary.pop("hidden", None)
-            summary.pop("unarchived", None)
-            if hidden:
-                summary["hidden"] = True
-            elif key in (settled or {}):
-                summary["unarchived"] = settled[key]
-        await self.save_index()
-        journal("info", f"{len(keys)} conversation(s) {'hidden' if hidden else 'unhidden'}", recording_ids=list(keys))
 
     async def forget_later(self, *keys):
         """Delete conversations once the run in progress ends (Pipeline._ran: forget_queued), or at the next start:
@@ -475,7 +441,7 @@ class Recorder:
 
     async def forget_queued(self):
         """Delete the conversations queued for deletion (forget_later), together; if that fails, one by one, so one
-        that can't be is put back where it was (in the list, or among the archived when settled), and the household told. The IDs deleted."""
+        that can't be is put back where it was, and the household told. The IDs deleted."""
         from homeassistant.components import persistent_notification
         queued = [k for k, s in self.index.items() if s.get("deleting")]
         if not queued:

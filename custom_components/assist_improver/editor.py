@@ -10,7 +10,8 @@ the tests and the changeset (panel.py).
 import re
 
 import probatio
-from homeassistant.helpers import llm
+
+from .exploration import RoleTool, SessionAPI
 
 ROLE = "editor"
 INSTRUCTIONS = """You write the two short texts a household reads first when deciding whether to accept a change to their Home Assistant voice assistant ("Assist"). You get the change (its idea, what was going wrong, and the exact changes) and what testing showed: what the household said, what happened before, and what happened with the change.
@@ -70,42 +71,37 @@ def entity_names(hass, item):
 
 def payload(item, names=None, assistant=None):
     """The improvement as the editor reads it: its idea, cause and changes in plain words (named as the household
-    names things), and each test."""
-    from .improvements import wordier
+    names things), and its test (improvements.row)."""
+    from .improvements import row, wordier
     from .panel import _change_text
     names = names or {}
     assistant = assistant or (item.get("provider") or {}).get("title") or "Assist"
-    tests = []
-    for test in item.get("tests", []):
-        entry = {"goal": test.get("summary"), "improved": test.get("status") == "awaiting_review",
-                 "before": test.get("before", []), "with_the_change": test.get("after", [])}
-        if entry["improved"]:
-            before, after = test.get("turns_before"), test.get("turns_after")
-            shown = (["goal now met (it went unmet before)"] if test.get("goal_newly_met")
-                     else [f"{after} turn(s) instead of {before}"] if (after or 0) < (before or 0)
-                     or not (test.get("side_effects_gone") or test.get("feedback_followed")) else [])
-            gone = [s for s in test.get("side_effects") or [] if s["entity_id"] in (test.get("side_effects_gone") or [])]
-            if gone:  # What it no longer changes, by the household's names for the devices.
-                shown.append("no longer changes " + ", ".join(f"{s['name']} (it stays {s['start']})" for s in gone))
-            if test.get("feedback_followed"):
-                shown.append("does what you asked: " + "; ".join(test.get("feedback") or []))
-            entry["result"] = "; ".join(shown)
-        if wordier(test):  # Counted by code: the write-up mustn't call it briefer.
-            entry["assist_says_more"] = True
-        tests.append(entry)
+    test = row(item["test"])
+    entry = {"goal": test["summary"], "improved": test["improved"], "before": test["before"],
+             "with_the_change": test["after"]}
+    if test["improved"]:
+        shown = (["goal now met (it went unmet before)"] if test["newly_met"]
+                 else [f"{test['turns_after']} turn(s) instead of {test['turns_before']}"]
+                 if test["turns_after"] < test["turns_before"] or not (test["side_effects_gone"] or test["feedback"])
+                 else [])
+        gone = [s for s in test["side_effects"] if s["entity_id"] in test["side_effects_gone"]]
+        if gone:  # What it no longer changes, by the household's names for the devices.
+            shown.append("no longer changes " + ", ".join(f"{s['name']} (it stays {s['start']})" for s in gone))
+        if test["feedback"]:
+            shown.append("does what you asked: " + "; ".join(test["feedback"]))
+        entry["result"] = "; ".join(shown)
+    if wordier(test):  # Counted by code: the write-up mustn't call it briefer.
+        entry["assist_says_more"] = True
     return {"idea": item.get("title"), "what_was_going_wrong": item.get("cause"),
-            "changes": [named(_change_text(c, assistant), names) for c in item.get("changes", [])], "tested": tests,
-            "expected_to_help_more_conversations": len(item.get("untested_goals", []))}
+            "changes": [named(_change_text(c, assistant), names) for c in item.get("changes", [])], "tested": [entry]}
 
 
-class SubmitCopy(llm.Tool):
+class SubmitCopy(RoleTool):
     """The editor's only way to answer; keeps every submission so the best one can be used."""
     name = "submit_copy"
     description = ("Submit the headline and the benefit. They're checked; if problems are reported, fix them and submit "
                    "again.")
     parameters = STRUCTURE
-    integration = "assist_improver"
-    annotations = llm.ToolAnnotations(read_only=True, open_world=False)
 
     def __init__(self):
         self.submissions = []
@@ -117,9 +113,6 @@ class SubmitCopy(llm.Tool):
             return {"accepted": False, "problems": found}
         return {"accepted": True, "message": "Accepted. Finish with one short sentence."}
 
-    async def async_call(self, hass, tool_input, llm_context):
-        return llm.ToolResult(data=self.run(**self.parameters(tool_input.tool_args)))
-
     def best(self):
         """The last accepted answer, or None."""
         accepted = [s["answer"] for s in self.submissions if not s["problems"]]
@@ -129,7 +122,6 @@ class SubmitCopy(llm.Tool):
 async def write(hass, item, entity_id):
     """{headline, benefit, status, entity_id} for an improvement, or a failed status (the improvement keeps the
     generator's title, and its page reads the same as before)."""
-    from .exploration import SessionAPI
     from .reflective import run_role
     submit = SubmitCopy()
     record = await run_role(hass, role=ROLE, entity_id=entity_id, instructions=INSTRUCTIONS,

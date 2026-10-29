@@ -1,9 +1,9 @@
 """The developer view's data (/assist-improver?view=developer): every conversation and where it stands, any ID's
 lifecycle with its log, runs and where their time went (trace.py), the journal, and the improver's footprint.
 
-Admins only, and only while developer mode is on (the hidden developer_services option). Every stage and status is
-derived by the same code the pipeline decides with, never worked out again here. Health reports sizes and counts,
-never conversation text.
+Admins only, and only while developer mode is on (the hidden developer_services option). Where each conversation
+stands is read from its flow record (flow.py), never worked out again here. Health reports sizes and counts, never
+conversation text.
 """
 
 import asyncio
@@ -17,8 +17,7 @@ import probatio
 from homeassistant.components import websocket_api
 
 from . import trace
-from .const import CONF_DEVELOPER, DOMAIN, NO_FIX, VERSION
-from .pipeline import deliberate
+from .const import CONF_DEVELOPER, DOMAIN, VERSION
 from .runtime import loaded
 
 MIN_PREFIX = 4  # Characters an ID prefix needs before lookup tries it.
@@ -56,90 +55,51 @@ def _recording_sizes(hass):
     return out
 
 
-class _Facts:
-    """What the pipeline knows about every recording, gathered in one pass over the run log, the improvements and
-    the cases."""
+def _friction(analysis):
+    from .hypotheses import friction_by_goal
+    try:
+        return friction_by_goal(analysis)
+    except (KeyError, TypeError):
+        return {}
 
-    def __init__(self, runtime):
-        from .hypotheses import friction_by_goal
-        pipeline, improvements = runtime.pipeline, runtime.improvements
-        self.analysed, self.unreadable, self.tests = pipeline._analyzed(), pipeline._unreadable(), pipeline._tests()
-        self.waiting_at = pipeline._at()
-        self.settled = improvements.settled_goals()
-        self.attempts, self.proposals = defaultdict(list), defaultdict(list)
-        for run in getattr(runtime.role_runs, "runs", []):
-            if run.get("kind") == "journey_analyzer" and run.get("recording_id"):
-                self.attempts[run["recording_id"]].append(run)
-            elif run.get("kind") == "hypothesis_generator":
-                for session in run.get("sessions") or []:
-                    self.proposals[session].append(run)
-        self.covering = defaultdict(list)
-        for item in improvements.items.values():
-            for goal in dict.fromkeys(g.split(":")[0] for g in improvements._covers(item)):
-                self.covering[goal].append(item["id"])
-        self.cases = defaultdict(list)
-        for case in runtime.casebook.cases.values():
-            self.cases[case.get("recording_id")].append(case["id"])
-        self.friction_by_goal = friction_by_goal
 
-    def stage(self, rid, summary):
-        """Where a recording stands, in the pipeline's own terms."""
-        if summary.get("status") == "active":
-            return "active"
-        if summary.get("user_turns") == 0:
-            return "empty"
-        if rid in self.tests:
-            return "test"
-        if rid in self.unreadable:
-            return "set_aside"
-        analysis = self.analysed.get(rid)
-        if analysis is None:
-            attempts = self.attempts.get(rid, [])
-            if attempts and attempts[-1].get("status") == "held":
-                return "held"
-            # Its last attempt failed (a provider's error or a bug): the next run tries again.
-            return "failing" if attempts and attempts[-1].get("status") == "failed" else "waiting"
-        if analysis.get("triaged"):  # Sent in again since (or with a note): it waits for the full analysis.
-            return "waiting" if deliberate(summary.get("filed")) else "smooth"
-        goals = [f"{_short(rid)}:{turn}" for turn in self.friction(analysis)]
-        if goals and all(g in self.settled for g in goals):
-            if all(self.settled[g] == NO_FIX for g in goals):  # No fix found for any of them.
-                return "no_fix"
-            return "duplicate" if analysis.get("duplicates") and not self.covering.get(_short(rid)) else "improvement"
-        return "improvement" if self.covering.get(_short(rid)) else "analysed"
+def _improvements(runtime):
+    """{recording ID: the improvements it came from (P0.10)}."""
+    out = defaultdict(list)
+    for item in runtime.improvements.items.values():
+        out[item.get("conversation")].append(item["id"])
+    return out
 
-    def strikes(self, rid):
-        return sum(1 for r in self.attempts.get(rid, []) if r.get("answer_status") == "error")
 
-    def friction(self, analysis):
-        try:
-            return self.friction_by_goal(analysis)
-        except (KeyError, TypeError):
-            return {}
+def _attempts(conv, number=None):
+    """[(round, stage, attempt)] of every round of a flow record (only round `number`'s, if given)."""
+    return [(n, stage, attempt) for n, current in conv["rounds"].items() if number is None or n == str(number)
+            for stage, record in current["records"].items() for attempt in record.get("attempts") or []]
 
 
 def conversation_rows(runtime, sizes=None):
     """One row per recording, newest first: {id, short, started, ended, user_turns, status, stored, bytes, practice,
-    stage, waiting_at, strikes, goals, friction, improvements, cases, runs}. stage is one of active, empty, waiting,
-    held, failing (its last attempt failed; strikes counts the unexpected ones, which set it aside at three),
-    set_aside, test, smooth, analysed, duplicate, improvement, no_fix."""
-    facts, sizes = _Facts(runtime), sizes or {}
+    filed, stage, round, held, outcome, covered_by, failed, goals, friction, improvements, replays, runs}, where it
+    stands read from its flow record (flow.Flow.place): failed counts the attempts that failed in its round, runs are
+    the runs that worked on it, and goals and friction are its latest analysis's."""
+    flow, sizes, improvements = runtime.flow, sizes or {}, _improvements(runtime)
+    replays = defaultdict(list)
+    for plan_id, replay in runtime.replays.items.items():
+        replays[replay["recording_id"]].append(plan_id)
     rows = []
     for rid, summary in runtime.recorder.index.items():
-        analysis = facts.analysed.get(rid) or {}
-        short = _short(rid)
-        runs = {r.get("run_id") for r in facts.attempts.get(rid, []) if r.get("run_id")}
-        runs |= {r.get("run_id") for r in facts.proposals.get(short, []) if r.get("run_id")}
-        rows.append({"id": rid, "short": short, "started": summary.get("started"), "ended": summary.get("updated"),
-                     "user_turns": summary.get("user_turns"), "status": summary.get("status"),
-                     "stored": summary.get("stored", "full"), "bytes": sizes.get(rid),
+        place, conv, analysis = flow.place(rid), flow.record(rid), flow.analysis(rid) or {}
+        rows.append({"id": rid, "short": _short(rid), "started": summary.get("started"),
+                     "ended": summary.get("updated"), "user_turns": summary.get("user_turns"),
+                     "status": summary.get("status"), "stored": summary.get("stored", "full"),
+                     "bytes": sizes.get(rid),
                      "practice": bool((runtime.recorder.sessions.get(rid) or {}).get("practice")) or None,
-                     "filed": (summary.get("filed") or {}).get("at"),  # On-demand: when the user filed it.
-                     "stage": facts.stage(rid, summary), "waiting_at": facts.waiting_at.get(rid),
-                     "strikes": facts.strikes(rid), "goals": len(analysis.get("goals") or []),
-                     "friction": len(facts.friction(analysis)) if analysis else 0,
-                     "improvements": facts.covering.get(short, []), "cases": facts.cases.get(rid, []),
-                     "runs": sorted(runs)})
+                     "filed": (flow.sent(rid) or {}).get("at"),  # When the user sent it in.
+                     **{k: place[k] for k in ("stage", "round", "held", "outcome", "covered_by")},
+                     "failed": sum(1 for *_, a in _attempts(conv, conv["round"]) if a["status"] == "failed"),
+                     "goals": len(analysis.get("goals") or []), "friction": len(_friction(analysis)),
+                     "improvements": improvements.get(rid, []), "replays": replays.get(rid, []),
+                     "runs": sorted({a["run"] for *_, a in _attempts(conv) if a.get("run")})})
     rows.sort(key=lambda r: r["started"] or "", reverse=True)
     return rows
 
@@ -158,8 +118,8 @@ def _candidates(runtime, trace_ids):
             yield kind, run["id"], f"{run.get('kind')} {run.get('status')} {run.get('started') or ''}".strip()
     for item in runtime.improvements.items.values():
         yield "improvement", item["id"], item.get("title", "")
-    for case in runtime.casebook.cases.values():
-        yield "case", case["id"], case.get("title", "")
+    for plan_id, replay in runtime.replays.items.items():
+        yield "replay", plan_id, _replayed(replay)
     for trace_id in trace_ids:
         if trace_id.startswith("day_"):
             yield "trace", trace_id, f"The day's trace {trace_id[4:]}"
@@ -181,6 +141,14 @@ def resolve(runtime, query, trace_ids=()):
         chosen = []
     unique = {(kind, cid): title for kind, cid, title in chosen}
     return [{"kind": kind, "id": cid, "title": title} for (kind, cid), title in unique.items()]
+
+
+def _replayed(replay):
+    """A replay in a few words: which (without the change, or with it), of which conversation, and how it ended."""
+    which = "without the change" if replay["plan"]["kind"] == "before" else "with the change"
+    why = (replay.get("error") or {}).get("message")
+    return (f"Replay {which} of {_short(replay['recording_id'])}: {replay['status']}"
+            + (f" ({why})" if why else ""))
 
 
 def _event(at, kind, what, **ids):
@@ -217,37 +185,57 @@ def _tokens(run):
 
 
 def recording_timeline(runtime, rid):
-    facts, summary = _Facts(runtime), runtime.recorder.index.get(rid, {})
-    short = _short(rid)
+    """A recording's lifecycle: recorded and closed, each stage its flow record moved it to, round by round, each
+    attempt that didn't finish and its hold; the AI calls and proposals that read it, its replays, and the
+    improvements it came from."""
+    summary, short = runtime.recorder.index.get(rid, {}), _short(rid)
     events = [_event(summary.get("started"), "recorded", f"Recording started ({summary.get('user_turns', 0)} user "
                      f"turns so far)", recording=rid)]
     if summary.get("status") != "active":
         events.append(_event(summary.get("updated"), "closed", f"Closed: {summary.get('status')}; stored "
                              f"{summary.get('stored', 'full')}", recording=rid))
-    for run in facts.attempts.get(rid, []):
-        triage = run.get("triage") or {}
-        verdict = (triage.get("output") or {}).get("smooth") if isinstance(triage.get("output"), dict) else None
-        what = f"{run.get('status')}" + (f" ({run['answer_status']})" if run.get("answer_status") else "")
-        if verdict is not None:
-            what += f"; triage: {'smooth' if verdict else 'needs analysis'}"
-        if run.get("analysis"):
-            what += f"; {len(run['analysis'].get('goals') or [])} goals, {len(facts.friction(run['analysis']))} with friction"
-        if (run.get("error") or {}).get("message"):
-            what += f"; {run['error']['message']}"
-        events.append(_event(run.get("finished") or run.get("started"), "analysis", what, role_call=run.get("id"),
-                             run=run.get("run_id")))
-    for run in facts.proposals.get(short, []):
-        events.append(_event(run.get("finished") or run.get("started"), "proposal",
-                             f"Read by the proposer ({run.get('status')})", role_call=run.get("id"),
-                             run=run.get("run_id")))
-    for case_id in facts.cases.get(rid, []):
-        case = runtime.casebook.cases[case_id]
-        events.append(_event(case.get("created"), "case", f"Case: {case.get('title', '')}", case=case_id))
-    for improvement_id in facts.covering.get(short, []):
+    for run in getattr(runtime.role_runs, "runs", []):
+        if run.get("kind") == "journey_analyzer" and run.get("recording_id") == rid:
+            triage = run.get("triage") or {}
+            verdict = (triage.get("output") or {}).get("smooth") if isinstance(triage.get("output"), dict) else None
+            what = f"{run.get('status')}" + (f" ({run['answer_status']})" if run.get("answer_status") else "")
+            if verdict is not None:
+                what += f"; triage: {'smooth' if verdict else 'needs analysis'}"
+            if run.get("analysis"):
+                what += (f"; {len(run['analysis'].get('goals') or [])} goals, "
+                         f"{len(_friction(run['analysis']))} with friction")
+            if (run.get("error") or {}).get("message"):
+                what += f"; {run['error']['message']}"
+            events.append(_event(run.get("finished") or run.get("started"), "analysis", what,
+                                 role_call=run.get("id"), run=run.get("run_id")))
+        elif run.get("kind") == "hypothesis_generator" and short in (run.get("sessions") or []):
+            events.append(_event(run.get("finished") or run.get("started"), "proposal",
+                                 f"Read by the proposer ({run.get('status')})", role_call=run.get("id"),
+                                 run=run.get("run_id")))
+    for plan_id, replay in runtime.replays.items.items():
+        if replay["recording_id"] == rid:
+            events.append(_event(replay.get("at"), "replay", _replayed(replay), replay=plan_id))
+    if conv := runtime.flow.conversations.get(rid):
+        for moved in conv["trace"]:
+            record = (conv["rounds"].get(str(moved["round"])) or {}).get("records", {}).get(moved["stage"]) or {}
+            events.append(_event(moved["at"], "stage", f"Round {moved['round']}: {moved['stage']}"
+                                 + (f" ({record['outcome']})" if record.get("outcome") else ""), recording=rid))
+        for number, stage, attempt in _attempts(conv):
+            if attempt["status"] != "done":
+                events.append(_event(attempt["at"], "problem", f"Round {number}, {stage}: {attempt['status']}"
+                                     + (f": {attempt['error']}" if attempt.get("error") else ""),
+                                     run=attempt.get("run")))
+        for number, current in conv["rounds"].items():  # A round no idea could be tested in, and why.
+            if untestable := (current["records"].get("Propose") or {}).get("untestable"):
+                events.append(_event(untestable["at"], "untestable", f"Round {number}: no idea can be tested on it: "
+                                     f"{untestable['why']}", recording=rid))
+        if held := conv["held"]:
+            events.append(_event(held["at"], "held", f"Held at {conv['stage']}: {held['why']}", recording=rid))
+    for improvement_id in _improvements(runtime).get(rid, []):
         item = runtime.improvements.items[improvement_id]
-        goals = [g for g in runtime.improvements._covers(item) if g.split(":")[0] == short]
-        events.append(_event(item.get("created"), "improvement", f"Improvement covers goal(s) {', '.join(goals)}: "
-                             f"{item.get('title', '')} ({item.get('status')})", improvement=improvement_id))
+        events.append(_event(item.get("created"), "improvement", f"Improvement covers goal(s) "
+                             f"{', '.join(item['fixes'])}: {item.get('title', '')} ({item.get('status')})",
+                             improvement=improvement_id))
     return events
 
 
@@ -287,10 +275,9 @@ def improvement_timeline(runtime, improvement_id):
         events.append(_event(item["copy"].get("at") or item.get("created"), "written",
                              f"Written up: {item['copy'].get('headline') or item['copy'].get('status')}",
                              improvement=improvement_id))
-    for test in item.get("tests", []):
-        events.append(_event(test.get("at") or item.get("created"), "test",
-                             f"Tested on goal {test.get('goal')}: {test.get('result') or test.get('status')}",
-                             case=test.get("case_id"), recording=None))
+    test = item["test"]  # The one that validated it.
+    events.append(_event(test["at"], "test", f"Validated on its conversation: {', '.join(test['gains'])}",
+                         recording=item["conversation"], replay=test["after"]["plan"]))
     for decision in item.get("decisions", []):
         events.append(_event(decision.get("at"), "decision", f"{decision.get('decision')}: {decision.get('outcome')}"
                              + (" (automatically)" if decision.get("auto") else ""), improvement=improvement_id))
@@ -333,12 +320,13 @@ async def lookup(hass, runtime, query):
         item = runtime.improvements.items[mid]
         reply["record"] = {k: item.get(k) for k in ("id", "title", "status", "created")}
         reply["journal"] = await trace.find_entries(hass, limit=JOURNAL_SHOWN, improvement_id=mid)
-    elif kind == "case":
-        case = runtime.casebook.cases[mid]
-        reply["record"] = {k: case.get(k) for k in ("id", "title", "recording_id", "turns", "revision")}
-        reply["timeline"] = [_event(case.get("created"), "case", f"Case from recording {_short(case.get('recording_id') or '')}",
-                                    recording=case.get("recording_id"), case=mid)]
-        reply["journal"] = await trace.find_entries(hass, limit=JOURNAL_SHOWN, case_id=mid)
+    elif kind == "replay":
+        replay = runtime.replays.items[mid]
+        reply["record"] = {"plan": mid, "kind": replay["plan"]["kind"],
+                           **{k: replay.get(k) for k in ("recording_id", "status", "at", "said", "error", "notes")}}
+        reply["timeline"] = [_event(replay.get("at"), "replay", _replayed(replay), recording=replay["recording_id"],
+                                    replay=mid)]
+        reply["journal"] = await trace.find_entries(hass, limit=JOURNAL_SHOWN, plan_id=mid)
     elif kind == "trace":
         reply["trace_id"] = mid
         reply["journal"] = await trace.find_entries(hass, limit=JOURNAL_SHOWN, trace_ids={mid})
@@ -362,8 +350,7 @@ def _memory(hass, runtime):
     from .practice import MODE_KEY
     parts = {"live recordings": runtime.recorder.sessions, "recordings index": runtime.recorder.index,
              "run log": getattr(runtime.role_runs, "runs", []), "improvements": runtime.improvements.items,
-             "cases": runtime.casebook.cases, "candidates": getattr(runtime.candidates, "items", None),
-             "hot spots": trace.HOT}
+             "replays": runtime.replays.items, "hot spots": trace.HOT}
     out = {}
     for name, value in parts.items():
         if value is None:
@@ -471,7 +458,7 @@ async def ws_lookup(hass, connection, msg):
 @websocket_api.require_admin
 @websocket_api.async_response
 async def ws_runs(hass, connection, msg):
-    """{"runs": [{id, started, finished, status, trigger, only, timings, counts, problems, error, trace_id,
+    """{"runs": [{id, started, finished, status, trigger, only, stage, counts, problems, error, trace_id,
     trace_available}]}, newest first."""
     if (runtime := _runtime(hass, connection, msg)) is None:
         return
@@ -484,8 +471,8 @@ async def ws_runs(hass, connection, msg):
         trace_id = run.get("trace_id") or run.get("id")
         runs.append({"id": run.get("id"), "started": run.get("started"), "finished": run.get("finished"),
                      "status": run.get("status"), "trigger": run.get("trigger"), "only": run.get("only"),
-                     "stage": run.get("stage"), "timings": progress.pop("timings", {}),
-                     "problems": progress.pop("problems", []), "counts": progress, "error": run.get("error"),
+                     "stage": run.get("stage"), "problems": progress.pop("problems", []), "counts": progress,
+                     "error": run.get("error"),
                      "trace_id": trace_id, "trace_available": trace_id in retained})
     runs.sort(key=lambda r: r["started"] or "", reverse=True)
     connection.send_result(msg["id"], {"runs": runs})

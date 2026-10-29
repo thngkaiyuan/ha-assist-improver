@@ -2,7 +2,7 @@
 // decision at a time in the footer; after a decision the footer says what happened, with Undo and the next review.
 
 const v = new URL(import.meta.url).search;  // ?v=<version>, passed on to every module this one loads.
-const [{esc, plural, fill}, {STATUS, TEXT}, common, {dialog}] = await Promise.all([
+const [{esc, fill}, {STATUS, TEXT}, common, {dialog}] = await Promise.all([
   import(`./format.js${v}`), import(`./text.js${v}`), import(`./common.js${v}`), import(`./conversations.js${v}`)]);
 
 // Home Assistant makes the panel's element again whenever its sidebar title (the count) changes, as it does after a
@@ -111,16 +111,14 @@ export function render(p) {
      ${c.added ? `<span class="count-add">+${c.added}</span>` : ""}${c.removed ? `<span class="count-del">&#8722;${c.removed}</span>` : ""}
      ${bar(c.added, c.removed)}`, diff(c.rows, c), true)}</div>`).join("");
   const tests = r.tests.map((t, n) => test(p, t, n)).join("");
-  const improvedCount = r.tests.filter((t) => t.improved).length;
   // The summary, always open at the top: what you get (the editor's words), why it's safe (stated by code), and
   // what was tested, each test opening to its replay. The technical cause is last, for whoever wants it.
   const summary = `<div class="card summary">
     ${r.benefit ? `<div class="label">What you get</div><p class="benefit">${esc(r.benefit)}</p>` : ""}
     <div class="label">Why it's safe</div><ul class="safe">${r.safety.map((f) =>
       `<li><span class="mark">&#10003;</span><span>${esc(f)}</span></li>`).join("")}</ul>
-    <div class="label">Tested on ${plural(r.tests.length, "conversation")} · ${improvedCount} improved</div><ul class="tests">${tests}</ul>
-    ${r.wordier ? `<p class="lead more-words-line">${esc(fill(TEXT.review.moreWordsLine, {n: r.wordier}))}</p>` : ""}
-    ${r.untested ? `<p class="lead">Expected to help ${plural(r.untested, "more conversation")} too (not tested).</p>` : ""}</div>`;
+    <div class="label">Tested on</div><ul class="tests">${tests}</ul>
+    ${r.wordier ? `<p class="lead more-words-line">${esc(fill(TEXT.review.moreWordsLine, {n: r.wordier}))}</p>` : ""}</div>`;
   const how = `<div class="details-body"><p>${esc(r.cause)}</p>
     ${r.physical ? `<div class="note"><span>&#9432;</span><span>Physical positions aren't simulated in the sandbox: a door's motion, for
     example, is taken as done when its command succeeds.</span></div>` : ""}</div>`;

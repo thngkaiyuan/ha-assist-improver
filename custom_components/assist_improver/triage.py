@@ -67,6 +67,23 @@ def _instructions(previous, system):
                                             "now": [l for l in new if l not in set(old)]}}
 
 
+def instructions_seen(view):
+    """The instructions Assist ran with in this conversation, as the quick check reads them (who's speaking, the
+    household knowledge, the devices): in full as of the first turn, then each later turn's changed lines. For the
+    analyzer, which needs to know the household as the other roles do."""
+    from .cases import recording_turns
+    out, previous, changed = {}, None, []
+    for turn in recording_turns(view.recording, replay=False):
+        system = next((m["content"] for m in turn.get("history") or [] if m["role"] == "system"), None)
+        seen = _instructions(previous, system)
+        if "assist_instructions" in seen:
+            out.update(seen)
+        elif seen:
+            changed.append({"turn": turn["number"], **seen["assist_instructions_changed"]})
+        previous = system or previous
+    return {**out, **({"assist_instructions_changed": changed} if changed else {})}
+
+
 def skips_analysis(answer):
     """Only a sure "smooth" skips the analyzer."""
     return bool(answer) and answer.get("smooth") is True and answer.get("sure") is True
