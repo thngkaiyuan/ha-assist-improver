@@ -1,18 +1,20 @@
-<p align="center"><img src="assets/icon.png" width="128" alt=""></p>
+<p align="center"><img src="https://raw.githubusercontent.com/thngkaiyuan/ha-assist-improver/main/assets/icon.png" width="128" alt=""></p>
 
 # Assist Improver
 
 **Your Home Assistant's AI, easier every week.**
 
-> **Early release.** Used every day in my household, on Home Assistant 2026.10.3. Tell me how it works in yours: [open an issue](https://github.com/thngkaiyuan/ha-assist-improver/issues).
+[![Open Assist Improver in your Home Assistant](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=thngkaiyuan&repository=ha-assist-improver&category=integration)
 
-<p align="center"><img src="assets/smoother.png" alt="Saying you are cold: three turns today, one turn with exact words after the first improvement, one natural turn after the second"></p>
+> **Early release.** Used every day in my household, on Home Assistant 2026.10.4. Tell me how it works in yours: [open an issue](https://github.com/thngkaiyuan/ha-assist-improver/issues).
+
+<p align="center"><img src="https://raw.githubusercontent.com/thngkaiyuan/ha-assist-improver/main/assets/smoother.png" alt="Saying you are cold: three turns today, one turn with exact words after the first improvement, one natural turn after the second"></p>
 
 ## How it works
 
 Think of a self-driving car. Every time the driver takes the wheel back, that's an *intervention*, and each one teaches the car where it still falls short.
 
-<p align="center"><img src="assets/intervention.gif" width="480" alt="A relaxed driver suddenly panics and grabs the wheel"></p>
+<p align="center"><img src="https://raw.githubusercontent.com/thngkaiyuan/ha-assist-improver/main/assets/intervention.gif" width="480" alt="A relaxed driver suddenly panics and grabs the wheel"></p>
 
 The best self-driving is one you never feel the need to supervise: **you just enjoy the ride.**
 
@@ -25,7 +27,7 @@ Assist Improver aims for that with your assistant. The goal is to cut the effort
 
 Approved improvements stay even if you uninstall Assist Improver.
 
-The principles behind each step: [Design principles](docs/DESIGN.md).
+The principles behind each step: [Design principles](https://github.com/thngkaiyuan/ha-assist-improver/blob/main/docs/DESIGN.md).
 
 ## Where we are
 
@@ -33,16 +35,19 @@ Every step above works end to end, and runs every day in my household. This is t
 
 ## Getting started
 
-1. **Install** through [HACS](https://hacs.xyz): add this repository as a custom repository (type **Integration**), download **Assist Improver**, and restart Home Assistant.
-2. **Add it:** Settings → Devices & services → Add integration → **Assist Improver**. Keep the recommended AI model: Claude Opus 5.5 does the thinking, and a small model is added for the quick steps.
+1. **Install:** the button at the top opens Assist Improver in [HACS](https://hacs.xyz) (the Marketplace from Home Assistant 2026.11). Download it, and restart Home Assistant. Or add this repository there yourself, as a custom repository of type **Integration**.
+2. **Add it:** the button below, or Settings → Devices & services → Add integration → **Assist Improver**. Keep the recommended AI model: Claude Opus 5.5 does the thinking, and a small model is added for the quick steps.
+
+   [![Add Assist Improver](https://my.home-assistant.io/badges/config_flow_start.svg)](https://my.home-assistant.io/redirect/config_flow_start/?domain=assist_improver)
+
 3. **Use Assist.** When a conversation doesn't go the way you wanted, ask Assist to file an improvement. It takes the fast lane: the improver studies it as soon as the conversation ends, with no run to start.
 4. **Send in past conversations:** open **Assist Improver** in the sidebar. Your conversations are listed there, and you can find one by what was said or when. Pick the ones that didn't go well, and run them. Before anything starts, it tells you what the run will do and that it costs money with your AI providers. Rather leave it all to the improver, and don't mind spending more tokens? Set a schedule in its settings, and every conversation goes to the improver.
-   <p align="center"><img src="assets/getting-started/conversation.png" width="720" alt="A conversation opened: what was said, the step that failed, and Send this one in"></p>
+   <p align="center"><img src="https://raw.githubusercontent.com/thngkaiyuan/ha-assist-improver/main/assets/getting-started/conversation.png" width="720" alt="A conversation opened: what was said, the step that failed, and Send this one in"></p>
 5. **Review:** you're told when improvements are ready. Open one, check what changes, and accept it. Turn on auto-accept for low-risk changes in the settings, and those fixes apply themselves (you're told each time, and can undo).
 
-<p align="center"><img src="assets/getting-started/panel.png" width="720" alt="Assist Improver: 3 improvements to review, each with what it gets you, then your conversations, each with where it stands, and Run for the new ones"></p>
-<p align="center"><img src="assets/getting-started/review.png" width="720" alt="A review: what you get, why it's safe, the conversations it was tested on, and what changes, as a diff"></p>
-<p align="center"><img src="assets/getting-started/what-changes.png" width="720" alt="What changes: a new Movie time script as a diff, and the script made visible to Assist"></p>
+<p align="center"><img src="https://raw.githubusercontent.com/thngkaiyuan/ha-assist-improver/main/assets/getting-started/panel.png" width="720" alt="Assist Improver: 3 improvements to review, each with what it gets you, then your conversations, each with where it stands, and Run for the new ones"></p>
+<p align="center"><img src="https://raw.githubusercontent.com/thngkaiyuan/ha-assist-improver/main/assets/getting-started/review.png" width="720" alt="A review: what you get, why it's safe, the conversations it was tested on, and what changes, as a diff"></p>
+<p align="center"><img src="https://raw.githubusercontent.com/thngkaiyuan/ha-assist-improver/main/assets/getting-started/what-changes.png" width="720" alt="What changes: a new Movie time script as a diff, and the script made visible to Assist"></p>
 
 That's it. Good to know:
 
@@ -51,7 +56,7 @@ That's it. Good to know:
 - **Tested with Anthropic and OpenRouter.** Other AI providers should work too.
 - **Settings** (the gear in the panel) are optimized by default: each step of the pipeline, its AI model, and what waits at it. If a model goes missing, the step says so before a run spends anything.
 
-<p align="center"><img src="assets/getting-started/settings.png" width="720" alt="The settings: your conversations flow through triage, analysis, proposals, simulation and write-up to your review, each step naming its AI model"></p>
+<p align="center"><img src="https://raw.githubusercontent.com/thngkaiyuan/ha-assist-improver/main/assets/getting-started/settings.png" width="720" alt="The settings: your conversations flow through triage, analysis, proposals, simulation and write-up to your review, each step naming its AI model"></p>
 
 ## Your data
 
@@ -63,4 +68,4 @@ That's it. Good to know:
 
 ## License
 
-[Apache 2.0](LICENSE)
+[Apache 2.0](https://github.com/thngkaiyuan/ha-assist-improver/blob/main/LICENSE)

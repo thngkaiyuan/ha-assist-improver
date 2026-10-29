@@ -93,9 +93,10 @@ export const TEXT = {
   // A full run (Settings' Run now, the schedule) takes in every conversation not analyzed yet; Run now says how many.
   schedule: {off: "Only when you run it", daily: "Every day at 3:00, on new conversations",
              weekly: "Every Sunday at 3:00, on new conversations"},
-  runNow: "Run now", runAll: "Run on {n} conversations", runOne: "Run on 1 conversation", runOneStep: "Run one step",
+  runNow: "Run now", runAll: "Run on {n} new conversations", runOne: "Run on 1 new conversation", runOneStep: "Run one step",
+  runWaiting: "Run what's waiting",  // A full run with no new conversation, but held ones to release.
   failure: {details: "Details", settings: "Open settings"},  // The home page's notice only when the household must act.
-  confirm: {title: "Run Assist Improver?", all: "Run on {n} conversations?", one: "Run on 1 conversation?",
+  confirm: {title: "Run Assist Improver?", all: "Run on {n} new conversations?", one: "Run on 1 new conversation?",
             on: "Run on {n} conversation{s}?", step: "Run {step}?", run: "Run", notNow: "Not now",
             // A run with new conversations names which, by their first words: up to three, then how many more; and
             // the held ones it releases, by the step that holds them, in the items' words.
@@ -127,7 +128,7 @@ export const TEXT = {
               label: "Household knowledge", on: "Household knowledge on: your assistants read the {lines} learned so far.",
               off: "Household knowledge off: your assistants don't read what's learned."},
   // A run in progress, by which it is (common.runTitle), and where it is: the conversation it's on, and its stage.
-  progress: {working: "Improving your assistant", all: "Running on {n} conversations", one: "Running on 1 conversation",
+  progress: {working: "Improving your assistant", all: "Running on {n} new conversations", one: "Running on 1 new conversation",
              picked: "Running on the conversations you picked", sent: "Running on what you sent in", step: "Running {step} only",
              revision: "Revising an improvement", conflict: "Resolving a conflict", at: "Conversation {k} of {total}, at {stage}."},
   history: {title: "History", triggers: {scheduled: "scheduled", filed: "on demand", picked: "picked", revision: "revision", conflict: "conflict"},

@@ -11,6 +11,7 @@ machinery cut off runs again.
 import asyncio
 from copy import copy, deepcopy
 from dataclasses import is_dataclass, replace
+from pathlib import Path
 from types import MappingProxyType
 
 import probatio
@@ -23,7 +24,7 @@ from homeassistant.util.dt import utcnow
 from . import measures
 from .cases import CaseError, digest, recording_turns, replay_readiness, replayed, started_from, transcript
 from .changes import setup_from_changes
-from .const import DOMAIN, REPLAY_ENGINE, STORAGE_VERSION, TESTED_PROVIDERS
+from .const import DOMAIN, STORAGE_VERSION, TESTED_PROVIDERS
 from .digest import _naming
 from .failures import closing
 from .instructions import target
@@ -59,6 +60,18 @@ class Untestable(CaseError):
 class Transient(Exception):
     """A test the machinery cut off (a provider or worker fault, a restart, a check model that couldn't answer): it
     says nothing about the idea, and can run again."""
+
+
+def engine_version(folder):
+    """How replays run and are judged, as a digest of the integration's own code (every module but const.py, whose
+    version an install changes whatever else it changes): a change to the code makes earlier replays a different test
+    (a new plan, DETAILS P6.7.1) by itself, with nobody having to remember to say so, and an install that leaves the
+    code as it was (the panel's alone, say) reuses what's kept."""
+    return digest({str(p.relative_to(folder)): p.read_text() for p in sorted(Path(folder).rglob("*.py"))
+                   if p.name != "const.py" and "__pycache__" not in p.parts})
+
+
+REPLAY_ENGINE = engine_version(Path(__file__).parent)  # Read once, as the integration loads (off HA's event loop).
 
 
 def before_plan(recording):

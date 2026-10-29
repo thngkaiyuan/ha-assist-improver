@@ -10,8 +10,9 @@ ON_OFF = {"light", "switch", "fan", "input_boolean", "siren", "remote", "humidif
           "water_heater", "automation"}
 TOGGLE_OFF = {"off", "closed", "unlocked", "idle", "standby", "paused", "unknown"}
 COLOUR_MODES = {"hs", "xy", "rgb", "rgbw", "rgbww"}
-# A sleeping device (a parked car, say) shows as unknown; a command wakes it like any off device.
-ASLEEP = {"off", "unknown", "unavailable"}
+# A sleeping device (a parked car, say) shows as unknown; a command wakes it like any off device. An unavailable one
+# can't be reached, so a command never gets to it (effect).
+ASLEEP = {"off", "unknown"}
 # Read-only queries; practice passes them to the real service. Everything else is emulated.
 QUERY_PREFIXES = ("get_", "search_")
 # What a device that reports its movement shows on its way to each end, as Home Assistant's covers, valves and locks
@@ -157,11 +158,15 @@ def underway(domain, service, before, state, attrs):
 
 
 def effect(domain, service, state, data):
-    """The device's new (state, attributes) after a command, or None if it isn't modelled."""
+    """The device's new (state, attributes) after a command, or None if it isn't modelled. An unavailable device
+    stays as it is: Home Assistant leaves an unavailable entity out of every command (its entity services call only
+    available ones), as when the household's own device was unreachable."""
     attrs = dict(state.attributes)
+    if state.state == "unavailable":
+        return state.state, attrs
     if service == "toggle":
         # HA's media players turn on only from off or standby, and every other player turns off.
-        off = ("off", "standby", "unknown", "unavailable") if domain == "media_player" else TOGGLE_OFF
+        off = ("off", "standby", "unknown") if domain == "media_player" else TOGGLE_OFF
         service = "turn_on" if state.state in off else "turn_off"
     if domain == "light" and service in ("turn_on", "turn_off"):
         if service == "turn_off" and state.state == "off":

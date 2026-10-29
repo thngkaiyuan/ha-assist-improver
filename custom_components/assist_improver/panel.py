@@ -27,6 +27,9 @@ URL_PATH = "assist-improver"  # The panel's address: /assist-improver?id=<improv
 STATIC = f"/{DOMAIN}_static"
 CONTEXT = 2  # Unchanged lines shown around each change.
 PANEL_KEY = f"{DOMAIN}_panel"  # Set while the panel is registered.
+# What an accept that met a conflict asks the household before its conversation goes back in at Propose (P0.7).
+RESOLVE = {"value": "resolve", "label": "Send it back to resolve"}
+REVISING = "Thanks. The improver is revising it now."  # After a revision, or a conflict sent back to resolve.
 
 
 def review_url(improvement_id):
@@ -148,14 +151,16 @@ def safety(steps):
     return facts
 
 
-def review(item, planned=None, names=None, hass=None, revising=False):
+def review(item, planned=None, names=None, hass=None, revising=False, resolvable=False):
     """Everything the panel shows for one improvement, built by code. names: {user id: name} for household lines.
     hass: to tell a device that drives a door by its name in Home Assistant too (improvements.physical). revising: its
-    revision's round runs (improvements.choices)."""
+    revision's round runs (improvements.choices). resolvable: its accept met a conflict, and the household is asked
+    to send it back (flow.Flow.resolvable). One whose accept met a conflict shows what that accept met."""
     enabled, removed = benefits(item)
     gone, followed = spared(item)
     shown = row(item["test"])
-    steps, already, conflicts = planned or ((item.get("application") or {}).get("steps") or [], [], [])
+    steps, already, conflicts = planned or ((item.get("application") or {}).get("steps") or [], [],
+                                            item.get("conflicts") or [] if item["status"] == "conflict" else [])
     changes = []
     for step in steps:
         rows = change_rows(step, names)
@@ -191,9 +196,11 @@ def review(item, planned=None, names=None, hass=None, revising=False):
             "tests": [{"summary": shown["summary"], "improved": shown["improved"], "result": test_result(shown),
                        **said(shown), **more_words(shown)}],
             "wordier": 1 if more_words(shown) else 0,
-            # Each decision open now, with the reasons it can be given with (Decline: not an issue).
-            "choices": [{"value": d, "label": DECISIONS[d], **({"reasons": r} if (r := reasons(d)) else {})}
-                        for d in choices(item, revising)]}
+            # Each decision open now, with the reasons it can be given with (Decline: not an issue); asked to send
+            # it back (resolvable), that one choice.
+            "choices": [dict(RESOLVE)] if resolvable else [
+                {"value": d, "label": DECISIONS[d], **({"reasons": r} if (r := reasons(d)) else {})}
+                for d in choices(item, revising)]}
 
 
 def outcome_text(item):
@@ -203,7 +210,7 @@ def outcome_text(item):
     if status == "recorded":
         decision = (item.get("decisions") or [{}])[-1].get("decision")
         if decision == "revise":
-            return "Thanks. The improver is revising it now."
+            return REVISING
         if decision == "decline":
             return "Thanks. Declined, and its conversation is archived."
         return "Thanks, your decision is recorded."
@@ -304,9 +311,11 @@ async def ws_get(hass, connection, msg):
             for user_id in {*step["before"]["people"], *step["after"]["people"]}:
                 user = await hass.auth.async_get_user(user_id) if getattr(hass, "auth", None) else None
                 names[user_id] = getattr(user, "name", None) or user_id
-    result = review(item, planned, names, hass, runtime.flow.revising(item["id"]))
-    if item["status"] not in PENDING:  # Decided: the next one waiting is one click away.
-        nxt = next((i for i in improvements.pending() if i["id"] != item["id"]), None)
+    result = review(item, planned, names, hass, runtime.flow.revising(item["id"]), runtime.flow.resolvable(item))
+    if improvements.held(item["id"]):  # Not up for review yet: nothing to decide.
+        result["choices"] = []
+    if item["status"] not in PENDING:  # Decided: the next one waiting is one click away, as the list has them.
+        nxt = next((i for i in improvements.listed() if i["status"] in PENDING and i["id"] != item["id"]), None)
         result["next_pending"] = {"id": nxt["id"], "title": display_title(nxt)} if nxt else None
     connection.send_result(msg["id"], result)
 
@@ -376,7 +385,7 @@ async def ws_conflict_resolve(hass, connection, msg):
         connection.send_error(msg["id"], "decision", "That improvement didn't meet a conflict.")
         return
     _send_back(runtime, await runtime.flow.resolve(item), "conflict")
-    connection.send_result(msg["id"], {"sent_back": True})
+    connection.send_result(msg["id"], {"sent_back": True, "result": REVISING})
 
 
 @websocket_api.websocket_command({probatio.Required("type"): f"{DOMAIN}/household"})
@@ -624,7 +633,7 @@ async def ws_practice(hass, connection, msg):
         return
     user = connection.user
     if msg["on"]:
-        await mode.async_turn_on(user.id, user.name or "someone")
+        await mode.async_turn_on(user.id, user.name or "Someone")  # DETAILS P11.13.
     else:
         await mode.async_turn_off(user.id)
     connection.send_result(msg["id"], view(hass, entry, user.id))
@@ -654,7 +663,9 @@ async def ws_log(hass, connection, msg):
                            **({"picked": True} if run.get("trigger") == "manual" and "picked" in run else {})})
     for item in runtime.improvements.items.values():
         title = display_title(item)
-        if item.get("copy"):
+        first = (item.get("decisions") or [{}])[0]
+        # One auto-accept applied before it was ever announced as waiting never went up for review (DETAILS P12.9).
+        if item.get("copy") and not (first.get("unannounced") and first.get("outcome") == "done"):
             events.append({"at": item.get("created"), "kind": "posted", "id": item["id"], "title": title})
         for decision in item.get("decisions", []):
             events.append({"at": decision.get("at"), "kind": "decision", "id": item["id"], "title": title,
@@ -670,20 +681,21 @@ async def ws_log(hass, connection, msg):
                                   probatio.Optional("days"): probatio.Any(None, probatio.All(int, probatio.Range(min=1))),
                                   probatio.Optional("order"): probatio.In(["newest", "oldest", "effort"]),
                                   probatio.Optional("offset", default=0): probatio.All(int, probatio.Range(min=0)),
-                                  probatio.Optional("hidden", default=False): bool,
+                                  probatio.Optional("archived", default=False): bool,
                                   probatio.Optional("statuses"): [str],
                                   probatio.Optional("ids"): probatio.All([str], probatio.Length(max=5000))})
 @websocket_api.require_admin
 @websocket_api.async_response
 async def ws_conversations(hass, connection, msg):
-    """A page of the kept conversations, found by what was said and when (conversations.listed); hidden ones too if
-    asked for, only those standing as asked (statuses), and where each of ids stands, whatever the filters."""
+    """A page of the kept conversations, found by what was said and when (conversations.listed); the archived ones
+    instead if asked for, only those standing as asked (statuses), and where each of ids stands, whatever the
+    filters."""
     from .conversations import listed
     if (runtime := _runtime(hass, connection, msg)) is None:
         return
     kept = await runtime.transcripts.all()
     connection.send_result(msg["id"], listed(runtime, kept, msg.get("query"), msg.get("days"), msg.get("order"),
-                                             msg.get("offset", 0), hidden=msg.get("hidden", False),
+                                             msg.get("offset", 0), archived=msg.get("archived", False),
                                              statuses=msg.get("statuses"), ids=msg.get("ids", ())))
 
 

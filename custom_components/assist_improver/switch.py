@@ -71,7 +71,7 @@ class PracticeModeSwitch(SwitchEntity):
     async def async_turn_on(self, **kwargs):
         user_id = self._user_id()
         user = await self.hass.auth.async_get_user(user_id)
-        await self.mode.async_turn_on(user_id, user.name if user else "someone")
+        await self.mode.async_turn_on(user_id, user.name if user else "Someone")  # DETAILS P11.13.
 
     async def async_turn_off(self, **kwargs):
         await self.mode.async_turn_off(self._user_id())

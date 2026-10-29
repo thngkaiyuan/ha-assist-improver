@@ -321,11 +321,6 @@ class Recorder:
                         custom_serializer=api.custom_serializer, openapi_version="3.1.0"))})
             if session["turns"]:
                 session["turns"][-1]["prepared"] = metadata
-            user_id = getattr(getattr(api.llm_context, "context", None), "user_id", None)
-            if user_id and self.opted_out(user_id):  # Known once Assist prepares its first answer: forgotten now.
-                self.ignored.add(conversation_id)
-                self.hass.async_create_task(self.forget(key), "assist_improver_forget")
-                return
         if "chat_log" in data:
             session["chat_log"] = plain(data["chat_log"])
         if kind == "deleted":
@@ -338,6 +333,18 @@ class Recorder:
         self.schedule(key, soon=turn_added)
         if kind == "deleted":
             self._closed(key)
+
+    def heard(self, conversation_id, user_id):
+        """Who's speaking in a conversation, once Home Assistant says (practice.py): as an assistant prepares its
+        answer, or as Home Assistant answers a request itself. One whose recording switch is off isn't kept: it's
+        forgotten now, and not recorded again. Whether it was."""
+        if not user_id or not self.opted_out(user_id):
+            return False
+        if conversation_id not in self.ignored:
+            self.ignored.add(conversation_id)
+            if (key := self.keys.get(conversation_id)) in self.sessions or key in self.index:
+                self.hass.async_create_task(self.forget(key), "assist_improver_forget")
+        return True
 
     def _pin(self, key, agent_id):
         """Now it's known which of the provider's assistants answers: its configuration is the one kept (P8.2.3)."""

@@ -22,7 +22,6 @@ import re
 
 from homeassistant.helpers.storage import Store
 from homeassistant.util import dt as dt_util
-from homeassistant.util.dt import utcnow
 
 from .cases import failed_calls, transcript
 from .const import DOMAIN, STORAGE_VERSION
@@ -109,7 +108,7 @@ def row(runtime, rid):
     status, stage = standing(runtime, rid, place), place["stage"]
     off = place["archived"] or stage == "Your household" or status == "review"
     held = place["held"]
-    return {"status": status, "hidden": off and not flow.unarchived(rid),
+    return {"status": status, "hidden": bool(off) and not flow.unarchived(rid),
             "sendable": stage == "Your household" or (stage == "Your Assist" and not held) or status == "unclear",
             "runnable": flow.waiting(rid) or bool(held) or stage == "Your household",
             "archivable": not flow.waits(rid),
@@ -228,9 +227,10 @@ def snippet(turns, words):
     return None
 
 
-def listed(runtime, kept, query=None, days=None, order=None, offset=0, limit=PAGE, plain=False, hidden=False,
+def listed(runtime, kept, query=None, days=None, order=None, offset=0, limit=PAGE, plain=False, archived=False,
            statuses=None, ids=()):
-    """A page of conversations: those with something said, started within the days, and matching the words: when
+    """A page of conversations: those with something said, started within the days (today, and the days - 1 before
+    it, from midnight in Home Assistant's time zone, as the search's 'today' is), and matching the words: when
     (a day, a part of the day, a time), and every other word, in any order, in what the user said or Assist replied
     (any case); if none has them all, those with the most of them (close: true). With a time said, the closest to it
     come first unless an order is chosen (closest: true), and each row says it was found by when (timed); otherwise
@@ -238,7 +238,8 @@ def listed(runtime, kept, query=None, days=None, order=None, offset=0, limit=PAG
     ("night light", "good morning") are words to find together, not a when; if none fits the when, the words are all
     looked for as said ("weather morning"). Sorted (ORDERS), with how many match. Each row says where it stands and
     what can be done with it (row); one up for review names its improvement (review). Those the list leaves out
-    (row's hidden) are left out unless asked for (hidden); how many there are is said (hidden). statuses: only those
+    (row's hidden) are listed on their own, below Show archived, when asked for (archived: those instead of the
+    rest); how many there are is said either way (hidden). statuses: only those
     standing so (all of them when None); by_status: how many of those matching the rest stand each way, for choosing.
     every: each one that matches, past this page too, with where it stands (its chip and stage), whether it's left
     out, whether a run can take it and whether it can be archived (the home page's selection: Select all, what its
@@ -246,7 +247,7 @@ def listed(runtime, kept, query=None, days=None, order=None, offset=0, limit=PAG
     ids still in view, whatever the filters (the selection's and the opened one's: one a run has moved out of the
     list since leaves the selection)."""
     index = runtime.recorder.index
-    since = (utcnow() - timedelta(days=days)).isoformat() if days else None
+    since = dt_util.start_of_local_day(dt_util.now().date() - timedelta(days=days - 1)) if days else None
     texts = {rid: "\n".join(t["you"] + "\n" + t["assist"] for t in (k or {}).get("turns", [])).casefold()
              for rid, k in kept.items()}
     said = {name for name in maybe_names(query or "") if any(name in text for text in texts.values())}
@@ -259,13 +260,13 @@ def listed(runtime, kept, query=None, days=None, order=None, offset=0, limit=PAG
         where = row(runtime, rid)
         if rid in asked:
             stands.append({"id": rid, **where})
-        if where["hidden"]:
-            out_of_view += 1
-            if not hidden:
-                continue
-        if since and (summary.get("started") or "") < since:
+        out_of_view += where["hidden"]
+        if where["hidden"] != archived:
             continue
-        local = dt_util.as_local(dt_util.parse_datetime(summary["started"])) if at_time and summary.get("started") else None
+        started = dt_util.parse_datetime(summary["started"]) if summary.get("started") else None
+        if since and not (started and started >= since):
+            continue
+        local = dt_util.as_local(started) if at_time and started else None
         if at_time and not (local and at_time(local)):
             continue
         if at_time and at_time.off:
@@ -281,7 +282,7 @@ def listed(runtime, kept, query=None, days=None, order=None, offset=0, limit=PAG
                       "note": (runtime.flow.sent(rid) or {}).get("note"), "matched": matched, **where,
                       **({"review": runtime.flow.review(rid)} if where["status"] == "review" else {})})
     if at_time and not found:
-        return listed(runtime, kept, query, days, order, offset, limit, plain=True, hidden=hidden, statuses=statuses,
+        return listed(runtime, kept, query, days, order, offset, limit, plain=True, archived=archived, statuses=statuses,
                       ids=ids)
     close = bool(words) and not any(r["matched"] == len(words) for r in found)
     if words and not close:

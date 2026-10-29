@@ -113,7 +113,7 @@ export const STYLE = `
   .tests .result.more-words { color: var(--warn-fg); background: color-mix(in srgb, var(--warn-fg) 12%, transparent); }
   .note { display: flex; gap: 8px; font-size: 13px; color: var(--secondary-text-color); border-top: 1px solid var(--divider-color);
     padding-top: 10px; margin-top: 4px; }
-  .conflict { background: var(--del-bg); border: 1px solid var(--del-fg); border-radius: 8px; padding: 10px 14px; margin-bottom: 12px;
+  div.conflict { background: var(--del-bg); border: 1px solid var(--del-fg); border-radius: 8px; padding: 10px 14px; margin-bottom: 12px;
     overflow-wrap: anywhere; }
   .footer { position: sticky; bottom: 0; z-index: 11; background: var(--card-background-color);
     border-top: 1px solid var(--divider-color); padding: 12px 16px; }
@@ -319,6 +319,8 @@ export const STYLE = `
   .cs-confirm { gap: 8px 12px; } .cs-confirm span { flex: 1 1 240px; font-size: 13px; line-height: 1.45; }
   .cs-archived .cs-text { opacity: .6; }
   .cs-all.cs-show-archived { margin: 12px 0 0 16px; color: var(--secondary-text-color); }
+  /* Below Show archived, so ticking it moves nothing: the archived ones, headed by their own Select all. */
+  .cs-away { margin-top: 10px; } .cs-away > .cs-all { display: flex; width: fit-content; }
   .cs-more { margin: 10px 0 0; } .cs-empty { color: var(--secondary-text-color); }
   .cs-footer .footer-inner { flex-direction: row; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 8px 16px; }
   .cs-ask { flex: 1 1 100%; display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px 12px; }

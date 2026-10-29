@@ -381,6 +381,7 @@ class Decision(TypedDict, total=False):
     at: str
     outcome: str  # done, recorded, conflict, ...
     auto: bool  # Accepted automatically (auto-accept).
+    unannounced: bool  # Accepted automatically before it was ever announced as waiting: never up for review.
 
 
 class Improvement(TypedDict, total=False):
@@ -406,7 +407,7 @@ class Improvement(TypedDict, total=False):
     application: dict | None  # How it was applied, to undo it.
     last_outcome: dict
     history: list[dict]
-    revises: dict  # The improvement it revises: {id, title, note}.
+    revises: dict  # The improvement it revises: {id, title, note}, and conflict: true when sent back after one.
     revised_by: str
     conflicts: list[dict]  # What stood in the way when an accept met a conflict (sent back, the proposer hears it).
     conversation: str  # The one conversation it came from and was tested on (SPEC.md P0.10).

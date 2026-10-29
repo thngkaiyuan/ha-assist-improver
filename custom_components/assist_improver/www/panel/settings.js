@@ -68,7 +68,7 @@ function head(p, s) {
   const running = p.run?.run?.status === "running";
   const preview = p.run?.preview || {};
   const last = esc(common.lastRun(p.run?.run) || "No runs yet");
-  const runWords = common.runLabel(common.moves(preview));
+  const runWords = common.runLabel(preview);
   const waits = (gate) => common.heldAt(preview, gate);
   const when = SCHEDULE.find(([value]) => value === s.schedule) || SCHEDULE[0];
   const menu = p.runMenu ? `<div class="menu">${SCHEDULE.map(([value, label]) =>

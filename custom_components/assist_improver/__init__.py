@@ -78,9 +78,17 @@ async def async_setup_entry(hass, entry):
     await household.async_setup(hass)
     await trace.async_setup(hass, entry)  # First, so the recorder's start is in today's trace.
     recorder = Recorder(hass)
+    # Privacy controls, read live from the settings, and who's speaking (practice.py's hooks): in place before the
+    # recorder hears anything.
+    recorder.recording_on = lambda: entry.options.get(CONF_RECORDING, True)
+    recorder.opted_out = lambda user_id: user_id in entry.options.get(CONF_OPT_OUT, [])
+    hass.data[practice.MODE_KEY] = mode = practice.PracticeMode(hass, recorder)
+    practice.install()
     try:
+        await mode.async_load()
         await recorder.start()
     except Exception:
+        _unhook(hass)
         await trace.async_unload()
         raise
     runtime = RuntimeData(recorder=recorder, role_runs=RoleRuns(hass), replays=Replays(hass),
@@ -116,10 +124,8 @@ async def async_setup_entry(hass, entry):
         recorder.on_forgotten = forgotten
         # Deleted during a run that a restart cut off: they go now.
         hass.async_create_task(recorder.forget_queued(), "assist_improver_forget_queued")
-        # Privacy controls, read live from the settings.
-        recorder.recording_on = lambda: entry.options.get(CONF_RECORDING, True)
-        recorder.opted_out = lambda user_id: user_id in entry.options.get(CONF_OPT_OUT, [])
     except Exception:
+        _unhook(hass)
         await recorder.stop()
         await trace.async_unload()
         raise
@@ -183,9 +189,6 @@ async def async_setup_entry(hass, entry):
     reschedule()
     entry.async_on_unload(lambda: scheduled["off"] and scheduled["off"]())
     entry.async_on_unload(entry.add_update_listener(options_updated))
-    hass.data[practice.MODE_KEY] = mode = practice.PracticeMode(hass, recorder)
-    await mode.async_load()
-    practice.install()
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
     async def status(call):
@@ -267,14 +270,19 @@ def _update_setup_issue(hass, entry):
                               "link": f"/{panel.URL_PATH}?view=settings"})
 
 
+def _unhook(hass):
+    """Practice mode and its hooks go with the improver."""
+    practice.uninstall()
+    hass.data.pop(practice.MODE_KEY, None)
+
+
 async def async_unload_entry(hass, entry):
     runtime = entry.runtime_data
     await runtime.pipeline.stop()  # A run in progress stops first, then the stores close.
     await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
     if runtime.panel:
         panel.remove_panel(hass)
-    practice.uninstall()
-    hass.data.pop(practice.MODE_KEY, None)
+    _unhook(hass)
     await runtime.recorder.stop()
     from .worker import shutdown
     await shutdown()  # No replay worker, nor any sandbox in it, outlives the improver.

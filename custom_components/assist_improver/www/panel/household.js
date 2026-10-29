@@ -5,7 +5,7 @@ const v = new URL(import.meta.url).search;  // ?v=<version>, passed on to every 
 const [{esc, plural, fill}, {TEXT}, {glyph}] = await Promise.all(
   ["format", "text", "icons"].map((name) => import(`./${name}.js${v}`)));
 
-const fresh = () => ({open: new Set(), edit: null, remove: null, adding: null, draft: "", error: null, busy: false, search: ""});
+const fresh = () => ({open: new Set(), edit: null, old: null, remove: null, adding: null, draft: "", error: null, busy: false, search: ""});
 const reset = (st) => Object.assign(st, fresh(), {open: st.open, search: st.search});
 const split = (key) => { const at = key.lastIndexOf(":"); return [key.slice(0, at), Number(key.slice(at + 1))]; };
 const linesOf = (h, scope) => scope === "everyone" ? h.everyone || [] : ((h.people || []).find((x) => x.user_id === scope) || {}).lines || [];
@@ -16,7 +16,8 @@ export function modal(p) {
                     ...(h.people || []).map((x) => ({scope: x.user_id, name: x.name, lines: x.lines}))];
   const me = h.me;
   if (me && st.adding === me.user_id && !sections.some((s) => s.scope === me.user_id)) sections.push({scope: me.user_id, name: me.name, lines: []});
-  const q = st.search.trim().toLowerCase(), hit = (text) => !q || text.toLowerCase().includes(q);
+  // The search applies while its box shows, with what it searches for: a list down to six lines shows every line.
+  const q = (h.lines || 0) > 6 ? st.search.trim().toLowerCase() : "", hit = (text) => !q || text.toLowerCase().includes(q);
   const editor = () => `<div class="kn-editor"><textarea id="kn-text" placeholder="${esc(K.placeholder)}">${esc(st.draft)}</textarea>
     ${st.error ? `<div class="error-text">${esc(st.error)}</div>` : ""}
     <div class="kn-buttons"><button class="btn ghost" id="kn-cancel">${esc(K.cancel)}</button><button class="btn" id="kn-save" ${st.busy ? "disabled" : ""}>${esc(K.save)}</button></div></div>`;
@@ -25,7 +26,8 @@ export function modal(p) {
     if (st.edit === key) return `<li class="kn-line editing">${editor()}</li>`;
     const open = st.open.has(key);
     const confirm = st.remove === key ? `<div class="kn-confirm"><span>${esc(K.confirmRemove)}</span>
-      <button class="link" id="kn-cancel">${esc(K.cancel)}</button><button class="btn danger" id="kn-remove" ${st.busy ? "disabled" : ""}>${esc(K.remove)}</button></div>` : "";
+      <button class="link" id="kn-cancel">${esc(K.cancel)}</button><button class="btn danger" id="kn-remove" ${st.busy ? "disabled" : ""}>${esc(K.remove)}</button></div>
+      ${st.error ? `<div class="error-text">${esc(st.error)}</div>` : ""}` : "";
     return `<li class="kn-line" ${hit(text) ? "" : "hidden"}><div class="kn-row"><div class="kn-main"><div class="kn-text ${open ? "" : "clamp"}">${esc(text)}</div>
       <button class="link kn-more" data-kn-more="${esc(key)}">${esc(open ? K.less : K.more)}</button></div>
       <div class="kn-icons"><button class="kn-icon" data-kn-edit="${esc(key)}" aria-label="${esc(K.edit)}" data-tip="${esc(K.edit)}">${glyph("mdi:pencil-outline")}</button>
@@ -43,7 +45,7 @@ export function modal(p) {
   return `<div class="modal-shade" id="backdrop"></div><div class="modal" role="dialog" aria-modal="true" aria-label="${esc(K.title)}">
     <div class="modal-head">${glyph("mdi:book-heart-outline")}<b>${esc(K.title)}</b><span class="kn-count">${plural(h.lines || 0, "line")}</span>
       <button class="modal-close" id="modal-close" aria-label="Close">&#10005;</button></div>
-    ${(h.lines || 0) > 6 ? `<input class="kn-search" id="kn-search" type="search" placeholder="${esc(K.search)}">` : ""}
+    ${(h.lines || 0) > 6 ? `<input class="kn-search" id="kn-search" type="search" placeholder="${esc(K.search)}" value="${esc(st.search)}">` : ""}
     <div class="modal-body">${h.lines ? "" : `<p class="kn-empty">${esc(K.empty)}</p>`}${sections.map(group).join("")}${forMe}
     <div class="pop-lead kn-none" ${q && none ? "" : "hidden"}>${esc(K.none)}</div></div></div>`;
 }
@@ -81,7 +83,13 @@ async function send(p, msg) {
 
 export const actions = {
   click: [
-    ["[data-knowledge]", (p) => { p.pop = {kind: "knowledge", anchor: "[data-knowledge]"}; p.kn = fresh(); p.render(); }],
+    ["[data-knowledge]", async (p) => {
+      // Opens at once with the lines as Settings loaded them, then as they are now: another screen may have changed
+      // them since (a save that met a newer line says to close and open them again).
+      p.pop = {kind: "knowledge", anchor: "[data-knowledge]"}; p.kn = fresh(); p.render();
+      try { p.household = await p.ws("household"); } catch (err) { return; }  // Keeps what it has; a save says why.
+      p.render();
+    }],
     ["#modal-close", (p) => { p.pop = null; p.render(); }],
     ["[data-kn-more]", (p, el) => {
       const open = p.kn.open, key = el.dataset.knMore;
@@ -89,10 +97,15 @@ export const actions = {
       p.render();
     }],
     ["[data-kn-edit]", (p, el) => {
-      const [scope, index] = split(el.dataset.knEdit);
-      begin(p, {edit: el.dataset.knEdit, draft: linesOf(p.household || {}, scope)[index] ?? ""});
+      // The line as it opens is what the save says it changes: read again meanwhile, the lines may differ.
+      const [scope, index] = split(el.dataset.knEdit), line = linesOf(p.household || {}, scope)[index] ?? "";
+      begin(p, {edit: el.dataset.knEdit, draft: line, old: line});
     }],
-    ["[data-kn-ask]", (p, el) => begin(p, {remove: el.dataset.knAsk})],
+    ["[data-kn-ask]", (p, el) => {
+      // The line asked about is what the delete says it removes, as an edit's (the lines may be read again meanwhile).
+      const [scope, index] = split(el.dataset.knAsk);
+      begin(p, {remove: el.dataset.knAsk, old: linesOf(p.household || {}, scope)[index] ?? ""});
+    }],
     ["[data-kn-add]", (p, el) => begin(p, {adding: el.dataset.knAdd})],
     ["#kn-cancel", (p) => { reset(p.kn); p.render(); }],
     ["#kn-save", (p) => {
@@ -100,12 +113,12 @@ export const actions = {
       if (st.adding) send(p, {scope: st.adding, action: "add", text});
       else if (st.edit) {
         const [scope, index] = split(st.edit);
-        send(p, {scope, action: "update", index, old: linesOf(p.household || {}, scope)[index], text});
+        send(p, {scope, action: "update", index, old: st.old, text});
       }
     }],
     ["#kn-remove", (p) => {
       const [scope, index] = split(p.kn.remove);
-      send(p, {scope, action: "delete", index, old: linesOf(p.household || {}, scope)[index]});
+      send(p, {scope, action: "delete", index, old: p.kn.old});
     }],
   ],
   input: [

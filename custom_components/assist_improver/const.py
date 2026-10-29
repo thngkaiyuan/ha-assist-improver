@@ -2,9 +2,7 @@
 
 DOMAIN = "assist_improver"
 NAME = "Assist Improver"
-VERSION = "0.40.0"
-# How replays run and are judged; changing it makes earlier replays a different test (a new plan), not a resample.
-REPLAY_ENGINE = "2026-10-27.1"  # The whole conversation from its first turn, judged by P0.1.1's measures (measures.py).
+VERSION = "0.40.1"
 # Conversation providers whose replays are tested end to end; others replay with a "not yet tested" label.
 TESTED_PROVIDERS = {"anthropic", "open_router"}
 STORAGE_VERSION = 1

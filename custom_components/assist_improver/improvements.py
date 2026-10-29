@@ -7,6 +7,7 @@ notification together.
 """
 
 import asyncio
+from contextlib import asynccontextmanager
 from copy import deepcopy
 import re
 
@@ -143,6 +144,7 @@ class Improvements:
         self.items: dict[str, Improvement] = {}
         self._locks = {}  # One decision at a time per improvement: two tabs, or auto-accept, never cross.
         self._notified = None  # The improvements the notification listed last (journaled when it changes).
+        self._unannounced = set()  # Written up for auto-accept to take: not announced as waiting yet (unannounced).
 
     async def start(self):
         # An improvement belongs to the one conversation it came from (SPEC.md P0.10); one that names none is an
@@ -260,13 +262,19 @@ class Improvements:
         """Improvements waiting on the household: written up, so each reads in plain words."""
         return [deepcopy(i) for i in self.items.values() if i["status"] in PENDING and i.get("copy")]
 
+    def held(self, improvement_id):
+        """Whether its round's write-up still holds it (unannounced): written up, but not up for review yet."""
+        return improvement_id in self._unannounced and (self.items.get(improvement_id) or {}).get("status") in PENDING
+
     def unwritten(self):
         """Improvements waiting for the editor (the write-up stage's backlog), not yet up for review."""
         return [deepcopy(i) for i in self.items.values() if i["status"] in PENDING and not i.get("copy")]
 
     def listed(self):
-        """Every improvement up for review or decided, those waiting on the user first, then the most recent."""
-        shown = sorted((deepcopy(i) for i in self.items.values() if i["status"] not in PENDING or i.get("copy")),
+        """Every improvement up for review or decided, those waiting on the user first, then the most recent. One its
+        round's write-up still holds (unannounced) isn't up for review yet."""
+        shown = sorted((deepcopy(i) for i in self.items.values()
+                        if (i["status"] not in PENDING or i.get("copy")) and not self.held(i["id"])),
                        key=lambda i: i["created"], reverse=True)
         return sorted(shown, key=lambda i: (i["status"] not in PENDING, i["status"] != "applied"))
 
@@ -297,7 +305,8 @@ class Improvements:
                 last = old["decisions"][-1] if old["decisions"] else {}
                 self.items[improvement_id]["revises"] = {
                     "id": old["id"], "title": old["title"],
-                    "note": (last.get("note") or "") if last.get("decision") == "revise" else ""}
+                    "note": (last.get("note") or "") if last.get("decision") == "revise" else "",
+                    **({"conflict": True} if old["status"] == "conflict" else {})}  # Sent back after its conflict.
                 if old["status"] in (*PENDING, "conflict"):
                     old.update(status="revised", revised_by=improvement_id)
         contracts.check(self.items[improvement_id], records.Improvement, "The improvement")  # What Write-up reads.
@@ -312,9 +321,26 @@ class Improvements:
         await self._save()
         self._sync()
 
+    @asynccontextmanager
+    async def unannounced(self, improvement_ids):
+        """While auto-accept has yet to take what it can of these (DETAILS P12.9), the notification and the sidebar's
+        count leave them out: what it applies never waited on the household. One already announced (written up in an
+        earlier try) stays listed. Whatever happens meanwhile (a write-up that fails, a run cut off), those still
+        waiting are announced after."""
+        ids = set(improvement_ids) - self._unannounced - (self._notified or set())
+        if not ids:
+            yield
+            return
+        self._unannounced |= ids
+        try:
+            yield
+        finally:
+            self._unannounced -= ids
+            self._sync()
+
     def _sync(self):
         """The notification lists the improvements waiting on the user, each linking to its review in the panel."""
-        wanted = {i["id"]: i for i in self.pending()}
+        wanted = {i["id"]: i for i in self.pending() if i["id"] not in self._unannounced}
         from .panel import set_count
         set_count(self.hass, len(wanted))  # The count beside the panel in the sidebar.
         if self._notified != set(wanted):
@@ -353,16 +379,27 @@ class Improvements:
     async def _decide(self, improvement_id, decision, *, note="", user_id=None, reason=None, auto=False,
                       revising=False):
         item = self.get(improvement_id)
-        if decision not in choices(item, revising):
+        # Not while its round's write-up holds it (unannounced): it isn't up for review yet.
+        if decision not in choices(item, revising) or (not auto and self.held(improvement_id)):
             raise CaseError("That decision isn't open for this improvement now")
         if reason is not None and reason not in reasons(decision):
             raise CaseError("That reason doesn't go with this decision")
         if decision == "revise" and not note.strip():
             raise CaseError("Say what to change in the note")
         record = {"decision": decision, "note": note.strip(), **({"reason": reason} if reason else {}), "by": user_id,
-                  "at": utcnow().isoformat()}
+                  "at": utcnow().isoformat(), **({"auto": True} if auto else {}),
+                  # Taken before it was announced as waiting (unannounced): it never went up for review.
+                  **({"unannounced": True} if auto and improvement_id in self._unannounced else {})}
         if decision == "accept":
             outcome = await self._apply(item, user_id, auto)
+            if auto and outcome["status"] in ("conflict", "rolled_back", "busy"):  # Nothing changed, nothing decided:
+                # up for review, for the household (P12.9.11).
+                journal("warning", f"Auto-accept: {outcome['status']}", improvement_id=improvement_id,
+                        conflicts=len(outcome.get("conflicts") or []) or None)
+                self.items[improvement_id] = item
+                await self._save()
+                self._sync()
+                return {**deepcopy(item), "outcome": outcome}
         elif decision == "undo":
             outcome = await self._undo(item)
         else:  # Declined; or a revision, which leaves it up for review until a revised version replaces it (P0.6).
@@ -394,7 +431,7 @@ class Improvements:
             item = self.items.get(improvement_id)
             if (not item or item["status"] not in PENDING or "accept" not in choices(item)
                     or not low_risk(self.hass, item)
-                    or any(d.get("decision") == "undo" for d in item.get("decisions", []))):  # Undone by someone.
+                    or item.get("decisions")):  # The household decided on it already (a revision asked; undone).
                 continue
             if switched_off(self.hass) and any(household_line(c) for c in item["changes"]):
                 continue  # Household knowledge is off: it waits for review (it can't apply now, and says why).
@@ -404,7 +441,6 @@ class Improvements:
                 result = await self.decide(improvement_id, "accept", note="Accepted automatically", auto=True)
             if one.failed:
                 continue
-            self.items[improvement_id]["decisions"][-1]["auto"] = True
             if result["status"] == "applied":
                 applied += 1
                 headline = (item.get("copy") or {}).get("headline") or item["title"]
@@ -418,7 +454,8 @@ class Improvements:
     async def _apply(self, item, user_id, auto=False):
         steps, already, conflicts = await plan_steps(self.hass, item)
         if conflicts:  # Home Assistant changed since it was tested: the household may send it back (P0.7).
-            item["status"], item["conflicts"] = "conflict", deepcopy(conflicts)
+            if not auto:  # Auto-accept's leaves it up for review, the conflict shown there (DETAILS P12.9.12).
+                item["status"], item["conflicts"] = "conflict", deepcopy(conflicts)
             return {"status": "conflict", "conflicts": conflicts}
         if auto and not low_risk(self.hass, item, steps):  # Up for review instead: someone decides.
             raise CaseError("Not low-risk as it would apply now")

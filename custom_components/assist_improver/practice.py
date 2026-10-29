@@ -14,20 +14,31 @@ voice satellites), are never affected.
 The hook is the one place every assistant gets its tools, ChatLog's
 async_provide_llm_data. It is installed while the improver is loaded and
 passes straight through unless practice mode applies.
+
+Home Assistant also answers some requests itself, with no assistant preparing
+tools: the household's sentence triggers and, when Assist prefers handling
+commands locally, its own intents, both before the assistant is asked; or its
+own conversation agent, as Assist's assistant. A second hook, on its default
+agent, tells the recorder who is speaking there (a person whose recording
+switch is off isn't kept), and leaves a practising person's request to their
+assistant rather than let Home Assistant act on the real home before it. With
+no assistant to leave it to (its own agent is Assist's), it changes nothing and
+says that sandbox mode needs an AI assistant.
 """
 
 from collections import ChainMap
 from dataclasses import asdict, fields, replace
 from datetime import timedelta
 
-from homeassistant.components.conversation import ChatLog
+from homeassistant.components.conversation import AssistantContent, ChatLog, ConversationResult
+from homeassistant.components.conversation.default_agent import DefaultAgent
 from homeassistant.components.intent.const import TIMER_DATA
 from homeassistant.components.intent.timers import TimerManager
 from homeassistant.components.todo import TodoItemStatus
 from homeassistant.components.todo.const import DATA_COMPONENT as TODO_LISTS
 from homeassistant.components.todo.entity import api_items_factory
 from homeassistant.core import State
-from homeassistant.helpers import llm
+from homeassistant.helpers import intent, llm
 from homeassistant.util.dt import utcnow
 from homeassistant.util.ulid import ulid_now
 
@@ -63,6 +74,7 @@ def simulated(tool):
     return getattr(inner, "intent_type", None) in SIMULATED_INTENTS
 MODE_KEY = "assist_improver_practice_mode"
 STORE_KEY = "assist_improver.practice_mode"
+NO_ASSISTANT = "Sandbox mode needs an AI assistant, so I didn't change anything."
 
 
 class SimulatedStates:
@@ -352,9 +364,12 @@ class PracticeMode:
             listener()
 
     def applies(self, chat_log, llm_context):
-        if ROLE_ACTIVE.get() or chat_log.conversation_id.startswith("improver-replay-"):
+        return self.practising(chat_log.conversation_id, getattr(llm_context, "context", None))
+
+    def practising(self, conversation_id, context):
+        """Whether a request in this conversation, made in this context, is the signed-in person's practice."""
+        if ROLE_ACTIVE.get() or conversation_id.startswith("improver-replay-"):
             return False  # The improver's own AI roles and replays are never practice.
-        context = getattr(llm_context, "context", None)
         return bool(context and context.user_id and self.is_on(context.user_id))
 
     async def provide_llm_data(self, original, chat_log, llm_context, *args, **kwargs):
@@ -371,12 +386,44 @@ class PracticeMode:
                                                     self.sessions.get(chat_log.conversation_id, recording_id),
                                                     PracticeReport(self.recorder, chat_log.conversation_id))
 
+    def without_assistant(self, user_input, chat_log):
+        """A practice turn with Home Assistant's own agent as Assist's assistant: no assistant can answer on a copy of
+        the home, so nothing acts (no sentence trigger, no intent), and the reply, added as the agent adds its own,
+        says so."""
+        if self.recorder:
+            self.recorder.practice(chat_log.conversation_id)  # Marks the recording as practice.
+        response = intent.IntentResponse(language=user_input.language or self.hass.config.language)
+        response.async_set_speech(NO_ASSISTANT)
+        chat_log.async_add_assistant_content_without_tools(
+            AssistantContent(agent_id=user_input.agent_id, content=NO_ASSISTANT))
+        return ConversationResult(response=response, conversation_id=chat_log.conversation_id)
 
+
+# Where Home Assistant's default agent answers a request itself: before the assistant (the household's sentence
+# triggers; its own intents, when Assist prefers handling commands locally), and as Assist's own assistant.
+BEFORE_ASSISTANT = ("async_handle_sentence_triggers", "async_handle_intents")
+ITSELF = (*BEFORE_ASSISTANT, "_async_handle_message")
 _ORIGINAL = None
+_ITSELF = {}  # The default agent's own methods, while hooked.
+
+
+def _answers_itself(name, original):
+    """The default agent answering a request itself: the recorder hears who's speaking; before the assistant, a
+    practising person's request isn't answered here (None, as for no match), so their assistant answers it on their
+    copy of the home; as Assist's assistant, it changes nothing for them."""
+    async def answer(agent, user_input, chat_log, *args, **kwargs):
+        if (mode := agent.hass.data.get(MODE_KEY)) is not None:
+            if mode.recorder is not None:
+                mode.recorder.heard(chat_log.conversation_id, user_input.context.user_id)
+            if mode.practising(chat_log.conversation_id, user_input.context):
+                return None if name in BEFORE_ASSISTANT else mode.without_assistant(user_input, chat_log)
+        return await original(agent, user_input, chat_log, *args, **kwargs)
+    return answer
 
 
 def install():
-    """Hook ChatLog.async_provide_llm_data; it passes through unless practice mode applies."""
+    """Hook ChatLog.async_provide_llm_data and the default agent's own answers; they pass through unless practice
+    mode applies (the recorder hears who's speaking either way)."""
     global _ORIGINAL
     if _ORIGINAL is not None:
         return
@@ -384,11 +431,16 @@ def install():
 
     async def provide_llm_data(chat_log, llm_context, *args, **kwargs):
         mode = chat_log.hass.data.get(MODE_KEY)
+        if mode is not None and mode.recorder is not None:  # Who's speaking, with or without an Assist API.
+            mode.recorder.heard(chat_log.conversation_id, getattr(getattr(llm_context, "context", None), "user_id", None))
         if mode is None or not mode.applies(chat_log, llm_context):
             return await original(chat_log, llm_context, *args, **kwargs)
         return await mode.provide_llm_data(original, chat_log, llm_context, *args, **kwargs)
 
     ChatLog.async_provide_llm_data = provide_llm_data
+    for name in ITSELF:
+        _ITSELF[name] = getattr(DefaultAgent, name)
+        setattr(DefaultAgent, name, _answers_itself(name, _ITSELF[name]))
 
 
 def uninstall():
@@ -396,3 +448,6 @@ def uninstall():
     if _ORIGINAL is not None:
         ChatLog.async_provide_llm_data = _ORIGINAL
         _ORIGINAL = None
+    for name, original in _ITSELF.items():
+        setattr(DefaultAgent, name, original)
+    _ITSELF.clear()

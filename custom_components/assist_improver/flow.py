@@ -383,12 +383,15 @@ class Flow:
                 return
             run["stage"] = key
             await moved()
-            if not await self._work(rid, conv, run, stage, tries):
-                return
-            # Auto-accept, once written up: not Write up's work, so a run cut off meanwhile holds nothing at Your
-            # review (P0.8); one deleted while it was written up has left the run (P5.1.3).
-            if stage == "Write up" and self.entry.options.get(CONF_AUTO_ACCEPT) and not self._deleted(rid):
-                await self._auto_accept(conv)
+            # Auto-accept, once written up, as it's set then (P12.9): not Write up's work, so a run cut off meanwhile
+            # holds nothing at Your review (P0.8); one deleted while it was written up has left the run (P5.1.3). What
+            # it applies never waited on the household, so what this round writes up is announced as waiting only after.
+            write_up = stage == "Write up"
+            async with self.runtime.improvements.unannounced(self._written(conv) if write_up else ()):
+                if not await self._work(rid, conv, run, stage, tries):
+                    return
+                if write_up and self.entry.options.get(CONF_AUTO_ACCEPT) and not self._deleted(rid):
+                    await self._auto_accept(conv)
             tries = RETRIES  # A stage it reaches afterwards, in the same run, gives it its full tries.
 
     @staticmethod
@@ -664,11 +667,16 @@ class Flow:
         conversation ends improved, as the household's accept would end it; one that isn't low-risk, can't apply or
         meets a conflict stays up for review."""
         improvements = self.runtime.improvements
-        written = (conv["rounds"][str(conv["round"])]["records"].get("Write up") or {}).get("improvements") or []
+        written = self._written(conv)
         await improvements.auto_accept(written)
         for iid in written:
             if (item := improvements.items.get(iid)) and item["status"] == "applied":
                 await self.decided(item, "accept")
+
+    @staticmethod
+    def _written(conv):
+        """The improvements this round sent on to Write up."""
+        return (conv["rounds"][str(conv["round"])]["records"].get("Write up") or {}).get("improvements") or []
 
     def _improvements(self, rid, pending=False):
         """The improvements of a conversation: those it came from (P0.10)."""
@@ -780,6 +788,11 @@ class Flow:
         await self.save()
         return back
 
+    def resolvable(self, item):
+        """Whether the household is asked to send back an improvement whose accept met a conflict (resolve): its
+        conversation still waits at Your review (P0.7)."""
+        return item["status"] == "conflict" and bool(self._covering(item, "Your review"))
+
     def _back_to_propose(self, rid, conv, **record):
         self._trip(conv, "Your review", "Propose", "person")
         self._start_round(rid, conv, at="Propose", **record)
@@ -847,8 +860,9 @@ class Flow:
 
     def review(self, rid):
         """The improvement of this conversation (P0.10) waiting for the household's review, written up, or None."""
-        items = self.runtime.improvements.items
-        return next((iid for iid in self._improvements(rid, pending=True) if items[iid].get("copy")), None)
+        improvements = self.runtime.improvements
+        return next((iid for iid in self._improvements(rid, pending=True)
+                     if improvements.items[iid].get("copy") and not improvements.held(iid)), None)
 
     async def mark_test(self, rid):
         """The household marked it a test: it ends in Your household as one (P0.12), from wherever it stood; not while

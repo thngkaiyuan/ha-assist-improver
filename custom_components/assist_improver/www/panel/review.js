@@ -9,7 +9,7 @@ const [{esc, fill}, {STATUS, TEXT}, common, {dialog}] = await Promise.all([
 // decision. What was open and where the page was scrolled carry over to the new element, so nothing moves.
 export const KEPT = {open: new Set(), page: null, scroll: null};
 
-const NO_NOTE = ["accept", "undo"];
+const NO_NOTE = ["accept", "undo", "resolve"];
 
 const section = (p, key, title, inner, rich = false) =>
   // rich: the title is already the summary's parts (name, kind, counts), laid out side by side.
@@ -72,8 +72,9 @@ function footer(p, r) {
   const said = p.result || r.recent_outcome, ok = p.result ? p.resultOk : r.recent_outcome_ok;
   const done = said && `<div class="done-msg ${ok ? "ok" : "bad"}"><span class="mark">${ok ? "&#10003;" : "!"}</span><span>${
     esc(said)}${r.choices.some((c) => c.value === "undo") ? ` <button class="link" id="undo-link">Undo</button>` : ""}</span></div>`;
-  // Undone: up for review again, so the decision is open right here, under what happened.
-  const again = said && r.status === "awaiting_review" && r.choices.length > 0;
+  // Undone: up for review again, so the decision is open right here, under what happened; an accept that met a
+  // conflict asks here at once whether to send it back to resolve it.
+  const again = said && ["awaiting_review", "conflict"].includes(r.status) && r.choices.length > 0;
   if (said && !again) {
     return `<div class="footer"><div class="footer-inner done-row">${done}
       ${r.next_pending ? `<button class="btn" id="next" data-id="${esc(r.next_pending.id)}">Next: ${esc(r.next_pending.title)} &#8594;</button>`
@@ -137,7 +138,8 @@ export function render(p) {
     page: `<div class="page">
     <h1>${esc(r.title)} <span class="chip ${esc(r.status)}">${esc(STATUS[r.status] || r.status)}</span></h1>
     <div class="outcome">${esc(outcome)}</div>
-    ${r.revises ? `<div class="revises">Revised after your note on “${esc(r.revises.title)}”${r.revises.note ? `: “${esc(r.revises.note)}”` : ""}</div>` : ""}
+    ${r.revises ? `<div class="revises">${r.revises.conflict ? `Revised after a conflict on “${esc(r.revises.title)}”`
+      : `Revised after your note on “${esc(r.revises.title)}”${r.revises.note ? `: “${esc(r.revises.note)}”` : ""}`}</div>` : ""}
     ${conflicts}
     ${summary}<div class="card">${sections}</div></div>`,
     layer: footer(p, r),
@@ -158,8 +160,10 @@ async function decide(p, decision = p.decision || p.review.choices[0].value) {
   p.render();
   try {
     const reason = reasonsFor(r, decision).includes(p.reason) ? p.reason : null;  // Ticked for this decision.
-    const res = await p.ws("decide", {improvement_id: r.id, decision, note: NO_NOTE.includes(decision) ? "" : (p.note || ""),
-                                      ...(reason ? {reason} : {})});
+    const res = decision === "resolve"  // Sent back to resolve its conflict: not a decision on it.
+      ? {...await p.ws("conflict/resolve", {improvement_id: r.id}), ok: true}
+      : await p.ws("decide", {improvement_id: r.id, decision, note: NO_NOTE.includes(decision) ? "" : (p.note || ""),
+                              ...(reason ? {reason} : {})});
     Object.assign(p, {result: res.result, resultOk: res.ok, decision: null, note: "", reason: null});
   } catch (err) {
     Object.assign(p, {result: err.message || String(err), resultOk: false});

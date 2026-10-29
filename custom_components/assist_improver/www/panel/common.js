@@ -38,8 +38,8 @@ export const errorPage = {render: (p) => ({bar: toolbar("Assist Improver", true)
 
 export function runTitle(run) {
   // Which run this is: one step, what was sent in (on-demand's own run), a revision's or a conflict's own run, the
-  // conversations picked on the home page, or a full run on all it moves (how many, once it has admitted them).
-  const P = TEXT.progress, n = run.progress?.total || 0;
+  // conversations picked on the home page, or a full run on the new ones it took in (how many, once it has).
+  const P = TEXT.progress, n = run.progress?.taken_in || 0;
   return run.only ? fill(P.step, {step: GATE_NAMES[run.only] || run.only}) : run.trigger === "filed" ? P.sent
     : run.trigger === "revision" ? P.revision : run.trigger === "conflict" ? P.conflict
     : run.picked ? P.picked : n > 1 ? fill(P.all, {n}) : n ? P.one : P.working;
@@ -93,7 +93,7 @@ export function askAutoAccept() {
 }
 
 // How many conversations a run moves (Pipeline.preview, or a picked run's: conversations.runPreview): the new ones it
-// admits and the held ones it releases, less those that would stop at a blocked step. Its button and the
+// admits and the held ones it releases, less those that would stop at a blocked step. A picked run's button and its
 // confirmation's title say it.
 const sum = (counts) => Object.values(counts || {}).reduce((n, x) => n + x, 0);
 export const moves = (preview) => (preview.admits || 0) + sum(preview.releases);
@@ -101,7 +101,10 @@ export const moves = (preview) => (preview.admits || 0) + sum(preview.releases);
 // What's held at a step (Run one step releases it, and takes in nothing new).
 export const heldAt = (preview, gate) => sum((preview.held || {})[gate]);
 
-export const runLabel = (n) => n > 1 ? fill(TEXT.runAll, {n}) : n ? TEXT.runOne : TEXT.runNow;
+// A full run's button (Settings' Run, and the home page's with nothing picked): how many new conversations it admits
+// ("new" says which); with none, what's waiting, when it releases held ones; else Run now.
+export const runLabel = (preview) => preview.admits > 1 ? fill(TEXT.runAll, {n: preview.admits})
+  : preview.admits ? TEXT.runOne : moves(preview) ? TEXT.runWaiting : TEXT.runNow;
 
 const count = (n, text) => fill(text, {n, s: n === 1 ? "" : "s"});
 
@@ -139,11 +142,12 @@ const WHICH = 3, WORDS = 40;  // Conversations a confirmation names, and how muc
 const firstWords = (said) => said.length <= WORDS ? said : `${said.slice(0, WORDS + 1).replace(/\s+\S*$/, "")}…`;
 
 export function confirm(p, preview) {
-  // What helps decide at a glance: the title says how many conversations the run moves; under it, the new ones it
-  // admits (up to three by their first words, and how many more), the held ones it releases ("Also: …", by the step
-  // holding them), the warnings when they matter, and the cost. A picked run names the picks themselves, and nothing
-  // else (it moves nothing else). With no new one, what a full run releases is a sentence; one step says what it does
-  // in a sentence instead. In a modal, so the page stays put; a click outside or Esc is "Not now".
+  // What helps decide at a glance: the title says how many new conversations a full run admits (a picked run: how many
+  // of the picks it moves); under it, the new ones (up to three by their first words, and how many more), the held
+  // ones a full run releases ("Also: …", by the step holding them), the warnings when they matter, and the cost. A
+  // picked run names the picks themselves, and nothing else (it moves nothing else). With no new one, what a full run
+  // releases is a sentence; one step says what it does in a sentence instead. In a modal, so the page stays put; a
+  // click outside or Esc is "Not now".
   const only = p.only, C = TEXT.confirm, blocked = new Set(only ? [] : preview.paused || []);
   const all = only ? 0 : moves(preview);
   let lead;
@@ -170,10 +174,10 @@ export function confirm(p, preview) {
   const broken = [...new Set(stages.flatMap((g) => (preview.blocked_models || {})[g] || []))];
   const modelsLine = broken.length ? fill(C.models, {steps: broken.join(" and "), its: broken.length === 1 ? C.its : C.their}) : "";
   const blockedLine = held.length ? fill(C.blocked, {steps: held.join(", "), is: held.length === 1 ? "is" : "are"}) : "";
-  // How many conversations it moves, as its button says: all a full run would from the settings, those picked from
-  // the home page.
+  // As its button says: the new ones a full run admits (with none, the run itself), the picks a picked run moves.
+  const admits = preview.admits || 0;
   const title = only ? fill(C.step, {step: GATE_NAMES[only]}) : p.picking && all ? count(all, C.on)
-    : all > 1 ? fill(C.all, {n: all}) : all ? C.one : C.title;
+    : admits > 1 ? fill(C.all, {n: admits}) : admits ? C.one : C.title;
   return `<div class="modal-shade" id="confirm-shade"></div><div class="modal confirm-modal" role="dialog" aria-modal="true" aria-label="${esc(title)}">
       <div class="modal-head">${svg("play")}<b>${esc(title)}</b><span class="kn-count"></span>
         <button class="modal-close" id="cancel-confirm" aria-label="${esc(C.notNow)}">&#10005;</button></div>

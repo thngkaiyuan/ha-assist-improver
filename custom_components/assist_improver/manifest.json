@@ -1,6 +1,19 @@
 {
   "domain": "assist_improver",
   "name": "Assist Improver",
+  "after_dependencies": [
+    "anthropic",
+    "assist_pipeline",
+    "frontend",
+    "http",
+    "intent",
+    "open_router",
+    "repairs",
+    "script"
+  ],
+  "categories": [
+    "ai_voice.voice_assistants"
+  ],
   "codeowners": [
     "@thngkaiyuan"
   ],
@@ -14,16 +27,6 @@
   "iot_class": "calculated",
   "issue_tracker": "https://github.com/thngkaiyuan/ha-assist-improver/issues",
   "requirements": [],
-  "version": "0.40.0",
-  "after_dependencies": [
-    "anthropic",
-    "assist_pipeline",
-    "frontend",
-    "http",
-    "intent",
-    "open_router",
-    "repairs",
-    "script"
-  ],
-  "single_config_entry": true
+  "single_config_entry": true,
+  "version": "0.40.1"
 }
