@@ -22,7 +22,7 @@ from homeassistant.helpers import llm
 from .cases import CaseError, recording_turns
 from .sandbox import seed_options
 from .serialization import plain
-from .simulation import UnsupportedSimulation, recorded_transitions, reports_movement
+from .simulation import UnsupportedSimulation, moved_by_others, reports_movement
 from .trace import span, tag
 from .worker import RemoteSandbox, WorkerError, context_data
 
@@ -153,8 +153,8 @@ class SandboxHome(llm.API):
         return RecordedAPIInstance(api=self, api_prompt=built["api_prompt"], llm_context=llm_context,
                                    tools=self.tools, custom_serializer=serializer)
 
-    async def observe(self, source, exclude=()):
-        await self.sandbox.call("observe", source=source, exclude=sorted(exclude))
+    async def observe(self, source, moves):
+        await self.sandbox.call("observe", source=source, moves=moves)
         await self.refresh()
 
     async def refresh(self):
@@ -192,7 +192,7 @@ class FrozenTurnLog(conversation.ChatLog):
     provider's native history), never the recorded replies. say() moves on to a later recorded turn."""
     def __init__(self, hass, recording, *, scripts, automations, exposure_changes=None, alias_changes=None,
                  alias_removals=None, prompt_template=None, use_sandbox_prompt=False, household=None):
-        turns = recording_turns(recording)
+        self.turns = turns = recording_turns(recording)
         turn = turns[0]
         history = turn["history"]
         if [m["role"] for m in history] != ["system", "user"]:
@@ -207,10 +207,7 @@ class FrozenTurnLog(conversation.ChatLog):
         # A change that shows in Assist's instructions (a preference, an alias) uses the prompt HA builds in the
         # sandbox with the change; otherwise the model sees exactly the recorded prompt.
         self.use_sandbox_prompt = use_sandbox_prompt
-        self.turn, self.pending_source = None, None
-        # What the recorded assistant changed: the replay's own run decides those, not the recording's snapshots.
-        self.assistant_entities = {t["entity_id"] for recorded in turns
-                                   for t in recorded_transitions(recording, recorded)}
+        self.turn, self.pending_source, self.pending_turns = None, None, []
         self.turn_start_attributes = {}  # The watched lights' attributes as the current turn began.
         self.external_calls = []
         self.usage_events = []
@@ -223,7 +220,7 @@ class FrozenTurnLog(conversation.ChatLog):
             raise CaseError("A replay says the recorded turns in order")
         if self.unresponded_tool_results or self.replay_api.unsupported:
             raise CaseError("Cannot continue an incomplete or unsupported replay")
-        self.pending_source = turn["source"]
+        self.pending_source, self.pending_turns = turn["source"], self.turns[self.turn["number"]:turn["number"]]
         self._said(turn)
 
     def _said(self, turn):
@@ -256,8 +253,9 @@ class FrozenTurnLog(conversation.ChatLog):
     async def async_provide_llm_data(self, llm_context, user_llm_hass_api=None,
                                    user_llm_prompt=None, user_extra_system_prompt=None):
         if self.pending_source is not None:  # Others moved things in the home between the recorded turns.
-            await self.replay_api.observe(self.pending_source, self.assistant_entities)
-            self.pending_source = None
+            await self.replay_api.observe(self.pending_source, [
+                moved_by_others(self.replay_api.recording, self.turns, t) for t in self.pending_turns])
+            self.pending_source, self.pending_turns = None, []
         self.llm_api = await self.replay_api.api_instance(self.turn, self.recorded_context)
         self.turn_start_attributes = deepcopy(self.replay_api.world.attributes)
         if self.use_sandbox_prompt:

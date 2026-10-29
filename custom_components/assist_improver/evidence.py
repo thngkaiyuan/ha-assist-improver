@@ -30,7 +30,7 @@ from .cases import CaseError, recording_turns, replayable_turns
 from .changes import setup_from_changes
 from .failures import contained
 from .sandbox import SANDBOX_KEY, Sandbox, observe, sandbox_context, seed, seed_options
-from .simulation import recorded_transitions
+from .simulation import moved_by_others
 from .worker import worker
 
 CONCURRENT = 4  # Sandboxes started at once.
@@ -153,12 +153,12 @@ async def _replay(recording, definitions, setup=None):
     if not turns or (context := _context(turns[0])) is None:
         return None
     sandbox = await _start(recording, turns[0], definitions, setup)
-    assistant = {t["entity_id"] for turn in turns for t in recorded_transitions(recording, turn)}
     out, effects = [], {}
     try:
         for index, turn in enumerate(turns):
             if index:
-                await sandbox.run(lambda hass: observe(hass, turn["source"], assistant))
+                moves = [moved_by_others(recording, turns, turn)]
+                await sandbox.run(lambda hass: observe(hass, turn["source"], moves))
             context = _context(turn) or context
             calls = [c for c in turn["calls"] if not c.get("external")]
             before = len(sandbox.transitions)

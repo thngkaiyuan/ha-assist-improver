@@ -31,7 +31,7 @@ from .instructions import target
 from .replay import FrozenTurnLog, check_fidelity
 from .serialization import plain
 from .simulation import (UnsupportedSimulation, assist_transitions, per_entity, recorded_attributes, same_brightness,
-                         setting_off)
+                         same_effects, setting_off)
 from .snapshot import assist_config
 from .trace import span
 
@@ -376,12 +376,12 @@ class Trial:
             e for e in mine if e.startswith("light.") and (world.attributes.get(e) or {}).get("brightness") is not None)
         then = recorded_attributes(self.recording, turn, lights)
         step.update(recorded_transitions=expected,
-                    matched=all(actual_by.get(e, []) == expected_by.get(e, []) for e in mine)
+                    matched=all(same_effects(actual_by.get(e, []), expected_by.get(e, [])) for e in mine)
                     and all(same_brightness(world.attributes.get(e), then[e]) for e in lights),
                     differences_elsewhere={e: {"replay": [list(c) for c in actual_by.get(e, [])],
                                                "recorded": [list(c) for c in expected_by.get(e, [])]}
                                            for e in sorted((set(actual_by) | set(expected_by)) - mine)
-                                           if actual_by.get(e, []) != expected_by.get(e, [])})
+                                           if not same_effects(actual_by.get(e, []), expected_by.get(e, []))})
         if not step["matched"]:
             self.entry["status"] = "not_reproducible"
         return step["matched"]

@@ -58,8 +58,8 @@ DEVICE_SERVICES = {
             "decrease_speed", "oscillate", "set_direction"),
     "media_player": ("turn_on", "turn_off", "toggle", "media_play", "media_pause", "media_stop",
                      "media_play_pause", "volume_set", "volume_up", "volume_down", "volume_mute", "select_source"),
-    "climate": ("turn_on", "turn_off", "set_hvac_mode", "set_temperature", "set_fan_mode", "set_preset_mode",
-                "set_humidity", "set_swing_mode"),
+    "climate": ("turn_on", "turn_off", "toggle", "set_hvac_mode", "set_temperature", "set_fan_mode",
+                "set_preset_mode", "set_humidity", "set_swing_mode"),
     "cover": ("open_cover", "close_cover", "stop_cover", "set_cover_position"),
     "valve": ("open_valve", "close_valve", "stop_valve", "set_valve_position"),
     "lock": ("lock", "unlock", "open"),
@@ -67,9 +67,9 @@ DEVICE_SERVICES = {
     "select": ("select_option",), "input_select": ("select_option",),
     "number": ("set_value",), "input_number": ("set_value",),
     "input_boolean": ("turn_on", "turn_off", "toggle"),
-    "humidifier": ("turn_on", "turn_off", "set_humidity", "set_mode"),
+    "humidifier": ("turn_on", "turn_off", "toggle", "set_humidity", "set_mode"),
     "water_heater": ("turn_on", "turn_off", "set_temperature", "set_operation_mode"),
-    "siren": ("turn_on", "turn_off"), "remote": ("turn_on", "turn_off"),
+    "siren": ("turn_on", "turn_off", "toggle"), "remote": ("turn_on", "turn_off", "toggle"),
 }
 
 
@@ -578,20 +578,19 @@ async def call_tool(hass, api, tool_input):
         return await api.async_call_tool(tool_input)
 
 
-async def observe(hass, source, exclude=()):
-    """Move on to the next recorded turn: its time, and entities the replay never changed at their recorded values
-    (others in the home moved them). exclude: entities the recorded assistant changed, whose next values are the
-    original run's, not others'."""
+async def observe(hass, source, moves=()):
+    """Move on to the next recorded turn: its time, and what others in the home moved since, on top of what the replay
+    did itself. moves: each skipped turn's then this one's, in order (simulation.moved_by_others)."""
     _run_at(hass, source)
     sandbox = hass.data[SANDBOX_KEY]
-    touched = {c["entity_id"] for c in sandbox.commands} | {t["entity_id"] for t in sandbox.transitions} | set(exclude)
     sandbox.observing = True
     try:
-        for entity_id, state in source["states"].items():
-            current = hass.states.get(entity_id)
-            if entity_id not in touched and current is not None and (
-                    current.state != state["state"] or dict(current.attributes) != (state.get("attributes") or {})):
-                hass.states.async_set(entity_id, state["state"], state.get("attributes") or {})
+        for moved in moves:
+            for entity_id, move in moved.items():
+                if (current := hass.states.get(entity_id)) is None:
+                    continue
+                attributes = {k: v for k, v in current.attributes.items() if k not in move["removed"]}
+                hass.states.async_set(entity_id, move.get("state", current.state), attributes | move["attributes"])
         await hass.async_block_till_done()
     finally:
         sandbox.observing = False

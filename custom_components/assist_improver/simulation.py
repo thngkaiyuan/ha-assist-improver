@@ -3,6 +3,10 @@
 Replays themselves run in a sandboxed HA instance (sandbox.py, replay.py).
 """
 
+from datetime import datetime, timedelta
+
+from homeassistant.helpers.entity import CONTEXT_RECENT_TIME_SECONDS
+
 from .cases import CaseError
 from .devices import MOVERS, UNDERWAY
 
@@ -15,11 +19,14 @@ class UnsupportedSimulation(CaseError):
     pass
 
 
-def _request_changes(recording, turn):
-    """The changes the assistant made during one recorded turn, attributes too: practice's simulated changes, or the
-    real changes HA attributes to the turn's request."""
-    start, end = turn["source"]["at"], turn["ended"]
-    practice = recording.get("practice")
+def _request_changes(recording, turn, until=None):
+    """The changes the assistant made during one recorded turn, attributes too: practice's simulated changes, until
+    the reply; or the real changes HA attributes to the turn's request, until as long after the reply as HA puts what
+    a device reports down to a command it got (CONTEXT_RECENT_TIME_SECONDS): a real device may report a little after
+    the reply (a garage relay's press, its last step 60 ms after). until: a later end."""
+    start, practice = turn["source"]["at"], recording.get("practice")
+    end = until or (turn["ended"] if practice else (datetime.fromisoformat(turn["ended"])
+                                                     + timedelta(seconds=CONTEXT_RECENT_TIME_SECONDS)).isoformat())
     if practice:
         changes = practice["simulated_changes"]
     else:
@@ -42,6 +49,38 @@ def assist_transitions(recording, turn):
     P6.6.1): recorded_transitions without a template entity's own follow-ons."""
     follow = template_follow_ons(turn["source"], {c["entity_id"] for c in _request_changes(recording, turn)})
     return [t for t in recorded_transitions(recording, turn) if t["entity_id"] not in follow]
+
+
+def moved_by_others(recording, turns, turn):
+    """What others in the home moved between the recorded turn before this one and this one: each state and attribute
+    this turn's snapshot shows otherwise than the turn before's left it, Assist's own changes on it: those under any
+    recorded turn's request (a script it started may act turns later), and a device it set moving getting there (a
+    door closed, past what Home Assistant puts down to the request). A replay applies them on top of what it did
+    itself (sandbox.observe). {entity_id: {"state"?: new, "attributes": {name: new}, "removed": [name]}}"""
+    before = turns[turn["number"] - 2]
+    start, end, practice = before["source"]["at"], turn["source"]["at"], recording.get("practice")
+    requests = {(t["prepared"]["context"].get("context") or {}).get("id") for t in turns} - {None}
+    left, moving = dict(before["source"]["states"]), {}  # moving: Assist's last state for each device, from the start.
+    for change in sorted((c for c in (practice["simulated_changes"] if practice else recording.get("state_changes", []))
+                          if c["at"] < end and c.get("old") and c.get("new")), key=lambda c: c["at"]):
+        entity_id, old, new = change["entity_id"], change["old"]["state"], change["new"]["state"]
+        context = change["new"].get("context") or {}
+        own = practice or requests & {context.get("id"), context.get("parent_id")} or (
+            moving.get(entity_id) == old and UNDERWAY.get(new) == old)
+        if own or new != old:  # A door's own reports on its way (its position) leave it moving.
+            moving[entity_id] = new if own else None
+        if own and change["at"] >= start:
+            left[entity_id] = change["new"]
+    out = {}
+    for entity_id, now in turn["source"]["states"].items():
+        if (was := left.get(entity_id)) is None:
+            continue  # New since: the replay's home never had it.
+        old, new = was.get("attributes") or {}, now.get("attributes") or {}
+        move = {"attributes": {k: v for k, v in new.items() if k not in old or old[k] != v},
+                "removed": sorted(set(old) - set(new)), **({"state": now["state"]} if now["state"] != was["state"] else {})}
+        if "state" in move or move["attributes"] or move["removed"]:
+            out[entity_id] = move
+    return out
 
 
 def template_follow_ons(source, changed):
@@ -76,8 +115,28 @@ def reports_movement(recording):
 
 def setting_off(transitions):
     """Transitions as a reproduction compares them: a device that reports its movement by where it set off for (a
-    garage door closing), not by its getting there (closed), which its travel time puts before the reply or after it."""
-    return [t for t in transitions if UNDERWAY.get(t["new"]) != t["old"]]
+    garage door closing), not by its getting there (closed), which its travel time puts before the reply or after it;
+    a script started in the turn by its starting, not its getting done, which the devices it waits on put before the
+    reply or after it (a car's warm-up script ran 17 seconds while the car woke). A script stopped is compared."""
+    started, out = set(), []
+    for t in transitions:
+        if t["entity_id"].startswith("script.") and t["new"] == "on":
+            started.add(t["entity_id"])
+        elif UNDERWAY.get(t["new"]) == t["old"] or (t["entity_id"] in started and t["new"] == "off"):
+            continue
+        out.append(t)
+    return out
+
+
+def same_effects(replay, recorded):
+    """Whether a replayed turn's changes to a device are the recorded ones (per_entity's (old, new) pairs): neither
+    changed it, or both did from the same state and it ends the turn where it did, the states the replay set coming in
+    the recorded order. The recording may show more: a real device reports states of its own on its way (a heater fan
+    showed fan only for a moment as it went to heat), which an emulated one doesn't."""
+    if not replay or not recorded:
+        return replay == recorded
+    then = iter(new for _, new in recorded)
+    return replay[0][0] == recorded[0][0] and replay[-1][1] == recorded[-1][1] and all(new in then for _, new in replay)
 
 
 def same_brightness(attributes, recorded):

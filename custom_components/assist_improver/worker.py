@@ -339,10 +339,10 @@ class Server:
         result = await home.sandbox.run(lambda hass: call_tool(hass, home.api, tool_input))
         return self._reported(home, {"data": result.data, "error": result.error})
 
-    async def op_home_observe(self, session, source, exclude=()):
+    async def op_home_observe(self, session, source, moves=()):
         from .sandbox import observe
         home = self._home(session)
-        await home.sandbox.run(lambda hass: observe(hass, source, exclude))
+        await home.sandbox.run(lambda hass: observe(hass, source, moves))
         return self._reported(home)
 
     async def op_home_snapshot(self, session, attributes=()):

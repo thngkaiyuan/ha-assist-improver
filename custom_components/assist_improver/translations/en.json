@@ -85,6 +85,7 @@
     }
   },
   "options": {
+    "step": {},
     "abort": {
       "settings_in_panel": "Assist Improver's settings are in its panel, beside the whole pipeline: which AI model each step uses, when it runs, and more.\n\n[Open the settings]({link})"
     }

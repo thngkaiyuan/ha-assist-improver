@@ -8,10 +8,12 @@ report back. Commands without a model here are reported as done and flagged.
 
 ON_OFF = {"light", "switch", "fan", "input_boolean", "siren", "remote", "humidifier", "media_player",
           "water_heater", "automation"}
-TOGGLE_OFF = {"off", "closed", "unlocked", "idle", "standby", "paused", "unknown"}
 COLOUR_MODES = {"hs", "xy", "rgb", "rgbw", "rgbww"}
-# A sleeping device (a parked car, say) shows as unknown; a command wakes it like any off device. An unavailable one
-# can't be reached, so a command never gets to it (effect).
+# What a toggle does, as Home Assistant's own entities do it: a device turns off when it's on, else on
+# (ToggleEntity.async_toggle); a climate device turns on only from off, a media player only from off or standby.
+TOGGLES_ON_FROM = {"climate": ("off",), "media_player": ("off", "standby")}
+# A sleeping device (a parked car, say) shows as unknown; turning it on wakes it like any off device. An unavailable
+# one can't be reached, so a command never gets to it (effect).
 ASLEEP = {"off", "unknown"}
 # Read-only queries; practice passes them to the real service. Everything else is emulated.
 QUERY_PREFIXES = ("get_", "search_")
@@ -165,9 +167,8 @@ def effect(domain, service, state, data):
     if state.state == "unavailable":
         return state.state, attrs
     if service == "toggle":
-        # HA's media players turn on only from off or standby, and every other player turns off.
-        off = ("off", "standby", "unknown") if domain == "media_player" else TOGGLE_OFF
-        service = "turn_on" if state.state in off else "turn_off"
+        on = state.state in TOGGLES_ON_FROM[domain] if domain in TOGGLES_ON_FROM else state.state != "on"
+        service = "turn_on" if on else "turn_off"
     if domain == "light" and service in ("turn_on", "turn_off"):
         if service == "turn_off" and state.state == "off":
             return "off", attrs  # Already off: nothing changes.
