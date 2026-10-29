@@ -16,7 +16,7 @@ Think of a self-driving car. Every time the driver takes the wheel back, that's 
 
 The best self-driving is one you never feel the need to supervise: **you just enjoy the ride.**
 
-Assist Improver aims for that with your assistant. The goal is to cut the effort it takes you to get what you wanted, whether that's a change in your home or an answer to a question. It measures that effort two ways: goals that went unmet (the assistant guessed or missed what you wanted), and the extra turns you spent repeating, correcting or clarifying. A fix has to get more of your goals met first, and in fewer turns second.
+Assist Improver aims for that with your assistant. The goal is to cut the effort it takes you to get what you wanted, whether that's a change in your home or an answer to a question. It measures that effort two ways: goals that went unmet (the assistant guessed or missed what you wanted), and the extra turns you spent repeating, correcting or clarifying. Every change has to leave you better off, and never worse.
 
 1. **Learns from your own use.** Keeps your Assist conversations and their results in your Home Assistant, next to the history it already keeps. It's as private as your Home Assistant setup.
 2. **Thinks.** A deep-thinking AI looks for where you had to step in and proposes changes that would have spared you the effort.
