@@ -100,6 +100,9 @@ class AnalysisResult(TypedDict, total=False):
     problems: list[str]  # What the checks found in an answer kept though none was accepted.
     duplicates: list[dict]  # Goals an existing improvement already fixes (marked by the analyzer).
     triaged: dict  # The quick check found it smooth (no goals extracted).
+    notes: list[dict]  # Its turns after those said, in order: the note it was sent in with ({sent}), each revision
+    # note ({revision: its round}).
+    about_the_fix: list[dict]  # Revision notes only about the improvement itself ({turn, what}): no goal, P12.8.1.
 
 
 GoalRef = TypedDict("GoalRef", {"session": str, "goal_turn": int}, total=False)
@@ -405,6 +408,7 @@ class Improvement(TypedDict, total=False):
     history: list[dict]
     revises: dict  # The improvement it revises: {id, title, note}, and conflict: true when sent back after one.
     revised_by: str
+    unrevised: dict  # A revision whose round brought no new version: {note, why} (the proposer's reason).
     conflicts: list[dict]  # What stood in the way when an accept met a conflict (sent back, the proposer hears it).
     conversation: str  # The one conversation it came from and was tested on (SPEC.md P0.10).
     reach: list[dict]  # What each change applies to: the household, one assistant, or one person (SPEC.md P0.10).
@@ -440,25 +444,32 @@ class Checked(TypedDict):  # Triage → Analyze: the quick check found it needs 
     smooth: bool
 
 
+class CantImprove(TypedDict, total=False):  # The question when Home Assistant answered a turn itself (DETAILS P9.9.9).
+    turn: int  # The first turn it answered, not the AI.
+    quote: str  # What the household said there.
+    agent_id: str | None  # The AI the conversation was with, where it answered a turn.
+    pipeline_id: str | None  # The voice assistant it ran through, where the recording kept it.
+
+
 class Analysed(TypedDict):  # Analyze → Propose: the goals it carries, and its question for the household, if any.
     conversation: str
     round: int
     goals: list[str]
-    question: str | None
+    question: str | CantImprove | None
 
 
 class Proposed(TypedDict):  # Propose → Write up: the improvements it sent on (or the one still waiting), or the question.
     conversation: str
     round: int
     improvements: list[str]
-    question: str | None
+    question: str | CantImprove | None
 
 
 class Written(TypedDict):  # Write up → Your review: what waits there for the household.
     conversation: str
     round: int
     improvements: list[str]
-    question: str | None
+    question: str | CantImprove | None
 
 
 class SentBack(TypedDict):  # Your review → Propose: a new round, for a revision or a conflict the household agreed to.

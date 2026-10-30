@@ -54,6 +54,23 @@ def _requests(session):
     return found
 
 
+def _pipeline(hass, conversation_id):
+    """The voice assistant (Assist pipeline) a request ran through, by Home Assistant's own log of its runs: the run
+    whose intent step names this conversation. None for a request that came another way (a conversation service
+    call)."""
+    try:
+        from homeassistant.components.assist_pipeline.pipeline import KEY_ASSIST_PIPELINE
+        runs = hass.data[KEY_ASSIST_PIPELINE].pipeline_debug
+    except (ImportError, KeyError, AttributeError):
+        return None
+    for pipeline_id, kept in list(runs.items()):
+        for run in reversed(list(kept.values())):
+            if any(e.type == "intent-start" and (e.data or {}).get("conversation_id") == conversation_id
+                   for e in run.events):
+                return pipeline_id
+    return None
+
+
 def _agent(content, chat_log):
     """The conversation agent answering, where an event shows it: a tool result's or a reply's agent_id (HA sends
     no event for a reply itself; the chat log the recorder observes has them)."""
@@ -249,7 +266,7 @@ class Recorder:
 
     @callback
     def on_chat(self, conversation_id, kind, data):
-        if not self.running or conversation_id.startswith("improver-replay-"):
+        if not self.running:  # A replay's chat log is its sandbox's: none reaches here.
             return
         if kind == "deleted":  # HA's cleanup, minutes later, in whatever context set its timer (an AI role's, say).
             if self.keys.get(conversation_id) not in self.sessions:
@@ -299,6 +316,8 @@ class Recorder:
             with span("recorder.snapshot", recording_id=key):  # The whole home, on the event loop: watched.
                 source = snapshot(self.hass)
             session["turns"].append({"user": plain(content), "source": source})
+            if "pipeline_id" not in session and (found := _pipeline(self.hass, conversation_id)):
+                session["pipeline_id"] = found  # Its voice assistant, whose settings say what Assist may do.
         active = current_chat_log.get()
         if active and active.conversation_id == conversation_id and kind == "updated":
             self.logs[key] = active

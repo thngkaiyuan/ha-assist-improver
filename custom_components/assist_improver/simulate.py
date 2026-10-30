@@ -9,32 +9,33 @@ plan and is kept (Replays): a settled one is reused, never resampled; one the ma
 """
 
 import asyncio
-from copy import copy, deepcopy
-from dataclasses import is_dataclass, replace
+from copy import deepcopy
 from datetime import datetime
 import json
 from pathlib import Path
-from types import MappingProxyType
+from uuid import uuid4
 
 import probatio
-from homeassistant.components import conversation
 from homeassistant.components.conversation.trace import async_conversation_trace
 from homeassistant.const import __version__ as CORE_VERSION
+from homeassistant.core import Context
+from homeassistant.exceptions import HomeAssistantError
+from homeassistant.helpers import llm
 from homeassistant.helpers.storage import Store
 from homeassistant.util.dt import utcnow
 
 from . import measures
-from .cases import (CaseError, as_seen, digest, recording_turns, replay_readiness, replayed, started_from,
-                    transcript)
+from .analyzer import SPEAKING
+from .cases import (CaseError, as_seen, calls_in, digest, recording_turns, replay_readiness, replayed,
+                    started_from, transcript)
 from .changes import setup_from_changes
 from .const import DOMAIN, STORAGE_VERSION, TESTED_PROVIDERS
 from .digest import _clip, _naming
 from .failures import closing
 from .instructions import target
-from .replay import FrozenTurnLog, check_fidelity
-from .serialization import plain
-from .simulation import (UnsupportedSimulation, assist_transitions, per_entity, recorded_attributes, same_brightness,
-                         same_effects, setting_off)
+from .replay import SandboxHome, assistant_of
+from .simulation import (UnsupportedSimulation, _request_changes, assist_transitions, moved_by_others, per_entity,
+                         recorded_attributes, same_brightness, same_effects, setting_off)
 from .snapshot import assist_config
 from .trace import span
 
@@ -50,13 +51,13 @@ NOTHING_AGAIN = ("Without the change, nothing the household had trouble with hap
 # time, with the turn they objected to as the example (DETAILS P6.1.9, P6.1.11). Its model is set where the feedback
 # check's was (settings' role key).
 CONDUCT_ROLE = "feedback_check"
-CONDUCT_INSTRUCTIONS = """A household objected to something their home assistant ("Assist") said or did in one turn of a conversation, or had to check on a result because Assist's reply there left them unsure (then what they objected to is a reply that leaves the result unclear). Each objection below has their own words (quote) and, as the example of what they objected to, that turn as it was recorded (objected_to: its turn number, then what the user said, what Assist did, each tool call with Home Assistant's result, and what it replied); or "Assist in general" when they named no one turn. Then the same conversation replayed, turn by turn, in the same form. The replay's turn with the same number is the same request asked again. For each objection, judge each replay turn it lists (judge): does that turn show what the household objected to? Answer for each with shows (true or false) and a short reason (why). Judge only what they objected to, from what the turn said and did: the tool calls and results are the facts of what Assist did. A turn that doesn't do it, or does something they didn't object to, doesn't show it."""
+CONDUCT_INSTRUCTIONS = """A household objected to something their home assistant ("Assist") said or did in one turn of a conversation, or had to check on a result because Assist's reply there left them unsure (then what they objected to is a reply that leaves the result unclear). Each objection below has their own words (quote) and, as the example of what they objected to, that turn as it was recorded (objected_to: its turn number, then what the user said, what Assist did, each tool call with Home Assistant's result, what it replied, and what the home did: each message spoken and on which devices, each device it changed, and each script it ran); or "Assist in general" when they named no one turn. Then the same conversation replayed, turn by turn, in the same form, what the home did there being each message spoken and on which devices, each command its devices were sent, and each device whose state changed: a turn with none of these did nothing of the kind. The replay's turn with the same number is the same request asked again. For each objection, judge each replay turn it lists (judge): does that turn show what the household objected to? Answer for each with shows (true or false) and a short reason (why). Judge only what they objected to, from what the turn said and did: the tool calls, their results and what the home did are the facts of what Assist did. A turn that doesn't do it, or does something they didn't object to, doesn't show it."""
 CONDUCT_STRUCTURE = probatio.Schema({probatio.Required("answers"): [{
     probatio.Required("goal"): str, probatio.Required("turn"): int, probatio.Required("shows"): bool,
     probatio.Required("why"): str}]})
 # Whether a reply gives what the user asked to know (DETAILS P9.7.4): the same small model judges it, one turn at a
 # time, with the home as it was then (the devices the question is about) and the form they asked for.
-FACT_INSTRUCTIONS = """A household asked their home assistant ("Assist") something they wanted to know. Each question below has what they asked (asked: the turn and their words), what the answer needs (needs), the form they asked for the answer in, if any (form: their own words), the turn whose reply to judge (turn), and, when it's about the home, the devices it's about as the home had them when Assist answered (home: each device's name, its state and attributes as that turn started, and what changed in it before the reply). Then each turn to judge (turns), as it went: what the user said, what Assist did (each tool call with Home Assistant's result) and what it replied. For each question, does that turn's reply give what the answer needs, true to the home as given, in the form asked for (when given)? A question with no home is beyond what the home records: judge only whether the reply answers it in the form asked for, never whether its content is true. Answer for each with gives (true or false) and a short reason (why). Judge only the question: a reply that gives it with more besides still gives it; one that is wrong about the home, leaves out what the answer needs, or ignores the form asked for doesn't."""
+FACT_INSTRUCTIONS = """A household asked their home assistant ("Assist") something they wanted to know. Each question below has what they asked (asked: the turn and their words), what the answer needs (needs), the form they asked for the answer in, if any (form: their own words), the turn whose reply to judge (turn), and, when it's about the home, the devices it's about as the home had them when Assist answered (home: each device's name, its state and attributes as that turn started, and what changed in it before the reply). Then each turn to judge (turns), as it went: what the user said, what Assist did (each tool call with Home Assistant's result), what it replied, and what the home did (each message spoken and on which devices, each device changed, and in a replay each command its devices were sent; a replayed turn with none of these did nothing of the kind, while a recorded one names each script it ran). For each question, does that turn's reply give what the answer needs, true to the home as given, in the form asked for (when given)? A question with no home is beyond what the home records: judge only whether the reply answers it in the form asked for, never whether its content is true. Answer for each with gives (true or false) and a short reason (why). Judge only the question: a reply that gives it with more besides still gives it; one that is wrong about the home, leaves out what the answer needs, or ignores the form asked for doesn't."""
 FACT_STRUCTURE = probatio.Schema({probatio.Required("answers"): [{
     probatio.Required("goal"): str, probatio.Required("turn"): int, probatio.Required("gives"): bool,
     probatio.Required("why"): str}]})
@@ -157,43 +158,6 @@ def setup_for(hypothesis, recording, hass):
     return setup, tested, {k: config.get(k) for k in ("config_entry_id", "subentry_id", "title")}
 
 
-def clone_provider(agent, plan):
-    """Copy per-run options onto the user's own assistant; keep HA's provider code and client.
-
-    Anthropic and OpenRouter are tested. Other providers get the same copy and run labelled as not yet tested
-    (plan["provider_tested"]); a provider that caches options outside its subentry may not see a candidate's change.
-    """
-    provider = plan["provider"]
-    if agent is None:  # Removed, or its provider isn't loaded.
-        raise CaseError("The assistant this conversation used is no longer set up, so it can't be replayed.")
-    if (agent.entry.entry_id != provider["config_entry_id"]
-            or agent.subentry.subentry_id != provider["subentry_id"]):
-        raise CaseError("Selected HA agent does not match the recorded provider entry")
-    options = deepcopy(provider["options"])
-    clone = copy(agent)
-    if is_dataclass(agent.subentry):
-        clone.subentry = replace(agent.subentry, data=MappingProxyType(options))
-    else:  # In-process fixture subentry; production uses HA's frozen dataclass.
-        clone.subentry = copy(agent.subentry)
-        clone.subentry.data = MappingProxyType(options)
-    module = type(agent).__module__
-    if module == "homeassistant.components.anthropic.conversation":
-        from homeassistant.components.anthropic.const import CONF_CHAT_MODEL, DEFAULT
-        # As HA's own entity picks it: recommended settings name no model, and HA runs those on its default.
-        model = options.get(CONF_CHAT_MODEL, DEFAULT[CONF_CHAT_MODEL])
-        if not model:
-            raise CaseError("Recorded model is missing")
-        model_info, found = agent.entry.runtime_data.get_model_info(model)
-        if not found:
-            raise CaseError("Recorded model has no cached provider metadata; do not silently substitute a model")
-        clone.model_info = model_info
-    elif module == "homeassistant.components.open_router.conversation":
-        if not options.get("model"):
-            raise CaseError("Recorded model is missing")
-        clone.model = options["model"]  # OpenRouter reads its model at setup, not from the subentry per message.
-    return clone
-
-
 def reaches(hypothesis, recording):
     """Whether an idea changes anything for this conversation (DETAILS P6.8.5): anything but edits of assistants'
     instructions does; those do only when the conversation used one of those assistants."""
@@ -216,10 +180,11 @@ def instructions_now(hass, hypothesis):
     return found
 
 
-def _turn(number, user, items):
+def _turn(number, user, items, home=None):
     """One turn as the judge reads it, in order (a list: the judge's input is sent with its keys sorted): its number,
-    what the user said, what Assist did (each tool call with Home Assistant's result, clipped) and what it replied.
-    items: what Assist added to the conversation in it, as recorded or replayed."""
+    what the user said, what Assist did (each tool call with Home Assistant's result, clipped), what it replied, and
+    what the home did, if anything (home: _replayed_turn's or _recorded_turn's). items: what Assist added to the
+    conversation in it, as recorded or replayed."""
     calls, did, reply = {}, [], ""
     for item in items:
         if item.get("role") == "assistant":
@@ -231,7 +196,48 @@ def _turn(number, user, items):
             found = item["result"] if "result" in item else item.get("tool_result")  # tool_result: before 2026.10.
             did.append({"called": item.get("tool_name") or call.get("tool_name"), "with": call.get("tool_args"),
                         "result": _clip(json.dumps(found, ensure_ascii=False, default=str))})
-    return [{"turn": number}, {"user_said": user}, {"assistant_did": did}, {"assistant_replied": reply}]
+    home = {k: v for k, v in (home or {}).items() if v}
+    return [{"turn": number}, {"user_said": user}, {"assistant_did": did}, {"assistant_replied": reply},
+            *([{"home_did": home}] if home else [])]
+
+
+def _spoke(spoken):
+    return [{"message": s["message"], "on": sorted(s["targets"])} for s in spoken]
+
+
+def _replayed_turn(step):
+    """A replay's turn as the judge reads it (_turn), with what its sandbox logged the home doing: each message spoken
+    and on which devices, each command its devices were sent, and each device whose state changed."""
+    return _turn(step["turn"], step["input"], step.get("output") or [], {
+        "spoke": _spoke(step.get("spoken") or []),
+        "commanded": [f"{c['service']} {c['entity_id']}"  # What was spoken is in spoke, once.
+                      + (f" {_clip(json.dumps(c['data'], ensure_ascii=False, sort_keys=True, default=str), 200)}"
+                         if c.get("data") else "") for c in step.get("commands") or []
+                      if c["service"] not in SPEAKING],
+        "changed": [f"{t['entity_id']}: {t['old']} → {t['new']}" for t in step.get("transitions") or []]})
+
+
+def _recorded_turn(recording, recorded, number):
+    """A recorded turn as the judge reads it (_turn), with what the recording shows the home doing: what a broadcast
+    reached (a device available as the turn began), each device the turn's request changed, its state or its
+    settings (a recording keeps no commands), and each script it ran, saying the rest of what that did isn't kept."""
+    from .analyzer import ran_scripts, spoken
+    turn = recorded[number - 1]
+    states, calls = turn["source"].get("states") or {}, calls_in(turn["messages"][1:])
+    heard = [{**s, "targets": {e for e in s["targets"] if (states.get(e) or {}).get("state") != "unavailable"}}
+             for s in spoken(calls)]
+    changed = []
+    for change in _request_changes(recording, turn):
+        old, new = change["old"], change["new"]
+        if old.get("state") != new.get("state"):
+            changed.append(f"{change['entity_id']}: {old.get('state')} → {new.get('state')}")
+        elif settings := [k for k, v in (new.get("attributes") or {}).items()
+                          if (old.get("attributes") or {}).get(k) != v][:3]:
+            changed.append(f"{change['entity_id']}: " + ", ".join(
+                f"{k} {(old.get('attributes') or {}).get(k)} → {new['attributes'][k]}" for k in settings))
+    return _turn(number, turn["messages"][0]["content"], turn["messages"][1:],
+                 {"spoke": _spoke(heard), "changed": changed, "ran_scripts": [
+                     f"{s}: what it did isn't recorded, beyond any change listed" for s in ran_scripts(calls)]})
 
 
 def judgeable(goal, view):
@@ -310,7 +316,7 @@ async def answered(hass, model, view, goals):
                  for n, run in runs.items() if n not in found]
     if not questions:
         return found, None
-    turns = [_turn(t, said(t), recorded[t - 1]["messages"][1:]) for t in sorted({q["turn"] for q in questions})]
+    turns = [_recorded_turn(view.recording, recorded, t) for t in sorted({q["turn"] for q in questions})]
     heard = await check_facts(hass, model, questions, turns)
     found |= {int(a["goal"]): {k: a[k] for k in ("turn", "gives", "why")} for a in heard["answers"]
               if heard["status"] == "completed"}
@@ -347,8 +353,7 @@ async def judged_facts(hass, model, recording, view, steps, questions, goals, ve
         user = lambda n: recorded[n - 1]["messages"][0]["content"]
         heard = await check_facts(hass, model, [{"goal": str(n), **question_of(g, view, t, user(g["label"]), world)}
                                                 for n, (g, t) in enumerate(missing, 1)],
-                                  [_turn(t, said[t]["input"], said[t].get("output") or [])
-                                   for t in sorted({t for _, t in missing})])
+                                  [_replayed_turn(said[t]) for t in sorted({t for _, t in missing})])
         if heard["status"] != "completed":
             raise Unjudged("The replies couldn't be checked against what the user asked to know.")
         found = {}
@@ -375,8 +380,7 @@ async def check_conduct(hass, entity_id, objections, steps):
     if not entity_id:
         return {"status": "not_run", "answers": [], "error": {"message": "No model to check with"}}
     record = await run_role(hass, role=CONDUCT_ROLE, entity_id=entity_id, instructions=CONDUCT_INSTRUCTIONS,
-                            payload={"objections": objections, "replay": [
-                                _turn(s["turn"], s["input"], s.get("output") or []) for s in steps]},
+                            payload={"objections": objections, "replay": [_replayed_turn(s) for s in steps]},
                             structure=CONDUCT_STRUCTURE, allow_paid_inference=True)
     given = {(a.get("goal"), a.get("turn")): a for a in _well_formed(CONDUCT_STRUCTURE, record.get("output"))}
     asked = sorted((o["goal"], t) for o in objections for t in o["judge"])
@@ -408,8 +412,7 @@ async def judged(hass, model, recording, steps, goals, verdicts):
                    if (turns := [t for t in wanted[g["key"]] if t not in known.get(named[g["key"]], {})])]:
         recorded = recording_turns(recording)
         asked = [{"goal": str(n), "quote": g.get("quote") or "", "judge": turns,
-                  "objected_to": _turn(g["about"], recorded[g["about"] - 1]["messages"][0]["content"],
-                                       recorded[g["about"] - 1]["messages"][1:])
+                  "objected_to": _recorded_turn(recording, recorded, g["about"])
                   if isinstance(g.get("about"), int) else "Assist in general"}
                  for n, (g, turns) in enumerate(missing, 1)]
         heard = await check_conduct(hass, model, asked, steps)
@@ -517,15 +520,18 @@ class Trial:
     the sandbox, saying only the turns it can't skip (DETAILS P6.4), with the judge (judge: its model) asked about
     the objections as it goes. It runs once; its sandbox closes however it ends."""
 
-    def __init__(self, hass, plan, recording, agent, *, goals=None, setup=None, aside=(), judge=None, through=None):
-        self.hass, self.plan, self.recording, self.agent = hass, plan, recording, agent
+    def __init__(self, hass, plan, recording, *, before=None, goals=None, setup=None, aside=(), judge=None,
+                 through=None):
+        self.hass, self.plan, self.recording = hass, plan, recording
+        self.assistant = before or plan  # Whose plan names the assistant and its recorded settings: the before's.
         self.goals, self.setup, self.after, self.aside = goals or [], setup or {}, plan["kind"] == "after", set(aside)
         self.judge, self.states, self.facts = judge, {}, {}  # The judge's model; its answers so far.
         self.turns = recording_turns(recording)
         self.through = through or len(self.turns)
         # The devices the recorded Assist changed itself, in any turn: what a before is judged on.
         self.mine = {t["entity_id"] for turn in self.turns for t in assist_transitions(recording, turn)}
-        self.log, self.session, self._rerun = None, None, None
+        self.home, self.agent, self.session, self._rerun = None, None, None, None
+        self.conversation_id, self.usage = f"improver-replay-{uuid4()}", []  # In its sandbox only.
         self.entry = {"plan": deepcopy(plan), "recording_id": recording["id"], "at": utcnow().isoformat(),
                       "status": "running", "error": None, "notes": list(plan.get("notes") or []), "usage": None,
                       "said": [], "steps": [], "verdicts": {}}
@@ -537,27 +543,32 @@ class Trial:
             return await self._run()
 
     async def _run(self):
-        entry, setup, source = self.entry, self.setup, self.turns[0]["source"]
+        """The household's assistant runs each turn in the replay's sandbox, loaded from its own config entry with the
+        recorded provider settings (a change's instructions in their place): a turn runs there whole, the model seeing
+        what Home Assistant builds there, which must be the recorded prompt and tools (SandboxHome.faithful)."""
+        entry, setup, turns = self.entry, self.setup, self.turns
+        source = turns[0]["source"]
         try:
-            self.log = FrozenTurnLog(self.hass, self.recording,
-                                     scripts={**source["scripts"], **(setup.get("scripts") or {})},
-                                     automations=source["automations"], exposure_changes=setup.get("exposure"),
-                                     alias_changes=setup.get("aliases"), alias_removals=setup.get("alias_removals"),
-                                     prompt_template=setup.get("prompt"),
-                                     use_sandbox_prompt=bool(setup.get("prompt_changed")),
-                                     household=setup.get("household"))
-            if setup.get("prompt_changed"):
-                # The change shows in Assist's instructions, so the model sees the prompt HA builds in the sandbox.
-                # That is faithful only if, unchanged, the sandbox builds exactly the recorded prompt.
-                report = await check_fidelity(self.hass, self.recording)
-                if not report["prompt_matches"]:
-                    raise UnsupportedSimulation("The sandbox doesn't rebuild this conversation's instructions exactly: "
-                                                + " | ".join(report["prompt_diff"][2:8]))
-            for turn in self.turns[:self.through]:
-                if turn["number"] > 1:
-                    if self.after and not await self._needed(turn["number"]):
+            self.home = home = SandboxHome(
+                self.hass, self.recording, turns[0], self.conversation_id,
+                scripts={**source["scripts"], **(setup.get("scripts") or {})}, automations=source["automations"],
+                exposure_changes=setup.get("exposure"), alias_changes=setup.get("aliases"),
+                alias_removals=setup.get("alias_removals"), household=setup.get("household"),
+                watch=[e for e in source["states"] if e.startswith("light.")])
+            provider = deepcopy(self.assistant["provider"])
+            if setup.get("prompt") is not None:
+                provider["options"] = {**provider["options"], "prompt": setup["prompt"]}
+            self.agent = await home.load_assistant(self.assistant["agent_id"], provider)
+            said = 0
+            for turn in turns[:self.through]:
+                number = turn["number"]
+                if number > 1:
+                    if self.after and not await self._needed(number):
                         continue
-                    self.log.say(turn)
+                    # Others moved things in the home between the recorded turns.
+                    await home.observe(turn["source"], [moved_by_others(self.recording, turns, t)
+                                                        for t in turns[said:number]])
+                said = number
                 if not await self._turn(turn):
                     break
             else:
@@ -569,9 +580,9 @@ class Trial:
             entry["status"] = "unsupported" if isinstance(err, CaseError) else "infrastructure_failure"
             entry["error"] = {"type": type(err).__name__, "message": str(err)[:500]}
         finally:
-            if self.log is not None:
-                entry["usage"] = self.log.usage_report()
-                await self.log.close()
+            entry["usage"] = usage_report(self.usage)
+            if self.home is not None:
+                await self.home.stop()
         return entry
 
     async def _needed(self, number):
@@ -614,24 +625,38 @@ class Trial:
 
     async def _turn(self, turn):
         """Replay one turn and keep it as a step; False when the before's turn didn't go as recorded."""
-        log, number = self.log, turn["number"]
-        world = log.replay_api.world
-        start, moved, called = len(log.content), len(world.transitions), len(log.external_calls)
-        spoke = len(world.spoken)
+        number, home = turn["number"], self.home
+        identity = turn["prepared"]["context"].get("context") or {}
+        if not identity.get("id") or not {"id", "user_id", "parent_id"} <= identity.keys():
+            raise CaseError("Cannot backfill missing historical identity")
+        recorded_context = llm.LLMContext(**{**turn["prepared"]["context"], "context": Context(**identity)})
+        if not self.after:  # The replay with a change says turns its before has shown are rebuilt exactly.
+            if not await home.faithful(turn, recorded_context):
+                raise UnsupportedSimulation("The sandbox doesn't rebuild this turn's instructions and tools exactly")
+        else:  # The household knowledge Assist reads: the change's, or as recorded.
+            await home.prepare(turn, recorded_context)
         async with span("replay.turn", replay=self.plan["kind"], turn=number):
-            await self.agent._async_handle_message(log.input, log)
-        new = log.content[start:]
-        if (not new or log.unresponded_tool_results or new[-1].role != "assistant" or not new[-1].content
-                or new[-1].tool_calls):
+            found = await home.turn(turn, self.agent, self.conversation_id)
+        self.usage += found["usage"]
+        new = found["content"]
+        external = [{"name": c["tool_name"], "args": deepcopy(c["tool_args"]), "provenance": "provider_execution"}
+                    for m in new if m.get("role") == "assistant" for c in m.get("tool_calls") or [] if c.get("external")]
+        if any(c["name"] != "tool_search_tool_bm25" for c in external):
+            # A server tool may already have executed remotely: the replay can't tell what it did.
+            raise UnsupportedSimulation("Provider tool is outside catalogue-search evaluation coverage")
+        if found["unemulated"]:  # The turn's own commands, never what others' moves set off before it.
+            raise UnsupportedSimulation("No emulation for " + ", ".join(found["unemulated"]))
+        if found["reply"].get("response_type") == "error":  # The provider or HA failed it: the machinery's, not the run's.
+            raise HomeAssistantError(((found["reply"].get("speech") or {}).get("plain") or {}).get("speech") or "error")
+        if not new or new[-1].get("role") != "assistant" or not new[-1].get("content") or new[-1].get("tool_calls"):
             raise CaseError("The assistant didn't finish this turn")
-        transitions = deepcopy(world.transitions[moved:])
-        brightness = {e: [(log.turn_start_attributes.get(e) or {}).get("brightness"),
-                          (world.attributes.get(e) or {}).get("brightness")] for e in log.replay_api.watch}
-        step = {"turn": number, "input": log.input.text, "reply": new[-1].content,
-                "output": plain([c.as_dict() for c in new]), "transitions": transitions,
-                "brightness": {e: v for e, v in brightness.items() if v[0] != v[1]},
-                "external_calls": deepcopy(log.external_calls[called:]), "spoken": deepcopy(world.spoken[spoke:]),
-                "prompt_matches_recording": log.prompt_matches_recording}
+        transitions, attributes = found["transitions"], found["attributes"]
+        brightness = {e: [(found["before"].get(e) or {}).get("brightness"), (attributes.get(e) or {}).get("brightness")]
+                      for e in home.watch}
+        step = {"turn": number, "input": turn["messages"][0]["content"], "reply": new[-1]["content"], "output": new,
+                "transitions": transitions, "brightness": {e: v for e, v in brightness.items() if v[0] != v[1]},
+                "external_calls": external, "spoken": found["spoken"], "commands": found["commands"],
+                "prompt_matches_recording": found["given"]["prompt"] == turn["history"][0]["content"]}
         self.entry["said"].append(number)
         self.entry["steps"].append(step)
         if self.after:
@@ -644,11 +669,11 @@ class Trial:
         # Their lights' brightness too, where the replay knows it: a light switched on with none named comes on at the
         # level it remembers, which only the real light knew.
         lights = [] if self.recording.get("practice") else sorted(
-            e for e in mine if e.startswith("light.") and (world.attributes.get(e) or {}).get("brightness") is not None)
+            e for e in mine if e.startswith("light.") and (attributes.get(e) or {}).get("brightness") is not None)
         then = recorded_attributes(self.recording, turn, lights)
         step.update(recorded_transitions=expected,
                     matched=all(same_effects(actual_by.get(e, []), expected_by.get(e, [])) for e in mine)
-                    and all(same_brightness(world.attributes.get(e), then[e]) for e in lights),
+                    and all(same_brightness(attributes.get(e), then[e]) for e in lights),
                     differences_elsewhere={e: {"replay": [list(c) for c in actual_by.get(e, [])],
                                                "recorded": [list(c) for c in expected_by.get(e, [])]}
                                            for e in sorted((set(actual_by) | set(expected_by)) - mine)
@@ -668,6 +693,14 @@ class Trial:
         return self._rerun.get(turn["number"], [])
 
 
+def usage_report(events):
+    """The provider-neutral statistics HA's assistant traced for a replay's turns: absence is unknown, never zero
+    usage or a billing guarantee."""
+    return {"status": "provider_reported_partial" if events else "unavailable", "events": deepcopy(events),
+            "billing_total": None, "provider_request_count": None,
+            "limits": "HA trace statistics may omit cache writes, tool fees and retries; events are not request counts"}
+
+
 async def _settled(hass, replays, plan, before, recording, **kwargs):
     """The plan's replay: a settled one as kept (never resampled); otherwise run now, kept from before its first
     inference and closed however it ends. Transient when the machinery cut it off; Untestable (nothing kept) when the
@@ -675,10 +708,11 @@ async def _settled(hass, replays, plan, before, recording, **kwargs):
     if (kept := replays.get(plan["id"])) and kept["status"] in SETTLED:
         return kept
     try:
-        agent = clone_provider(conversation.async_get_agent(hass, before["agent_id"]), before)
+        if assistant_of(hass, before["agent_id"], before["provider"]) is None:
+            raise CaseError("The assistant this conversation used is no longer set up, so it can't be replayed.")
     except CaseError as err:
         raise Untestable(str(err), conversation=True) from err
-    trial = Trial(hass, plan, recording, agent, **kwargs)
+    trial = Trial(hass, plan, recording, before=before, **kwargs)
     async with closing(replays.save, deepcopy(trial.entry)) as keep:
         async with span("replay", kind=plan["kind"], plan_id=plan["id"]) as section:
             found = await keep(await trial.run())
@@ -811,7 +845,6 @@ async def replay_recording(hass, recorder, recording_id, last_turn=1):
     developer service). Paid: the assistant's own model. Nothing is kept."""
     recording = await recorder.export(recording_id)
     plan = before_plan(recording)
-    agent = clone_provider(conversation.async_get_agent(hass, plan["agent_id"]), plan)
-    found = await Trial(hass, plan, recording, agent, through=last_turn).run()
+    found = await Trial(hass, plan, recording, through=last_turn).run()
     return {"agent_id": plan["agent_id"], "model": (plan["provider"].get("options") or {}).get("chat_model"),
             **{k: v for k, v in found.items() if k != "plan"}}

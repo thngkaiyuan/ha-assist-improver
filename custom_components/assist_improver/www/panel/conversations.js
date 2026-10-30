@@ -279,8 +279,18 @@ function badge(row) {
                                         duplicate: C.duplicateTip};
   const text = row.held ? fill(C.heldTip, {why: row.held.why}) : tips[row.status];
   const tip = text ? ` title="${esc(text)}"` : "";
-  return row.status === "review" && row.review ? ""
+  return row.status === "review" && row.review || cannot(row) ? ""
     : `<span class="chip cs-${row.status}"${tip}>${esc(C.status[row.status] || row.status)}</span>`;
+}
+
+// One Home Assistant answered itself (DETAILS P9.9.9): what to do, said in full in its bubble, which a tap or focus
+// shows too; beside the row, so reading it doesn't open the conversation.
+const cannot = (row) => row.cant_improve && !row.held;
+function cannotChip(row) {
+  if (!cannot(row)) return "";
+  const C = TEXT.conversations, said = fill(C.cannotTip, row.cant_improve);
+  return `<span class="chip cs-cannot" data-tip="${esc(said)}" tabindex="0" role="note"
+    aria-label="${esc(`${C.status.cannot}: ${said}`)}">${esc(C.status.cannot)}</span>`;
 }
 
 const reviewLink = (row) => row.status === "review" && row.review
@@ -357,7 +367,7 @@ function rowHtml(p, cv, row) {
       <span class="cs-text"><span class="cs-said">${row.said ? marked(row.said, cv.query) : esc(C.nothing)}</span>
         ${row.match ? `<span class="cs-reply cs-match">${marked(row.match, cv.query)}</span>`
           : row.reply ? `<span class="cs-reply">${marked(row.reply, cv.query)}</span>` : ""}
-        <span class="cs-sub">${row.timed ? `<mark>${esc(when(row.started))}</mark>` : esc(when(row.started))} · ${esc(plural(row.turns || 0, "turn"))}${failed}</span></span>${badge(row)}</button>${reviewLink(row)}</div>
+        <span class="cs-sub">${row.timed ? `<mark>${esc(when(row.started))}</mark>` : esc(when(row.started))} · ${esc(plural(row.turns || 0, "turn"))}${failed}</span></span>${badge(row)}</button>${reviewLink(row)}${cannotChip(row)}</div>
       ${opened ? reading(p, cv, row) : ""}</div>`;
 }
 
@@ -404,8 +414,8 @@ export function section(p) {
 }
 
 // The Status filter's choices, in the order a conversation moves through them.
-const STATUSES = ["waiting", "sent", "active", "smooth", "queued", "fine", "unclear", "working", "writing", "review",
-                  "declined", "nofix", "duplicate", "improved", "test", "unreadable", "archived"];
+const STATUSES = ["waiting", "sent", "active", "smooth", "queued", "fine", "unclear", "cannot", "working", "writing",
+                  "review", "declined", "nofix", "duplicate", "improved", "test", "unreadable", "archived"];
 // The standings to choose from: those some conversation matching the rest has, and any chosen.
 const standing = (cv, s) => (cv.byStatus[s] || 0) + (cv.away?.byStatus[s] || 0);  // In the list and below Show archived.
 const choosable = (cv) => STATUSES.filter((s) => standing(cv, s) || cv.only?.has(s));

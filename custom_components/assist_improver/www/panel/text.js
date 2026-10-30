@@ -33,7 +33,8 @@ export const TEXT = {
                   sentNow: "Sent in. The improver is looking at it now.", sentLater: "Sent in. It goes in with your next run.",
                   // Where each stands: the stage its flow record names, or its outcome (conversations.standing).
                   status: {waiting: "New", active: "Still going", sent: "Sent in", smooth: "Looked smooth", queued: "To analyze",
-                           fine: "No trouble found", unclear: "Needs your note", working: "Looking for a fix",
+                           fine: "No trouble found", unclear: "Needs your note", cannot: "Can't improve",
+                           working: "Looking for a fix",
                            writing: "Writing it up", review: "Up for review",
                            declined: "Declined", nofix: "No fix found", duplicate: "Already covered", improved: "Improved",
                            test: "Marked as a test", unreadable: "Couldn't be read", archived: "Archived"},
@@ -42,6 +43,10 @@ export const TEXT = {
                   nofixTip: "No fix worked. Send it in again with a note for one more look.",
                   fineTip: "Nothing went wrong, as far as it could tell. Send it in again with a note if something did.",
                   unclearTip: "It couldn't tell what you wanted. Send it in again with a note.",
+                  // A conversation Home Assistant answered itself, not the AI (DETAILS P9.9.9): the chip's bubble.
+                  cannotTip: "Home Assistant's built-in commands answered “{quote}”, not your AI assistant, and " +
+                             "Assist Improver can only improve your AI assistant. To let it help with requests like " +
+                             "this, turn off Prefer handling commands locally in {assistant}'s settings.",
                   duplicateTip: "Another conversation's improvement covers it.", heldTip: "Held: {why}",
                   // The Status filter's button: everything, or what it shows (one status's name, or how many).
                   statusAll: "Status", statusSome: "Status: {n}",
@@ -50,6 +55,8 @@ export const TEXT = {
                   empty: "Use Assist as usual: your conversations show up here, ready to send in."},
   // An improvement's review: each test opens to its conversation as it went, and its replay with the change.
   review: {before: "Before", after: "With the change", stopped: "The replay stopped before Assist replied.",
+           // A revision whose round brought no new version: said with the version still shown, with the proposer's why.
+           unrevised: "No new version for your note “{note}”: {why}", unrevisedPlain: "No new version for your note “{note}”.",
            // What else an improvement gets you, beside new things Assist can do and fewer turns: side effects it no
            // longer leaves (each device, as it stays) and what you pointed out that it fixed (your words). {n}: how many.
            spared: {gain: "{n} unwanted change{s} avoided", title: "Unwanted changes avoided ({n})"},

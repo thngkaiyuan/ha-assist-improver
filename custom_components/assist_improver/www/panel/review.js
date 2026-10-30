@@ -146,6 +146,8 @@ export function render(p) {
     <div class="outcome">${esc(outcome)}</div>
     ${r.revises ? `<div class="revises">${r.revises.conflict ? `Revised after a conflict on “${esc(r.revises.title)}”`
       : `Revised after your note on “${esc(r.revises.title)}”${r.revises.note ? `: “${esc(r.revises.note)}”` : ""}`}</div>` : ""}
+    ${r.unrevised ? `<div class="revises unrevised">${esc(fill(r.unrevised.why ? R.unrevised : R.unrevisedPlain,
+      r.unrevised))}</div>` : ""}
     ${conflicts}
     ${summary}<div class="card">${sections}</div></div>`,
     layer: footer(p, r),

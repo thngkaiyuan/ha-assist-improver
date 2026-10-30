@@ -93,7 +93,7 @@ class SessionView:
         practice = recording.get("practice")
         self._by_results = set()  # (entity, at) of changes only Assist's results named as its (_who).
         self.changes = self._changes(practice["simulated_changes"] if practice else recording.get("state_changes", []))
-        self.note = None  # The note it was sent in with, where the analyzer hears it: its last turn (read_turn).
+        self.notes = {}  # Its notes, where the analyzer hears them, by their turns after those said (read_turn).
         # Each turn's calls with Home Assistant's results, for what leaves no device state (analyzer.announced); a
         # script's own calls aren't recorded.
         self.calls, self.scripts_seen = {t["number"]: calls_in(t["messages"][1:]) for t in turns}, False
@@ -271,9 +271,9 @@ class SessionView:
 
     def read_turn(self, turn):
         found = next((t for t in self.digest["turns"] if t["turn"] == turn), None)
-        last = len(self.digest["turns"]) + bool(self.note)
-        if found is None and self.note and turn == last:  # The note: words only, with nothing Assist did.
-            return {"turn": turn, "user_says": self.note, "sent_with_it": True}
+        last = len(self.digest["turns"]) + len(self.notes)
+        if found is None and turn in self.notes:  # A note: words only, with nothing Assist did.
+            return dict(self.notes[turn])
         if found is None:
             return {"error": f"There is no turn {turn}; turns are 1 to {last}."}
         steps = []

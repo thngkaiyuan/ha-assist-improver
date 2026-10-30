@@ -52,7 +52,7 @@
     },
     "check_replay_fidelity": {
       "name": "Check replay fidelity",
-      "description": "Rebuild a recorded conversation's home in a sandbox and compare Assist's system prompt and tools there with the recorded ones. No AI model is called.",
+      "description": "Rebuild a recorded conversation's home in a sandbox and compare Assist's system prompt and tools there with the recorded ones. The conversation's assistant is loaded there too, which fetches its provider's model list; no AI model is called.",
       "fields": {
         "recording_id": {
           "name": "Recording",

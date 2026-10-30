@@ -16,6 +16,7 @@ In tests the same messages go to the same server in the test's own process (INLI
 import asyncio
 from collections import deque
 from contextlib import suppress
+import contextvars
 import itertools
 import json
 import logging
@@ -42,7 +43,8 @@ STATS = dict(SANDBOX_STATS)  # Sandbox statistics across every worker this proce
 # sandboxes run Home Assistant's own code and the improver's alone: custom_components is a folder of the worker's own
 # holding only the improver, so Home Assistant finds none of the household's custom integrations there (one a recorded
 # tool names is never set up, nor its tools run), and finds the improver as an integration, as household knowledge
-# needs (household.serve).
+# needs (household.serve). The one exception: a household assistant's own provider, when it's a custom integration
+# (link_providers).
 BOOT = """import atexit, os, shutil, sys, tempfile, types
 improver = sys.argv[1] + "/custom_components/assist_improver"
 own = tempfile.mkdtemp(prefix="assist_improver_worker_")
@@ -79,9 +81,14 @@ class Worker:
         self._writing = None  # The running process's lock: messages to it are written in the order sent (_send).
         self._server = None  # INLINE: the server, in this process.
         self.generation = 0  # Counts the workers started: a sandbox lives only as long as the one it was started in.
+        self.listeners = {}  # {call's message id: what its deltas go to, as they come}: a turn streaming its reply.
+        self.reader = None  # Answers a sandbox's read of the real home (practice.py); none: every read is refused.
 
-    async def call(self, op, **args):
+    async def call(self, op, listener=None, **args):
+        """An operation in the worker; listener: given each delta it streams before its answer (home.turn)."""
         message = {"id": next(self.ids), "op": op, "args": args}
+        if listener is not None:
+            self.listeners[message["id"]] = listener
         self.busy += 1
         if self._idle is not None:
             self._idle.cancel()
@@ -89,13 +96,21 @@ class Worker:
         try:
             if INLINE:
                 if self._server is None:
-                    self._server, self.generation = Server(), self.generation + 1
-                answer = json.loads(json.dumps(await self._server.answer(json.loads(json.dumps(message)))))
+                    loop = asyncio.get_running_loop()
+                    self._server = Server(  # Called from a sandbox's thread, as the worker process's are.
+                        lambda asked, delta: loop.call_soon_threadsafe(
+                            self._delta, asked, json.loads(json.dumps(delta))),
+                        lambda request: asyncio.run_coroutine_threadsafe(self._read_for(request), loop))
+                    self.generation += 1
+                # In a context of its own, as in the worker's process: nothing of the caller's (its chat log) in it.
+                answer = json.loads(json.dumps(await asyncio.create_task(
+                    self._server.answer(json.loads(json.dumps(message))), context=contextvars.Context())))
             else:
                 answer = await self._send(message)
             if op == "home.start" and "result" in answer:
                 self.open.add(answer["result"])
         finally:
+            self.listeners.pop(message["id"], None)
             if op == "home.stop":
                 self.open.discard(args.get("session"))
             self.busy -= 1
@@ -105,6 +120,27 @@ class Worker:
         if "error" in answer:
             raise raised(answer["error"])
         return answer["result"]
+
+    def _delta(self, asked, delta):
+        if (listener := self.listeners.get(asked)) is not None:
+            listener(delta)
+
+    async def _read_for(self, request):
+        """A sandbox's read of the real home ({domain, service, data}), answered by the reader."""
+        if self.reader is None:
+            raise WorkerError("This sandbox can't read the real home")
+        return json.loads(json.dumps(await self.reader(request)))
+
+    async def _answer_read(self, process, read_id, request):
+        try:
+            reply = {"result": await self._read_for(request)}
+        except Exception as err:  # noqa: BLE001 - the sandbox's read fails as it would at home.
+            reply = {"error": _error(err)}
+        line = _line({"id": read_id, "op": "read_answer", "args": {"read_id": read_id, **reply}})
+        async with self._writing:
+            if self.process is process:
+                process.stdin.write(line)
+                await process.stdin.drain()
 
     def _count(self, stats):
         """STATS: the stopped workers' statistics and the running one's (each worker counts from zero)."""
@@ -162,6 +198,13 @@ class Worker:
     async def _read(self, process):
         while line := await process.stdout.readline():
             answer = json.loads(line)
+            if "delta" in answer:  # A turn streaming its reply, before its answer.
+                self._delta(answer["id"], answer["delta"])
+                continue
+            if "read" in answer:  # A sandbox asking the real home.
+                asyncio.get_running_loop().create_task(self._answer_read(process, answer["read_id"], answer["read"]),
+                                                       name="assist_improver_worker_read")
+                continue
             if (future := self.pending.get(answer.get("id"))) is not None and not future.done():
                 future.set_result(answer)
         await process.wait()
@@ -209,6 +252,7 @@ def _line(message):
 
 
 _WORKER = None
+_ASKING = contextvars.ContextVar("asking", default=None)  # The message a worker operation answers.
 
 
 def worker():
@@ -258,8 +302,9 @@ class RemoteSandbox:
 
     @classmethod
     @span("sandbox.start")
-    async def start(cls, time_zone):
-        session = await worker().call("home.start", time_zone=time_zone)
+    async def start(cls, time_zone, providers=None):
+        """providers: the household's assistants' providers that are custom integrations (replay.custom_providers)."""
+        session = await worker().call("home.start", time_zone=time_zone, providers=providers or {})
         return cls(session, worker().generation)
 
     @property
@@ -281,14 +326,39 @@ class RemoteSandbox:
 
 # The worker's side.
 
-class Server:
-    """The operations a worker serves: recorded homes (sessions), the evidence probes, and its statistics."""
+def link_providers(providers):
+    """The household's assistants' providers that are custom integrations ({domain: its folder}), linked into the
+    worker's own custom_components beside the improver, so its sandboxes load the household's assistant by its own
+    integration (DETAILS P6.2.3). No other custom integration ever is (BOOT)."""
+    import os
+    import custom_components
+    own = Path(custom_components.__path__[0])
+    for domain, folder in providers.items():
+        link = own / domain
+        if domain == "assist_improver" or not Path(folder).is_dir() or (
+                link.is_symlink() and os.readlink(link) == folder):
+            continue  # The improver's own, a copy gone from home (it can't load: can't replay), or linked already.
+        if link.is_symlink():
+            link.unlink()  # The household's copy has moved: linked where it is now.
+        os.symlink(folder, link)
 
-    def __init__(self):
-        self.sessions = {}
+
+class Server:
+    """The operations a worker serves: recorded homes (sessions), the evidence probes, and its statistics.
+
+    on_delta(asked, delta): a streaming operation's delta, for the message that asked; on_read(request): a sandbox's
+    read of the real home, a future of its answer. Both are called from a sandbox's thread."""
+
+    def __init__(self, on_delta=None, on_read=None):
+        self.sessions, self.on_delta, self.on_read = {}, on_delta, on_read
+        self.reads = {}  # {read id: its future}: reads of the real home awaiting their answer (op_read_answer).
 
     async def answer(self, message):
         from . import sandbox
+        if message["op"] == "read_answer":  # The real home answering a read: no answer of its own.
+            self.op_read_answer(**message["args"])
+            return None
+        _ASKING.set(message["id"])
         try:
             handler = getattr(self, "op_" + message["op"].replace(".", "_"))
             result = {"result": await handler(**message["args"])}
@@ -300,6 +370,13 @@ class Server:
         for session in list(self.sessions):
             await self.op_home_stop(session)
 
+    def op_read_answer(self, read_id, result=None, error=None):
+        if (future := self.reads.pop(read_id, None)) is not None and not future.done():
+            if error is not None:
+                future.set_exception(raised(error))
+            else:
+                future.set_result(result)
+
     def _home(self, session):
         if session not in self.sessions:
             raise WorkerError("That sandbox has stopped")
@@ -309,22 +386,32 @@ class Server:
     def _reported(home, extra=None):
         return {**(extra or {}), "unsimulated": list(home.sandbox.unsimulated), "log": list(home.sandbox.log)}
 
-    async def op_home_start(self, time_zone):
+    async def op_home_start(self, time_zone, providers=None):
+        from . import sandbox
         from .sandbox import Sandbox
+        if providers and sandbox.OWN_PROCESS and not INLINE:  # Before the sandbox first looks for custom ones.
+            link_providers(providers)
         session = uuid4().hex  # Never one another worker gave out: a sandbox from before a restart finds none.
         self.sessions[session] = _Home(await Sandbox.start(time_zone))
+        self.sessions[session].sandbox.reader = self.on_read
         return session
 
     async def op_home_seed(self, session, source, options, user_name=None, scripts=None, automations=None,
                            exposure_changes=None, alias_changes=None, alias_removals=None, moving=(), lists=None,
-                           timers=()):
+                           timers=(), reads=False, calendars=None, forecasts=None):
         from .sandbox import seed
         home = self._home(session)
         await home.sandbox.run(lambda hass: seed(
             hass, source, user_name=user_name, **options, scripts=scripts, automations=automations,
             exposure_changes=exposure_changes, alias_changes=alias_changes, alias_removals=alias_removals,
-            moving=moving, lists=lists, timers=timers))
+            moving=moving, lists=lists, timers=timers, reads=reads, calendars=calendars, forecasts=forecasts))
         return self._reported(home)
+
+    async def op_home_assistant(self, session, entry, agent):
+        """The household's assistant, loaded by its provider's own integration (sandbox.load_assistant)."""
+        from .sandbox import load_assistant
+        home = self._home(session)
+        return self._reported(home, {"agent": await home.sandbox.run(lambda hass: load_assistant(hass, entry, agent))})
 
     async def op_home_household(self, session, knowledge, legacy=False):
         """The household knowledge the sandbox's Assist reads; legacy: through the household API (up to 0.37)."""
@@ -341,8 +428,8 @@ class Server:
         return self._reported(home)
 
     async def op_home_prompt(self, session, context, api_id, template):
-        """Assist's system prompt and tools as HA builds them in the sandbox; each tool's parameters as the JSON
-        schema its own serializer gives, which providers read back unchanged (replay.Precomputed)."""
+        """Assist's system prompt and tools as HA builds them in the sandbox, each tool's parameters as the JSON
+        schema its own serializer gives."""
         from .sandbox import system_prompt
         home = self._home(session)
         prompt, api = await home.sandbox.run(lambda hass: system_prompt(hass, llm_context(context), api_id, template))
@@ -353,6 +440,18 @@ class Server:
                   "parameters": probatio.to_openapi(t.parameters, custom_serializer=api.custom_serializer,
                                                     openapi_version="3.1.0")} for t in api.tools]
         return self._reported(home, {"prompt": prompt, "api_prompt": api.api_prompt, "tools": tools})
+
+    async def op_home_turn(self, session, text, conversation_id, context, language, agent_id, device_id=None,
+                           watch=(), stream=False, settle=True, since=None, extra_system_prompt=None):
+        """One Assist turn, the household's assistant answering here (sandbox.run_turn); stream: each delta of its
+        reply, as it comes, ahead of the answer."""
+        from functools import partial
+        from .sandbox import run_turn
+        home = self._home(session)
+        emit = partial(self.on_delta, _ASKING.get()) if stream and self.on_delta else None
+        return self._reported(home, await home.sandbox.run(lambda hass: run_turn(
+            hass, text, conversation_id, context, language, agent_id, device_id, watch, emit, settle, since,
+            extra_system_prompt)))
 
     async def op_home_tool(self, session, tool_name, tool_args, call_id=None, external=False):
         from homeassistant.helpers import llm
@@ -365,17 +464,29 @@ class Server:
         result = await home.sandbox.run(lambda hass: call_tool(hass, home.api, tool_input))
         return self._reported(home, {"data": result.data, "error": result.error})
 
-    async def op_home_observe(self, session, source, moves=()):
+    async def op_home_outside(self, session, apis):
+        """The tools of the household assistant's other LLM APIs, as it has them at home (sandbox.outside_tools)."""
+        from .sandbox import outside_tools
+        home = self._home(session)
+        await home.sandbox.run(lambda hass: outside_tools(hass, apis))
+
+    async def op_home_observe(self, session, source, moves=(), settle=True):
         from .sandbox import observe
         home = self._home(session)
-        await home.sandbox.run(lambda hass: observe(hass, source, moves))
+        await home.sandbox.run(lambda hass: observe(hass, source, moves, settle))
         return self._reported(home)
 
-    async def op_home_lists(self, session, source, lists, given):
+    async def op_home_stores(self, session, source, calendars, forecasts):
+        """The home's calendars and forecasts now, but a calendar the copy wrote (sandbox.hold_stores)."""
+        from .sandbox import hold_stores
+        home = self._home(session)
+        await home.sandbox.run(lambda hass: hold_stores(hass, source, calendars, forecasts))
+
+    async def op_home_lists(self, session, source, lists, given, settle=True):
         """The home's to-do lists now, but those the sandbox changed (sandbox.hold_lists)."""
         from .sandbox import hold_lists
         home = self._home(session)
-        return {"held": await home.sandbox.run(lambda hass: hold_lists(hass, source, lists, given))}
+        return {"held": await home.sandbox.run(lambda hass: hold_lists(hass, source, lists, given, settle))}
 
     async def op_home_snapshot(self, session, attributes=(), settle=True):
         from .sandbox import snapshot
@@ -437,12 +548,26 @@ async def _serve():
     reader = asyncio.StreamReader(limit=LIMIT)
     await loop.connect_read_pipe(lambda: asyncio.StreamReaderProtocol(reader), sys.stdin)
     out = sys.stdout.buffer
-    server, tasks = Server(), set()
+    asked_ids, tasks = itertools.count(1), set()
+
+    def write(message):
+        out.write(_line(message))
+        out.flush()
+
+    def read(request):
+        async def ask():
+            read_id = next(asked_ids)
+            future = server.reads[read_id] = loop.create_future()
+            write({"read": request, "read_id": read_id})
+            return await future
+        return asyncio.run_coroutine_threadsafe(ask(), loop)
+    server = Server(lambda asked, delta: loop.call_soon_threadsafe(write, {"id": asked, "delta": delta}), read)
 
     async def one(message):
         answer = await server.answer(message)
-        out.write(await loop.run_in_executor(None, _line, answer))
-        out.flush()
+        if answer is not None:
+            out.write(await loop.run_in_executor(None, _line, answer))
+            out.flush()
     try:
         while line := await reader.readline():
             task = loop.create_task(one(json.loads(line)))

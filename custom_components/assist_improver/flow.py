@@ -18,6 +18,8 @@ from .cases import CaseError
 from .const import CONF_AUTO_ACCEPT, DOMAIN
 from .trace import span
 
+HOME_ASSISTANT, SENTENCE = "conversation.home_assistant", "sentence_trigger"  # Who answers a turn, not an AI.
+
 _LOGGER = logging.getLogger(__name__)
 
 STORE = f"{DOMAIN}.flow"
@@ -37,11 +39,12 @@ def deliberate(sent):
 
 
 def analysed_turns(analysis):
-    """An analysis's turns: each one said (by number), then "note" for the note it was sent in with, if any (its goals
-    sit at the turn after the last one said, as measures.goals_of labels them)."""
+    """An analysis's turns: each one said (by number), then each note's label: "note" for the note it was sent in
+    with, "revision:<round>" for a revision note (measures.note_labels)."""
+    from .measures import note_labels
     goals = analysis.get("goals") or []
     said = int(analysis.get("turns") or max([g.get("turn") or 0 for g in goals] or [0]))
-    return list(range(1, said + 1)) + (["note"] if any(g.get("turn") == said + 1 for g in goals) else [])
+    return list(range(1, said + 1)) + [label for _, label in sorted(note_labels({**analysis, "turns": said}).items())]
 
 
 class Failed(Exception):
@@ -302,33 +305,38 @@ class Flow:
                 "record": contracts.check(record, kind, f"The handoff from {start} to {end}")}
 
     def _judged(self, conv):
-        """The goals the conversation carries, as measures.goals_of gives them: its latest analysis's, and its revision
-        notes' since; none while it has no analysis."""
+        """The goals the conversation carries, as measures.goals_of gives them: its latest analysis's, its notes'
+        among them; none while it has no analysis."""
         from .measures import goals_of
-        analysis, revisions = None, []
-        for number in sorted(conv["rounds"], key=int):
-            records = conv["rounds"][number]["records"]
-            if found := (records.get("Analyze") or {}).get("analysis"):
-                analysis, revisions = found, []
-            if revision := (records.get("Propose") or {}).get("revision"):
-                revisions.append((number, revision))
-        return goals_of(analysis, revisions) if analysis else []
+        try:
+            return goals_of(self._latest_analysis(conv))
+        except Failed:
+            return []
 
     def _goals(self, conv):
-        """The keys of the goals the conversation carries ("turn:index", "revision:index")."""
+        """The keys of the goals the conversation carries ("turn:index")."""
         return [g["key"] for g in self._judged(conv)]
 
     def _turns(self, conv):
-        """The conversation's turns: what was said, the note it was sent in with, and each revision note since its
-        latest analysis ("revision:<round>")."""
-        turns = []
-        for number in sorted(conv["rounds"], key=int):
-            records = conv["rounds"][number]["records"]
-            if analysis := (records.get("Analyze") or {}).get("analysis"):
-                turns = analysed_turns(analysis)
-            if (records.get("Propose") or {}).get("revision"):
-                turns.append(f"revision:{number}")
-        return turns
+        """The conversation's turns, as its latest analysis read them: what was said, then its notes (analysed_turns)."""
+        try:
+            return analysed_turns(self._latest_analysis(conv))
+        except Failed:
+            return []
+
+    def revisions(self, conv):
+        """The revision notes since the conversation was last sent in, in order, as its next analysis reads them, each
+        with the improvement it revises (P12.8.1): {round, note, title (as the household reads it), changes, roots}."""
+        from .improvements import display_title
+        sent = max((int(n) for n, r in conv["rounds"].items() if "Your Assist" in r["records"]), default=0)
+        out = []
+        for n, r in sorted(conv["rounds"].items(), key=lambda kv: int(kv[0])):
+            if int(n) > sent and (revision := (r["records"].get("Propose") or {}).get("revision")):
+                item = self.runtime.improvements.items.get(revision["improvement"]) or {}
+                out.append({"round": int(n), "note": revision["note"],
+                            "title": display_title(item) if item.get("title") else "",
+                            "changes": deepcopy(item.get("changes") or []), "roots": self._roots_fixed(conv, item)})
+        return out
 
     @staticmethod
     def _taken_out(conv):
@@ -450,34 +458,65 @@ class Flow:
 
     async def _analyze(self, rid, conv):
         from .hypotheses import friction_by_goal
-        result = await self._analysis(rid)
-        if result is None:
+        if (analysis := await self._analysed(rid, conv)) is None:
             return
-        analysis = result.get("analysis")
-        if not analysis:
-            raise Failed(str((result.get("error") or {}).get("message") or "The analysis didn't finish."))
-        if result.get("answer_status") == "best_rejected":  # No answer kept its checks: retried, then held (P0.3).
-            raise Failed("The analysis didn't map every turn into a goal tree: "
-                         + "; ".join((analysis.get("problems") or [])[:3]))
-        self._record(conv, "Analyze", analysis=analysis,
-                     given={"turns": analysed_turns(analysis), "goals": [], "conversations": [rid[:8]]})
         trouble = set(friction_by_goal(analysis))
         covered = {d.get("goal_turn"): d.get("improvement") for d in analysis.get("duplicates") or []}
         if not trouble and analysis.get("question_for_user"):  # It travels the line to wait at Your review (P0.4).
             self._enter(conv, "Propose", question=analysis["question_for_user"])
         elif not trouble:
             self._end(conv, "no trouble found")
+        elif local := await self._answered_locally(rid):  # No replay can run it, so no fix can be tested (P9.9.9),
+            self._enter(conv, "Propose", question=local)  # and none reaches it while Home Assistant answers first.
         elif not trouble - set(covered):
             self._end(conv, "duplicate", covered_by=next(iter(covered.values())))
         else:
             self._enter(conv, "Propose")
 
-    async def _analysis(self, rid, **kwargs):
-        """The quick check or the analysis, by today's worker; None when no role can read the conversation (it ends
-        as couldn't be read)."""
-        from .analysis import analyze
+    async def _answered_locally(self, rid):
+        """The first turn Home Assistant's built-in commands answered, not the AI (records.CantImprove), or None. An
+        automation's sentence trigger answers before the AI too, but no setting gives that turn to the AI."""
+        from .cases import recording_turns
+        recording = await self.runtime.recorder.export(rid)
+        replied = lambda turn: [m.get("agent_id") for m in turn["messages"]  # noqa: E731 - who answered it last.
+                                if m.get("role") == "assistant"][-1:]
         try:
-            return await analyze(self.hass, self.entry, self.runtime, rid, sent=self._sent(self.record(rid)), **kwargs)
+            local = next((t for t in recording_turns(recording, replay=False)
+                          if t["handled_locally"] and replied(t) == [HOME_ASSISTANT]), None)
+        except CaseError:
+            return None
+        if local is None:
+            return None
+        agents = [m["agent_id"] for m in (recording.get("chat_log") or {}).get("content") or []
+                  if m.get("role") == "assistant" and m.get("agent_id") not in (None, HOME_ASSISTANT, SENTENCE)]
+        return {"turn": local["number"], "quote": local["messages"][0]["content"],
+                "agent_id": agents[0] if agents else None, "pipeline_id": recording.get("pipeline_id")}
+
+    async def _analysed(self, rid, conv, **kwargs):
+        """The analysis, kept as the round's; None when no role can read the conversation (it ended). Failed when it
+        didn't finish, or no answer kept its checks (retried, then held: P0.3)."""
+        result = await self._analysis(rid, **kwargs)
+        if result is None:
+            return None
+        analysis = result.get("analysis")
+        if not analysis:
+            raise Failed(str((result.get("error") or {}).get("message") or "The analysis didn't finish."))
+        if result.get("answer_status") == "best_rejected":
+            raise Failed("The analysis didn't map every turn into a goal tree: "
+                         + "; ".join((analysis.get("problems") or [])[:3]))
+        self._record(conv, "Analyze", analysis=analysis,
+                     given={"turns": analysed_turns(analysis), "goals": [], "conversations": [rid[:8]]})
+        return analysis
+
+    async def _analysis(self, rid, **kwargs):
+        """The quick check or the analysis, by today's worker, with how the conversation was last sent in; None when no
+        role can read the conversation (it ends as couldn't be read)."""
+        from .analysis import analyze
+        conv = self.record(rid)
+        sent_in = max((int(n) for n, r in conv["rounds"].items() if "Your Assist" in r["records"]), default=None)
+        try:
+            return await analyze(self.hass, self.entry, self.runtime, rid,
+                                 sent=self._sent(conv, sent_in) if sent_in else None, **kwargs)
         except asyncio.CancelledError:
             raise
         except CaseError as err:
@@ -550,11 +589,16 @@ class Flow:
         if question := self._carried(conv, "Propose"):  # Nothing to propose: a question passes on.
             self._enter(conv, "Write up", question=question)
             return
+        kept = conv["rounds"][str(conv["round"])]["records"]
+        if (kept.get("Propose") or {}).get("revision") and not (kept.get("Analyze") or {}).get("analysis"):
+            # A revision's round reads the conversation afresh first, its note a turn with its goals (P12.8.1).
+            if await self._analysed(rid, conv, revisions=self.revisions(conv)) is None:
+                return
         analysis = self._latest_analysis(conv)
         improvements, cap, asked = self.runtime.improvements, self.tests_cap(), {}
         current = conv["rounds"][str(conv["round"])]["records"].setdefault("Propose", {"attempts": []})
-        # What the household sent back for this round, if it was: a revision (its note, with the goal it was given on
-        # its way in, P0.3) or an accept's conflict, with the improvement in full.
+        # What the household sent back for this round, if it was: a revision (its note, a turn whose goals the round's
+        # analysis gives, P12.8.1) or an accept's conflict, with the improvement in full.
         revision, conflict = current.get("revision") or {}, current.get("conflict") or {}
         back = revision or conflict
         sent_back = ({**deepcopy(back), "why": "revision" if revision else "conflict",
@@ -644,11 +688,24 @@ class Flow:
         elif earlier.get("status") in (*PENDING, "conflict"):  # No new version: the earlier one stays up for review,
             if earlier["status"] == "conflict":  # one that met a conflict back up for the household to decide (P0.6).
                 await improvements.up_again(earlier["id"])
+            if revision:  # Saying so, with why (unrevised).
+                await improvements.unrevised(earlier["id"], (revision.get("note") or "").strip(),
+                                             self._unrevised_why(rid, answer, held_back))
             self._enter(conv, "Write up", waiting=earlier["id"])
         elif (addressed := self._addressed(rid, analysis, answer)):  # Another conversation's improvement covers it.
             self._end(conv, "duplicate", covered_by=addressed)
         else:
             self._end(conv, "no fix found")
+
+    @staticmethod
+    def _unrevised_why(rid, answer, held_back):
+        """Why a revision's round brought no new version, in one reason: the proposer's for the note's goal (the
+        conversation's last it gave one for), else why its idea didn't go on; "" when it gave none."""
+        given = sorted((n for n in answer.get("not_fixed") or [] if n.get("session") == rid[:8]
+                        and (n.get("why") or "").strip()), key=lambda n: n.get("goal_turn") or 0)
+        held = [why for h in answer.get("hypotheses") or [] if (why := held_back(h))]
+        why = (given[-1]["why"] if given else held[-1] if held else "").strip()
+        return why + "." if why and why[-1] not in ".!?" else why
 
     async def _write(self, rid, conv):
         """The editor's write-up; a failed one is a failure of this stage like any other (P0.8): the improvement
@@ -706,9 +763,10 @@ class Flow:
         return next(iter(covered.values())) if trouble and trouble <= set(covered) else None
 
     @staticmethod
-    def _sent(conv):
-        """How the conversation was sent in, as its round started at Your Assist (sent_in), or None."""
-        return (conv["rounds"][str(conv["round"])]["records"].get("Your Assist") or {}).get("sent")
+    def _sent(conv, number=None):
+        """How the conversation was sent in, as its round (the latest by default) started at Your Assist (sent_in), or
+        None."""
+        return (conv["rounds"][str(number or conv["round"])]["records"].get("Your Assist") or {}).get("sent")
 
     def _carried(self, conv, stage):
         """The question for the household the conversation carries at this stage in its round, if any."""
@@ -759,27 +817,23 @@ class Flow:
             elif decision == "decline":
                 conv["held"] = None
                 self._end(conv, "declined", archived=True)
-            elif decision == "revise":  # The note is a turn, with its goal given on its way in (P0.3).
-                self._back_to_propose(rid, conv, revision={"improvement": item["id"], "note": note,
-                                                           "goal": self._note_goal(conv, item, note)})
+            elif decision == "revise":  # The note is a turn, whose goals the round's analysis gives (P12.8.1).
+                self._back_to_propose(rid, conv, revision={"improvement": item["id"], "note": note})
                 back.append(rid)
         await self.save()
         return back
 
-    def _note_goal(self, conv, item, note):
-        """A revision note's goal: a conduct goal about Assist in general, in the note's own words, under the root goal
-        its improvement is for (P0.3), else the conversation's first; unmet: it asks for what the conversation didn't
-        get."""
-        turns = sorted({int(goal.split(":")[1]) for goal in item["fixes"]})
+    def _roots_fixed(self, conv, item):
+        """The turns of the root goals an improvement was for (P0.3): those its test helped (its fixes), else the
+        conversation's first."""
+        from .analyzer import top_level
+        roots = sorted({int(turn) for key in item.get("fixes") or [] if (turn := key.rsplit(":", 1)[-1]).isdigit()})
+        if roots:
+            return roots
         try:
-            goals = self._latest_analysis(conv).get("goals") or []
+            return [g["turn"] for g in top_level(self._latest_analysis(conv).get("goals") or [])][:1]
         except Failed:
-            goals = []
-        from .analyzer import root_turn, top_level
-        serves = root_turn(goals, turns[0]) if turns else None
-        if serves is None:
-            serves = next((g["turn"] for g in top_level(goals)), None)
-        return {"summary": note, "kind": "conduct", "about": "all", "quote": note, "serves": serves, "reached": False}
+            return []
 
     async def resolve(self, item):
         """The household agreed to send back an improvement whose accept met a conflict: its conversation goes back in

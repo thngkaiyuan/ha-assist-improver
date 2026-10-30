@@ -78,15 +78,16 @@ AT = {"Analyze": "queued", "Propose": "working", "Write up": "writing"}
 def standing(runtime, rid, place=None):
     """Where a conversation stands, as its chip names it, from its flow record (place: flow.Flow.place, if read): at
     Your Assist or Triage, sent if it was sent in (filed while still going too), else still going while recorded, else
-    waiting (New); at Your review, unclear while a question waits for the household, else review; in Your household,
-    by its outcome."""
+    waiting (New); at Your review, unclear while a question waits for the household, cannot when Home Assistant
+    answered a turn itself (P9.9.9), else review; in Your household, by its outcome."""
     flow = runtime.flow
     place = place or flow.place(rid)
     stage = place["stage"]
     if stage == "Your household":
         return OUTCOMES[place["outcome"]]
     if stage == "Your review":
-        return "unclear" if flow.question(rid) else "review"
+        question = flow.question(rid)
+        return "cannot" if isinstance(question, dict) else "unclear" if question else "review"
     if stage in AT:
         return AT[stage]
     if flow.sent(rid):
@@ -102,7 +103,8 @@ def row(runtime, rid):
     in (from Your household, P0.12; at Your Assist, unheld; or as the answer to its question, P0.11); runnable: a
     picked run can take it (new and waiting, or held anywhere, P0.7; or in Your household, sent in first when picked
     by hand: the panel never picks those with Select all); archivable: it can be archived (not while an improvement of
-    it waits for the household, flow.Flow.waits); and its stage, hold, and the improvement a duplicate points to."""
+    it waits for the household, flow.Flow.waits); and its stage, hold, and the improvement a duplicate points to; and,
+    when Home Assistant answered a turn itself, what the household is told of it (cant_improve)."""
     flow = runtime.flow
     place = flow.place(rid)
     status, stage = standing(runtime, rid, place), place["stage"]
@@ -113,7 +115,21 @@ def row(runtime, rid):
             "runnable": flow.waiting(rid) or bool(held) or stage == "Your household",
             "archivable": not flow.waits(rid),
             "stage": stage, "held": {"cause": held["cause"], "why": held["why"]} if held else None,
-            "covered_by": place["covered_by"]}
+            "covered_by": place["covered_by"],
+            **({"cant_improve": cant_improve(flow.hass, flow.question(rid))} if status == "cannot" else {})}
+
+
+QUOTED = 60  # Characters of what the household said that a chip's bubble quotes.
+
+
+def cant_improve(hass, question):
+    """What the household is told of a conversation Home Assistant answered itself (records.CantImprove): what they
+    said there, cut short, and the voice assistant whose settings let it answer first."""
+    from .household import voice_assistant
+    quote = " ".join((question.get("quote") or "").split())
+    if len(quote) > QUOTED:
+        quote = quote[:QUOTED].rsplit(" ", 1)[0].rstrip(",;:.") + "…"
+    return {"quote": quote, "assistant": voice_assistant(hass, question.get("pipeline_id"), question.get("agent_id"))}
 
 
 ORDERS = {  # How a list can be sorted: newest, oldest, or the most effort first (more turns, then failed calls).

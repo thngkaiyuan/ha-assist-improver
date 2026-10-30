@@ -2,7 +2,7 @@
 
 DOMAIN = "assist_improver"
 NAME = "Assist Improver"
-VERSION = "0.40.4"
+VERSION = "0.40.5"
 # Conversation providers whose replays are tested end to end; others replay with a "not yet tested" label.
 TESTED_PROVIDERS = {"anthropic", "open_router"}
 STORAGE_VERSION = 1

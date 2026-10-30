@@ -214,6 +214,27 @@ def pipelines(hass):
     return sorted(out, key=lambda p: not p["preferred"])
 
 
+def voice_assistant(hass, pipeline_id, agent_id):
+    """The name of the voice assistant (Assist pipeline) a conversation ran through, whose settings let Home Assistant
+    answer a request first: the one the recording kept; else the one using its AI (any AI, when the recording names
+    none) that answers first, if just one; else the AI's own name; else Assist."""
+    try:
+        from homeassistant.components.assist_pipeline.pipeline import KEY_ASSIST_PIPELINE
+        store = hass.data[KEY_ASSIST_PIPELINE].pipeline_store
+        kept = store.data
+    except (ImportError, KeyError, AttributeError):
+        kept = {}
+    if pipeline_id in kept:
+        return kept[pipeline_id].name
+    first = [p for p in kept.values() if p.prefer_local_intents and (
+        p.conversation_engine == agent_id if agent_id else p.conversation_engine != "conversation.home_assistant")]
+    if len(first) == 1:
+        return first[0].name
+    if agent_id and (state := hass.states.get(agent_id)) is not None:
+        return state.name
+    return "Assist"
+
+
 def literal(line):
     """A line as plain text in a template: one that looks like template code ({{, {%, {#) is kept from running,
     even one that itself says {% endraw %} (written out as a string, outside the raw block)."""

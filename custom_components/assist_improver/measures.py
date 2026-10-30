@@ -1,7 +1,7 @@
 """SPEC.md P0.1.1's measures, by code alone: how a conversation, or a replay of it, fulfilled its goals and with
 what effort. Fulfilment is goals met; effort is turns per root goal and side effects left.
 
-judge() gives every goal of the conversation (each analysis goal, the note's, each revision note's) a state, counts
+judge() gives every goal of the conversation (each analysis goal, its notes' among them) a state, counts
 the turns each root goal took, and lists the side effects left, from what the home did (a view: its start states and
 each change, with the turn it happened in). easier() compares two judged replays: strictly better, on one measure
 and worse on none (P0.1.1); went_as_it_went() checks that a replay without the change went the way the
@@ -18,19 +18,23 @@ CONVERSATION = None  # As conduct: the conversation as it went, where every reac
 MEASURES = ("goals met", "turns per root goal", "side effects left")
 
 
-def goals_of(analysis, revisions=()):
-    """Every goal of the conversation, keyed as the flow keys them: each analysis goal ("turn:i", labelled with its
-    turn, or "note" for the note's turn), then each revision note's ("revision:i", labelled "revision:<round>").
-    revisions: [(round, revision record)] in order."""
+def note_labels(analysis):
+    """The labels of an analysis's turns after those said (its notes): "note" for the note it was sent in with,
+    "revision:<round>" for a revision note, by turn."""
     said = int(analysis.get("turns") or 0)
-    out = []
-    for i, goal in enumerate(analysis.get("goals") or []):
-        note = said and goal.get("turn") == said + 1
-        out.append({**goal, "key": f"{goal.get('turn')}:{i}", "label": "note" if note else goal.get("turn")})
-    for number, revision in revisions:
-        if goal := revision.get("goal"):
-            out.append({**goal, "key": f"revision:{len(out)}", "label": f"revision:{number}"})
-    return out
+    notes = analysis.get("notes")
+    if notes is None:  # Recorded before an analysis kept its notes: at most the one it was sent in with.
+        notes = [{"sent": True}] * any(g.get("turn") == said + 1 for g in analysis.get("goals") or [])
+    return {said + n: "note" if note.get("sent") else f"revision:{note['revision']}"
+            for n, note in enumerate(notes, 1)}
+
+
+def goals_of(analysis):
+    """Every goal of the conversation, keyed as the flow keys them ("turn:i"), labelled with its turn, or its note's
+    label (note_labels)."""
+    labels = note_labels(analysis) if int(analysis.get("turns") or 0) else {}
+    return [{**goal, "key": f"{goal.get('turn')}:{i}", "label": labels.get(goal.get("turn"), goal.get("turn"))}
+            for i, goal in enumerate(analysis.get("goals") or [])]
 
 
 def root_of(goals, goal):
@@ -279,10 +283,10 @@ def replay_view(turns, session_view, steps):
     """What the home did in a replay, as judge() reads it: from the first recorded turn's home, each step's changes
     (by Assist, in the step's turn) and its lights' brightness, with what people did to devices neither the recorded
     Assist nor the replay had touched by then, and, on the devices the recorded Assist changed, what others moved
-    between the turns it said, as the replay's sandbox applies it (simulation.moved_by_others); and what each step
-    called and spoke (calls). turns: the recording's turns; steps: the replay's, each {turn, output (Assist's
-    messages), spoken (the sandbox's log), transitions: [{entity_id, old, new}], brightness: {light: [old, new] on
-    0-255}}."""
+    between the turns it said, as the replay's sandbox applies it (simulation.moved_by_others); what each step called
+    and spoke (calls); and each recorded turn's home as it began (sources), as the conversation's view has it. turns:
+    the recording's turns; steps: the replay's, each {turn, output (Assist's messages), spoken (the sandbox's log),
+    transitions: [{entity_id, old, new}], brightness: {light: [old, new] on 0-255}}."""
     from .simulation import moved_by_others
     assistant = {e for e, cs in session_view.changes.items() if any(c["by"] in ASSISTANT for c in cs)}
     changes, touched, said = {}, {}, 1
@@ -324,8 +328,9 @@ def replay_view(turns, session_view, steps):
                 changes.setdefault(entity, []).append(dict(change))
     # What each turn called, and what it spoke wherever it was called from (a script's too, logged by the sandbox).
     calls = {step["turn"]: calls_in(step.get("output") or []) + step.get("spoken", []) for step in steps}
-    return SimpleNamespace(source=turns[0]["source"], calls=calls, scripts_seen=True,
-                           changes={e: sorted(cs, key=lambda c: c["at"]) for e, cs in changes.items()})
+    changes = {e: sorted(cs, key=lambda c: c["at"]) for e, cs in changes.items()}
+    return SimpleNamespace(source=turns[0]["source"], sources=[t["source"] for t in turns], calls=calls,
+                           scripts_seen=True, changes=changes)
 
 
 def judged_of(goals, devices_of):

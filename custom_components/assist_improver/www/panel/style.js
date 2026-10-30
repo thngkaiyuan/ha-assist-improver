@@ -185,6 +185,7 @@ export const STYLE = `
   .next { display: flex; justify-content: flex-end; margin: -4px 0 12px; }
   .revises { padding: 10px 14px; border-radius: 8px; margin-bottom: 12px; border: 1px solid var(--primary-color);
     color: var(--primary-text-color); background: var(--card-background-color); }
+  .revises.unrevised { border-color: var(--warn-fg); }
   .done-row { flex-direction: row !important; align-items: center !important; justify-content: space-between; flex-wrap: wrap; gap: 12px !important; }
   .done-msg { display: flex; align-items: baseline; gap: 8px; flex: 1 1 320px; min-width: 0; line-height: 1.45; }
   .footer-inner:not(.done-row) > .done-msg { flex: none; align-self: stretch; }  /* Above a decision open again. */
@@ -279,6 +280,8 @@ export const STYLE = `
   .cs-last { font-size: 13px; color: var(--secondary-text-color); margin: -6px 0 12px; }
   .chip.cs-waiting, .chip.cs-sent, .chip.cs-queued, .chip.cs-working, .chip.cs-writing,
   .chip.cs-unclear { border-color: var(--primary-color); color: var(--primary-color); }
+  .chip.cs-cannot { align-self: center; flex: none; margin-right: 16px; border-color: var(--warn-fg); color: var(--warn-fg);
+    cursor: help; }
   button.chip.cs-review { align-self: center; flex: none; margin-right: 16px; font: inherit; font-size: 12px; cursor: pointer;
     border-color: var(--primary-color); background: color-mix(in srgb, var(--primary-color) 14%, transparent); color: var(--primary-color); }
   button.chip.cs-review:hover { background: color-mix(in srgb, var(--primary-color) 24%, transparent); }

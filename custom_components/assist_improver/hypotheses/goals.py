@@ -2,6 +2,7 @@
 the session as a script, and what Assist can do with a device."""
 
 from ..analyzer import root_turn, top_level
+from ..measures import note_labels
 
 def short(recording_id):
     return recording_id[:8]
@@ -22,14 +23,14 @@ FRICTION_KINDS = {  # What each kind of friction means, for the roles that read 
     "ask": "settings the user's words left open, which the user then chose",
     "side effect": "a device Assist changed that no goal asked for and that didn't end as it started",
     "conduct": "what the household objected to in what Assist said or did in one of its turns (about_assist_turn), "
-               "in their own words (quote), in a later turn or in the note it was sent in with",
+               "in their own words (quote), in a later turn, in the note it was sent in with, or in a revision note",
 }
 
 
 def friction(analysis):
     """The friction in one analysed session, by the turn where it happened: extra turns (with the sub-goals they
-    served; the note, after the last turn said, is one when it asks again for what a goal didn't get), goals left
-    unmet and asks, side effects left (code-derived) and what the household objected to (conduct goals)."""
+    served; a note, after the turns said, is one when it asks again for what a goal didn't get), goals left unmet and
+    asks, side effects left (code-derived) and what the household objected to (conduct goals)."""
     goals = analysis.get("goals", [])
     out = []
     for goal in top_level(goals):  # Assist guessed or missed what the user wanted (DETAILS P9.11.4).
@@ -38,8 +39,8 @@ def friction(analysis):
                         **({"home_couldnt": HOME_COULDNT} if goal.get("home_couldnt") else {}),
                         **({"why": goal["answered"]["why"]} if goal.get("answered") else {})})
     said = analysis.get("turns")
-    note = [said + 1] if said and any(g["turn"] == said + 1 and g["kind"] not in ("conduct", "thanks", "wrap-up")
-                                      for g in goals) else []
+    note = [t for t in (note_labels(analysis) if said else {})
+            if any(g["turn"] == t and g["kind"] not in ("conduct", "thanks", "wrap-up") for g in goals)]
     for turn in [*analysis.get("extra_turns", []), *note]:
         served = [g for g in goals if g.get("serves") is not None and g["turn"] == turn]
         out.append({"turn": turn, "kind": "extra turn",
@@ -112,8 +113,8 @@ def removes(sessions, hypothesis):
 
 
 def scenario(analysis, view):
-    """One session as a script: each turn's words, the goals it started, and the friction it carried; then the note
-    it was sent in with, as what it holds."""
+    """One session as a script: each turn's words, the goals it started, and the friction it carried; then its notes,
+    in order, as what each holds: the note it was sent in with, and each revision note (DETAILS P12.8.1)."""
     goals = analysis.get("goals", [])
     by_goal = friction_by_goal(analysis)
     owner = {f["turn"]: t for t, items in by_goal.items() for f in items if f["kind"] == "extra turn"}
@@ -149,11 +150,16 @@ def scenario(analysis, view):
             turn["conduct"] = conduct
         turns.append(turn)
     out = {"session": short(analysis["recording_id"]), "turns": turns, "goals_with_friction": sorted(by_goal)}
-    said = analysis.get("turns")
-    if said and (note := [g for g in goals if g["turn"] == said + 1]):  # What the note it was sent in with holds.
-        out["note"] = {k: v for k, v in (
-            ("conduct", [_objection(g, goals) for g in note if g["kind"] == "conduct"]),
-            ("served", [g["summary"] for g in note if g["kind"] != "conduct"])) if v}
+    fixing = {n["turn"]: n["what"] for n in analysis.get("about_the_fix") or []}
+    for turn, label in sorted((note_labels(analysis) if analysis.get("turns") else {}).items()):
+        held = [g for g in goals if g["turn"] == turn]
+        holds = {k: v for k, v in (("conduct", [_objection(g, goals) for g in held if g["kind"] == "conduct"]),
+                                   ("served", [g["summary"] for g in held if g["kind"] != "conduct"]),
+                                   ("about_the_fix", fixing.get(turn))) if v}
+        if label == "note":  # What the note it was sent in with holds.
+            out["note"] = holds
+        elif holds:  # What each revision note holds, in order, or asks of the improvement itself.
+            out.setdefault("revision_notes", []).append({"round": int(label.split(":")[1]), **holds})
     if analysis.get("triaged"):  # A quick check found it smooth, so the analyzer didn't extract its goals.
         out["not_analysed"] = TRIAGED_NOTE
     elif analysis.get("not_analysed"):

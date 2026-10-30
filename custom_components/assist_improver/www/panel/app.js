@@ -33,6 +33,7 @@ export class PanelApp {
     }, true);
     for (const [type, show] of TIPS) this.root.addEventListener(type, (ev) => this.tip(ev, show));
     this.root.addEventListener("pointerdown", (ev) => {  // A click acts; its bubble steps aside for a moment.
+      if (ev.target?.closest?.("[data-tip]")?.matches("[tabindex]")) return;  // One there to explain shows it at a tap.
       this.root.getElementById("tip").hidden = true;
       this.tipMuted = {text: ev.target?.closest?.("[data-tip]")?.dataset.tip, until: Date.now() + 1500};
     });

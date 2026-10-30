@@ -321,6 +321,12 @@ class Improvements:
         await self._save()
         self._sync()
 
+    async def unrevised(self, improvement_id, note, why):
+        """A revision of this one whose round brought no new version: the note it asked with and why not (the
+        proposer's reason), shown with it as it stays up for review (P0.6), until the household decides again."""
+        self.items[improvement_id]["unrevised"] = {"note": note, "why": why}
+        await self._save()
+
     @asynccontextmanager
     async def unannounced(self, improvement_ids):
         """While auto-accept has yet to take what it can of these (DETAILS P12.9), the notification and the sidebar's
@@ -386,6 +392,7 @@ class Improvements:
             raise CaseError("That reason doesn't go with this decision")
         if decision == "revise" and not note.strip():
             raise CaseError("Say what to change in the note")
+        item.pop("unrevised", None)  # Decided again: what an earlier revision brought no longer stands.
         record = {"decision": decision, "note": note.strip(), **({"reason": reason} if reason else {}), "by": user_id,
                   "at": utcnow().isoformat(), **({"auto": True} if auto else {}),
                   # Taken before it was announced as waiting (unannounced): it never went up for review.

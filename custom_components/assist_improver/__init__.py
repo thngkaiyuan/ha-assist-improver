@@ -213,7 +213,7 @@ async def async_setup_entry(hass, entry):
     async def check_replay_fidelity(call):
         from .replay import check_fidelity
         try:
-            return await check_fidelity(hass, await recorder.export(call.data["recording_id"]))
+            return await check_fidelity(hass, await recorder.export(call.data["recording_id"]), assistant=True)
         except (CaseError, ValueError) as err:
             raise HomeAssistantError(str(err)) from err
 

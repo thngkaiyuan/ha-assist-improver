@@ -214,6 +214,7 @@ def review(item, planned=None, names=None, hass=None, revising=False, resolvable
     return {"id": item["id"], "title": display_title(item), "benefit": copy.get("benefit"),
             "safety": safety(steps), "status": item["status"], "enabled": enabled,
             "recent_outcome": recent, "recent_outcome_ok": recent_ok, "revises": item.get("revises"),
+            "unrevised": item.get("unrevised"),
             "removed": removed, "conflicts": conflicts, "changes": changes, "cause": item["cause"],
             # Side effects it no longer leaves (each device, left as it was), what the household pointed out that it
             # fixed (their words) and what it doesn't show fixed.
