@@ -8,8 +8,8 @@ from ..exploration import related_improvements
 from ..failures import contained
 from ..sessions import SessionSet, footprint
 from .assistants import Assistants
-from .goals import (FRICTION_KINDS, capabilities, friction, friction_by_goal, goal_devices, goal_summary, scenario,
-                    short)
+from .goals import (FRICTION_KINDS, HOME_COULDNT, capabilities, friction, friction_by_goal, goal_devices, goal_summary,
+                    scenario, short)
 
 # The open friction the generator gets as full scripts upfront (newest first), in characters and sessions; the
 # rest of the open goals come one line each, and read_session reads any session.
@@ -77,8 +77,9 @@ class Sessions(Assistants, SessionSet):
 
     def _goal_line(self, session, turn):
         analysis = self.analyses[session]
-        return {"turn": turn, "summary": goal_summary(analysis, turn),
-                "friction": sorted({f["kind"] for f in friction_by_goal(analysis).get(turn, [])})}
+        items = friction_by_goal(analysis).get(turn, [])
+        return {"turn": turn, "summary": goal_summary(analysis, turn), "friction": sorted({f["kind"] for f in items}),
+                **({"home_couldnt": HOME_COULDNT} if any(f.get("home_couldnt") for f in items) else {})}
 
     def overview(self):
         """Background; the newest open friction as scripts (within a budget) and the rest of it one line per goal;

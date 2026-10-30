@@ -68,9 +68,17 @@ async def analyze(hass, entry, runtime, recording_id, triage_only=False, sent=No
             run["output"] = answer
             if run["answer_status"] == "best_rejected":  # None accepted: only what passed the checks moves on.
                 answer = analyzer.valid_part(answer, found)
+            analysis = analyzer.to_analysis(recording_id, answer, view)
+            # What the user asked to know, judged once on the reply that ends its run (DETAILS P9.7.4, P9.10).
+            from .simulate import answered, judge_model
+            facts, heard = await answered(hass, judge_model(entry), view, analysis["goals"])
+            for n, goal in enumerate(analysis["goals"]):  # Each its own: two questions may share a turn.
+                if n in facts:
+                    goal.update(reached=facts[n]["gives"], answered=facts[n])
+            if heard:
+                run["fact_check"] = {k: heard.get(k) for k in ("status", "answers", "error", "usage")}
             run["analysis"] = contracts.check(  # What Propose and Simulate read: its contract, or it fails here.
-                {**analyzer.to_analysis(recording_id, answer, view, note=submit.note), "problems": found},
-                records.AnalysisResult, "The analysis")
+                {**analysis, "problems": found}, records.AnalysisResult, "The analysis")
             if duplicates := mark.kept(answer):  # Covered by another conversation's improvement (P0.12).
                 run["analysis"]["duplicates"] = duplicates
         return await keep(run)
@@ -87,7 +95,7 @@ def analyzer_input(runtime, recording_id, view, sent=None):
     # without a note, that passed the quick check is analysed as any other (DETAILS P9.3.2).
     told = sent if deliberate(sent) else None
     mark = analyzer.MarkDuplicate(view, existing)
-    # The note it was sent in with is feedback: an answer that drops it is rejected.
+    # The note it was sent in with is its last turn: an answer that gives it no goal is rejected.
     submit = analyzer.SubmitGoals(view, *([mark.THEN] if existing else []), note=(told or {}).get("note"),
                                   existing=existing)
     related = related_improvements(existing, view.devices_touched())
@@ -103,7 +111,9 @@ def analyzer_input(runtime, recording_id, view, sent=None):
     payload = {**view.overview(), **seen, **({"filed_by_user": {"note": told.get("note", "")}} if told else {}),
                **({"improvements_on_these_devices": related} if related else {})}
     if (note := ((told or {}).get("note") or "").strip()) and isinstance(payload.get("conversation"), list):
-        # The note it was sent in with is the conversation's last turn (SPEC.md P0.3), which needs its goal too.
+        # The note it was sent in with is the conversation's last turn (SPEC.md P0.3), which needs its goal too; it
+        # reads with read_turn as any turn does.
+        view.note = note
         payload["conversation"] = [*payload["conversation"], {"turn": len(view.digest["turns"]) + 1,
                                                               "user_says": note, "sent_with_it": True}]
     return instructions, payload, tools, submit, mark

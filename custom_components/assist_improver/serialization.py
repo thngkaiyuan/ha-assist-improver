@@ -3,6 +3,7 @@
 from collections.abc import Mapping
 from dataclasses import fields, is_dataclass
 from datetime import date, datetime
+from decimal import Decimal
 from enum import Enum
 import math
 import re
@@ -19,6 +20,8 @@ def plain(value):
         return value if math.isfinite(value) else None
     if isinstance(value, Enum):
         return value.value
+    if isinstance(value, Decimal):  # As Home Assistant's live context shows one to Assist.
+        return str(value)
     if isinstance(value, (datetime, date)):
         return value.isoformat()
     if isinstance(value, Context):

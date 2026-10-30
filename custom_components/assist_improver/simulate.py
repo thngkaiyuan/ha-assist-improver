@@ -3,14 +3,16 @@
 The whole conversation is replayed in a sandbox (sandbox.py, replay.py) with the household's own assistant and the
 user's recorded words, in order, from the home and time it started from: once without the change (the before), which
 must go as the conversation went, and once with it (the after), leaving out the turns DETAILS P6.4 lets it skip. Code
-judges both by P0.1.1's measures (measures.py); a small model judges only whether replies follow the household's
-feedback. Each replay runs once for its plan and is kept (Replays): a settled one is reused, never resampled; one the
-machinery cut off runs again.
+judges both by P0.1.1's measures (measures.py); a small model judges only whether an Assist turn shows what the
+household objected to (a conduct goal), one turn at a time, with what it said and did. Each replay runs once for its
+plan and is kept (Replays): a settled one is reused, never resampled; one the machinery cut off runs again.
 """
 
 import asyncio
 from copy import copy, deepcopy
 from dataclasses import is_dataclass, replace
+from datetime import datetime
+import json
 from pathlib import Path
 from types import MappingProxyType
 
@@ -22,10 +24,11 @@ from homeassistant.helpers.storage import Store
 from homeassistant.util.dt import utcnow
 
 from . import measures
-from .cases import CaseError, digest, recording_turns, replay_readiness, replayed, started_from, transcript
+from .cases import (CaseError, as_seen, digest, recording_turns, replay_readiness, replayed, started_from,
+                    transcript)
 from .changes import setup_from_changes
 from .const import DOMAIN, STORAGE_VERSION, TESTED_PROVIDERS
-from .digest import _naming
+from .digest import _clip, _naming
 from .failures import closing
 from .instructions import target
 from .replay import FrozenTurnLog, check_fidelity
@@ -40,13 +43,26 @@ from .trace import span
 SETTLED = ("reproduced", "not_reproducible", "done", "unsupported")
 TRANSIENT = ("running", "infrastructure_failure", "interrupted", "cancelled")
 NOT_REACHED = "It only changes the instructions of an assistant this conversation didn't use."
-# Whether a replay's replies follow what the household said about how Assist behaved: a small model judges only that.
-FEEDBACK_ROLE = "feedback_check"
-FEEDBACK_INSTRUCTIONS = """A household told their home assistant how it should behave (feedback, below). The same conversation was then replayed: you see what the user said in each turn and what the assistant replied. For each piece of feedback, say whether the replies follow it (followed), with a short reason. Judge only what the feedback asks for, from the replies' words; whether the devices did the right thing is checked separately. When a reply does what the feedback asked against, or the feedback asks for something the replies don't show, it is not followed."""
-FEEDBACK_STRUCTURE = probatio.Schema({probatio.Required("verdicts"): [{
-    probatio.Required("feedback"): str, probatio.Required("followed"): bool, probatio.Required("why"): str}]})
-# What of a goal decides which turns a replay with the change may skip, and whether its replies are checked.
-GOAL_FIELDS = ("key", "label", "kind", "entity_id", "entity_ids", "state", "states", "brightness_pct", "serves")
+ASKED_IN_NOTE = "They asked again in the note they sent it in with."
+NOTHING_AGAIN = ("Without the change, nothing the household had trouble with happened again, so a change can't be "
+                 "shown to remove it.")
+# Whether a replay's Assist turns show what the household objected to: a small model judges only that, one turn at a
+# time, with the turn they objected to as the example (DETAILS P6.1.9, P6.1.11). Its model is set where the feedback
+# check's was (settings' role key).
+CONDUCT_ROLE = "feedback_check"
+CONDUCT_INSTRUCTIONS = """A household objected to something their home assistant ("Assist") said or did in one turn of a conversation, or had to check on a result because Assist's reply there left them unsure (then what they objected to is a reply that leaves the result unclear). Each objection below has their own words (quote) and, as the example of what they objected to, that turn as it was recorded (objected_to: its turn number, then what the user said, what Assist did, each tool call with Home Assistant's result, and what it replied); or "Assist in general" when they named no one turn. Then the same conversation replayed, turn by turn, in the same form. The replay's turn with the same number is the same request asked again. For each objection, judge each replay turn it lists (judge): does that turn show what the household objected to? Answer for each with shows (true or false) and a short reason (why). Judge only what they objected to, from what the turn said and did: the tool calls and results are the facts of what Assist did. A turn that doesn't do it, or does something they didn't object to, doesn't show it."""
+CONDUCT_STRUCTURE = probatio.Schema({probatio.Required("answers"): [{
+    probatio.Required("goal"): str, probatio.Required("turn"): int, probatio.Required("shows"): bool,
+    probatio.Required("why"): str}]})
+# Whether a reply gives what the user asked to know (DETAILS P9.7.4): the same small model judges it, one turn at a
+# time, with the home as it was then (the devices the question is about) and the form they asked for.
+FACT_INSTRUCTIONS = """A household asked their home assistant ("Assist") something they wanted to know. Each question below has what they asked (asked: the turn and their words), what the answer needs (needs), the form they asked for the answer in, if any (form: their own words), the turn whose reply to judge (turn), and, when it's about the home, the devices it's about as the home had them when Assist answered (home: each device's name, its state and attributes as that turn started, and what changed in it before the reply). Then each turn to judge (turns), as it went: what the user said, what Assist did (each tool call with Home Assistant's result) and what it replied. For each question, does that turn's reply give what the answer needs, true to the home as given, in the form asked for (when given)? A question with no home is beyond what the home records: judge only whether the reply answers it in the form asked for, never whether its content is true. Answer for each with gives (true or false) and a short reason (why). Judge only the question: a reply that gives it with more besides still gives it; one that is wrong about the home, leaves out what the answer needs, or ignores the form asked for doesn't."""
+FACT_STRUCTURE = probatio.Schema({probatio.Required("answers"): [{
+    probatio.Required("goal"): str, probatio.Required("turn"): int, probatio.Required("gives"): bool,
+    probatio.Required("why"): str}]})
+# What of a goal decides which turns a replay with the change may skip.
+GOAL_FIELDS = ("key", "label", "kind", "entity_id", "entity_ids", "state", "states", "brightness_pct", "serves",
+               "about", "quote", "fact", "outcome", "message")
 
 
 class Untestable(CaseError):
@@ -106,11 +122,15 @@ def before_plan(recording):
     return plan
 
 
-def after_plan(before, setup, goals):
+def after_plan(before, setup, goals, aside=(), judge=None):
     """The replay with a change: its before's, the change as the sandbox runs it (setup_for), and the goals, which
-    decide the turns it may skip and whether its replies are checked against feedback."""
+    decide the turns it may skip, with those set aside (aside: keys), whose turns it says, and the model that judges
+    the objections and questions it may skip on (P6.7: it decides which turns are said too)."""
     plan = {"kind": "after", "before": before["id"], "setup": deepcopy(setup),
-            "goals": digest([[g.get(k) for k in GOAL_FIELDS] + [bool(g.get("feedback"))] for g in goals])}
+            "goals": digest([[g.get(k) for k in GOAL_FIELDS] for g in goals]),
+            **({"aside": sorted(aside)} if aside else {}),
+            **({"judge": judge} if any(g.get("kind") == "conduct" or g.get("kind") == "fact" and g.get("serves") is None
+                                       for g in goals if g["key"] not in aside) else {})}
     plan["id"] = digest(plan)
     return plan
 
@@ -196,43 +216,261 @@ def instructions_now(hass, hypothesis):
     return found
 
 
-async def check_feedback(hass, entity_id, feedback, turns):
-    """The small model's verdict on whether a replay's replies follow each piece of the household's feedback:
-    {status, verdicts, followed (all of it), error, usage}. Without a model it can't say (status not_run). turns:
-    [{turn, input, reply}]."""
+def _turn(number, user, items):
+    """One turn as the judge reads it, in order (a list: the judge's input is sent with its keys sorted): its number,
+    what the user said, what Assist did (each tool call with Home Assistant's result, clipped) and what it replied.
+    items: what Assist added to the conversation in it, as recorded or replayed."""
+    calls, did, reply = {}, [], ""
+    for item in items:
+        if item.get("role") == "assistant":
+            calls.update({call.get("id"): call for call in item.get("tool_calls") or []})
+            if item.get("content") and not item.get("tool_calls"):
+                reply = item["content"]
+        elif item.get("role") == "tool_result":
+            call = calls.get(item.get("tool_call_id")) or {}
+            found = item["result"] if "result" in item else item.get("tool_result")  # tool_result: before 2026.10.
+            did.append({"called": item.get("tool_name") or call.get("tool_name"), "with": call.get("tool_args"),
+                        "result": _clip(json.dumps(found, ensure_ascii=False, default=str))})
+    return [{"turn": number}, {"user_said": user}, {"assistant_did": did}, {"assistant_replied": reply}]
+
+
+def judgeable(goal, view):
+    """Whether a fact can be judged: its truth is in the record (it names a device the recording holds a state of), or
+    the user asked for a form; a question beyond the home with no form asked holds nothing to check (the goal design,
+    2026-10-29)."""
+    recorded = view.source.get("states") or {}
+    return goal.get("kind") == "fact" and (any(e in recorded for e in goal.get("entity_ids") or [])
+                                           or bool((goal.get("quote") or "").strip()))
+
+
+def question_of(goal, view, turn, user_said, world=None):
+    """A fact as the judge reads it, for one turn's reply: what was asked, what the answer needs, the form asked for,
+    and the home as it was as that turn started (the devices the question is about that the recording holds, as
+    Assist saw them), with what changed in that turn before the reply. world: a replay's (measures.replay_view), whose
+    changes before the turn decide the states (a recorded attribute stays only where they match the recording) and
+    whose changes in it are what that replay's turn did."""
+    out = {"asked": [{"turn": goal["turn"]}, {"user_said": user_said}], "needs": goal.get("fact") or "", "turn": turn}
+    if (goal.get("quote") or "").strip():
+        out["form"] = goal["quote"]
+    start = as_seen(view.recording, view.sources[turn - 1]) if 1 <= turn <= len(view.sources) else {}
+    replied = view.replies[turn - 1] if 1 <= turn <= len(view.replies) else None
+    changes, home = (world or view).changes, []
+    for e in [e for e in goal.get("entity_ids") or [] if e in start]:
+        state = start[e].get("state")
+        if world is not None:
+            before = [c for c in changes.get(e, []) if c["during_turn"] < turn]
+            state = before[-1]["new"] if before else (as_seen(view.recording, view.sources[0]).get(e) or {}).get(
+                "state")
+        changed = [{k: c[k] for k in ("old", "new", "by")} for c in changes.get(e, []) if c["during_turn"] == turn
+                   and (world is not None and c["by"] == "assistant" or "between turns" not in c["by"] and (
+                       replied is None or datetime.fromisoformat(c["at"]) <= datetime.fromisoformat(replied)))]
+        home.append({"device": _naming(view.source, e)[0], "entity_id": e, "state": state,
+                     **({"attributes": start[e].get("attributes")} if start[e].get("state") == state else {}),
+                     **({"during_the_turn": changed} if changed else {})})
+    if home:
+        out["home"] = home
+    return out
+
+
+async def check_facts(hass, entity_id, questions, turns):
+    """The small model's answers on whether turns' replies give what the user asked to know: {status, answers, error,
+    usage}, completed only with a well-formed answer for each question. questions: [{goal, asked, needs, form?,
+    home?, turn}]; turns: each judged turn as the judge reads it (_turn)."""
     from .reflective import run_role
     if not entity_id:
-        return {"status": "not_run", "verdicts": [], "followed": None, "error": {"message": "No model to check with"}}
-    record = await run_role(hass, role=FEEDBACK_ROLE, entity_id=entity_id, instructions=FEEDBACK_INSTRUCTIONS,
-                            payload={"feedback": list(feedback),
-                                     "replay": [{"turn": t["turn"], "user": t["input"], "assistant": t["reply"]}
-                                                for t in turns]},
-                            structure=FEEDBACK_STRUCTURE, allow_paid_inference=True)
-    verdicts = (record.get("output") or {}).get("verdicts", [])
-    judged = record["status"] == "completed" and len(verdicts) >= len(feedback)
-    return {"status": "completed" if judged else "failed", "verdicts": verdicts, "error": record.get("error"),
-            "followed": judged and all(v["followed"] for v in verdicts), "usage": record["usage"]}
+        return {"status": "not_run", "answers": [], "error": {"message": "No model to check with"}}
+    record = await run_role(hass, role=CONDUCT_ROLE, entity_id=entity_id, instructions=FACT_INSTRUCTIONS,
+                            payload={"questions": questions, "turns": turns}, structure=FACT_STRUCTURE,
+                            allow_paid_inference=True)
+    given = {(a.get("goal"), a.get("turn")): a for a in _well_formed(FACT_STRUCTURE, record.get("output"))}
+    judged = record["status"] == "completed" and all((q["goal"], q["turn"]) in given for q in questions)
+    return {"status": "completed" if judged else "failed",
+            "answers": [given[k] for k in ((q["goal"], q["turn"]) for q in questions) if k in given],
+            "error": record.get("error"), "usage": record["usage"]}
 
 
-async def verdicts(hass, entry, replays, replay, goals):
-    """{text: followed} for each feedback text the goals ask for, in this replay's replies. Each text is checked once
-    and kept with the replay (P6.3.5.1): one check for those not kept yet, never a new replay. Transient when the
-    check can't run."""
-    from .settings import role_model
-    texts = sorted({t for g in goals for t in g.get("feedback") or []})
-    known = {t: f for check in (replay.get("verdicts") or {}).values() for t, f in check["followed"].items()}
-    if missing := [t for t in texts if t not in known]:
-        heard = await check_feedback(hass, role_model(entry, "feedback_check") or role_model(entry, "editor"),
-                                     missing, replay["steps"])
+async def answered(hass, model, view, goals):
+    """({a fact root's place among the goals: {turn, gives, why}}, the judge's record): each judgeable fact root of the
+    conversation as it went, judged once, at analysis, on the reply that ends its run of steps (its own when none
+    follows; a reply a step follows is unmet by the step itself, as is the last when the step is in the note). A root
+    that can't be judged, or whose judge didn't answer, has none, and the analysis goes on either way."""
+    try:
+        recorded = recording_turns(view.recording, replay=False)
+    except CaseError:
+        return {}, None
+    from .analyzer import question_run
+    roots = {n: g for n, g in enumerate(goals) if g.get("serves") is None and g.get("kind") == "fact"}
+    found, runs = {}, {n: question_run(goals, g) for n, g in roots.items()  # Not one in the note: no reply.
+                       if judgeable(g, view) and g["turn"] <= len(recorded)}
+    for n, run in runs.items():
+        if run[-1] > len(recorded):  # Asked again in the note: its last reply said gave nothing either.
+            found[n] = {"turn": max(t for t in run if t <= len(recorded)), "gives": False, "why": ASKED_IN_NOTE}
+    said = lambda turn: recorded[turn - 1]["messages"][0]["content"]
+    questions = [{"goal": str(n), **question_of(roots[n], view, run[-1], said(roots[n]["turn"]))}
+                 for n, run in runs.items() if n not in found]
+    if not questions:
+        return found, None
+    turns = [_turn(t, said(t), recorded[t - 1]["messages"][1:]) for t in sorted({q["turn"] for q in questions})]
+    heard = await check_facts(hass, model, questions, turns)
+    found |= {int(a["goal"]): {k: a[k] for k in ("turn", "gives", "why")} for a in heard["answers"]
+              if heard["status"] == "completed"}
+    return found, heard
+
+
+def _well_formed(structure, output):
+    """The judge's answers that hold the shape asked for (the provider may not enforce it; keys it adds are dropped):
+    none unless all do."""
+    try:
+        return probatio.Schema(structure.schema, extra=probatio.REMOVE_EXTRA)(output)["answers"]
+    except (probatio.Invalid, TypeError):
+        return []
+
+
+def questions_in(goals, view, aside=()):
+    """The questions a replay judges: the judgeable fact roots not set aside."""
+    return [g for g in goals if g.get("serves") is None and judgeable(g, view) and g["key"] not in aside]
+
+
+async def judged_facts(hass, model, recording, view, steps, questions, goals, verdicts, upto=None):
+    """({key: [{turn, gives, why}]}, verdicts): the judge's answer for each question (a judgeable fact root, among the
+    conversation's goals) on each turn of its run among these steps (upto: only those before that turn), with the home
+    as the replay had it, kept with the replay as the objections' are: each asked once, one call for those not kept
+    yet. Unjudged when the judge can't answer."""
+    said, recorded = {s["turn"]: s for s in steps}, recording_turns(recording)
+    named = {g["key"]: digest({**{k: g.get(k) for k in ("label", "fact", "entity_ids", "quote")}, "model": model,
+                               "question": True}) for g in questions}
+    known = _answers(verdicts)
+    wanted = {g["key"]: [t for t in measures.run_of(goals, g) if t in said and (upto is None or t < upto)]
+              for g in questions}
+    if missing := [(g, t) for g in questions for t in wanted[g["key"]] if t not in known.get(named[g["key"]], {})]:
+        world = measures.replay_view(recorded, view, steps)
+        user = lambda n: recorded[n - 1]["messages"][0]["content"]
+        heard = await check_facts(hass, model, [{"goal": str(n), **question_of(g, view, t, user(g["label"]), world)}
+                                                for n, (g, t) in enumerate(missing, 1)],
+                                  [_turn(t, said[t]["input"], said[t].get("output") or [])
+                                   for t in sorted({t for _, t in missing})])
         if heard["status"] != "completed":
-            raise Transient("The replies couldn't be checked against the household's feedback.")
-        by_text = {v.get("feedback"): v.get("followed") for v in heard["verdicts"]}
-        followed = {t: bool(by_text[t] if t in by_text else heard["verdicts"][i]["followed"])
-                    for i, t in enumerate(missing)}
-        await replays.save({**replay, "verdicts": {**(replay.get("verdicts") or {}), digest(missing): {
-            "status": "completed", "followed": followed, "verdicts": heard["verdicts"], "usage": heard.get("usage")}}})
-        known.update(followed)
-    return {t: known[t] for t in texts}
+            raise Unjudged("The replies couldn't be checked against what the user asked to know.")
+        found = {}
+        for n, (g, _) in enumerate(missing, 1):
+            found.setdefault(named[g["key"]], []).extend(
+                {k: a[k] for k in ("turn", "gives", "why")} for a in heard["answers"] if a["goal"] == str(n))
+        verdicts = {**verdicts, digest([[named[g["key"]], t] for g, t in missing]): {
+            "status": "completed", "model": model, "answers": found, "usage": heard.get("usage")}}
+        known = _answers(verdicts)
+    return {g["key"]: [known[named[g["key"]]][t] for t in wanted[g["key"]]] for g in questions}, verdicts
+
+
+def _judged_turns(steps, goal):
+    """The replay turns a conduct goal is judged on: each said before its own turn; every one for the note's and a
+    revision note's (never said)."""
+    return [s["turn"] for s in steps if not isinstance(goal.get("label"), int) or s["turn"] < goal["label"]]
+
+
+async def check_conduct(hass, entity_id, objections, steps):
+    """The small model's answers on whether replay turns show what the household objected to: {status, answers,
+    error, usage}, completed only with an answer for each turn every objection lists. Without a model it can't say
+    (status not_run). objections: [{goal, quote, objected_to, judge: [turns]}]; steps: the replay's."""
+    from .reflective import run_role
+    if not entity_id:
+        return {"status": "not_run", "answers": [], "error": {"message": "No model to check with"}}
+    record = await run_role(hass, role=CONDUCT_ROLE, entity_id=entity_id, instructions=CONDUCT_INSTRUCTIONS,
+                            payload={"objections": objections, "replay": [
+                                _turn(s["turn"], s["input"], s.get("output") or []) for s in steps]},
+                            structure=CONDUCT_STRUCTURE, allow_paid_inference=True)
+    given = {(a.get("goal"), a.get("turn")): a for a in _well_formed(CONDUCT_STRUCTURE, record.get("output"))}
+    asked = sorted((o["goal"], t) for o in objections for t in o["judge"])
+    judged = record["status"] == "completed" and all(k in given for k in asked)
+    return {"status": "completed" if judged else "failed", "answers": [given[k] for k in asked if k in given],
+            "error": record.get("error"), "usage": record["usage"]}
+
+
+class Unjudged(Exception):
+    """The judge couldn't answer (no model, or no answer for every turn it was asked about): the machinery's doing.
+    Never a CaseError, which would settle a replay it cut off as unsupported."""
+
+
+def judge_model(entry):
+    """The model that judges replies: its own setting, else the write-up model's."""
+    from .settings import role_model
+    return role_model(entry, CONDUCT_ROLE) or role_model(entry, "editor")
+
+
+async def judged(hass, model, recording, steps, goals, verdicts):
+    """({key: [{turn, shows, why}]}, verdicts): the judge's answer for each conduct goal on each turn it's judged on
+    among these steps (_judged_turns), and the verdicts kept with them. Each answer, for one goal (by its words, the
+    turn it's about and the model) and one replay turn, is asked once and kept: one call for those not kept yet.
+    Unjudged when the judge can't answer."""
+    named = {g["key"]: digest({**{k: g.get(k) for k in ("label", "about", "quote")}, "model": model}) for g in goals}
+    known = _answers(verdicts)
+    wanted = {g["key"]: _judged_turns(steps, g) for g in goals}
+    if missing := [(g, turns) for g in goals
+                   if (turns := [t for t in wanted[g["key"]] if t not in known.get(named[g["key"]], {})])]:
+        recorded = recording_turns(recording)
+        asked = [{"goal": str(n), "quote": g.get("quote") or "", "judge": turns,
+                  "objected_to": _turn(g["about"], recorded[g["about"] - 1]["messages"][0]["content"],
+                                       recorded[g["about"] - 1]["messages"][1:])
+                  if isinstance(g.get("about"), int) else "Assist in general"}
+                 for n, (g, turns) in enumerate(missing, 1)]
+        heard = await check_conduct(hass, model, asked, steps)
+        if heard["status"] != "completed":
+            raise Unjudged("The replies couldn't be checked against what the household objected to.")
+        found = {named[g["key"]]: [{k: a[k] for k in ("turn", "shows", "why")} for a in heard["answers"]
+                                   if a["goal"] == str(n)] for n, (g, _) in enumerate(missing, 1)}
+        verdicts = {**verdicts, digest([[named[g["key"]], turns] for g, turns in missing]): {
+            "status": "completed", "model": model, "answers": found, "usage": heard.get("usage")}}
+        known = _answers(verdicts)
+    return {g["key"]: [known[named[g["key"]]][t] for t in wanted[g["key"]]] for g in goals}, verdicts
+
+
+def _answers(verdicts):
+    """{goal's digest: {turn: answer}}, from the verdicts kept with a replay."""
+    out = {}
+    for check in (verdicts or {}).values():
+        for name, answers in (check.get("answers") or {}).items():
+            out.setdefault(name, {}).update({a["turn"]: a for a in answers})
+    return out
+
+
+def state_of(answers):
+    """A conduct goal's state from the judge's answers on the turns it's judged on: unmet when one shows what the
+    household objected to, met when none does, indeterminate with no turn to judge."""
+    return "unmet" if any(a["shows"] for a in answers) else "met" if answers else "indeterminate"
+
+
+async def conduct(hass, model, replays, replay, recording, goals):
+    """{key: {state, answers: [{turn, shows, why}]}} for each conduct goal in this replay, judged once the replay is
+    done (state_of): those it judged as it went (Trial) are kept with it; the rest, the note's and revision notes'
+    among them, get one call, never a new replay, and are kept too (DETAILS P6.3.5.1). Transient when the judge can't
+    answer. model: the judge's (judge_model), the one the replay with the change was judged with as it went."""
+    objections = [g for g in goals if g.get("kind") == "conduct"]
+    try:
+        found, verdicts = await judged(hass, model, recording, replay["steps"], objections,
+                                       replay.get("verdicts") or {})
+    except Unjudged as err:
+        raise Transient(str(err)) from err
+    if verdicts != (replay.get("verdicts") or {}):  # Kept with the replay the caller holds too, for what's judged next.
+        replay["verdicts"] = verdicts
+        await replays.save(replay)
+    return {k: {"state": state_of(answers), "answers": answers} for k, answers in found.items()}
+
+
+async def questions(hass, model, replays, replay, recording, asking, goals, view):
+    """{key: {state, answers: [{turn, gives, why}]}} for each question asked of this replay (asking: judgeable fact
+    roots among the goals), judged on each turn of its run it said (DETAILS P9.10.4), once the replay is done: those
+    judged as it went (Trial) are kept with it, the rest get one call and are kept too. Its state is the latest
+    reply's (measures.question_state). Transient when the judge can't answer."""
+    try:
+        found, verdicts = await judged_facts(hass, model, recording, view, replay["steps"], asking, goals,
+                                             replay.get("verdicts") or {})
+    except Unjudged as err:
+        raise Transient(str(err)) from err
+    if verdicts != (replay.get("verdicts") or {}):  # Kept with the replay the caller holds too.
+        replay["verdicts"] = verdicts
+        await replays.save(replay)
+    keyed = {g["key"]: g for g in asking}
+    return {k: {"state": measures.question_state(keyed[k], None, {k: answers}), "answers": answers}
+            for k, answers in found.items()}
 
 
 class Replays:
@@ -276,12 +514,13 @@ class Trial:
     """One replay of a conversation under its plan, from the first turn, the user's recorded words in order (through
     the turn `through`, for a developer's replay): the before, each turn's effects on the devices the recorded Assist
     changed matching the recording's (not_reproducible at the first that doesn't), or the after, with the change in
-    the sandbox, saying only the turns it can't skip (DETAILS P6.4). It runs once; its sandbox closes however it
-    ends."""
+    the sandbox, saying only the turns it can't skip (DETAILS P6.4), with the judge (judge: its model) asked about
+    the objections as it goes. It runs once; its sandbox closes however it ends."""
 
-    def __init__(self, hass, plan, recording, agent, *, goals=None, setup=None, through=None):
+    def __init__(self, hass, plan, recording, agent, *, goals=None, setup=None, aside=(), judge=None, through=None):
         self.hass, self.plan, self.recording, self.agent = hass, plan, recording, agent
-        self.goals, self.setup, self.after = goals or [], setup or {}, plan["kind"] == "after"
+        self.goals, self.setup, self.after, self.aside = goals or [], setup or {}, plan["kind"] == "after", set(aside)
+        self.judge, self.states, self.facts = judge, {}, {}  # The judge's model; its answers so far.
         self.turns = recording_turns(recording)
         self.through = through or len(self.turns)
         # The devices the recorded Assist changed itself, in any turn: what a before is judged on.
@@ -316,7 +555,7 @@ class Trial:
                                                 + " | ".join(report["prompt_diff"][2:8]))
             for turn in self.turns[:self.through]:
                 if turn["number"] > 1:
-                    if self.after and measures.skippable(self.goals, self._view(), turn["number"]):
+                    if self.after and not await self._needed(turn["number"]):
                         continue
                     self.log.say(turn)
                 if not await self._turn(turn):
@@ -335,31 +574,63 @@ class Trial:
                 await self.log.close()
         return entry
 
-    def _view(self):
-        """What the home did in this replay so far, as measures judge it."""
+    async def _needed(self, number):
+        """Whether the replay with the change says this turn (measures.needed), the judge asked first, over the
+        replies so far, about this turn's objections and, at a wrap-up's turn, its goal's note's and revision notes'
+        and any earlier one of its goal's not judged yet (its turn was said anyway), and about each question a step or
+        filing on this turn hangs on (DETAILS P6.4), when the answers decide the turn. What the judge answers is part
+        of this replay: when it can't answer, the replay is cut off and runs again (Unjudged, P6.3.5)."""
+        goals = self.goals
+        roots = {measures.root_of(goals, g) for g in goals if g["label"] == number and g.get("kind") == "wrap-up"}
+        asked = [g for g in goals if g.get("kind") == "conduct" and g["key"] not in self.aside and (
+            g["label"] == number or measures.root_of(goals, g) in roots and (
+                not isinstance(g["label"], int) or g["label"] < number and g["key"] not in self.states))]
+        hangs = {g["key"] for g in goals if g["label"] == number and g.get("kind") in ("step", "wrap-up")}
+        questions = [q for q in questions_in(goals, self._session(), self.aside) if measures.under(goals, q) & hangs]
+        if (asked or questions) and not measures.needed(  # It decides: asked, all met would skip the turn.
+                goals, self._view(), number, self.aside, {**self.states, **{g["key"]: "met" for g in asked}},
+                {**self.facts, **{q["key"]: [{"turn": 0, "gives": True}] for q in questions}}):
+            if asked:
+                found, self.entry["verdicts"] = await judged(self.hass, self.judge, self.recording,
+                                                             self.entry["steps"], asked, self.entry["verdicts"])
+                self.states.update({k: state_of(answers) for k, answers in found.items()})
+            if questions:
+                found, self.entry["verdicts"] = await judged_facts(
+                    self.hass, self.judge, self.recording, self._session(), self.entry["steps"], questions, goals,
+                    self.entry["verdicts"], upto=number)
+                self.facts.update(found)
+        return measures.needed(goals, self._view(), number, self.aside, self.states, self.facts)
+
+    def _session(self):
+        """The recording as the analysis read it (exploration.SessionView), made once."""
         if self.session is None:
             from .exploration import SessionView
             self.session = SessionView(self.recording)
-        return measures.replay_view(self.turns, self.session, self.entry["steps"])
+        return self.session
+
+    def _view(self):
+        """What the home did in this replay so far, as measures judge it."""
+        return measures.replay_view(self.turns, self._session(), self.entry["steps"])
 
     async def _turn(self, turn):
         """Replay one turn and keep it as a step; False when the before's turn didn't go as recorded."""
         log, number = self.log, turn["number"]
-        start, moved, called = len(log.content), len(log.replay_api.world.transitions), len(log.external_calls)
+        world = log.replay_api.world
+        start, moved, called = len(log.content), len(world.transitions), len(log.external_calls)
+        spoke = len(world.spoken)
         async with span("replay.turn", replay=self.plan["kind"], turn=number):
             await self.agent._async_handle_message(log.input, log)
         new = log.content[start:]
         if (not new or log.unresponded_tool_results or new[-1].role != "assistant" or not new[-1].content
                 or new[-1].tool_calls):
             raise CaseError("The assistant didn't finish this turn")
-        world = log.replay_api.world
         transitions = deepcopy(world.transitions[moved:])
         brightness = {e: [(log.turn_start_attributes.get(e) or {}).get("brightness"),
                           (world.attributes.get(e) or {}).get("brightness")] for e in log.replay_api.watch}
         step = {"turn": number, "input": log.input.text, "reply": new[-1].content,
                 "output": plain([c.as_dict() for c in new]), "transitions": transitions,
                 "brightness": {e: v for e, v in brightness.items() if v[0] != v[1]},
-                "external_calls": deepcopy(log.external_calls[called:]),
+                "external_calls": deepcopy(log.external_calls[called:]), "spoken": deepcopy(world.spoken[spoke:]),
                 "prompt_matches_recording": log.prompt_matches_recording}
         self.entry["said"].append(number)
         self.entry["steps"].append(step)
@@ -430,18 +701,24 @@ def _devices(goal):
     return {e for e in [goal.get("entity_id"), *(goal.get("entity_ids") or [])] if e}
 
 
-def _replay(replay, judged, followed, source, setup):
-    """A replay as its test keeps it: how it went (its replies) and how it fulfilled the goals, from where."""
+def _replay(replay, judged, heard, told, aside, source, setup):
+    """A replay as its test keeps it: how it went (its replies) and how it fulfilled the goals, from where, with each
+    conduct goal's and question's state, what the judge said of it (heard, told) and whether it was set aside."""
     replies = [{"turn": step["turn"], "you": said["you"], "assistant": said["assist"],
                 **({"failed": said["failed"]} if said.get("failed") else {})}
                for step, said in zip(replay["steps"], replayed(replay["steps"]))]
     return {"plan": replay["plan"]["id"], "status": replay["status"], "said": list(replay["said"]), "replies": replies,
             "goals": judged["goals"], "goals_met": judged["goals_met"],
             "turns_per_root_goal": judged["turns_per_root_goal"], "counted": judged["counted"],
+            "home_couldnt": judged["home_couldnt"],
             "side_effects_left": [{"entity_id": s["entity_id"], "name": _naming(source, s["entity_id"])[0],
                                    "start": s["start"], "end": s["end"], "turn": s["turn"]}
                                   for s in judged["side_effects_left"]],
-            "started_from": started_from(source), "config": assist_config(source, setup), "feedback": followed}
+            "started_from": started_from(source), "config": assist_config(source, setup),
+            "conduct": {k: {"state": judged["goals"][k], "answers": (heard.get(k) or {}).get("answers", []),
+                            **({"set_aside": True} if k in aside else {})} for k in heard},
+            "facts": {k: {"state": judged["goals"][k], "answers": (told.get(k) or {}).get("answers", []),
+                          **({"set_aside": True} if k in aside else {})} for k in told}}
 
 
 async def test(hass, entry, runtime, rid, goals, hypothesis):
@@ -462,28 +739,66 @@ async def test(hass, entry, runtime, rid, goals, hypothesis):
     if without["status"] != "reproduced":
         raise Untestable(_why(without), conversation=True)
     turns, session = recording_turns(recording), SessionView(recording)
-    heard_before = await verdicts(hass, entry, replays, without, goals)
-    b = measures.judge(goals, measures.replay_view(turns, session, without["steps"]), without["said"], heard_before)
     went = measures.judge(goals, session, range(1, len(turns) + 1), measures.CONVERSATION)
-    if why := measures.went_as_it_went(b, went):
+    home = measures.replay_view(turns, session, without["steps"])
+    # What code judges first: a before that didn't go as the conversation went costs no judge's call. What it can't
+    # test is set aside (open for saying turns, indeterminate in both replays): a wrap-up it finds met, then an
+    # objection none of its turns shows (DETAILS P6.6.2).
+    objections = {g["key"] for g in goals if g.get("kind") == "conduct"}
+    asking = questions_in(goals, session)  # The questions, and what hangs on their answers: the judge's to tell.
+    hanging = {q["key"]: measures.under(goals, q) for q in asking}
+    theirs = set().union(*hanging.values())
+    found = measures.judge(goals, home, without["said"], {})
+    aside = measures.set_aside(found, went, goals) - objections - theirs  # Those are the judge's to tell, next.
+    actions = measures.told_by(goals, {g["key"] for g in goals if g.get("kind") == "action"})  # From calls.
+    if why := measures.went_as_it_went(found, went, leave_out=objections | theirs | aside | actions):
         raise Untestable(why, conversation=True)
+    model = judge_model(entry)
+    heard_before = await conduct(hass, model, replays, without, recording, goals)
+    states = {k: v["state"] for k, v in heard_before.items()}
+    told_before = await questions(hass, model, replays, without, recording, asking, goals, session)
+    off = measures.answered_otherwise(goals, {k: v["answers"] for k, v in told_before.items()})
+    aside |= set().union(*(hanging[k] for k in off))
+    facts = {k: v["answers"] for k, v in told_before.items() if k not in aside}
+    aside |= measures.set_aside(measures.judge(goals, home, without["said"], states, aside, facts), went,
+                                goals) & objections
+    # A filing as the replay with the change decides it, at its own turn: the objections judged on the replies before.
+    aside |= {g["key"] for g in goals if g.get("kind") == "wrap-up" and went["goals"].get(g["key"]) == "unmet"
+              and measures.wrap_up(goals, home, g, {k: state_of([a for a in v["answers"] if a["turn"] < g["turn"]])
+                                                    for k, v in heard_before.items()}, aside, facts) == "met"}
+    b = measures.judge(goals, home, without["said"], states, aside, facts)
+    # An action one side can't tell (a script in the recording, whose own calls it doesn't keep) isn't compared, nor
+    # what's told from it.
+    untold = {g["key"] for g in goals if g.get("kind") == "action" and "indeterminate" in (
+        b["goals"].get(g["key"]), went["goals"].get(g["key"]))}
+    if why := measures.went_as_it_went(b, went, leave_out=aside | measures.told_by(goals, untold)):
+        raise Untestable(why, conversation=True)
+    if (aside or {k for k in untold if went["goals"].get(k) == "unmet"}) and not b["side_effects_left"] and not any(
+            v == "unmet" for k, v in b["goals"].items() if k not in aside | measures.told_by(goals, untold)):
+        raise Untestable(NOTHING_AGAIN, conversation=True)  # What's set aside left nothing to remove (P6.6.5).
     try:
         setup, tested, provider = setup_for(hypothesis, recording, hass)
     except CaseError as err:
         raise Untestable(str(err)) from err
-    with_change = await _settled(hass, replays, after_plan(before, setup, goals), before, recording, goals=goals,
-                                 setup=setup)
+    with_change = await _settled(hass, replays, after_plan(before, setup, goals, aside, model), before, recording,
+                                 goals=goals, setup=setup, aside=aside, judge=model)
     if with_change["status"] != "done":  # It can't run with this change: the idea's, not counted (P6.3.5).
         raise Untestable(_why(with_change))
-    heard_after = await verdicts(hass, entry, replays, with_change, goals)
+    heard_after = {k: {} for k in heard_before if k in aside}  # Set aside: not judged again.
+    heard_after.update(await conduct(hass, model, replays, with_change, recording,
+                                     [g for g in goals if g["key"] not in aside]))
+    told_after = {k: {} for k in told_before if k in aside}
+    told_after.update(await questions(hass, model, replays, with_change, recording,
+                                      [q for q in asking if q["key"] not in aside], goals, session))
     a = measures.judge(goals, measures.replay_view(turns, session, with_change["steps"]), with_change["said"],
-                       heard_after)
+                       {k: v["state"] for k, v in heard_after.items() if v}, aside,
+                       {k: v["answers"] for k, v in told_after.items() if v})
     source = turns[0]["source"]
     return {"idea": hypothesis.get("title"), "changes": digest(hypothesis.get("changes")),
             "hypothesis": deepcopy(hypothesis), "at": utcnow().isoformat(),
             "judged": measures.judged_of(goals, _devices),
-            "before": _replay(without, b, heard_before, source, None),
-            "after": _replay(with_change, a, heard_after, source, setup),
+            "before": _replay(without, b, heard_before, told_before, aside, source, None),
+            "after": _replay(with_change, a, heard_after, told_after, aside, source, setup),
             "gains": measures.gains(a, b), "validated": measures.easier(a, b),
             "setup": setup, "tested": tested, "provider": provider,
             "user_id": (turns[0]["prepared"]["context"].get("context") or {}).get("user_id"),

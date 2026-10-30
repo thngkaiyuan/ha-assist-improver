@@ -1,21 +1,26 @@
 """Journey analyzer role: a recorded session in, the user's goals out.
 
 The model does only the human modelling: what the user wanted, as goals
-(device states, device sequences or facts), each tagged with the turn that
-first asked for it, and sub-goals: steps the user only took to get an earlier
-goal. It answers by calling submit_goals, which checks the answer against the
-recording (entities exist, states are ones the device has) and rejects it with
-the reasons until it is valid; the last accepted answer counts, or the best one
-if none was accepted. Code derives the rest from the recording: which turns were
-extra (interventions), whether Assist's own changes reached each goal, and
-changes Assist left behind that no goal asked for. The model also records what
-the household said about how Assist behaved (feedback), in a turn or in the note
-they sent the conversation in with. It is agentic: it starts from the
-conversation and reads turns and the household with read-only tools over the
-recording (exploration.py).
+(device states, device sequences, facts, actions that leave no device state
+or settings left open), each tagged
+with the turn that first asked for it, and sub-goals, each of which exists only
+because of its goal (DETAILS P2.3.2): a part of it (a device asked for with it,
+or a repair of one Assist left wrong), or a reaction that names what it reacts
+to: the goal still unmet (a step), what Assist said or did in one turn, in the
+household's own words (conduct: about that turn, quoting them), the trouble as
+a whole (a wrap-up: filing it, giving up) or the goal met (a thanks). It answers
+by calling submit_goals, which checks the answer against the recording (entities
+exist, states are ones the device has, a quote is the household's own words)
+and rejects it with the reasons until it is valid; the last accepted answer
+counts, or the best one if none was accepted. Code derives the rest from the
+recording: which turns were extra (interventions), whether Assist's own changes
+reached each goal, and changes Assist left behind that no goal asked for. It is
+agentic: it starts from the conversation and reads turns and the household with
+read-only tools over the recording (exploration.py).
 """
 
 from datetime import datetime
+import re
 
 import probatio
 
@@ -29,17 +34,22 @@ INSTRUCTIONS = """You analyse one recorded session between a household and its H
 List the user's goals. A goal is one thing the user wanted:
 - state: a device ending in a state (entity_id and state; add brightness_pct only if the user asked for a brightness);
 - sequence: a device passing through states in order (entity_id and states), such as a relay pressed off then on;
-- fact: something the user needed to know (fact);
+- fact: something the user needed to know. fact: what the answer needs (the facts, distinctions or limits it must give, never the answer itself); entity_ids: the devices the answer is about, when it's about the home; quote: the form they asked for the answer in ("in a single brief sentence"), in their own words, only when they asked for one;
+- action: something done that leaves no device in a new state. outcome announce: a message spoken on devices; message: only the words to speak (nothing around them, such as "that"), copied from what the user said (in the request, or in their answer when the assistant asked what to say); entity_ids: every device it's for, in one action (each speaker the household has, when they say all of them). Asked together with a device request, it's a part at that turn;
 - ask: devices whose settings the user's words leave open (entity_ids). Don't guess what the user didn't say: list the controls the user should set, as narrow as their words allow. One control when only its value is open (a seat heater with no level given); the related controls of a device when only the device or the theme is clear ("make the car toasty": its heating controls). The user will be shown those controls and set them.
 Give each goal the turn where the user first asked for it. A goal is one state of the home at one time: several things asked for at once are one goal, so give the first device as the goal and each other device as a sub-goal with the same turn that serves it. What later turns reveal changes the earlier goal: a correction or clarification makes it more exact rather than adding a goal. When the assistant asks the user a follow-up question, the answer makes the earlier request more exact: give those details the turn of the original request. When the assistant answers a vague request by guessing and asking what the user wants, the user's reply says what they wanted all along: those goals belong to the vague request's turn, and the assistant's guess is not a goal. When a later turn shows how a goal must be reached (such as a relay pressed off then on), change the earlier goal itself. Once a goal has been reached, asking for the same thing again is a new goal with the new turn. Respect the timing and separation of the user's requests: what they asked for separately, at different times, stays separate goals; what they asked for together is one request. Never turn them into a broader request the user didn't make, even if their intent seems predictable.
 
-A sub-goal is a step the user took only in order to get an earlier goal: asking what the assistant can do after it failed, asking what it did or how a device is doing, telling it how to do the job, finishing a step it left half done, or undoing something it did that the user did not want. Give a sub-goal the turn where it was asked, the same fields as a goal, and serves: the turn of the goal it was for, or of the earlier sub-goal it was a step towards. A sub-goal is never a goal of its own.
+A sub-goal exists only because of a goal: it is a part of the goal, or a reaction to it. Give it the turn where it was said and serves: the turn of the goal it belongs to. A sub-goal is never a goal of its own. Its kinds:
+- a part: another device asked for in the goal's own turn (a state or sequence sub-goal at that turn, above), or a repair: a later turn asking to put right a device the goal didn't name, which Assist changed (a state or sequence sub-goal on that device);
+- step: a later turn the user spent only because the goal wasn't met yet: repeating, rephrasing or correcting the request, answering the assistant's question about it, checking whether it was done (while it wasn't), asking what the assistant can do or did, telling it how to do the job, finishing what it left half done on the goal's own devices. A step has nothing of its own: serves is the turn of the goal, or of the earlier step or repair it continues;
+- conduct: something the household objected to in what the assistant said or did in one of its turns (it was careless or wrong, too wordy, its tone, "next time do X"), even after it did what they asked; or a check on a result the assistant had already reached, because its reply left them unsure. about: the turn whose reply they objected to (or that left them unsure), from the goal's turn up to the turn before; quote: their own words, copied exactly from the turn where they said them (leave words out only with …; never paraphrase); improvement: leave it out, unless an applied improvement (list_improvements, when you have it) made Assist do it. One conduct goal for each thing they want done differently: two in one sentence are two conduct goals, and one said again in a later turn is a new conduct goal at that turn. One turn can hold a step and a conduct goal;
+- wrap-up: filing the trouble for improvement, or giving up on it;
+- thanks: thanking the assistant, or telling it unasked that all of it worked ("thanks", "it worked"), with no other fields.
+A conduct goal, a wrap-up and a thanks serve the turn where their goal itself starts. A fact asked together with a device request is a sub-goal at that turn; a fact asked later is a goal of its own, or, when it only checks on a goal, a step (while the goal wasn't met) or a conduct goal (once it was).
 
 Describe what the user wanted, not what the assistant did. Use only entity IDs the tools show you. Include a device in a goal only if the user wanted something from it.
 
-Feedback is what the household said about how Assist behaved, beyond asking for something: a complaint, telling it it was careless or wrong, a remark on its wording, length or tone, or "next time do X". List each piece in feedback, with the turn where it was said, about_turn (the turn of the goal it's about, or null when it's about Assist in general) and what (what they want Assist to do differently, in a short sentence). A correction that makes a request more exact is a sub-goal, not feedback; a turn can hold both.
-
-Every turn needs at least one goal or sub-goal. A "thanks" is a sub-goal of the goal it thanks for, with kind thanks and no other fields. Turns that are not real requests or feedback, such as microphone tests or speech misfires, go in not_requests.
+Every turn needs at least one goal or sub-goal. Turns that are neither requests nor reactions, such as microphone tests or speech misfires, go in not_requests.
 
 If you cannot even tell which devices the user meant, write one short question for the user in question_for_user instead of guessing. Otherwise leave it empty.
 
@@ -49,7 +59,7 @@ Answer only by calling submit_goals, with sub-goals in the same goals list. It c
 # filing it from Assist, or sending it in again after an earlier round looked at it.
 FILED = """
 
-The user filed this conversation for improvement themselves (filed_by_user in your input), so something here didn't go the way they wanted. Its note, when there is one, is feedback in their words: list what it asks for in feedback, with turn null and about_turn the turn of the goal it's about (null when it's about Assist in general). The note is also the conversation's last turn: give it a sub-goal (a fact: what the note says) serving the goal it's about. Still describe the goals as the conversation shows them."""
+The user filed this conversation for improvement themselves (filed_by_user in your input), so something here didn't go the way they wanted. Its note, when there is one, is the conversation's last turn: give it the sub-goals it holds, serving the goal it's about: a conduct goal for each objection it makes (quote the note's own words; about: the turn whose reply it objects to, or "all" when it's about the assistant in general), or a step when it only asks again for what a goal didn't get. Still describe the goals as the conversation shows them."""
 
 # Added to the instructions when improvements exist (waiting for review, or applied): a goal one of them already fixes
 # stops here instead of flowing on to the proposer.
@@ -57,38 +67,42 @@ DUPLICATES = """
 
 Some of what went wrong here may already have a fix: an improvement waiting for the household's review, or one already applied. Your input's improvements_on_these_devices lists those that touch the devices in this session; list_improvements lists them all, and read_improvement shows one in full (its changes, and the conversations it was tested on). Once your goals are accepted, check each goal the user had to repeat, correct or clarify, or that went unmet: if an improvement already fixes what went wrong there, call mark_duplicate with the goal's turn, that improvement and why, so it isn't fixed twice. One applied before this session took place didn't prevent what happened here, so it doesn't count. Mark a goal only when you're sure; otherwise leave it.
 
-An applied improvement can also be the cause of feedback: when one applied before this session makes Assist do what a piece of feedback is about (a household line telling it how to word something, a script it ran), name it in that feedback's improvement."""
+An applied improvement can also be the cause of what the household objected to: when one applied before this session makes Assist do what a conduct goal is about (a household line telling it how to word something, a script it ran), name it in that conduct goal's improvement."""
 
+OUTCOMES = {"announce": "a message spoken on devices"}  # What an action goal can want: the outcome, not a service.
 STRUCTURE = probatio.Schema({
     probatio.Required("goals"): [{
         probatio.Required("turn"): int,
         probatio.Required("summary"): str,
-        probatio.Required("kind"): probatio.In(["state", "sequence", "fact", "ask", "thanks"]),
+        probatio.Required("kind"): probatio.In(["state", "sequence", "fact", "action", "ask", "step", "conduct",
+                                                "wrap-up", "thanks"]),
         probatio.Optional("entity_id"): str,
         probatio.Optional("entity_ids"): [str],
         probatio.Optional("state"): str,
         probatio.Optional("states"): [str],
         probatio.Optional("brightness_pct"): int,
         probatio.Optional("fact"): str,
+        probatio.Optional("outcome"): probatio.In(list(OUTCOMES)),  # Action: what it does.
+        probatio.Optional("message"): str,  # Action: the words to speak, the household's own.
         probatio.Optional("serves"): int,
+        probatio.Optional("about"): probatio.Any(int, probatio.In(["all"])),  # Conduct: the Assist turn objected to.
+        probatio.Optional("quote"): str,  # Conduct: the household's own words; fact: the form they asked for.
+        probatio.Optional("improvement"): probatio.Any(str, None),  # Conduct: an applied improvement that made it.
     }],
     probatio.Required("not_requests"): [{probatio.Required("turn"): int, probatio.Required("what"): str}],
-    # What the household said about how Assist behaved: in a turn, or (turn null) in the note it was sent in with.
-    probatio.Optional("feedback"): [{
-        probatio.Required("turn"): probatio.Any(int, None),
-        probatio.Required("about_turn"): probatio.Any(int, None),  # The goal it's about; null: Assist in general.
-        probatio.Required("what"): str,
-        probatio.Optional("improvement"): probatio.Any(str, None),  # An applied improvement that makes Assist do it.
-    }],
     probatio.Required("question_for_user"): str,
 })
 UNKNOWN_STATES = ("unknown", "unavailable")  # A start nobody can compare with (a sleeping car's entities).
+REACTIONS = ("step", "conduct", "wrap-up", "thanks")  # Sub-goals that react to their goal, rather than being part of it.
+CUT = re.compile(r"…|\.\.\.")  # Where a quote leaves words out.
 
 
 def clean_goal(goal):
     """A goal with only the fields its kind uses (some providers send every optional field, as null)."""
     keep = {"state": ("entity_id", "state", "brightness_pct"), "sequence": ("entity_id", "states"),
-            "fact": ("fact",), "ask": ("entity_ids",), "thanks": ()}[goal["kind"]] + ("serves",)
+            "fact": ("fact", "entity_ids", "quote"), "action": ("outcome", "message", "entity_ids"),
+            "ask": ("entity_ids",), "step": (),
+            "conduct": ("about", "quote", "improvement"), "wrap-up": (), "thanks": ()}[goal["kind"]] + ("serves",)
     return {"turn": goal["turn"], "summary": goal.get("summary", ""), "kind": goal["kind"],
             **{k: goal[k] for k in keep if goal.get(k) is not None}}
 
@@ -110,18 +124,86 @@ def root_turn(goals, turn):
     return None
 
 
-def extra_turns(turn_count, goals, not_requests, question=None, feedback=()):
-    """Turns that started no goal (sub-goals don't count) and were real requests: the interventions. A turn that only
-    gave feedback isn't one (the feedback is friction of its own); one that also served a goal is. Nor is one that only thanked.
+def destination(goals, step):
+    """What a step wants met: its parent, the goals at the turn it serves that aren't reactions (the goal and its
+    parts, or a repair), found back through the steps it continues; empty when there are none."""
+    seen, turn = set(), step.get("serves")
+    while turn is not None and turn not in seen:
+        seen.add(turn)
+        there = [g for g in goals if g.get("turn") == turn]
+        if parent := [g for g in there if g.get("kind") not in REACTIONS]:
+            return parent
+        turn = next((g.get("serves") for g in there if g.get("kind") == "step"), None)
+    return []
+
+
+SPEAKING = ("tts.speak", "assist_satellite.announce", "media_player.play_media")  # Services that speak a message.
+
+
+def spoken(calls):
+    """What a turn's calls spoke, and on which devices: [{message, targets}], from a broadcast's result (the devices it
+    reached) and the speaking calls a replay's sandbox logged (service, the devices that spoke, the message)."""
+    out = []
+    for call in calls:
+        if call.get("service") in SPEAKING:  # Logged by a replay's sandbox, wherever it was called from.
+            out.append({"message": call.get("message") or "", "targets": set(call.get("targets") or [])})
+        elif (call.get("tool") or "").endswith("HassBroadcast"):
+            data = (call.get("result") or {}).get("data") if isinstance(call.get("result"), dict) else None
+            inner = data.get("data") if isinstance(data, dict) else None
+            out.append({"message": str((call.get("args") or {}).get("message") or ""),
+                        "targets": {t.get("id") for t in (inner or {}).get("success") or [] if isinstance(t, dict)}})
+    return out
+
+
+def announced(view, goal, turns):
+    """Whether an announce action was done over these turns' calls (view.calls): its message, word for word (case and
+    punctuation aside), spoken on every device it's for, by any call (DETAILS P9.7.6); a device is reached when any of
+    its entities spoke (a voice satellite and its speaker are one device). None when that can't be told: no calls
+    kept, or a script ran that a recording doesn't see into (view.scripts_seen: a replay's sandbox logs what scripts
+    speak)."""
+    if getattr(view, "calls", None) is None:
+        return None
+    entities = view.source.get("entities") or {}
+    device = lambda e: (entities.get(e) or {}).get("device_id") or e  # noqa: E731
+    calls = [c for t in turns for c in view.calls.get(t, [])]
+    reached = {device(e) for s in spoken(calls) if _words(s["message"]) == _words(goal.get("message")) for e in
+               s["targets"]}
+    if {device(e) for e in goal.get("entity_ids") or []} <= reached:
+        return True
+    if not getattr(view, "scripts_seen", False) and any(re.search(r"(^|__)script__", c.get("tool") or "")
+                                                        for c in calls):
+        return None
+    return False
+
+
+def spoken_before(view, goals, action, turn):
+    """Whether an action was done by the turns of its request before this turn (announced)."""
+    root = root_turn(goals, action["turn"])
+    return announced(view, action, [t for t in range(action["turn"], turn) if root_turn(goals, t) == root]) is True
+
+
+def _words(text):
+    """A text's words, case, punctuation and the kind of apostrophe aside."""
+    return re.findall(r"\w+(?:'\w+)*", (text or "").casefold().replace("\u2019", "'").replace("\u2018", "'"))
+
+
+def question_run(goals, root):
+    """The turns of a question's run: its own, then each step whose destination is that question alone (asked again,
+    or asked again after that), in order; a step continuing a repair under it isn't one (DETAILS P9.10.4)."""
+    return [root["turn"], *sorted(g["turn"] for g in goals if g.get("kind") == "step" and isinstance(g.get("turn"), int)
+                                  and (wants := destination(goals, g)) and len(wants) == 1 and wants[0] is root)]
+
+
+def extra_turns(turn_count, goals, not_requests, question=None):
+    """Turns that started no goal (sub-goals don't count) and were real requests: the interventions, a step's, a
+    conduct goal's or a wrap-up's among them. A turn that only thanked isn't one.
 
     While a question to the user is open, such turns are pending the answer instead, so this returns none.
     """
     if question:
         return []
-    serving = {g["turn"] for g in goals if g.get("serves") is not None}
     thanks = {g["turn"] for g in goals if g["kind"] == "thanks"} - {g["turn"] for g in goals if g["kind"] != "thanks"}
-    used = {g["turn"] for g in top_level(goals)} | thanks | {n["turn"] for n in not_requests} | (
-        {f["turn"] for f in feedback or () if f.get("turn") is not None} - serving)
+    used = {g["turn"] for g in top_level(goals)} | thanks | {n["turn"] for n in not_requests}
     return [t for t in range(1, turn_count + 1) if t not in used]
 
 
@@ -137,7 +219,7 @@ def reached(view, goal, until_turn=None):
     the device ends there because of Assist, or was already there and nobody moved it; a sequence goal when
     Assist's changes pass through its states in order.
     """
-    if goal["kind"] in ("fact", "ask") or not goal.get("entity_id"):
+    if goal["kind"] in ("fact", "ask", "action") or not goal.get("entity_id"):
         return None
     entity = goal["entity_id"]
     changes = sorted(view.changes.get(entity, []), key=lambda c: datetime.fromisoformat(c["at"]))
@@ -168,19 +250,40 @@ def reached(view, goal, until_turn=None):
     return state == goal.get("state") and _brightness_ok(goal, brightness) and by_assistant is not False
 
 
+def home_couldnt(view, goal, goals):
+    """Whether a root goal's device was unavailable in every turn its tree took (its own, as the user asked for it,
+    and each of its sub-goals'), so the home couldn't have reached it whatever Assist did then: context for an unmet
+    root goal, not a state of its own. An unknown device is a sleeping one a command wakes (devices.ASLEEP), so it
+    isn't one."""
+    entity, turn = goal.get("entity_id"), goal.get("turn")
+    took = {turn} | {g["turn"] for g in goals if g.get("serves") is not None and root_turn(goals, g["serves"]) == turn}
+    if not entity or not isinstance(turn, int) or not 1 <= turn <= len(view.sources):
+        return False
+    return all(((view.sources[t - 1].get("states") or {}).get(entity) or {}).get("state") == "unavailable"
+               for t in took if isinstance(t, int) and 1 <= t <= len(view.sources))
+
+
 def side_effects_left(view, goals):
     """Devices Assist changed itself (not a device's own follow-on) that no goal asked for (or left open for the
     user) and that did not end as they started, with the turn of Assist's last change to each. Asked for: by a root
-    goal, or a sub-goal asked at once with it (one world state, P0.3); a later sub-goal that repairs a device doesn't
-    make it wanted. A device whose start was unknown or unavailable (a sleeping car's) can't be told to have changed,
-    so it isn't one."""
+    goal, or a sub-goal asked at once with it (one world state, P0.3), or, for changes in its request's turns from its
+    own, an action's (a speaker left playing or idle by what it spoke); a later sub-goal that repairs a device doesn't
+    make it wanted, nor does a question about it. A device whose start was unknown or unavailable (a sleeping car's)
+    can't be told to have changed, so it isn't one."""
     wanted = {g.get("entity_id") for g in goals
               if g.get("serves") is None or root_turn(goals, g["serves"]) == g.get("turn")} | {
-        e for g in goals for e in g.get("entity_ids") or []}
+        e for g in goals if g.get("kind") == "ask" for e in g.get("entity_ids") or []}
+    spoke = {}  # A device an action is for: the turns where what speaking leaves on it is wanted.
+    for g in goals:
+        if g.get("kind") == "action":
+            turns = {t for t in {h.get("turn") for h in goals} if isinstance(t, int) and t >= g["turn"]
+                     and root_turn(goals, t) == root_turn(goals, g["turn"])}
+            for e in g.get("entity_ids") or []:
+                spoke.setdefault(e, set()).update(turns)
     left = []
     for entity, changes in view.changes.items():
         own = [c for c in changes if c["by"] == "assistant"]
-        if not own or entity in wanted:
+        if not own or entity in wanted or all(c["during_turn"] in spoke.get(entity, ()) for c in own):
             continue
         start = (view.source.get("states", {}).get(entity) or {}).get("state", changes[0]["old"])
         end = changes[-1]["new"]
@@ -189,35 +292,25 @@ def side_effects_left(view, goals):
     return left
 
 
-def clean_feedback(item):
-    """A feedback item with the fields it uses (null where a provider sent nothing)."""
-    out = {"turn": item.get("turn"), "about_turn": item.get("about_turn"), "what": (item.get("what") or "").strip()}
-    if item.get("improvement"):
-        out["improvement"] = item["improvement"]
-    return out
-
-
-def to_analysis(recording_id, output, view, note=None):
-    """The model's goals and feedback, plus what code derives from the recording. note: the one the conversation was
-    sent in with, which is feedback: an answer kept without it (every submission rejected) gets it as general
-    feedback, so it's never dropped. Every goal, root or sub-goal (P0.3), is reached (met), not (unmet) or None
-    (indeterminate) as measures.judge finds it in the conversation as it went."""
+def to_analysis(recording_id, output, view):
+    """The model's goals, plus what code derives from the recording. Every goal, root or sub-goal (P0.3), is reached
+    (met), not (unmet) or None (indeterminate) as measures.judge finds it in the conversation as it went; an unmet
+    root goal whose device was unavailable as it was asked for is marked home_couldnt."""
     from .measures import goals_of, judge
     goals = [clean_goal(g) for g in output.get("goals", [])]
     count = len(view.digest["turns"])
     not_requests = list(output.get("not_requests", []))
-    feedback = [clean_feedback(f) for f in output.get("feedback") or [] if isinstance(f, dict)]
-    if (note or "").strip() and not any(f["turn"] is None and f["what"] for f in feedback):
-        feedback.append({"turn": None, "about_turn": None, "what": note.strip()})
     question = (output.get("question_for_user") or "").strip()
-    analysis = {"recording_id": recording_id, "goals": goals, "not_requests": not_requests, "feedback": feedback,
-                "extra_turns": extra_turns(count, goals, not_requests, question, feedback),
-                "pending_turns": extra_turns(count, goals, not_requests, feedback=feedback) if question else [],
+    analysis = {"recording_id": recording_id, "goals": goals, "not_requests": not_requests,
+                "extra_turns": extra_turns(count, goals, not_requests, question),
+                "pending_turns": extra_turns(count, goals, not_requests) if question else [],
                 "side_effects_left": side_effects_left(view, goals), "question_for_user": question or None,
                 "turns": count}
     states = judge(goals_of(analysis), view, range(1, count + 1))["goals"]
     for i, goal in enumerate(goals):
         goal["reached"] = {"met": True, "unmet": False}.get(states[f"{goal['turn']}:{i}"])
+        if goal["reached"] is False and goal.get("serves") is None and home_couldnt(view, goal, goals):
+            goal["home_couldnt"] = True
     return analysis
 
 
@@ -247,9 +340,25 @@ def allowed_states(view, entity_id):
     return STATES.get(domain)
 
 
+def quoted(quote, said):
+    """Whether a quote is the household's own words: each part of it (where … or ... leaves words out) is found in
+    what they said, in order, word for word, case, punctuation and the kind of apostrophe aside."""
+    def words(text):
+        return re.findall(r"\w+(?:'\w+)*", text.casefold().replace("\u2019", "'").replace("\u2018", "'"))
+    heard, at = words(said or ""), 0
+    parts = [part for part in map(words, CUT.split(quote or "")) if part]
+    for part in parts:
+        at = next((i + len(part) for i in range(at, len(heard) - len(part) + 1) if heard[i:i + len(part)] == part),
+                  None)
+        if at is None:
+            return False
+    return bool(parts)
+
+
 def problems(view, answer, note=None, existing=()):
     """What is wrong with an answer, checked against the recording; empty means valid. note: the note the user sent
-    the conversation in with (it must come back as feedback); existing: the improvements list_improvements shows."""
+    the conversation in with (its last turn, which needs a goal); existing: the improvements list_improvements
+    shows."""
     try:
         STRUCTURE(answer)
     except probatio.Invalid as err:
@@ -260,9 +369,9 @@ def problems(view, answer, note=None, existing=()):
     found = []
     top_turns = {g["turn"] for g in answer["goals"] if g.get("serves") is None}
     goal_turns = {g["turn"] for g in answer["goals"]}
+    quiet = {n["turn"] for n in answer["not_requests"]}
     # Every turn maps to at least one goal; a root goal is one world state at one time; a note is a sub-goal (P0.3).
-    left = [t for t in range(1, turn_count + 1) if t not in goal_turns
-            and (t == note_turn or t not in {n["turn"] for n in answer["not_requests"]})]
+    left = [t for t in range(1, turn_count + 1) if t not in goal_turns and (t == note_turn or t not in quiet)]
     if left:
         found.append(f"Turns {', '.join(map(str, left))} have no goal: give every turn at least one goal or sub-goal "
                      "(a thanks, a correction or the note is a sub-goal of the goal it's about).")
@@ -276,13 +385,58 @@ def problems(view, answer, note=None, existing=()):
         where = f"Goal {n} (turn {goal['turn']})"
         if not 1 <= goal["turn"] <= turn_count:
             found.append(f"{where}: there is no turn {goal['turn']}; turns are 1 to {turn_count}.")
-        kind, entity = goal["kind"], goal.get("entity_id")
-        if kind == "thanks":
-            if goal.get("serves") is None:
-                found.append(f"{where}: a thanks is a sub-goal: give serves, the turn of the goal it thanks for.")
+        kind, entity, serves = goal["kind"], goal.get("entity_id"), goal.get("serves")
+        if kind in REACTIONS:
+            if serves is None:
+                found.append(f"{where}: a {kind} is a sub-goal: give serves, the turn of the goal it's for.")
+            elif kind != "step" and serves not in top_turns:
+                found.append(f"{where}: a {kind} serves the turn where its goal itself starts; goals start at turns "
+                             f"{sorted(top_turns) or 'none'}.")
+            if kind != "thanks" and goal["turn"] in quiet:
+                found.append(f"{where}: turn {goal['turn']} has a {kind}; take it out of not_requests.")
+            if kind == "conduct":
+                found += _conduct_problems(view, answer, goal, where, note_turn, note, existing)
+            if kind == "step" and serves is not None and (parent := destination(answer["goals"], goal)) and all(
+                    g.get("kind") in ("state", "sequence") and g.get("entity_id") in known
+                    and reached(view, g, goal["turn"]) or g.get("kind") == "action"
+                    and spoken_before(view, answer["goals"], g, goal["turn"]) for g in parent):
+                found.append(f"{where}: what it serves was already done by turn {goal['turn']}, so it isn't a step "
+                             "towards it: a check because a reply left them unsure, or an objection, is a conduct goal "
+                             "about that reply, and a new request a goal of its own.")
+        elif kind == "action":
+            words = [t["user_says"] for t in view.digest["turns"] if t["turn"] >= goal["turn"]] + (
+                [note] if note_turn else [])  # The request, or their answer when asked what to say.
+            if not goal.get("outcome"):
+                found.append(f"{where}: an action goal needs outcome: {', '.join(OUTCOMES)}.")
+            if not (goal.get("message") or "").strip():
+                found.append(f"{where}: an action goal needs message: the words to speak, as the user said them.")
+            elif CUT.search(goal["message"]):
+                found.append(f"{where}: message must be the whole words to speak, nothing left out.")
+            elif not any(quoted(goal["message"], said) for said in words):
+                found.append(f"{where}: message must be the words to speak as the user said them, in turn "
+                             f"{goal['turn']} or later, copied exactly.")
+            if serves is not None and serves != goal["turn"]:
+                found.append(f"{where}: an action asked at a later turn is a goal of its own (no serves), or a step "
+                             "when it asks again.")
+            ids = goal.get("entity_ids") or []
+            if not ids:
+                found.append(f"{where}: an action goal needs entity_ids: the devices it's for.")
+            if unknown := [e for e in ids if e not in known]:
+                found.append(f"{where}: no device {', '.join(map(repr, unknown))} in this household; "
+                             "use entity IDs the tools show.")
         elif kind == "fact":
             if not goal.get("fact"):
-                found.append(f"{where}: a fact goal needs fact.")
+                found.append(f"{where}: a fact goal needs fact: what the answer needs.")
+            if unknown := [e for e in goal.get("entity_ids") or [] if e not in known]:
+                found.append(f"{where}: no device {', '.join(map(repr, unknown))} in this household; "
+                             "use entity IDs the tools show.")
+            words = next((t["user_says"] for t in view.digest["turns"] if t["turn"] == goal["turn"]), "")
+            if (goal.get("quote") or "").strip() and not quoted(goal["quote"], words):
+                found.append(f"{where}: quote must be the form they asked for in their own words from turn "
+                             f"{goal['turn']}, copied exactly; leave it out when they asked for none.")
+            if serves is not None and serves != goal["turn"]:
+                found.append(f"{where}: a fact asked at a later turn is a goal of its own (no serves), or a step when "
+                             "it only checks on the goal.")
         elif kind == "ask":
             ids = goal.get("entity_ids") or []
             if not ids:
@@ -307,7 +461,16 @@ def problems(view, answer, note=None, existing=()):
             if goal.get("brightness_pct") is not None and (
                     not entity.startswith("light.") or not 0 <= goal["brightness_pct"] <= 100):
                 found.append(f"{where}: brightness_pct is for lights, from 0 to 100.")
-        serves = goal.get("serves")
+        if kind in ("state", "sequence") and serves is not None and serves != goal["turn"]:
+            wants = destination(answer["goals"], goal)  # Nor does a question about it, or speaking on it.
+            if entity in {e for g in wants for e in [g.get("entity_id"), *(g.get("entity_ids") or [])]
+                          if g.get("kind") not in ("fact", "action")}:
+                found.append(f"{where}: its goal at turn {serves} already wants {entity}: a later turn that asks for it "
+                             "again is a step (kind step, no device), not a sub-goal of its own.")
+            elif entity in known and reached(view, goal, goal["turn"]):
+                found.append(f"{where}: {entity} was already that way by turn {goal['turn']}, so nothing there was put "
+                             "right: a check because a reply left them unsure is a conduct goal about that reply, and a "
+                             "new request a goal of its own.")
         if serves is not None and (serves not in goal_turns or serves > goal["turn"]
                                    or root_turn(answer["goals"], serves) not in top_turns):
             found.append(f"{where}: serves must be the turn of an earlier goal or sub-goal that hangs from a goal; "
@@ -315,50 +478,50 @@ def problems(view, answer, note=None, existing=()):
     for item in answer["not_requests"]:
         if not 1 <= item["turn"] <= turn_count:
             found.append(f"Not-request at turn {item['turn']}: there is no such turn.")
-    return found + _feedback_problems(view, answer, top_turns, note, existing)
+    return found
 
 
-def _feedback_problems(view, answer, top_turns, note, existing):
-    """Feedback, checked: real turns, a goal it's about, an applied improvement it names, and the note kept."""
+def _conduct_problems(view, answer, goal, where, note_turn, note, existing):
+    """A conduct goal, checked: the Assist turn it's about, in its goal's tree and before it was said ("all" only in
+    the note); its quote, the household's own words where they said them; an applied improvement it names."""
     from .exploration import applied_too_early
-    turn_count, found = len(view.digest["turns"]), []
-    applied = {i["improvement"]: i for i in existing or () if i.get("status") == "applied"}
-    quiet = {n["turn"] for n in answer["not_requests"]}
-    for n, item in enumerate(answer.get("feedback") or [], 1):
-        turn, about = item["turn"], item["about_turn"]
-        where = f"Feedback {n} ({'the note' if turn is None else f'turn {turn}'})"
-        if not item["what"].strip():
-            found.append(f"{where}: say in what what they want Assist to do differently.")
-        if turn is not None and not 1 <= turn <= turn_count:
-            found.append(f"{where}: there is no turn {turn}; turns are 1 to {turn_count}.")
-        elif turn is None and not (note or "").strip():
-            found.append(f"{where}: turn null is for the note the conversation was sent in with, and there's none; "
-                         "give the turn where it was said.")
-        if turn in quiet:
-            found.append(f"{where}: turn {turn} is feedback; take it out of not_requests.")
-        if about is not None and (about not in top_turns or (turn is not None and about > turn)):
-            found.append(f"{where}: about_turn must be the turn of a goal it follows (goals start at turns "
-                         f"{sorted(top_turns) or 'none'}), or null when it's about Assist in general.")
-        if name := item.get("improvement"):
-            if name not in applied:
-                found.append(f"{where}: no applied improvement {name!r}; list_improvements shows those applied: "
-                             f"{', '.join(applied) or 'none'}.")
-            elif not applied_too_early(applied[name], view.digest["started"]):
-                found.append(f"{where}: {applied[name]['title']!r} was applied after this session, so it can't be "
-                             "what Assist did here; leave improvement out.")
-    if (note or "").strip() and not any(f["turn"] is None for f in answer.get("feedback") or []):
-        found.append(f"The note the conversation was sent in with is feedback: {note.strip()!r}. List what it asks "
-                     "for in feedback, with turn null.")
+    found, turn, about = [], goal["turn"], goal.get("about")
+    said = note if turn == note_turn else next(
+        (t["user_says"] for t in view.digest["turns"] if t["turn"] == turn), "")
+    if not (goal.get("quote") or "").strip():
+        found.append(f"{where}: a conduct goal needs quote: the household's own words from turn {turn}.")
+    elif not quoted(goal["quote"], said):
+        found.append(f"{where}: quote must be the household's own words from turn {turn}, copied exactly: copy their "
+                     "words, and mark words you leave out with …; never paraphrase.")
+    root = root_turn(answer["goals"], goal["serves"]) if goal.get("serves") is not None else None
+    tree = {root} | {g["turn"] for g in answer["goals"]
+                     if g.get("serves") is not None and root_turn(answer["goals"], g["serves"]) == root}
+    if about is None:
+        found.append(f"{where}: a conduct goal needs about: the turn whose reply the household objected to.")
+    elif about == "all":
+        if turn != note_turn:
+            found.append(f"{where}: about all is for the note, about the assistant in general; give the turn whose "
+                         "reply they objected to.")
+    elif root is not None and not (root <= about < turn and about in tree):
+        found.append(f"{where}: about must be a turn of its goal's, from the goal's turn ({root}) to the turn before "
+                     f"the objection: its turns are {sorted(t for t in tree if t < turn)}.")
+    if name := goal.get("improvement"):
+        applied = {i["improvement"]: i for i in existing or () if i.get("status") == "applied"}
+        if name not in applied:
+            found.append(f"{where}: no applied improvement {name!r}; list_improvements shows those applied: "
+                         f"{', '.join(applied) or 'none'}.")
+        elif not applied_too_early(applied[name], view.digest["started"]):
+            found.append(f"{where}: {applied[name]['title']!r} was applied after this session, so it can't be what "
+                         "Assist did here; leave improvement out.")
     return found
 
 
 class SubmitGoals(RoleTool):
     """The analyzer's only way to answer. Keeps every submission so the best one can be used."""
     name = "submit_goals"
-    description = ("Submit your answer: the user's goals (sub-goals in the same list, with serves), what the "
-                   "household said about how Assist behaved (feedback), the turns that were not requests, and any "
-                   "question for the user. The answer is checked against the recording; if problems are reported, "
-                   "fix them and submit again.")
+    description = ("Submit your answer: the user's goals (sub-goals in the same list, with serves; a conduct goal "
+                   "with about and quote), the turns that were not requests, and any question for the user. The "
+                   "answer is checked against the recording; if problems are reported, fix them and submit again.")
     parameters = STRUCTURE
 
     def __init__(self, view, then="Finish with one short sentence.", note=None, existing=()):
@@ -386,9 +549,9 @@ class SubmitGoals(RoleTool):
 def valid_part(answer, found):
     """What moves on from the best of answers none of which was accepted (DESIGN.md: an impossible answer never moves
     on): its goals the checks found nothing wrong with. found: the checks' problems ("Goal n (turn t): ..."). One not
-    in the format moves on with no goals (its note is still kept as feedback: to_analysis)."""
+    in the format moves on with no goals."""
     if any(p.startswith("The answer does not match the format") for p in found):
-        return {"goals": [], "not_requests": [], "feedback": [], "question_for_user": ""}
+        return {"goals": [], "not_requests": [], "question_for_user": ""}
     goals = answer.get("goals") or []
     wrong = {n for n, _ in enumerate(goals, 1) if any(p.startswith(f"Goal {n} (") for p in found)}
     tops = {g.get("turn") for n, g in enumerate(goals, 1) if n not in wrong and g.get("serves") is None}

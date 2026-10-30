@@ -54,7 +54,9 @@ function test(p, t, n) {
   const R = TEXT.review, more = t.more_words;
   const row = `<span class="mark">${t.improved ? "&#10003;" : "&#8211;"}</span><span>${esc(t.summary)}</span>
     <span class="result">${esc(t.result || (t.improved ? "improved" : "not improved"))}</span>${more
-      ? `<span class="result more-words" title="${esc(fill(R.moreWordsTip, more))}">${esc(R.moreWords)}</span>` : ""}`;
+      ? `<span class="result more-words" title="${esc(fill(R.moreWordsTip, more))}">${esc(R.moreWords)}</span>` : ""}${t.open
+      ? `<span class="result still-open" title="${esc(t.happened ? R.open.chipTip : R.open.setAside)}">${
+        esc(fill(R.open.chip, {n: t.open}))}</span>` : ""}`;
   const key = `test${n}`;
   return `<li class="${t.improved ? "ok" : "no"}">${t.before?.length || t.after?.length
     ? `<details data-key="${key}" ${p.open.has(key) ? "open" : ""}><summary class="row">${row}</summary>${replay(t)}</details>`
@@ -102,7 +104,7 @@ function footer(p, r) {
 
 export function render(p) {
   const r = p.review;
-  const R = TEXT.review, spared = r.spared || [], followed = r.followed || [];
+  const R = TEXT.review, spared = r.spared || [], followed = r.followed || [], open = r.still_open || [];
   const outcome = common.gains({enabled: r.enabled.length, removed: r.removed.length, spared: spared.length,
                                 followed: followed.length});
   const lines = (cls, sign, items) => `<div class="lines">${items.map((t) =>
@@ -128,6 +130,10 @@ export function render(p) {
     r.removed.length && section(p, "removed", `Turns no longer needed (${r.removed.length})`, lines("del", "−", r.removed)),
     spared.length && section(p, "spared", esc(fill(R.spared.title, {n: spared.length})), lines("add", "✓", spared)),
     followed.length && section(p, "followed", esc(fill(R.followed.title, {n: followed.length})), lines("add", "✓", followed)),
+    // Each with a bubble: the reply that still did it and why, or that this test couldn't tell.
+    open.length && section(p, "open", esc(fill(R.open.title, {n: open.length})), `<div class="lines">${open.map((o) =>
+      `<div class="line open" tabindex="0" data-tip="${esc(o.set_aside ? R.open.setAside : fill(R.open.reply, {n: o.reply, why: o.why}))
+      }"><span class="sign">!</span><span>${esc(o.quote)}</span></div>`).join("")}</div>`),
     section(p, "changes", `What changes (${r.changes.length})`, `<div class="files">${files}</div>`),
     section(p, "details", "What went wrong", how),
   ].filter(Boolean).join("");

@@ -13,7 +13,7 @@ from . import records
 # keeps what earlier versions wrote).
 REQUIRED = {records.TriageVerdict: ("smooth", "sure"),
             records.AnalysisResult: ("recording_id", "goals"), records.Goal: ("turn", "kind"),
-            records.FeedbackItem: ("what",), records.Hypothesis: ("title", "goals", "changes"),
+            records.Hypothesis: ("title", "goals", "changes"),
             records.GoalRef: ("session", "goal_turn"), records.Change: ("kind",),
             records.Draft: ("title", "goals", "changes", "friction_it_targets", "sessions_where_it_would_apply"),
             records.ReviewResponse: ("comment", "resolution"), records.ReviewAnswer: ("comments",),
@@ -22,7 +22,7 @@ REQUIRED = {records.TriageVerdict: ("smooth", "sure"),
             records.Test: ("idea", "changes", "hypothesis", "judged", "before", "after", "gains", "validated", "setup",
                            "tested", "provider", "user_id", "recorded"),
             records.Replay: ("plan", "status", "said", "replies", "goals", "goals_met", "turns_per_root_goal", "counted",
-                             "side_effects_left", "started_from", "config", "feedback"),
+                             "side_effects_left", "started_from", "config", "conduct"),
             records.Improvement: ("id", "title", "status", "changes", "test"), records.Copy: ("status",),
             records.Decision: ("decision", "at")}
 

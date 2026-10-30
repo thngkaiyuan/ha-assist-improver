@@ -6,6 +6,8 @@ gets; practice catches the command (for example light.turn_on with brightness
 report back. Commands without a model here are reported as done and flagged.
 """
 
+from homeassistant.components.media_player import PROP_TO_ATTR, MediaPlayerEntityStateAttribute
+
 ON_OFF = {"light", "switch", "fan", "input_boolean", "siren", "remote", "humidifier", "media_player",
           "water_heater", "automation"}
 COLOUR_MODES = {"hs", "xy", "rgb", "rgbw", "rgbww"}
@@ -15,16 +17,13 @@ TOGGLES_ON_FROM = {"climate": ("off",), "media_player": ("off", "standby")}
 # A sleeping device (a parked car, say) shows as unknown; turning it on wakes it like any off device. An unavailable
 # one can't be reached, so a command never gets to it (effect).
 ASLEEP = {"off", "unknown"}
-# Read-only queries; practice passes them to the real service. Everything else is emulated.
-QUERY_PREFIXES = ("get_", "search_")
 # What a device that reports its movement shows on its way to each end, as Home Assistant's covers, valves and locks
 # report it: a garage door is "closing" until it's down.
 UNDERWAY = {"open": "opening", "closed": "closing", "locked": "locking", "unlocked": "unlocking"}
 MOVERS = ("cover", "valve", "lock")
-
-
-def is_query(service):
-    return service.startswith(QUERY_PREFIXES)
+# What Home Assistant's own media player shows only while it isn't off (MediaPlayerEntity.state_attributes): what's
+# playing, how loud, from where.
+MEDIA_WHILE_ON = {str(a) for a in (*PROP_TO_ATTR.values(), MediaPlayerEntityStateAttribute.ENTITY_PICTURE_LOCAL)}
 
 
 def _brightness(attrs, data):
@@ -87,8 +86,8 @@ def _media(service, state, attrs, data):
     effects = {"turn_on": "on", "turn_off": "off", "media_play": "playing", "media_pause": "paused",
                "media_stop": "idle", "media_play_pause": "paused" if state == "playing" else "playing"}
     if service in effects:
-        return effects[service], attrs
-    if service == "volume_set" and "volume_level" in data:
+        state = effects[service]
+    elif service == "volume_set" and "volume_level" in data:
         attrs["volume_level"] = float(data["volume_level"])
     elif service in ("volume_up", "volume_down"):
         attrs["volume_level"] = round(max(0.0, min(1.0, level + (0.1 if service == "volume_up" else -0.1))), 2)
@@ -98,7 +97,7 @@ def _media(service, state, attrs, data):
         attrs["source"] = data["source"]
     else:
         return None
-    return state, attrs
+    return state, {k: v for k, v in attrs.items() if k not in MEDIA_WHILE_ON} if state == "off" else attrs
 
 
 def _fan(service, state, attrs, data):

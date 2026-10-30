@@ -7,15 +7,11 @@ from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.device_registry import DeviceEntryType, DeviceInfo
 
 from .const import DOMAIN, NAME, VERSION
-from .practice import MODE_KEY
+from .practice import MODE_KEY, reminder_id
 
 
 async def async_setup_entry(hass, entry, async_add_entities):
     async_add_entities([PracticeModeSwitch(entry)])
-
-
-def _notification_id(user_id):
-    return f"assist_improver_practice_{user_id}"
 
 
 class PracticeModeSwitch(SwitchEntity):
@@ -48,9 +44,9 @@ class PracticeModeSwitch(SwitchEntity):
             persistent_notification.async_create(
                 self.hass, f"Sandbox mode is on for {self.mode.users[user_id]}. Their Assist conversations use a "
                            "simulated home, so nothing real changes. It stays on until they turn it off.",
-                title="Assist Improver: sandbox mode", notification_id=_notification_id(user_id))
+                title="Assist Improver: sandbox mode", notification_id=reminder_id(user_id))
         for user_id in self._notified - set(self.mode.users):
-            persistent_notification.async_dismiss(self.hass, _notification_id(user_id))
+            persistent_notification.async_dismiss(self.hass, reminder_id(user_id))
         self._notified = set(self.mode.users)
         self.async_write_ha_state()
 

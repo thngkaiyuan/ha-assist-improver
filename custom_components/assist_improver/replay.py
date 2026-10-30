@@ -9,6 +9,7 @@ provider client or model-run service is created here; offline tests pass this
 log to HA's existing conversation adapter with a scripted transport.
 """
 
+import asyncio
 from copy import deepcopy
 from types import SimpleNamespace
 from uuid import uuid4
@@ -87,8 +88,9 @@ class SandboxHome(llm.API):
     """One replay's sandbox, started on first use from the recording's first turn, and what it did.
 
     scripts ({object id: config}) and automations are those the sandbox runs: the recorded ones, with a change's on
-    top. world holds the sandbox's states, the replay's state changes (transitions) and device commands (calls),
-    refreshed after every tool call, and the attributes of the entities whose attributes it's judged on (watch).
+    top. world holds the sandbox's states, the replay's state changes (transitions), device commands (calls) and what
+    it spoke (spoken), refreshed after every tool call, and the attributes of the entities whose attributes it's
+    judged on (watch).
     """
 
     def __init__(self, hass, recording, turn, run_id, *, scripts, automations, exposure_changes=None,
@@ -103,7 +105,8 @@ class SandboxHome(llm.API):
         self.tools = None  # Assist's tools in the sandbox, once it built them.
         self.unsupported, self.dispatched = [], []
         self.watch = sorted(watch)
-        self.world = SimpleNamespace(states={}, transitions=[], calls=[], attributes={})
+        self.world = SimpleNamespace(states={}, transitions=[], calls=[], attributes={}, spoken=[])
+        self._refreshing = asyncio.Lock()  # One refresh at a time (refresh).
         self.prompt = None  # The system prompt HA builds in the sandbox, for comparison with the recorded one.
 
     async def start(self):
@@ -158,9 +161,13 @@ class SandboxHome(llm.API):
         await self.refresh()
 
     async def refresh(self):
-        found = await self.sandbox.call("snapshot", **({"attributes": self.watch} if self.watch else {}))
-        self.world.states, self.world.transitions = found["states"], found["transitions"]
-        self.world.calls, self.world.attributes = found["commands"], found.get("attributes", {})
+        # A message's tool calls run at once, and each refreshes after it: one at a time, so the world kept is the
+        # latest snapshot's, not the one whose answer came back last.
+        async with self._refreshing:
+            found = await self.sandbox.call("snapshot", **({"attributes": self.watch} if self.watch else {}))
+            self.world.states, self.world.transitions = found["states"], found["transitions"]
+            self.world.calls, self.world.attributes = found["commands"], found.get("attributes", {})
+            self.world.spoken = found["spoken"]
 
     async def stop(self):
         if self.sandbox is not None:

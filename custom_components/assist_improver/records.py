@@ -1,9 +1,10 @@
 """The shapes of what the improver stores: one TypedDict per kind of record, with what each field holds.
 
-Every field is optional, since a record has the fields its writer had at the time. A few come only from earlier
-versions and are marked so; nothing reads them. Parts whose shape belongs to someone else (a provider's settings, a
-model's answer, Home Assistant's own states and registries) are plain dicts. fixture-test/test_records.py checks the
-fixture's stores, and the household's own where present, against these.
+Every field is optional, since a record has the fields its writer had at the time. A field only earlier versions
+wrote is deleted here with its last reader, and the check of the household's own stores leaves it out. Parts whose
+shape belongs to someone else (a provider's settings, a model's answer, Home Assistant's own states and registries)
+are plain dicts. fixture-test/test_records.py checks the fixture's stores, and the household's own where present,
+against these.
 """
 
 from typing import Any, Literal, TypedDict
@@ -28,6 +29,7 @@ class Turn(TypedDict, total=False):
     source: dict  # states, entities, areas, devices, exposure, home_name, time_zone, at, attribute_policy.
     prepared: dict  # api_id, api_prompt, tools, provider_config, provider_model_capabilities, context.
     preparations: list[dict]  # The chat log as each answer was prepared.
+    context_limitations: list[str]  # What the turn's record lacks when the assistant had no LLM API.
 
 
 class Recording(TypedDict, total=False):
@@ -43,37 +45,38 @@ class Recording(TypedDict, total=False):
     events: list[dict]  # The chat log's events: at, type, data.
     turns: list[Turn]
     state_changes: list[dict]  # at, entity_id, old, new.
+    flaps_not_kept: int  # Availability flaps left out of state_changes (digest.flap), counted for the digest.
     limitations: list[str]  # What the recording may be missing, and why.
     chat_log: dict  # The chat log at the end.
     practice: dict  # Sandbox mode: simulated_changes, unsimulated_actions.
+    compact: bool  # Kept as a digest (retention.compact): read by every role, never replayed.
 
 
 # What one stage hands the next (SPEC-CORE.md 3): typed here, checked where it's made (contracts.py, with the fields
 # each stage must hand on), and read by the next stage through these shapes alone.
 
 class Goal(TypedDict, total=False):
-    """A goal the user had in a turn: a device state, a sequence, a fact, controls they chose (ask), or a thanks."""
+    """A goal the user had in a turn (a device state, a sequence, a fact, controls they chose: ask), or a sub-goal: a
+    part of its goal, or a reaction to it (a step, conduct, a wrap-up or a thanks)."""
     turn: int
     summary: str
-    kind: str  # state, sequence, fact, ask or thanks.
+    kind: str  # state, sequence, fact, action, ask, step, conduct, wrap-up or thanks.
     entity_id: str
-    entity_ids: list[str]
+    entity_ids: list[str]  # Ask: the controls left open; fact: the devices it's about; action: the devices it's for.
     state: str
     states: list[str]
     brightness_pct: int
-    fact: str
+    fact: str  # Fact: what the answer needs, never the answer.
+    outcome: str  # Action: what it does (analyzer.OUTCOMES), whatever service does it.
+    message: str  # Action: the words to speak, the household's own.
     serves: int | None  # A sub-goal: the turn of the goal it serves.
-    reached: bool | None  # Code's verdict from the recording.
+    about: int | str  # Conduct: the turn of the Assist reply the household objected to ("all": Assist in general).
+    quote: str  # Conduct: the household's own words; fact: the form they asked for the answer in, in their words.
+    improvement: str | None  # Conduct: an applied improvement that makes Assist do what they objected to.
+    reached: bool | None  # Code's verdict from the recording (a fact's: the judge's, answered).
+    answered: dict  # Fact: the judge's verdict on the reply that ends its run of steps: turn, gives, why.
+    home_couldnt: bool  # An unmet root goal whose device was unavailable as it was asked for.
     user_chose: list[dict]
-    because: str  # Only from earlier versions.
-
-
-class FeedbackItem(TypedDict, total=False):
-    """What the household said about how Assist behaved: in a turn, or (turn None) in the note it was sent in with."""
-    turn: int | None
-    about_turn: int | None  # The goal it's about; None: Assist in general.
-    what: str
-    improvement: str | None  # An applied improvement that makes Assist do it.
 
 
 class SideEffect(TypedDict, total=False):
@@ -89,7 +92,6 @@ class AnalysisResult(TypedDict, total=False):
     recording_id: str
     goals: list[Goal]
     not_requests: list[dict]
-    feedback: list[FeedbackItem]
     extra_turns: list[int]
     pending_turns: list[int]
     side_effects_left: list[SideEffect]
@@ -98,16 +100,12 @@ class AnalysisResult(TypedDict, total=False):
     problems: list[str]  # What the checks found in an answer kept though none was accepted.
     duplicates: list[dict]  # Goals an existing improvement already fixes (marked by the analyzer).
     triaged: dict  # The quick check found it smooth (no goals extracted).
-    journeys: list  # Only from earlier versions, as the three below.
-    not_journeys: list
-    notes: Any
-    wants: list
 
 
 GoalRef = TypedDict("GoalRef", {"session": str, "goal_turn": int}, total=False)
 Change = TypedDict("Change", {  # One change a hypothesis makes (hypotheses.schema._CHANGE).
     "kind": str, "text": str, "for": str, "replaces": list[str], "assistant": str, "target": str, "entity_id": str,
-    "alias": str, "expose": bool, "script_name": str, "steps": list[dict]}, total=False)
+    "alias": str, "expose": bool, "script_name": str, "steps": list[dict], "fields": list[dict]}, total=False)
 
 
 class TriageVerdict(TypedDict, total=False):
@@ -137,7 +135,6 @@ class Hypothesis(TypedDict, total=False):
     support: list[dict]
     conflicts: list[dict]
     expected: str
-    friction: Any  # Only from earlier versions.
 
 
 class ReviewResponse(TypedDict, total=False):
@@ -244,11 +241,13 @@ class Replay(TypedDict, total=False):
     goals: dict[str, str]  # {goal key: met, unmet or indeterminate}.
     goals_met: list[str]
     turns_per_root_goal: dict[str, int]
+    home_couldnt: list[str]  # Root goals the home couldn't reach: their device was unavailable as it was asked for.
     counted: dict[str, list[int]]  # {root goal key: the turns it took}.
     side_effects_left: list[dict]  # entity_id, name (as the household names it), start, end, turn.
     started_from: dict  # The home and time it started from (cases.started_from).
     config: dict  # The scripts and the exposure it ran on (snapshot.assist_config).
-    feedback: dict[str, bool]  # {feedback text: whether its replies followed it}.
+    conduct: dict[str, dict]  # {conduct goal key: state, answers [{turn, shows, why}], set_aside}: the judge's.
+    facts: dict[str, dict]  # {question's key: state, answers [{turn, gives, why}], set_aside}: the judge's.
 
 
 class Test(TypedDict, total=False):
@@ -258,7 +257,7 @@ class Test(TypedDict, total=False):
     changes: str  # The digest of the idea's changes.
     hypothesis: dict
     at: str
-    judged: dict  # {goal key: summary, turn, root, devices, feedback}: every goal it judged.
+    judged: dict  # {goal key: summary, turn, root, devices, kind, home_couldnt, quote, about}: every goal it judged.
     before: Replay
     after: Replay
     gains: list[str]  # The measures the change made strictly better (measures.gains).
@@ -284,7 +283,8 @@ class ReplayEntry(TypedDict, total=False):
     usage: dict | None
     said: list[int]
     steps: list[dict]  # Each turn said: turn, input, reply, output, transitions, brightness, external_calls, ...
-    verdicts: dict  # {digest of the feedback texts checked: the check}: whether its replies follow them.
+    verdicts: dict  # {digest of the goals judged: model, answers {goal's content digest: [{turn, shows, why}]},
+    #   usage}: the judge's, on whether its Assist turns show what the household objected to.
 
 
 # The run log (RoleRuns): one record per AI role call, and per pipeline run.
@@ -322,6 +322,7 @@ class Analysis(RoleCall, total=False):
     agentic: bool
     triage: TriageCheck
     analysis: AnalysisResult  # The goals, with their friction, as the pipeline reads them.
+    fact_check: dict  # The reply judge's call on what users asked to know: status, answers, error, usage.
 
 
 class Proposal(RoleCall, total=False):
@@ -329,11 +330,6 @@ class Proposal(RoleCall, total=False):
     sessions: list  # The conversations it was given.
     reviews: list[dict]  # On one conversation, its round's (Flow): an earlier attempt's too.
     reviewer_run: dict  # The reviewer's own call: status, error, usage, output.
-    # Only from earlier versions: the goals with open friction it was given ("session:turn"), whether the test stage
-    # was done with its ideas, and the ideas cleared to test.
-    friction: list[str]
-    tested: bool
-    to_test: list[Hypothesis]
 
 
 class PipelineRun(TypedDict, total=False):

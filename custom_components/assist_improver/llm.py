@@ -4,7 +4,8 @@ Home Assistant's llm integration gathers each integration's tools and prompt fro
 the Assist API, so every assistant on Assist gets both:
 - the household's lines (household.py), while the Household knowledge switch is on;
 - with on-demand improvements on, a tool to file the conversation it's in, when the user asks ("file an improvement");
-  the improver takes it in as soon as it ends (pipeline.py). The improver's own AI roles and replays never get it.
+  the improver takes it in as soon as it ends (pipeline.py). The improver's own AI roles never get it;
+  a replay of a conversation that had it gets one that files nothing.
 """
 
 import probatio
@@ -44,16 +45,28 @@ class FileImprovement(llm.Tool):
         return llm.ToolResult(data={"filed": True, "next": "The Assist Improver will study this conversation once it ends."})
 
 
+REPLAYED_FILING = f"{DOMAIN}_replayed_filing"  # In a sandbox: the recorded Assist could file (sandbox.seed).
+
+
+class ReplayedFiling(FileImprovement):
+    """In a replay, the filing tool the recorded Assist had: it answers as filing does and files nothing. That the
+    replay filed is what it shows (DETAILS P6.6.2)."""
+
+    async def async_call(self, hass, tool_input, llm_context):
+        return llm.ToolResult(data={"filed": True, "next": "The Assist Improver will study this conversation once it ends."})
+
+
 @callback
 def async_get_tools(hass, llm_context, api_id):
     """For the Assist API: the household's lines as its prompt, and the file_improvement tool while on-demand
     improvements are on. None when there's neither."""
     if api_id != llm.LLM_API_ASSIST:
         return None
-    pipeline = getattr(loaded(hass), "pipeline", None)  # None while the improver starts, and in a sandbox: no tool.
+    pipeline = getattr(loaded(hass), "pipeline", None)  # None while the improver starts, and in a sandbox.
     files = pipeline is not None and pipeline.entry.options.get(CONF_ON_DEMAND) and not role_active()
+    tools = [FileImprovement()] if files else [ReplayedFiling()] if hass.data.get(REPLAYED_FILING) else []
     prompt = household.prompt(hass, llm_context)
-    return LLMTools(tools=[FileImprovement()] if files else [], prompt=prompt) if files or prompt else None
+    return LLMTools(tools=tools, prompt=prompt) if tools or prompt else None
 
 
 def role_active():

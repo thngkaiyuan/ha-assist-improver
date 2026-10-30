@@ -359,18 +359,11 @@ def _memory(hass, runtime):
         out[name] = {"items": len(value) if hasattr(value, "__len__") else None, "bytes": size, "ms": ms}
     mode = hass.data.get(MODE_KEY)
     sessions = getattr(getattr(mode, "sessions", None), "sessions", {}) or {}
-    out["practice sessions"] = {
-        "items": len(sessions), "simulated states": sum(len(s.states.overrides) for s in sessions.values()),
-        "list copies": sum(len(s.lists.lists) for s in sessions.values() if s.lists),
-        "timers": sum(len(t.timers) for s in sessions.values()
-                      if (t := s.data.maps[0].get(_timer_key())) is not None)}
+    out["practice sessions"] = {  # Each a copy of the home in the replay worker (practice.LiveHome).
+        "items": len(sessions), "copies running": sum(1 for s in sessions.values() if s.sandbox is not None),
+        "devices changed": sum(len(s.mine) for s in sessions.values())}
     out["active traces"] = trace.active_summary()
     return out
-
-
-def _timer_key():
-    from homeassistant.components.intent.const import TIMER_DATA
-    return TIMER_DATA
 
 
 def _tasks():

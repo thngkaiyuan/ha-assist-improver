@@ -6,10 +6,13 @@ what actually changed, and what Assist could and could not do. Nothing here
 infers intent; it only selects and shortens recorded observations.
 """
 
+from contextlib import suppress
 from copy import deepcopy
 from datetime import datetime
 import json
 import re
+
+from homeassistant.util import dt as dt_util
 
 from .cases import CaseError, recording_turns
 
@@ -22,6 +25,10 @@ ACTION_DOMAINS = {"script", "scene", "automation"}
 ENTITY_ID = re.compile(r"\b([a-z_]+\.[a-z0-9_]+)\b")
 OP_ATTRIBUTES = ("hvac_modes", "fan_modes", "preset_modes", "swing_modes", "effect_list", "options",
                  "supported_color_modes", "source_list")
+# What a device reports of the world on its own, which no command sets: its readings, what it's playing and what it
+# can do now; and its name, which a rename changes.
+OWN_REPORTS = {"current_temperature", "hvac_action", "media_title", "media_artist", "media_album_name",
+               "supported_features", "friendly_name"}
 
 
 def _states(change):
@@ -30,15 +37,16 @@ def _states(change):
 
 def background(change):
     """Whether a recorded state change is background, which the readers listing what changed skip: a noise domain's,
-    an availability flap (to or from unavailable), or a write that changed neither the state nor a recorded attribute
-    (friendly_name aside)."""
+    an availability flap (to or from unavailable), or a write that changed neither the state nor an attribute someone
+    sets (a TV's next song, a thermostat's reading). A correction of an attribute alone (a volume, a brightness)
+    counts."""
     old, new = change.get("old") or {}, change.get("new") or {}
     if change["entity_id"].split(".", 1)[0] in NOISE_DOMAINS or "unavailable" in (old.get("state"), new.get("state")):
         return True
     if old.get("state") != new.get("state"):
         return False
     before, after = old.get("attributes") or {}, new.get("attributes") or {}
-    return all(before.get(k) == after.get(k) for k in before.keys() | after.keys() if k != "friendly_name")
+    return all(before.get(k) == after.get(k) for k in (before.keys() | after.keys()) - OWN_REPORTS)
 
 
 def flap(change):
@@ -89,6 +97,23 @@ def _ops(entity_id, state):
     return ops
 
 
+def _shown(source, entity_id, state):
+    """A recorded state as Home Assistant's live context showed it to Assist (async_get_exposed_entities): a sensor's
+    rounded to its display precision (sensor.async_rounded_state), a timestamp in the home's time zone."""
+    value = state.get("state")
+    options = (source.get("entities", {}).get(entity_id) or {}).get("sensor_options") or {}
+    precision = options.get("display_precision", options.get("suggested_display_precision"))
+    if entity_id.startswith("sensor.") and precision is not None:
+        with suppress(TypeError, ValueError):
+            value = f"{float(value):z.{precision}f}"
+    if (state.get("attributes") or {}).get("device_class") == "timestamp" and state.get("state"):
+        with suppress(ValueError):  # A date that can't be (month 13) stays as it was: the card is still shown.
+            if (parsed := dt_util.parse_datetime(state["state"])) is not None:
+                zone = dt_util.get_time_zone(source.get("time_zone") or "UTC") or dt_util.UTC
+                value = parsed.replace(tzinfo=parsed.tzinfo or zone).astimezone(zone).isoformat()
+    return value
+
+
 def _entity_card(source, entity_id, detailed=False):
     name, area, aliases = _naming(source, entity_id)
     state = source.get("states", {}).get(entity_id)
@@ -101,7 +126,7 @@ def _entity_card(source, entity_id, detailed=False):
     if state is None:
         card["state"] = "no live state (disabled or missing)"
         return card
-    card["state"] = state.get("state")
+    card["state"] = _shown(source, entity_id, state)
     ops = _ops(entity_id, state)
     if ops:
         card["operations"] = ops
@@ -205,8 +230,9 @@ def digest_size(digest):
 
 
 def label_coverage(digest, label):
-    """Entities and turns a label depends on that the digest lacks; empty means covered."""
-    turns = {t["turn"] for t in digest["turns"]}
+    """Entities and turns a label depends on that the digest lacks; empty means covered. A label's note (what the
+    conversation was sent in with) is its last turn: the analyzer gets it with the conversation, not in the digest."""
+    turns = {t["turn"] for t in digest["turns"]} | ({len(digest["turns"]) + 1} if label.get("note") else set())
     present = {c["entity_id"] for c in digest["relevant_entities"]}
     for cards in digest["capabilities"]["exposed_entities_by_area"].values():
         present |= {c["entity_id"] for c in cards}

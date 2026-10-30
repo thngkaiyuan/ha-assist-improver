@@ -37,10 +37,11 @@ def deliberate(sent):
 
 
 def analysed_turns(analysis):
-    """An analysis's turns: each one said (by number), then "note" for the note it was sent in with, if any."""
-    said = int(analysis.get("turns") or max([g.get("turn") or 0 for g in analysis.get("goals") or []] or [0]))
-    return list(range(1, said + 1)) + (["note"] if any(f.get("turn") is None for f in analysis.get("feedback") or [])
-                                       else [])
+    """An analysis's turns: each one said (by number), then "note" for the note it was sent in with, if any (its goals
+    sit at the turn after the last one said, as measures.goals_of labels them)."""
+    goals = analysis.get("goals") or []
+    said = int(analysis.get("turns") or max([g.get("turn") or 0 for g in goals] or [0]))
+    return list(range(1, said + 1)) + (["note"] if any(g.get("turn") == said + 1 for g in goals) else [])
 
 
 class Failed(Exception):
@@ -766,16 +767,19 @@ class Flow:
         return back
 
     def _note_goal(self, conv, item, note):
-        """A revision note's goal: a sub-goal of the root goal its improvement is for (P0.3), unmet: it asks for what
-        the conversation didn't get."""
+        """A revision note's goal: a conduct goal about Assist in general, in the note's own words, under the root goal
+        its improvement is for (P0.3), else the conversation's first; unmet: it asks for what the conversation didn't
+        get."""
         turns = sorted({int(goal.split(":")[1]) for goal in item["fixes"]})
         try:
             goals = self._latest_analysis(conv).get("goals") or []
         except Failed:
             goals = []
-        from .analyzer import root_turn
+        from .analyzer import root_turn, top_level
         serves = root_turn(goals, turns[0]) if turns else None
-        return {"summary": note, "kind": "feedback", "serves": serves, "reached": False}
+        if serves is None:
+            serves = next((g["turn"] for g in top_level(goals)), None)
+        return {"summary": note, "kind": "conduct", "about": "all", "quote": note, "serves": serves, "reached": False}
 
     async def resolve(self, item):
         """The household agreed to send back an improvement whose accept met a conflict: its conversation goes back in

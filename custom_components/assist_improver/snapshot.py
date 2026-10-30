@@ -1,5 +1,8 @@
 """Read local state/registries without polling integrations or calling services."""
 
+import functools
+import logging
+
 from homeassistant.components.homeassistant.exposed_entities import async_should_expose
 from homeassistant.helpers import area_registry as ar, device_registry as dr, entity_registry as er
 from homeassistant.util.dt import utcnow
@@ -7,16 +10,54 @@ from homeassistant.util.dt import utcnow
 from .const import ATTRIBUTES, DOMAIN, PROVIDER_OPTIONS
 from .serialization import plain, SECRET
 
+_LOGGER = logging.getLogger(__name__)
+
+
+@functools.cache
+def live_context_attributes():
+    """The state attributes Home Assistant's live context shows Assist (its GetLiveContext tool), read from HA's own
+    code so a recording follows the Home Assistant that made it: interesting_attributes, a set local to
+    async_get_exposed_entities, which Python keeps as the one frozenset among that function's constants. Anything else
+    (HA moved it): none, said once, and recordings keep the replay engine's attributes alone. Never raises: a
+    recording never fails for it."""
+    try:
+        from homeassistant.components.homeassistant import llm
+        code = llm.async_get_exposed_entities.__code__
+        found = [c for c in code.co_consts if "interesting_attributes" in code.co_varnames
+                 and isinstance(c, frozenset) and c and all(isinstance(name, str) for name in c)]
+    except Exception:  # noqa: BLE001 - HA changed under us; the fallback below says so.
+        found = []
+    if len(found) != 1:
+        _LOGGER.warning("Home Assistant's live-context attributes weren't found in its code: recordings keep the "
+                        "replay engine's attributes only")
+        return frozenset()
+    return found[0]
+
+
+@functools.cache
+def _kept_attributes():
+    return frozenset(ATTRIBUTES | live_context_attributes())
+
 
 def state_record(state):
     if state is None:
         return None
     if SECRET.search(state.entity_id):
         return {"entity_id": state.entity_id, "state": "[redacted]", "attributes": {}}
+    kept = _kept_attributes()
     return {"entity_id": state.entity_id, "state": state.state,
-            "attributes": plain({k: v for k, v in state.attributes.items() if k in ATTRIBUTES}),
+            "attributes": plain({k: v for k, v in state.attributes.items() if k in kept}),
             "last_changed": plain(state.last_changed), "last_updated": plain(state.last_updated),
             "context": plain(state.context.as_dict())}
+
+
+def attribute_policy():
+    """What a recording's states keep of their attributes, as its snapshot says: allowlist-v1 is the replay engine's
+    attributes alone (older recordings, or Home Assistant's list not found)."""
+    if live_context_attributes():
+        return ("allowlist-v2: the replay engine's attributes and what Assist's live context shows (Home Assistant's "
+                "own list); omitted attributes are not recorded")
+    return "allowlist-v1; omitted attributes are not recorded"
 
 
 def snapshot(hass):
@@ -36,6 +77,8 @@ def snapshot(hass):
             "disabled_by": e.disabled_by, "hidden_by": e.hidden_by,
             "has_state": e.entity_id in states,
         })
+        if sensor_options := _sensor_options(e):  # Only where set.
+            entities[e.entity_id]["sensor_options"] = sensor_options
     exposure = {}
     for entity_id in states.keys() | entities.keys():
         try:
@@ -56,7 +99,14 @@ def snapshot(hass):
             # The household knowledge then, and whether Assist read it, so a replay rebuilds the same prompt.
             "household": plain(getattr(hass.data.get(f"{DOMAIN}_household"), "knowledge", None)),
             "household_on": bool(getattr(hass.data.get(f"{DOMAIN}_household"), "on", False)),
-            "attribute_policy": "allowlist-v1; omitted attributes are not recorded"}
+            "attribute_policy": attribute_policy()}
+
+
+def _sensor_options(entry):
+    """A sensor's display precision, as its registry entry holds it: Home Assistant's live context rounds the sensor's
+    state to it. Nothing else of the entry's options."""
+    options = entry.options.get("sensor") or {}
+    return {k: options[k] for k in ("display_precision", "suggested_display_precision") if options.get(k) is not None}
 
 
 def provider_config(hass, platform):

@@ -7,12 +7,14 @@ can't change or reveal anything beyond what was recorded.
 
 from datetime import datetime
 import json
+import math
 
 import probatio
 from homeassistant.helpers import llm
 
-from .cases import recording_turns
-from .digest import ACTION_DOMAINS, NOISE_DOMAINS, _clip, _entity_card, _naming, _text, background, build_digest
+from .cases import calls_in, recording_turns
+from .digest import (ACTION_DOMAINS, NOISE_DOMAINS, OWN_REPORTS, _clip, _entity_card, _naming, _text,
+                     background, build_digest)
 from .simulation import template_follow_ons
 from .trace import traced_tool
 
@@ -30,16 +32,45 @@ def _brightness(change):
     return ((change.get("attributes_changed") or {}).get("brightness_pct") or [None, None])[1]
 
 
+def _point(value):
+    """A number, or a list of numbers (a colour), as coordinates; None for anything else."""
+    values = list(value) if isinstance(value, (list, tuple)) else [value]
+    return values if values and all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in values) else None
+
+
+def _set_back(was, left, now):
+    """Whether an attribute Assist changed from was to left now reads as set back, rather than as left where Assist
+    put it: a number or a colour nearer where it was than where Assist left it (a device rounding a setpoint or a
+    colour temperature, a blind on its way, stays Assist's); anything else, whatever isn't Assist's value. With
+    nothing there before, nothing can be set back."""
+    if was is None or now == left:
+        return False
+    points = [_point(v) for v in (was, left, now)]
+    if all(points) and len({len(p) for p in points}) == 1:
+        return math.dist(points[2], points[0]) < math.dist(points[2], points[1])
+    return True
+
+
 def _carries(assists, later):
     """Whether a later change on an entity Assist changed only carries Assist's change through (assists: Assist's
-    changes to it before, oldest first): the state Assist's latest set, or settling from it, with the brightness
-    Assist last set kept."""
+    changes to it before, oldest first): the state Assist's latest set, or settling from it, with a brightness Assist
+    set near it and nothing else it set set back. What the device reports on its own (OWN_REPORTS) and what Assist
+    never set may move with it."""
     assist = assists[-1]
     if later["new"] != assist["new"] and (assist["new"], later["new"]) not in SETTLES:
         return False
     set_to = next((b for b in map(_brightness, reversed(assists)) if b is not None), None)
     now = _brightness(later)
-    return set_to is None or now is None or abs(now - set_to) <= BRIGHTNESS_TOLERANCE
+    if not (set_to is None or now is None or abs(now - set_to) <= BRIGHTNESS_TOLERANCE):
+        return False
+    was, left = {}, {}  # Each attribute Assist set: as it was before, and as Assist last left it.
+    for change in assists:
+        for k, (old, new) in (change.get("attributes_changed") or {}).items():
+            if k not in OWN_REPORTS and k not in ("brightness", "brightness_pct"):  # A brightness: near it, above.
+                was.setdefault(k, old)
+                left[k] = new
+    return not any(_set_back(was[k], left[k], now) for k, (_, now) in (later.get("attributes_changed") or {}).items()
+                   if k in left)
 
 
 class SessionView:
@@ -62,6 +93,10 @@ class SessionView:
         practice = recording.get("practice")
         self._by_results = set()  # (entity, at) of changes only Assist's results named as its (_who).
         self.changes = self._changes(practice["simulated_changes"] if practice else recording.get("state_changes", []))
+        self.note = None  # The note it was sent in with, where the analyzer hears it: its last turn (read_turn).
+        # Each turn's calls with Home Assistant's results, for what leaves no device state (analyzer.announced); a
+        # script's own calls aren't recorded.
+        self.calls, self.scripts_seen = {t["number"]: calls_in(t["messages"][1:]) for t in turns}, False
 
     def _turn_of(self, at):
         return sum(1 for start in self.starts if datetime.fromisoformat(at) >= datetime.fromisoformat(start))
@@ -95,13 +130,14 @@ class SessionView:
 
     def _mark_follow_ons(self, changes):
         """Assist's own follow-ons, and its results read rightly. A change by no one signed in, within FOLLOW_ON seconds
-        of Assist's change, is Assist's when it only carries that change through: on an entity Assist changed (ever
-        before it in the session), the state it set, reported again or settling (a blind opening, then open), with
-        the brightness it set kept; on another entity of the same physical device, one Assist never changed, the
-        device's own reaction (a fan's climate turning off with it). Anything else is someone's, a correction above
-        all. One only Assist's results named (no context of its) that puts the entity back where Assist's own change
-        found it is a correction too. What a template entity Assist changed switches with its own actions, under the
-        same request (a template light's helper), is that entity's follow-on (simulation.template_follow_ons)."""
+        of Assist's change, is Assist's when it only carries that change through (_carries): on an entity Assist
+        changed (ever before it in the session), the state it set, reported again or settling (a blind opening, then
+        open), with nothing it set set back; on another entity of the same physical device, one Assist never changed,
+        the device's own reaction (a fan's climate turning off with it). Anything else is someone's, a correction
+        above all. One only Assist's results named (no context of its), after Assist's own change in the same turn
+        came through under its request, is held to carrying that change through too. What a template entity Assist
+        changed switches with its own actions, under the same request (a template light's helper), is that entity's
+        follow-on (simulation.template_follow_ons)."""
         for turn, source in enumerate(self.sources, 1):
             mine = {e: [c for c in cs if c["during_turn"] == turn and c["by"] == "assistant"]
                     for e, cs in changes.items()}
@@ -114,9 +150,9 @@ class SessionView:
         near = []  # [(device, when)] of Assist's changes so far
         for at, entity_id, c in stamped:
             device, own = self._device(entity_id), assists.get(entity_id, [])
-            if c["by"] == "assistant" and (entity_id, c["at"]) in self._by_results and own and \
-                    own[-1]["by"] == "assistant" and (entity_id, own[-1]["at"]) not in self._by_results \
-                    and c["new"] == own[-1]["old"] and c["new"] != own[-1]["new"]:
+            if c["by"] == "assistant" and (entity_id, c["at"]) in self._by_results and any(
+                    a["during_turn"] == c["during_turn"] and (entity_id, a["at"]) not in self._by_results
+                    for a in own) and not _carries(own, c):  # Assist's own came through first, in this turn.
                 c["by"] = "not the assistant (a person at the device or app, an automation, or the device itself)"
             if c["by"] == "assistant":
                 assists.setdefault(entity_id, []).append(c)
@@ -138,7 +174,8 @@ class SessionView:
         turn_context = self.contexts[turn - 1] if 0 < turn <= len(self.contexts) else {}
         if turn_context.get("id") and turn_context["id"] in (context.get("id"), context.get("parent_id")):
             return "assistant"
-        if context.get("user_id") and not context.get("parent_id"):  # A person's own action, in the app or panel.
+        # A person's own action, in the app or panel; before identity capture Assist's own carried the person's too.
+        if turn_context.get("id") and context.get("user_id") and not context.get("parent_id"):
             return "a person (signed in to Home Assistant)"
         found = next((t for t in self.digest["turns"] if t["turn"] == turn), None)
         if found and any(entity_id in str(step.get("result", "")) for step in found["assistant"]):
@@ -234,8 +271,11 @@ class SessionView:
 
     def read_turn(self, turn):
         found = next((t for t in self.digest["turns"] if t["turn"] == turn), None)
+        last = len(self.digest["turns"]) + bool(self.note)
+        if found is None and self.note and turn == last:  # The note: words only, with nothing Assist did.
+            return {"turn": turn, "user_says": self.note, "sent_with_it": True}
         if found is None:
-            return {"error": f"There is no turn {turn}; turns are 1 to {len(self.digest['turns'])}."}
+            return {"error": f"There is no turn {turn}; turns are 1 to {last}."}
         steps = []
         for step in found["assistant"]:
             if "result" in step:  # Tool results are JSON text; give them back as objects when they are complete.
@@ -245,14 +285,14 @@ class SessionView:
                     pass
             steps.append(step)
         changed, drift = [], []
-        acted = {e for e, cs in self.changes.items() for c in cs if c["during_turn"] == turn and c["by"] == "assistant"}
+        acted = {e for e, cs in self.changes.items() for c in cs if c["during_turn"] <= turn and c["by"] == "assistant"}
         for e, cs in self.changes.items():
             for c in cs:
                 if c["during_turn"] != turn:
                     continue
                 if (c["old"] == c["new"] and c["by"] != "assistant" and e not in acted
                         and c["by"] != "a person (signed in to Home Assistant)"):
-                    drift.append(e)  # Readings ticking over on devices nobody acted on.
+                    drift.append(e)  # Only an attribute, by no one signed in, on what Assist hadn't changed yet.
                 else:
                     changed.append({"entity_id": e, "name": _naming(self.source, e)[0], **c})
         changed.sort(key=lambda c: c["at"])

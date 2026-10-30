@@ -8,10 +8,57 @@ candidate instead of being guessed at.
 """
 
 from copy import deepcopy
+import re
 
 from homeassistant.util import slugify
 
 from .cases import CaseError
+
+FIELD_KEY = re.compile(r"[a-z][a-z0-9_]{0,63}")  # As an AI tool's parameter names may be.
+FIELD_USE = re.compile(r"{{\s*([a-z][a-z0-9_]*)\s*}}")  # A field's value in a step's data.
+TEMPLATE = re.compile(r"{{|{%|{#")
+TAKEN = {"context", "this", "none", "true", "false"}  # Home Assistant's own script variables, and template constants.
+TARGETS = ("entity_id", "device_id", "area_id", "floor_id", "label_id")
+
+
+def field_problems(change):
+    """What's wrong with a proposed script's text inputs (fields), which Assist fills when it runs the script: each has
+    a key (a lowercase name of its own), a name and a description, and a step's data uses it; a step's data names only
+    those, as {{ key }}, and no other template, and never in what names a device; a stop message has none."""
+    fields, found = change.get("fields") or [], []
+    keys = [f.get("key") for f in fields]
+    for field in fields:
+        if not FIELD_KEY.fullmatch(field.get("key") or "") or field["key"] in TAKEN:
+            found.append(f"a field's key is a lowercase name (letters, digits and _, up to 64) that isn't one of "
+                         f"{', '.join(sorted(TAKEN))}: {field.get('key')!r} isn't one.")
+        if not (field.get("name") or "").strip() or not (field.get("description") or "").strip():
+            found.append(f"field {field.get('key')!r} needs a name and a description (what to give, its format).")
+    if len(set(keys)) < len(keys):
+        found.append("each field has a key of its own.")
+    used = set()
+    for step in change.get("steps") or []:
+        if TEMPLATE.search(step.get("stop") or ""):
+            found.append("a stop message is said as written: it uses no field or template.")
+        for key, value in (step.get("data") or {}).items():
+            if not isinstance(value, str):
+                continue
+            named = set()
+            if TEMPLATE.search(FIELD_USE.sub(lambda m: named.add(m[1]) or "", value)):
+                found.append(f"step data {value!r}: a step uses a field as {{{{ key }}}}, and no other template.")
+            if named and key.endswith(TARGETS):
+                found.append(f"step data {key}: a field gives words, never which device.")
+            used |= named
+    if unknown := sorted(used - set(keys)):
+        found.append(f"the steps use {', '.join(unknown)}, which this change doesn't declare as fields.")
+    if unused := [k for k in keys if k not in used]:
+        found.append(f"no step's data uses the field {', '.join(map(repr, unused))}.")
+    return found
+
+
+def ha_fields(change):
+    """A proposed script's fields in HA's script format: each a text Assist must give."""
+    return {f["key"]: {"name": f["name"], "description": f["description"], "required": True, "selector": {"text": {}}}
+            for f in change.get("fields") or []}
 
 
 def ha_step(step):
@@ -69,6 +116,8 @@ def setup_from_changes(changes, *, source, prompt, scripts, user_id=None, assist
             exposure[entity_id] = change.get("expose", True)
             prompt_changed = prompt_changed or not entity_id.startswith("script.")  # Scripts aren't listed.
         elif kind == "script":
+            if problems := field_problems(change):
+                raise CaseError(f"{where}: {problems[0]}")
             steps = [ha_step(s) for s in change.get("steps") or []]
             if entity_id:
                 object_id = entity_id.split(".", 1)[1]
@@ -77,8 +126,11 @@ def setup_from_changes(changes, *, source, prompt, scripts, user_id=None, assist
                 definition = deepcopy(new_scripts.get(object_id) or scripts[object_id])
                 if change.get("text"):
                     definition["description"] = change["text"]
-                if steps:
+                if steps:  # Its fields go with its steps.
                     definition["sequence"] = steps
+                    definition.pop("fields", None)
+                    if change.get("fields"):
+                        definition["fields"] = ha_fields(change)
                 new_scripts[object_id] = definition
             else:
                 name = (change.get("script_name") or "").strip()
@@ -87,7 +139,8 @@ def setup_from_changes(changes, *, source, prompt, scripts, user_id=None, assist
                     raise CaseError(f"{where}: a new script needs a name and steps")
                 if object_id in scripts or f"script.{object_id}" in source["states"]:
                     raise CaseError(f"{where}: a script named {name} already exists")
-                new_scripts[object_id] = {"alias": name, "description": change.get("text") or "", "sequence": steps}
+                new_scripts[object_id] = {"alias": name, "description": change.get("text") or "", "sequence": steps,
+                                          **({"fields": ha_fields(change)} if change.get("fields") else {})}
                 if change.get("expose", True):
                     exposure[f"script.{object_id}"] = True
         else:

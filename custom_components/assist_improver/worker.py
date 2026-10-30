@@ -21,6 +21,7 @@ import json
 import logging
 from pathlib import Path
 import sys
+from uuid import uuid4
 
 import probatio
 from homeassistant.exceptions import HomeAssistantError
@@ -37,12 +38,19 @@ CALL_SECONDS = 600  # One call longer than this means the worker is stuck: it's 
 LIMIT = 1 << 30  # The longest message line: a recording is a few MB.
 INLINE = False  # Tests: serve in this process, through the same JSON.
 STATS = dict(SANDBOX_STATS)  # Sandbox statistics across every worker this process started (sandbox.STATS there).
-# The worker loads only the modules sandboxes use: the integration's own setup (its __init__) never runs there.
-BOOT = """import sys, types
-for name, path in (("custom_components", "custom_components"),
-                   ("custom_components.assist_improver", "custom_components/assist_improver")):
+# The worker loads only the modules sandboxes use: the integration's own setup (its __init__) never runs there. Its
+# sandboxes run Home Assistant's own code and the improver's alone: custom_components is a folder of the worker's own
+# holding only the improver, so Home Assistant finds none of the household's custom integrations there (one a recorded
+# tool names is never set up, nor its tools run), and finds the improver as an integration, as household knowledge
+# needs (household.serve).
+BOOT = """import atexit, os, shutil, sys, tempfile, types
+improver = sys.argv[1] + "/custom_components/assist_improver"
+own = tempfile.mkdtemp(prefix="assist_improver_worker_")
+atexit.register(shutil.rmtree, own, True)
+os.symlink(improver, own + "/assist_improver")
+for name, path in (("custom_components", own), ("custom_components.assist_improver", improver)):
     package = types.ModuleType(name)
-    package.__path__ = [sys.argv[1] + "/" + path]
+    package.__path__ = [path]
     sys.modules[name] = package
 from custom_components.assist_improver.worker import main
 main()"""
@@ -68,7 +76,9 @@ class Worker:
         self._before = dict.fromkeys(SANDBOX_STATS, 0)  # Statistics of the workers that have stopped, summed.
         self._now = dict(self._before)  # The running worker's own, as of its last answer.
         self._starting = asyncio.Lock()
+        self._writing = None  # The running process's lock: messages to it are written in the order sent (_send).
         self._server = None  # INLINE: the server, in this process.
+        self.generation = 0  # Counts the workers started: a sandbox lives only as long as the one it was started in.
 
     async def call(self, op, **args):
         message = {"id": next(self.ids), "op": op, "args": args}
@@ -78,7 +88,8 @@ class Worker:
             self._idle = None
         try:
             if INLINE:
-                self._server = self._server or Server()
+                if self._server is None:
+                    self._server, self.generation = Server(), self.generation + 1
                 answer = json.loads(json.dumps(await self._server.answer(json.loads(json.dumps(message)))))
             else:
                 answer = await self._send(message)
@@ -115,9 +126,15 @@ class Worker:
         future = asyncio.get_running_loop().create_future()
         self.pending[message["id"]] = future
         try:
-            line = await asyncio.get_running_loop().run_in_executor(None, _line, message)  # MBs: off the loop.
-            self.process.stdin.write(line)
-            await self.process.stdin.drain()
+            # In the order sent, however long each takes to encode: a message's tool calls, which HA runs at once,
+            # reach the worker in the order HA started them.
+            process = self.process
+            async with self._writing:
+                line = await asyncio.get_running_loop().run_in_executor(None, _line, message)  # MBs: off the loop.
+                if self.process is not process:  # Stopped while this one waited its turn.
+                    raise WorkerError("The replay worker stopped")
+                process.stdin.write(line)
+                await process.stdin.drain()
             return await asyncio.wait_for(future, CALL_SECONDS)
         except TimeoutError:
             await self.stop()
@@ -133,9 +150,11 @@ class Worker:
                 return
             self._restarted()
             self.open.clear()  # A worker that stopped stopped its sandboxes too.
+            self.generation += 1
             self.process = await asyncio.create_subprocess_exec(
                 sys.executable, "-c", BOOT, str(self.root), stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, limit=LIMIT)
+            self._writing = asyncio.Lock()  # Made with each process, on the loop that writes to it.
             self._reading = (asyncio.create_task(self._read(self.process), name="assist_improver_worker_read"),
                              asyncio.create_task(self._log(self.process), name="assist_improver_worker_log"))
             _LOGGER.debug("Replay worker started (pid %s)", self.process.pid)
@@ -232,15 +251,21 @@ def _named(kind, name, base):
 class RemoteSandbox:
     """A sandbox in the worker, as replay.py uses it: its operations by name, and what it reported."""
 
-    def __init__(self, session):
-        self.session = session
+    def __init__(self, session, generation=None):
+        self.session, self.generation = session, generation
         self.unsimulated = []  # Device commands the sandbox has no emulation for, as of its last answer.
         self.log = []  # What HA logged inside it, as of its last answer.
 
     @classmethod
     @span("sandbox.start")
     async def start(cls, time_zone):
-        return cls(await worker().call("home.start", time_zone=time_zone))
+        session = await worker().call("home.start", time_zone=time_zone)
+        return cls(session, worker().generation)
+
+    @property
+    def live(self):
+        """Whether the worker it was started in still runs (one started since has sandboxes of its own)."""
+        return self.generation == worker().generation
 
     async def call(self, op, **args):
         found = await worker().call(f"home.{op}", session=self.session, **args)
@@ -260,7 +285,7 @@ class Server:
     """The operations a worker serves: recorded homes (sessions), the evidence probes, and its statistics."""
 
     def __init__(self):
-        self.sessions, self.ids = {}, itertools.count(1)
+        self.sessions = {}
 
     async def answer(self, message):
         from . import sandbox
@@ -286,18 +311,19 @@ class Server:
 
     async def op_home_start(self, time_zone):
         from .sandbox import Sandbox
-        session = next(self.ids)
+        session = uuid4().hex  # Never one another worker gave out: a sandbox from before a restart finds none.
         self.sessions[session] = _Home(await Sandbox.start(time_zone))
         return session
 
     async def op_home_seed(self, session, source, options, user_name=None, scripts=None, automations=None,
-                           exposure_changes=None, alias_changes=None, alias_removals=None, moving=()):
+                           exposure_changes=None, alias_changes=None, alias_removals=None, moving=(), lists=None,
+                           timers=()):
         from .sandbox import seed
         home = self._home(session)
         await home.sandbox.run(lambda hass: seed(
             hass, source, user_name=user_name, **options, scripts=scripts, automations=automations,
             exposure_changes=exposure_changes, alias_changes=alias_changes, alias_removals=alias_removals,
-            moving=moving))
+            moving=moving, lists=lists, timers=timers))
         return self._reported(home)
 
     async def op_home_household(self, session, knowledge, legacy=False):
@@ -345,10 +371,16 @@ class Server:
         await home.sandbox.run(lambda hass: observe(hass, source, moves))
         return self._reported(home)
 
-    async def op_home_snapshot(self, session, attributes=()):
+    async def op_home_lists(self, session, source, lists, given):
+        """The home's to-do lists now, but those the sandbox changed (sandbox.hold_lists)."""
+        from .sandbox import hold_lists
+        home = self._home(session)
+        return {"held": await home.sandbox.run(lambda hass: hold_lists(hass, source, lists, given))}
+
+    async def op_home_snapshot(self, session, attributes=(), settle=True):
         from .sandbox import snapshot
         home = self._home(session)
-        return self._reported(home, await home.sandbox.run(lambda hass: snapshot(hass, attributes)))
+        return self._reported(home, await home.sandbox.run(lambda hass: snapshot(hass, attributes, settle)))
 
     async def op_home_stop(self, session):
         home = self.sessions.pop(session, None)

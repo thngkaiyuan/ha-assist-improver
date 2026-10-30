@@ -2,7 +2,7 @@
 
 The generator reads the friction across analysed sessions (extra turns with the
 sub-goals they served, settings the user had to choose, side effects left
-behind, the household's feedback), groups it into themes and proposes one idea
+behind, what the household objected to), groups it into themes and proposes one idea
 for the conversation, combining a fix per theme, each the least specific change
 that works. It answers by calling submit_hypotheses, which checks the hypothesis
 against the sessions and the household and rejects it with the reasons until it

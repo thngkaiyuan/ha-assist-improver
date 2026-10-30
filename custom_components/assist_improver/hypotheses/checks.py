@@ -4,6 +4,7 @@ import re
 
 import probatio
 
+from ..changes import field_problems
 from ..exploration import applied_too_early
 from ..instructions import FACTS, carried, edit, effective, is_edit
 from .goals import friction_by_goal, goal_summary
@@ -228,6 +229,7 @@ def _change_problems(where, change, known, household, template=None):
                              "and a device in this household.")
             elif domain not in (step["entity_id"].split(".")[0], "homeassistant"):
                 found.append(f"{where}: script step {step['service']!r} doesn't match {step['entity_id']}'s domain.")
+        found += [f"{where}: {problem}" for problem in field_problems(change)]
     return found
 
 

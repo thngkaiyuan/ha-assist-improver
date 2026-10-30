@@ -559,27 +559,40 @@ def display_title(item):
 
 def row(test):
     """A test as the screens show it (the review, the editor, read_improvement): the root goals it helped, whether it
-    validated, the turns those met both ways took, the goals newly met, the side effects left without the change and
-    those gone with it, the feedback newly followed, the conversation as it went beside its replay with the change
-    (with the steps that failed in each turn), and the turns no longer needed."""
-    from .measures import helped
+    validated, the turns those whose turns compare took (measures.compared), the goals newly met, the side effects
+    left without the change and those gone with it, what the household objected to that the change fixed (feedback:
+    their words), what it still does (open: their words, the first reply that does it, by its place among the replies with the
+    change, and the judge's reason) and
+    what couldn't be told (set_aside), each goal it helped (goals; with home_couldnt, its devices when the home
+    couldn't do it either way), the conversation as it went beside its replay with the change (with the steps that
+    failed in each turn), and the turns no longer needed."""
+    from .measures import compared, helped
     before, after, judged = test["before"], test["after"], test["judged"]
     roots = set(before["turns_per_root_goal"])
-    both = {r for r in roots if before["goals"].get(r) == after["goals"].get(r) == "met"}
+    both = compared(after, before)
     newly = [r for r in roots if after["goals"].get(r) == "met" and before["goals"].get(r) != "met"]
     gone = {s["entity_id"] for s in before["side_effects_left"]} - {s["entity_id"] for s in after["side_effects_left"]}
-    followed = [text for key, goal in judged.items() if goal.get("feedback") and before["goals"].get(key) != "met"
-                and after["goals"].get(key) == "met" for text in goal["feedback"]]
-    recorded = test["recorded"]
+    followed = [goal.get("quote") or "" for key, goal in judged.items() if goal.get("kind") == "conduct"
+                and before["goals"].get(key) != "met" and after["goals"].get(key) == "met"]
+    conduct = after.get("conduct") or {}
+    replied = {r["turn"]: n for n, r in enumerate(after["replies"], 1)}  # A reply's place among those said with it.
+    objected = [{"quote": judged[key].get("quote") or "", "reply": replied.get(shown["turn"]), "why": shown["why"]}
+                for key, found in conduct.items() if found.get("state") == "unmet" and key in judged
+                for shown in [next((a for a in found.get("answers") or [] if a["shows"]), {"turn": None, "why": ""})]]
+    recorded, roots_helped = test["recorded"], helped(before, after, judged)
     counted = {n for turns in before["counted"].values() for n in turns}
     still = {n for turns in after["counted"].values() for n in turns}
-    return {"summary": "; ".join(judged[r]["summary"] or "" for r in helped(before, after, judged)),
+    return {"summary": "; ".join(judged[r]["summary"] or "" for r in roots_helped),
+            "goals": [{"goal": judged[r]["summary"] or "", **({"home_couldnt": judged[r]["devices"]} if judged[r].get(
+                "home_couldnt") and after["goals"].get(r) != "met" else {})} for r in roots_helped],
             "improved": test["validated"],
             "turns_before": sum(before["turns_per_root_goal"][r] for r in both),
             "turns_after": sum(after["turns_per_root_goal"][r] for r in both),
             "newly_met": [judged[r]["summary"] for r in newly],
             "side_effects": [{k: s[k] for k in ("entity_id", "name", "start")} for s in before["side_effects_left"]],
-            "side_effects_gone": sorted(gone), "feedback": list(dict.fromkeys(followed)),
+            "side_effects_gone": sorted(gone), "feedback": list(dict.fromkeys(followed)), "open": objected,
+            "set_aside": [judged[key].get("quote") or "" for key, found in conduct.items()
+                          if found.get("set_aside") and key in judged],
             "before": [{"you": t["you"], "assistant": t["assist"]} for t in recorded],
             "after": [{"you": r["you"], "assistant": r["assistant"]} for r in after["replies"]],
             "failed_steps": {"before": [t.get("failed", []) for t in recorded],

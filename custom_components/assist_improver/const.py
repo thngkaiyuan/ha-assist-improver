@@ -2,7 +2,7 @@
 
 DOMAIN = "assist_improver"
 NAME = "Assist Improver"
-VERSION = "0.40.3"
+VERSION = "0.40.4"
 # Conversation providers whose replays are tested end to end; others replay with a "not yet tested" label.
 TESTED_PROVIDERS = {"anthropic", "open_router"}
 STORAGE_VERSION = 1
@@ -34,6 +34,11 @@ CONF_OPT_OUT = "recording_opt_out"
 CONF_HOUSEHOLD = "household_knowledge"
 CONF_DEVELOPER = "developer_services"  # Hidden: registers the developer services (__init__.py).
 SAVE_DELAY = 1
+# The state attributes the replay engine and the analyzer read, which a recording keeps along with those Home
+# Assistant's live context shows Assist (snapshot.live_context_attributes, read from HA's own code): names
+# (friendly_name), what HA's intent matching checks (supported_features, device_class), the modes, ranges and options
+# the emulated devices and the analyzer's allowed states use, and what a date/time helper holds. The improver's roles
+# see them all on a device's card (digest.py).
 ATTRIBUTES = {
     "friendly_name", "supported_features", "device_class", "unit_of_measurement",
     "temperature", "current_temperature", "target_temp_high", "target_temp_low",

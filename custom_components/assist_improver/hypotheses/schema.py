@@ -21,6 +21,9 @@ _CHANGE = {
         {probatio.Required("service"): str, probatio.Required("entity_id"): str,
          probatio.Optional("data"): {str: probatio.Any(str, int, float, bool)}},
         {probatio.Required("stop"): str})],  # A closing stop step: the message Assist relays (HA's advice).
+    # A script's text inputs, which Assist fills when it runs it; its steps' data use each as {{ key }}.
+    probatio.Optional("fields"): [{probatio.Required("key"): str, probatio.Required("name"): str,
+                                   probatio.Required("description"): str}],
 }
 _EVIDENCE_REF = {probatio.Required("session"): str, probatio.Optional("turn"): int, probatio.Required("note"): str}
 _HYPOTHESIS = {

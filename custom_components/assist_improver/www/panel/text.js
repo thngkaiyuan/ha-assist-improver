@@ -51,9 +51,14 @@ export const TEXT = {
   // An improvement's review: each test opens to its conversation as it went, and its replay with the change.
   review: {before: "Before", after: "With the change", stopped: "The replay stopped before Assist replied.",
            // What else an improvement gets you, beside new things Assist can do and fewer turns: side effects it no
-           // longer leaves (each device, as it stays) and the feedback it follows. {n}: how many.
+           // longer leaves (each device, as it stays) and what you pointed out that it fixed (your words). {n}: how many.
            spared: {gain: "{n} unwanted change{s} avoided", title: "Unwanted changes avoided ({n})"},
-           followed: {gain: "follows your feedback", title: "Your feedback it follows ({n})"},
+           followed: {gain: "follows your feedback", title: "What you pointed out, now fixed ({n})"},
+           // What you pointed out that a test doesn't show fixed, in your words: a section, each line's bubble (the
+           // reply that still did it and why, or that it couldn't tell), and an amber chip on its test's row.
+           open: {title: "Still open ({n})", reply: "Reply {n}: {why}",
+                  setAside: "It didn't happen without the change either, so this test couldn't show it.",
+                  chip: "{n} still open", chipTip: "Something you pointed out still happened in a reply with this change."},
            // A test whose replay made Assist noticeably wordier (counted by code): its chip and tooltip, and a line
            // under the tests when any did.
            moreWords: "Says more", moreWordsTip: "Assist's replies: about {after} words each, {before} before.",
@@ -82,7 +87,7 @@ export const TEXT = {
              per: "tests per conversation, each round",
              cost: "Each test replays one of your conversations with a fix, on your own assistant: {n} each round costs at most about {n} times that conversation, plus one replay of it without the fix"},
   passThrough: {label: "Pass through", tip: "No triage model: conversations pass straight on to analysis."},
-  feedbackOff: "Feedback is checked with the write-up model",
+  repliesOff: "Replies are checked with the write-up model when off",
   models: {large: "Needs judgement: a strong model works best.", small: "A small, quick model is enough.",
            missing: {label: "Not available", tip: "This AI model is gone from Home Assistant. Choose another."},
            unavailable: "This AI model is unavailable right now.", none: {label: "Choose…", tip: "This step needs an AI model."},

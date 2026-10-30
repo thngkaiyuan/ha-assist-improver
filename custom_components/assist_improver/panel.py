@@ -100,6 +100,35 @@ def test_result(test):
     return " \u00b7 ".join(shown) or "improved"
 
 
+def unavailable(names):
+    """The devices the home couldn't reach, by name: "{device} was unavailable"."""
+    return f"{' and '.join(names)} {'was' if len(names) == 1 else 'were'} unavailable"
+
+
+def device_name(hass, entity_id):
+    """A device as Home Assistant names it now, else its entity ID."""
+    state = hass.states.get(entity_id) if hass else None
+    return (state.attributes.get("friendly_name") if state is not None else None) or entity_id
+
+
+def tested_on(test, hass=None):
+    """What a test's row says it tested: each goal it helped, and of one the home couldn't do either way, why."""
+    return "; ".join(f"{g['goal']}: the home couldn't do it "
+                     f"({unavailable([device_name(hass, e) for e in g['home_couldnt']])})"
+                     if g.get("home_couldnt") else g["goal"] for g in test["goals"])
+
+
+def still_open(test):
+    """What the household pointed out that a test doesn't show fixed, in their words, each once: each that a reply
+    with the change still did (that reply's place among them, the judge's reason), then each it couldn't tell (set
+    aside)."""
+    out = {}
+    for item in ([{"quote": f"\u201c{o['quote']}\u201d", "reply": o["reply"], "why": o["why"]} for o in test["open"]]
+                 + [{"quote": f"\u201c{q}\u201d", "set_aside": True} for q in test["set_aside"]]):
+        out.setdefault(item["quote"], item)
+    return list(out.values())
+
+
 def more_words(test):
     """{more_words: Assist's words a reply, before and with the change} when the change made it noticeably wordier."""
     found = reply_words(test)
@@ -159,6 +188,7 @@ def review(item, planned=None, names=None, hass=None, revising=False, resolvable
     enabled, removed = benefits(item)
     gone, followed = spared(item)
     shown = row(item["test"])
+    still = still_open(shown)
     steps, already, conflicts = planned or ((item.get("application") or {}).get("steps") or [], [],
                                             item.get("conflicts") or [] if item["status"] == "conflict" else [])
     changes = []
@@ -185,15 +215,20 @@ def review(item, planned=None, names=None, hass=None, revising=False, resolvable
             "safety": safety(steps), "status": item["status"], "enabled": enabled,
             "recent_outcome": recent, "recent_outcome_ok": recent_ok, "revises": item.get("revises"),
             "removed": removed, "conflicts": conflicts, "changes": changes, "cause": item["cause"],
-            # Side effects it no longer leaves (each device, left as it was) and the feedback it follows.
-            "spared": [f"{g['name']} stays {g['start']}" for g in gone], "followed": followed,
+            # Side effects it no longer leaves (each device, left as it was), what the household pointed out that it
+            # fixed (their words) and what it doesn't show fixed.
+            "spared": [f"{g['name']} stays {g['start']}" for g in gone],
+            "followed": [f"\u201c{q}\u201d" for q in followed], "still_open": still,
             # A door's or valve's motion isn't simulated: said where the improvement involves one (its changes, cause
             # and test as the review shows it: not every script and exposed device its replays ran with).
             "physical": bool(PHYSICAL.search(json.dumps([item.get("changes"), item.get("cause"), shown], default=str)))
             or any(physical(hass, e) for c in item.get("changes") or []
                    for e in [c.get("entity_id"), *(s.get("entity_id") for s in c.get("steps") or [])]
                    if isinstance(e, str)),
-            "tests": [{"summary": shown["summary"], "improved": shown["improved"], "result": test_result(shown),
+            "tests": [{"summary": tested_on(shown, hass), "improved": shown["improved"], "result": test_result(shown),
+                       # What the household pointed out that it doesn't show fixed, and how many a reply still did.
+                       **({"open": len(still), "happened": sum(not o.get("set_aside") for o in still)}
+                          if still else {}),
                        **said(shown), **more_words(shown)}],
             "wordier": 1 if more_words(shown) else 0,
             # Each decision open now, with the reasons it can be given with (Decline: not an issue); asked to send

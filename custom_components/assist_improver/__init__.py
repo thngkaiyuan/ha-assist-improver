@@ -38,7 +38,10 @@ async def async_setup(hass, config):
 async def async_remove_entry(hass, entry):
     """Uninstalling leaves only the applied improvements behind: the household's lines are written into the own
     instructions of each assistant on Assist (while the Household knowledge switch is on), and the AI Tasks the
-    improver set up and everything it stored (recordings, run log, traces, improvements' records) are removed."""
+    improver set up and everything it stored (recordings, run log, traces, improvements' records) are removed. Sandbox
+    mode ends for everyone first."""
+    if (mode := hass.data.get(practice.MODE_KEY)) is not None:
+        await mode.async_end()
     await household.async_remove(hass, on=entry.options.get(CONF_HOUSEHOLD, True))
     await ai_setup.remove_created(hass)
     await hass.async_add_executor_job(_remove_stores, hass.config.path(".storage"))
@@ -75,6 +78,10 @@ def _remove_stores(path):
 
 
 async def async_setup_entry(hass, entry):
+    if practice.MODE_KEY not in hass.data:  # Who's in sandbox mode, first: from then on they never get the real home.
+        mode = practice.PracticeMode(hass)
+        await mode.async_load()
+        hass.data[practice.MODE_KEY] = mode
     await household.async_setup(hass)
     await trace.async_setup(hass, entry)  # First, so the recorder's start is in today's trace.
     recorder = Recorder(hass)
@@ -82,13 +89,13 @@ async def async_setup_entry(hass, entry):
     # recorder hears anything.
     recorder.recording_on = lambda: entry.options.get(CONF_RECORDING, True)
     recorder.opted_out = lambda user_id: user_id in entry.options.get(CONF_OPT_OUT, [])
-    hass.data[practice.MODE_KEY] = mode = practice.PracticeMode(hass, recorder)
-    practice.install()
+    mode = hass.data[practice.MODE_KEY]
+    mode.recorder = recorder
+    mode.warm()  # A sandbox waiting for anyone already in sandbox mode.
     try:
-        await mode.async_load()
         await recorder.start()
     except Exception:
-        _unhook(hass)
+        await _unhook(hass)
         await trace.async_unload()
         raise
     runtime = RuntimeData(recorder=recorder, role_runs=RoleRuns(hass), replays=Replays(hass),
@@ -125,7 +132,7 @@ async def async_setup_entry(hass, entry):
         # Deleted during a run that a restart cut off: they go now.
         hass.async_create_task(recorder.forget_queued(), "assist_improver_forget_queued")
     except Exception:
-        _unhook(hass)
+        await _unhook(hass)
         await recorder.stop()
         await trace.async_unload()
         raise
@@ -270,10 +277,12 @@ def _update_setup_issue(hass, entry):
                               "link": f"/{panel.URL_PATH}?view=settings"})
 
 
-def _unhook(hass):
-    """Practice mode and its hooks go with the improver."""
-    practice.uninstall()
-    hass.data.pop(practice.MODE_KEY, None)
+async def _unhook(hass):
+    """Sandbox mode stays, unrecorded, while the improver isn't loaded (practice._hook); its copies of the home go
+    with the replay worker, which stops with the improver, and start afresh on the next turn."""
+    if (mode := hass.data.get(practice.MODE_KEY)) is not None:
+        mode.recorder = None
+        await mode.cool()
 
 
 async def async_unload_entry(hass, entry):
@@ -282,7 +291,9 @@ async def async_unload_entry(hass, entry):
     await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
     if runtime.panel:
         panel.remove_panel(hass)
-    _unhook(hass)
+    await _unhook(hass)
+    if getattr(entry, "disabled_by", None) is not None:  # Disabled: sandbox mode ends for everyone (DETAILS P11.11).
+        await hass.data[practice.MODE_KEY].async_end()
     await runtime.recorder.stop()
     from .worker import shutdown
     await shutdown()  # No replay worker, nor any sandbox in it, outlives the improver.

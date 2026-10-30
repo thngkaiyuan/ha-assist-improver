@@ -299,9 +299,16 @@ class Evidence:
 
     async def _try_scripts(self, recording, turn, setup, scripts, targets, goal):
         """Each script alone from the goal's starting state; if none reaches the goal alone, all of them together
-        (one goal may need several, such as a script per door). Order never decides the result."""
+        (one goal may need several, such as a script per door). Order never decides the result. A script that takes
+        inputs from Assist would run here with nothing given, so it's left to the replays."""
+        defined = {**self._scripts(turn["source"]), **setup["scripts"]}
+        taking = [s for s in scripts if (defined.get(s) or {}).get("fields")]
+        left = {"left_to_the_replays": [f"script.{s} takes inputs that Assist gives when it runs it"
+                                        for s in taking]} if taking else {}
+        if not (scripts := [s for s in scripts if s not in taking]):
+            return {"goal": goal, "goal_devices_wanted": targets, "reaches_goal": None, **left}
         alone = [await self._run_scripts(recording, turn, setup, [s], targets) for s in scripts]
-        out = {"goal": goal, "goal_devices_wanted": targets, "each_script_alone": alone}
+        out = {"goal": goal, "goal_devices_wanted": targets, "each_script_alone": alone, **left}
         if not targets:
             out.update(reaches_goal=None, note="This goal has no device states to check.")
             return out
@@ -314,6 +321,8 @@ class Evidence:
                        reached_by=["all together"] if together.get("reaches_goal") else [])
         else:
             out.update(reaches_goal=False, reached_by=[])
+        if taking and out["reaches_goal"] is False:  # One left to the replays may reach it.
+            out["reaches_goal"] = None
         return out
 
     async def _match_aliases(self, setup, entity_id, aliases):
@@ -370,7 +379,7 @@ async def run_scripts(recording, turn, definitions, setup, scripts, targets):
     try:
         runs = []
         for object_id in scripts:
-            before = len(sandbox.transitions)
+            before, spoke = len(sandbox.transitions), len(sandbox.spoken)
 
             async def run(hass, object_id=object_id):
                 await hass.services.async_call("script", object_id, blocking=True)
@@ -378,7 +387,9 @@ async def run_scripts(recording, turn, definitions, setup, scripts, targets):
             try:
                 await sandbox.run(run)
                 runs.append({"script": f"script.{object_id}", "devices_changed": [
-                    f"{t['entity_id']}: {t['old']}→{t['new']}" for t in sandbox.transitions[before:]]})
+                    f"{t['entity_id']}: {t['old']}→{t['new']}" for t in sandbox.transitions[before:]],
+                    **({"spoken": [f"{s['message']!r} on {', '.join(s['targets']) or 'no device'}"
+                                   for s in sandbox.spoken[spoke:]]} if sandbox.spoken[spoke:] else {})})
             except Exception as err:  # noqa: BLE001
                 runs.append({"script": f"script.{object_id}", "error": str(err)[:300]})
         final = await sandbox.run(lambda hass: _states(hass, [t["entity_id"] for t in targets]))

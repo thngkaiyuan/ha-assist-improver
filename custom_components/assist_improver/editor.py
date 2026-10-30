@@ -18,7 +18,7 @@ INSTRUCTIONS = """You write the two short texts a household reads first when dec
 
 Write:
 - headline: what the change does, in plain words anyone in the household understands. Start with a verb. At most 60 characters, no full stop. Name things the way the household does (the garage doors, the bedroom lights), never by entity ID. Examples: "Expose garage door controls via scripts", "Turn off only lights when you ask for lights".
-- benefit: what gets easier for them, in one or two short sentences addressed to "you": what they can now say, and what happens, compared with before. When a test's result says it no longer changes a device, or does what they asked, say that (name the device, or what they asked for). Only what the tests showed; no promises beyond them, no entity IDs, no technical terms they wouldn't use. A test marked assist_says_more made Assist's replies longer: never call the change briefer or quicker to listen to.
+- benefit: what gets easier for them, in one or two short sentences addressed to "you": what they can now say, and what happens, compared with before. When a test's result says it no longer changes a device, or no longer does what they pointed out, say that (name the device, or what they pointed out, in their words). Never present what the result lists as still open as fixed. Only what the tests showed; no promises beyond them, no entity IDs, no technical terms they wouldn't use. A test marked assist_says_more made Assist's replies longer: never call the change briefer or quicker to listen to.
 
 Answer only by calling submit_copy. If it reports problems, fix them and submit again. When it accepts your answer, finish with one short sentence."""
 STRUCTURE = probatio.Schema({probatio.Required("headline"): str, probatio.Required("benefit"): str})
@@ -57,12 +57,14 @@ def named(text, names):
 
 
 def entity_names(hass, item):
-    """{entity ID: name} for the entities an improvement's changes mention: Home Assistant's names, else the
-    names its scripts give themselves."""
+    """{entity ID: name} for the entities an improvement's changes mention, and the devices the home couldn't reach
+    in its test: Home Assistant's names, else the names its scripts give themselves."""
     from .panel import _change_text
     names = {f"script.{oid}": c.get("alias") for oid, c in (item.get("setup") or {}).get("scripts", {}).items()
              if c.get("alias")}
-    for entity_id in {m for c in item.get("changes", []) for m in ENTITY_ID.findall(_change_text(c, ""))}:
+    couldnt = {e for g in ((item.get("test") or {}).get("judged") or {}).values() if g.get("home_couldnt")
+               for e in g.get("devices") or []}
+    for entity_id in {m for c in item.get("changes", []) for m in ENTITY_ID.findall(_change_text(c, ""))} | couldnt:
         state = hass.states.get(entity_id) if hass else None
         if state is not None and state.attributes.get("friendly_name"):
             names[entity_id] = state.attributes["friendly_name"]
@@ -73,7 +75,7 @@ def payload(item, names=None, assistant=None):
     """The improvement as the editor reads it: its idea, cause and changes in plain words (named as the household
     names things), and its test (improvements.row)."""
     from .improvements import row, wordier
-    from .panel import _change_text
+    from .panel import _change_text, unavailable
     names = names or {}
     assistant = assistant or (item.get("provider") or {}).get("title") or "Assist"
     test = row(item["test"])
@@ -87,8 +89,13 @@ def payload(item, names=None, assistant=None):
         gone = [s for s in test["side_effects"] if s["entity_id"] in test["side_effects_gone"]]
         if gone:  # What it no longer changes, by the household's names for the devices.
             shown.append("no longer changes " + ", ".join(f"{s['name']} (it stays {s['start']})" for s in gone))
+        quoted = lambda quotes: "; ".join(f"\u201c{q}\u201d" for q in quotes)
         if test["feedback"]:
-            shown.append("does what you asked: " + "; ".join(test["feedback"]))
+            shown.append("no longer does what you pointed out: " + quoted(test["feedback"]))
+        if test["open"]:
+            shown.append("still does what you pointed out: " + quoted(dict.fromkeys(o["quote"] for o in test["open"])))
+        shown += [f"the home couldn't do it: {unavailable([names.get(e, e) for e in g['home_couldnt']])} when asked"
+                  for g in test["goals"] if g.get("home_couldnt")]
         entry["result"] = "; ".join(shown)
     if wordier(test):  # Counted by code: the write-up mustn't call it briefer.
         entry["assist_says_more"] = True

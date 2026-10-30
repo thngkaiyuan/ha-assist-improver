@@ -64,6 +64,8 @@ export const STYLE = `
   .lines { margin: 0 16px 12px; border: 1px solid var(--divider-color); border-radius: 8px; overflow: hidden; }
   .line { display: flex; gap: 8px; padding: 4px 12px; }
   .line.add { background: var(--add-bg); } .line.del { background: var(--del-bg); }
+  .line.open { background: color-mix(in srgb, var(--warn-fg) 10%, transparent); cursor: default; }
+  .line.open .sign { color: var(--warn-fg); font-weight: 700; }
   .line .sign { width: 12px; color: var(--secondary-text-color); }
   .files { padding: 0 0 4px; }
   .file { margin: 0 16px 8px; border: 1px solid var(--divider-color); border-radius: 8px; overflow: hidden; }
@@ -110,7 +112,8 @@ export const STYLE = `
     .tests .result { margin-left: 44px; white-space: normal; } }
   .tests .ok .result { color: var(--add-fg); background: var(--add-bg); }
   .tests .no .result { color: var(--secondary-text-color); background: var(--secondary-background-color); }
-  .tests .result.more-words { color: var(--warn-fg); background: color-mix(in srgb, var(--warn-fg) 12%, transparent); }
+  .tests .result.more-words, .tests .result.still-open { color: var(--warn-fg);
+    background: color-mix(in srgb, var(--warn-fg) 12%, transparent); }
   .note { display: flex; gap: 8px; font-size: 13px; color: var(--secondary-text-color); border-top: 1px solid var(--divider-color);
     padding-top: 10px; margin-top: 4px; }
   div.conflict { background: var(--del-bg); border: 1px solid var(--del-fg); border-radius: 8px; padding: 10px 14px; margin-bottom: 12px;

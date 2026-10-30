@@ -147,14 +147,28 @@ def recording_turns(recording, replay=True):
                         calls=deepcopy(calls), results=deepcopy(results),
                         final_reply=finals[-1]["content"], ended=finals[-1]["created"])
     if replay and recording.get("practice"):
-        # A practice turn's snapshot holds the real states; the assistant saw them with practice's earlier
-        # simulated changes on top.
         for exchange in exchanges:
-            states = exchange["source"]["states"]
-            for change in recording["practice"]["simulated_changes"]:
-                if change["at"] < exchange["source"]["at"] and change["entity_id"] in states and change.get("new"):
-                    states[change["entity_id"]] = deepcopy(change["new"])
+            exchange["source"]["states"] = as_seen(recording, exchange["source"])
     return exchanges
+
+
+def calls_in(messages):
+    """Assist's calls in one turn's messages (as recorded, or a replay step's output), each with Home Assistant's
+    result: [{tool, args, result}]."""
+    asked = {c.get("id"): c for m in messages if m.get("role") == "assistant" for c in m.get("tool_calls") or []}
+    return [{"tool": m.get("tool_name"), "args": (asked.get(m.get("tool_call_id")) or {}).get("tool_args") or {},
+             "result": m["result"] if "result" in m else {"data": m.get("tool_result")}}  # tool_result: before 2026.10.
+            for m in messages if m.get("role") == "tool_result"]
+
+
+def as_seen(recording, source):
+    """A turn's snapshot states as the assistant saw them: a practice turn's snapshot holds the real states, which it
+    saw with practice's earlier simulated changes on top."""
+    states = deepcopy(source.get("states") or {})
+    for change in (recording.get("practice") or {}).get("simulated_changes") or []:
+        if change["at"] < source["at"] and change["entity_id"] in states and change.get("new"):
+            states[change["entity_id"]] = deepcopy(change["new"])
+    return states
 
 
 def replayable_turns(recording):

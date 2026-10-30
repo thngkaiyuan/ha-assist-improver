@@ -1,19 +1,19 @@
-"""Practice mode: your regular assistant, in a simulated home.
+"""Practice mode: your regular assistant, in a copy of the home.
 
-While practice mode is on for a person, their conversations with any AI
-assistant run HA's own tools and intent logic against a copy of the home: HA
-decides which devices a request targets and which command each gets, and only
-the commands to devices (the drivers' job) are caught and emulated on the copy
-(devices.py). The copy starts from the real states and lives as long as the
-chat session. To-do lists and timers are copied into the session too, so HA's
-own list and timer intents act on the copies; a broadcast is recorded, never
-spoken. Commands without an emulation are reported as done and flagged in the
-recording. Other people, and requests without a signed-in person (such as
-voice satellites), are never affected.
+While practice mode is on for a person, their Assist conversations, with any AI assistant, act on a copy of the
+home in a Home Assistant of its own: a sandbox in the replay worker (worker.py, sandbox.py), seeded as the home is
+when the conversation begins, which keeps seeing the real changes it hasn't made. Assist's prompt and tools are
+built there, and Home Assistant's own tools and intent logic run there: its devices are emulated (devices.py), its
+to-do lists hold the real lists' items, the household's scripts run there, its timers run there and ring nowhere.
+Nothing a tool does there can reach the real home. Only the reads the copy can't hold (a calendar's events, a media
+library) are answered by the real home, through the query's own handler, never announced on the real bus. Tools the
+copy doesn't have (an integration's own, an intent script) are reported as done and flagged in the recording, never
+run. Other people, and requests without
+a signed-in person (such as voice satellites), are never affected.
 
-The hook is the one place every assistant gets its tools, ChatLog's
-async_provide_llm_data. It is installed while the improver is loaded and
-passes straight through unless practice mode applies.
+The hook is the one place every assistant gets its tools in Assist, ChatLog's async_provide_llm_data. For a
+practising person, Home Assistant still builds the turn's system prompt from their assistant's own template, with
+the copy's Assist API in place of the real one.
 
 Home Assistant also answers some requests itself, with no assistant preparing
 tools: the household's sentence triggers and, when Assist prefers handling
@@ -26,268 +26,37 @@ no assistant to leave it to (its own agent is Assist's), it changes nothing and
 says that sandbox mode needs an AI assistant.
 """
 
-from collections import ChainMap
-from dataclasses import asdict, fields, replace
+import asyncio
+from contextlib import suppress
+from dataclasses import asdict
 from datetime import timedelta
 
+from homeassistant.components import persistent_notification
 from homeassistant.components.conversation import AssistantContent, ChatLog, ConversationResult
 from homeassistant.components.conversation.default_agent import DefaultAgent
-from homeassistant.components.intent.const import TIMER_DATA
-from homeassistant.components.intent.timers import TimerManager
-from homeassistant.components.todo import TodoItemStatus
 from homeassistant.components.todo.const import DATA_COMPONENT as TODO_LISTS
 from homeassistant.components.todo.entity import api_items_factory
-from homeassistant.core import State
+from homeassistant.core import ServiceCall, SupportsResponse
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import intent, llm
 from homeassistant.util.dt import utcnow
-from homeassistant.util.ulid import ulid_now
 
-from . import devices
 from .reflective import ROLE_ACTIVE
-from .snapshot import state_record
 from .trace import journal
 
 SESSION_TTL = timedelta(hours=2)
-# Intents that act only through what practice simulates (Home Assistant's services and states, the to-do lists and
-# the timers), so they can run against the copy. Any other tool that isn't read-only (the old shopping list intents,
-# and anything Home Assistant adds later) never runs in practice: it's recorded as not simulated, so nothing real
-# changes.
-SIMULATED_INTENTS = {
-    "HassTurnOn", "HassTurnOff", "HassToggle", "HassLightSet", "HassSetPosition", "HassStopMoving",
-    "HassClimateSetTemperature", "HassFanSetSpeed", "HassMediaPause", "HassMediaUnpause", "HassMediaNext",
-    "HassMediaPrevious", "HassSetVolume", "HassSetVolumeRelative", "HassMediaPlayerMute", "HassMediaPlayerUnmute",
-    "HassVacuumStart", "HassVacuumReturnToBase", "HassVacuumCleanArea", "HassLawnMowerStartMowing",
-    "HassLawnMowerDock", "HassHumidifierSetpoint", "HassHumidifierMode", "HassBroadcast",
-    "HassListAddItem", "HassListCompleteItem", "HassListRemoveItem",
-    "HassStartTimer", "HassCancelTimer", "HassCancelAllTimers", "HassIncreaseTimer", "HassDecreaseTimer",
-    "HassPauseTimer", "HassUnpauseTimer", "HassTimerStatus"}
-
-
-def simulated(tool):
-    """Whether a tool can run against the copy: read-only, a script (run through hass.services, which practice
-    catches), or an intent known to act only through services and states."""
-    inner = getattr(tool, "tool", tool)  # HA's NamespacedTool wraps the real one.
-    if any(getattr(getattr(t, "annotations", None), "read_only", False) for t in (tool, inner)):
-        return True
-    if type(inner).__name__ == "ActionTool":
-        return True
-    return getattr(inner, "intent_type", None) in SIMULATED_INTENTS
 MODE_KEY = "assist_improver_practice_mode"
 STORE_KEY = "assist_improver.practice_mode"
 NO_ASSISTANT = "Sandbox mode needs an AI assistant, so I didn't change anything."
+# The reads a copy holds: its states (the live context), its clock, its to-do lists. Any other read of Home
+# Assistant's own tools (a calendar's events, a media library) only the real home has.
+COPY_READS = {"homeassistant", "llm", "todo"}
+HOUSEHOLD_INTENTS = "intent_script"  # The household's own intents: the copy answers with Home Assistant's.
 
 
-class SimulatedStates:
-    """hass.states as practice sees it: the real states with the practice changes on top."""
-
-    def __init__(self, real):
-        self._real = real
-        self.overrides = {}
-
-    def get(self, entity_id):
-        return self.overrides.get(entity_id) or self._real.get(entity_id)
-
-    def async_all(self, domain_filter=None):
-        if isinstance(domain_filter, str):
-            domain_filter = {domain_filter}
-        return [self.overrides.get(s.entity_id, s) for s in self._real.async_all(domain_filter)]
-
-    def __getattr__(self, name):
-        return getattr(self._real, name)
-
-
-def _entity_ids(data, target):
-    """The entities a service call targets; data loses its entity_id."""
-    entity_ids = data.pop("entity_id", None) or (target or {}).get("entity_id") or []
-    return [entity_ids] if isinstance(entity_ids, str) else list(entity_ids)
-
-
-class SimulatedServices:
-    """hass.services as practice sees it: device commands are emulated on the copy, never sent."""
-
-    def __init__(self, real, session):
-        self._real, self.session = real, session
-
-    async def async_call(self, domain, service, service_data=None, blocking=False, context=None, target=None,
-                         return_response=False):
-        if return_response and devices.is_query(service) and domain != "script":  # A script named get_* still acts.
-            copies = self.session.lists.lists if domain == "todo" and self.session.lists else {}
-            data = dict(service_data or {})
-            entity_ids = _entity_ids(data, target)
-            if not any(e in copies for e in entity_ids):
-                return await self._real.async_call(domain, service, service_data, blocking=blocking,
-                                                   context=context, target=target, return_response=True)
-            # A list this session changed answers from its copy; any other is read as it is.
-            response = {e: copies[e].items(data.get("status")) for e in entity_ids if e in copies}
-            if rest := [e for e in entity_ids if e not in copies]:
-                response |= await self._real.async_call(domain, service, {**data, "entity_id": rest},
-                                                        blocking=blocking, context=context, return_response=True)
-            return response
-        data = dict(service_data or {})
-        entity_ids = _entity_ids(data, target)
-        if not entity_ids and self.session.report:
-            # A command to no particular device, such as running a script by name: nothing to emulate.
-            self.session.report.unsimulated(f"{domain}.{service}", data)
-        for entity_id in entity_ids:
-            self.session.command(domain, service, entity_id, data, context)
-        return {} if return_response else None
-
-    def __getattr__(self, name):
-        return getattr(self._real, name)
-
-
-class SimulatedList:
-    """A to-do list as practice sees it: a copy of the real items, changed only here. HA's own list intents act on
-    it as they would on the real list."""
-
-    def __init__(self, real, session):
-        self.entity_id, self.session = real.entity_id, session
-        self.todo_items = [replace(item) for item in real.todo_items or ()]
-
-    async def async_create_todo_item(self, item):
-        self.todo_items.append(replace(item, uid=item.uid or ulid_now()))
-        self._changed()
-
-    async def async_update_todo_item(self, item):
-        changes = {f.name: getattr(item, f.name) for f in fields(item) if getattr(item, f.name) is not None}
-        self.todo_items = [replace(i, **changes) if i.uid == item.uid else i for i in self.todo_items]
-        self._changed()
-
-    async def async_delete_todo_items(self, uids):
-        self.todo_items = [i for i in self.todo_items if i.uid not in uids]
-        self._changed()
-
-    def items(self, statuses=None):
-        """What todo.get_items answers for this list."""
-        statuses = [statuses] if isinstance(statuses, str) else statuses
-        return {"items": [asdict(i, dict_factory=api_items_factory) for i in self.todo_items
-                          if not statuses or i.status in statuses]}
-
-    def _changed(self):
-        """A list's state is the count of items still to do, as HA reports it."""
-        if (state := self.session.states.get(self.entity_id)) is not None:
-            count = sum(i.status == TodoItemStatus.NEEDS_ACTION for i in self.todo_items)
-            self.session.update(state, str(count), state.attributes)
-
-
-class SimulatedLists:
-    """HA's to-do lists as practice sees them: each list is copied when the session first uses it."""
-
-    def __init__(self, real, session):
-        self._real, self.session, self.lists = real, session, {}
-
-    def get_entity(self, entity_id):
-        if entity_id not in self.lists:
-            if (real := self._real.get_entity(entity_id)) is None:
-                return None
-            self.lists[entity_id] = SimulatedList(real, self.session)
-        return self.lists[entity_id]
-
-    def __getattr__(self, name):
-        return getattr(self._real, name)
-
-
-class QuietDevices:
-    """The real timer devices, so a timer starts for them as it would for real, but none of them hears of it."""
-
-    def __init__(self, real):
-        self._real = real
-
-    def __contains__(self, device_id):
-        return device_id in self._real
-
-    def __getitem__(self, device_id):
-        return lambda event, timer: None
-
-
-class SimulatedTimers(TimerManager):
-    """HA's timers as practice sees them: the running ones copied, then started, changed and cancelled only here.
-    Nothing rings on a device, and a timer's delayed command never runs: it's flagged in the recording."""
-
-    def __init__(self, hass, real, session):
-        super().__init__(hass)
-        self.session, self.handlers = session, QuietDevices(real.handlers)
-        for timer_id, timer in real.timers.items():
-            self.timers[timer_id] = copy = replace(timer)
-            if copy.is_active:
-                self.timer_tasks[timer_id] = hass.async_create_background_task(
-                    self._wait_for_timer(timer_id, copy.seconds_left, copy.updated_at), name=f"Practice timer {timer_id}")
-
-    def start_timer(self, device_id, *args, conversation_command=None, **kwargs):
-        if conversation_command and self.session.report:
-            self.session.report.unsimulated("delayed command", {"command": conversation_command})
-        return super().start_timer(device_id, *args, conversation_command=conversation_command, **kwargs)
-
-    async def _async_run_conversation_command(self, timer):
-        """A delayed command runs only in real use; it was flagged when its timer started."""
-
-
-class SimulatedHass:
-    """A view of hass with the simulated states, device commands, lists and timers; everything else is the real
-    hass. What HA code stores in hass.data here stays in the session."""
-
-    def __init__(self, hass, states, services, data):
-        self._hass = hass
-        self.states, self.services, self.data = states, services, data
-
-    def __getattr__(self, name):
-        return getattr(self._hass, name)
-
-
-class PracticeSession:
-    def __init__(self, hass):
-        self.states = SimulatedStates(hass.states)
-        self.data = ChainMap({}, hass.data)
-        self.view = SimulatedHass(hass, self.states, SimulatedServices(hass.services, self), self.data)
-        self.lists = None
-        if (lists := hass.data.get(TODO_LISTS)) is not None:
-            self.data[TODO_LISTS] = self.lists = SimulatedLists(lists, self)
-        if (timers := hass.data.get(TIMER_DATA)) is not None:
-            self.data[TIMER_DATA] = SimulatedTimers(self.view, timers, self)
-        self.report = None
-        self.touched = utcnow()
-
-    def command(self, domain, service, entity_id, data, context):
-        """One device command: apply its emulated effect to the copy, or flag it."""
-        state = self.states.get(entity_id)
-        if domain == "homeassistant" and state is not None:
-            domain = state.domain  # homeassistant.turn_on and friends act through the device's own domain.
-        result = devices.effect(domain, service, state, data) if state is not None else None
-        if result is None or result[0] is None:
-            if self.report:
-                self.report.unsimulated(f"{domain}.{service}", {"entity_id": entity_id, **data})
-            return
-        self.update(state, *result, context=context)
-
-    def update(self, state, value, attributes, context=None):
-        """A new state on the copy, recorded if anything changed."""
-        new = State(state.entity_id, value, attributes, context=context)
-        if new.state != state.state or new.attributes != state.attributes:
-            self.states.overrides[state.entity_id] = new
-            if self.report:
-                self.report.changed(state, new)
-
-
-class SimulatedAPIInstance(llm.APIInstance):
-    """The assistant's own tools, prompt and context, with HA's tool logic running against the copy."""
-
-    def __init__(self, real, session, report):
-        super().__init__(api=real.api, api_prompt=real.api_prompt, llm_context=real.llm_context,
-                         tools=real.tools, custom_serializer=real.custom_serializer)
-        self.session = session
-        session.report = report
-
-    async def async_call_tool(self, tool_input):
-        tool = next((t for t in self.tools if t.name == tool_input.tool_name), None)
-        if tool is None:
-            return await super().async_call_tool(tool_input)  # Raises HA's own "not found".
-        own = getattr(getattr(tool, "tool", tool), "improver_own", False)  # Filing writes only the improver's record.
-        if not own and (not type(tool).__module__.startswith("homeassistant.") or not simulated(tool)):
-            # Only HA's own tools known to act through the hass they're given run in practice; the rest never do.
-            self.session.report.unsimulated(tool_input.tool_name, tool_input.tool_args)
-            return llm.ToolResult(data={"success": True})
-        result = await tool.async_call(self.session.view, tool_input, self.llm_context)
-        return result if isinstance(result, llm.ToolResult) else llm.ToolResult(data=result)
+def reminder_id(user_id):
+    """The notification reminding a person that sandbox mode is on for them (switch.py)."""
+    return f"assist_improver_practice_{user_id}"
 
 
 class PracticeReport:
@@ -299,10 +68,13 @@ class PracticeReport:
     def _practice(self):
         return self.recorder.practice(self.conversation_id) if self.recorder else None
 
-    def changed(self, old, new):
+    def changed(self, entity_id, old, new, user_id=None):
+        """A change on the copy: old and new as {state, attributes}, as the sandbox reports them."""
         if (practice := self._practice()) is not None:
-            practice["simulated_changes"].append({"at": utcnow().isoformat(), "entity_id": new.entity_id,
-                                                  "old": state_record(old), "new": state_record(new)})
+            context = {"id": None, "parent_id": None, "user_id": user_id}
+            practice["simulated_changes"].append({"at": utcnow().isoformat(), "entity_id": entity_id,
+                                                  "old": {"entity_id": entity_id, **old},
+                                                  "new": {"entity_id": entity_id, **new, "context": context}})
 
     def unsimulated(self, tool_name, args):
         if (practice := self._practice()) is not None:
@@ -310,34 +82,280 @@ class PracticeReport:
                                                     "args": dict(args)})
 
 
-class PracticeSessions:
+class _Reads:
+    """The real home as a read of Home Assistant's own sees it: a query (Home Assistant's mark, a service that only
+    answers) is answered by its own handler, as the registry runs it, but never announced on the real bus, where an
+    automation would hear it and the recorder keep it; nothing else is reached."""
+
     def __init__(self, hass):
-        self.hass, self.sessions = hass, {}
+        self._hass, self.states, self.data, self.config = hass, hass.states, hass.data, hass.config
+        self.services = self
+
+    def __getattr__(self, name):
+        return getattr(self._hass, name)
+
+    async def async_call(self, domain, service, service_data=None, blocking=False, context=None, target=None,
+                         return_response=False):
+        registry = self._hass.services
+        domain, service = domain.lower(), service.lower()
+        if not registry.has_service(domain, service) or registry.supports_response(domain, service) is not \
+                SupportsResponse.ONLY:
+            raise HomeAssistantError(f"Sandbox mode only reads the real home ({domain}.{service})")
+        handler = registry.async_services_internal()[domain][service]
+        data = {**(service_data or {}), **(target or {})}
+        call = ServiceCall(self._hass, domain, service, handler.schema(data) if handler.schema else data, context,
+                           return_response=True)
+        return await registry._execute_service(handler, call)  # noqa: SLF001 - the registry's own run, unannounced.
+
+    def has_service(self, domain, service):
+        return self._hass.services.has_service(domain, service)
+
+    def supports_response(self, domain, service):
+        return self._hass.services.supports_response(domain, service)
+
+
+class _CopyTool(llm.Tool):
+    """One of Assist's tools as Home Assistant built it in the copy, offered by the name the person's assistant knows
+    it by: a call runs there."""
+
+    def __init__(self, tool, home, name):
+        import probatio
+        from .replay import Precomputed
+        self.copy_name, self.name, self.description = tool["name"], name, tool["description"]
+        self.parameters = probatio.Schema(Precomputed(tool["parameters"]))
+        self.integration = tool.get("integration")
+        self.home = home
+
+    async def async_call(self, hass, tool_input, llm_context):
+        async with self.home.acting:
+            if (sandbox := self.home.sandbox) is None:  # Sandbox mode ended mid-turn: nothing runs.
+                raise HomeAssistantError("Sandbox mode's copy of the home has ended")
+            try:
+                found = await sandbox.call("tool", tool_name=self.copy_name, tool_args=tool_input.tool_args,
+                                           call_id=tool_input.id, external=tool_input.external)
+            except Exception:
+                with suppress(Exception):  # What it changed before it failed (a script's steps so far).
+                    await self.home.report_since(sandbox)
+                raise
+            await self.home.report_since(sandbox)
+        return llm.ToolResult(data=found["data"], error=found["error"])
+
+
+class _RealRead(llm.Tool):
+    """A read of Home Assistant's own the copy can't hold, answered by the real home (_Reads)."""
+
+    def __init__(self, tool):
+        self.tool, self.name, self.description = tool, tool.name, tool.description
+        self.parameters, self.integration = tool.parameters, getattr(tool, "integration", None)
+        self.annotations = type(tool).annotations
+
+    async def async_call(self, hass, tool_input, llm_context):
+        return await self.tool.async_call(_Reads(hass), tool_input, llm_context)
+
+
+class _Flagged(llm.Tool):
+    """A tool the copy doesn't have (a script, an integration's own): reported as done and flagged, never run."""
+
+    def __init__(self, tool, home):
+        self.home, self.name, self.description = home, tool.name, tool.description
+        self.parameters, self.integration = tool.parameters, getattr(tool, "integration", None)
+
+    async def async_call(self, hass, tool_input, llm_context):
+        self.home.report.unsimulated(tool_input.tool_name, tool_input.tool_args)
+        return llm.ToolResult(data={"success": True})
+
+
+def _inner(tool):
+    """The tool itself, out of Home Assistant's NamespacedTool wrappers (as Home Assistant unwraps a merged API's)."""
+    while type(tool) is llm.NamespacedTool:
+        tool = tool.tool
+    return tool
+
+
+def _assist_name(tool, apis):
+    """A tool's name in Assist's own API, as the copy builds it; None for another API's tool. Beside another API,
+    Home Assistant offers Assist's tools under its name (MergedAPI)."""
+    if type(tool) is llm.NamespacedTool:
+        return tool.tool.name if tool.namespace == llm.LLM_API_ASSIST else None
+    return tool.name if apis == [llm.LLM_API_ASSIST] else None
+
+
+def _improvers_own(tool):
+    """The improver's own tool (filing the conversation): it writes only the improver's record, so it runs as at home.
+    Its class says so (llm.py), never an instance."""
+    kind = type(_inner(tool))
+    return kind.__module__.startswith(f"{__package__}.") and getattr(kind, "improver_own", False)
+
+
+def _reads_real(tool):
+    """Whether a tool is a read of Home Assistant's own that only the real home can answer (COPY_READS): its class is
+    Home Assistant's and declares it only reads (a claim set on an instance, as a remote server's, doesn't count)."""
+    tool = _inner(tool)
+    kind = type(tool)
+    return kind.__module__.startswith("homeassistant.") and kind.annotations.read_only and \
+        getattr(tool, "integration", None) not in COPY_READS
+
+
+class LiveHome(llm.API):
+    """One practising conversation's copy of the home: a sandbox in the replay worker, seeded from the home as it is
+    when the conversation begins; before each turn, the real changes it hasn't made since reach it (as a replay's
+    others' moves do). Its Assist API is what the person's assistant gets in place of the real one."""
+
+    def __init__(self, hass, conversation_id, start):
+        super().__init__(hass=hass, id=f"assist_improver_sandbox_{conversation_id}", name="Sandbox mode")
+        self.conversation_id, self.apis, self.report = conversation_id, "assist", PracticeReport(None, None)
+        self.start = start  # A started sandbox, a spare one if there is one (PracticeMode.take).
+        self.sandbox, self.synced, self.mine, self.reported, self.flagged = None, {}, set(), 0, 0
+        self.lists = {}  # Each to-do list's items as the copy was last given them.
+        # One tool call on the copy at a time, with what it changed: a message's calls, which Home Assistant runs at
+        # once, each get their own changes and flags.
+        self.acting = asyncio.Lock()
+        self.closed = False  # Stopped: its copy is gone, and none is started for it again.
+        self.touched = utcnow()
+
+    async def async_get_api_instance(self, llm_context):
+        from .replay import serializer
+        from .worker import context_data
+        real = await llm.async_get_api(self.hass, self.apis, llm_context)  # The person's own tools, as at home.
+        source = self._now()
+        if self.sandbox is not None and not self.sandbox.live:  # The worker stopped, and its copies with it.
+            journal("warning", "Practice session's copy of the home ended with the replay worker: a new copy",
+                    conversation_id=self.conversation_id)
+            self.sandbox, self.synced, self.mine, self.reported, self.flagged, self.lists = None, {}, set(), 0, 0, {}
+        if self.sandbox is None:
+            await self._seed(source, llm_context, real)
+        else:
+            await self._mirror(source)
+            if (lists := self._lists(source)) and any(lists[e] != self.lists.get(e) for e in lists):
+                held = await self.sandbox.call("lists", source=source, lists=lists, given=self.lists)
+                self.lists |= {e: lists[e] for e in held["held"]}
+        if source.get("household_on"):
+            await self.sandbox.call("household", knowledge=source.get("household"))
+        built = await self.sandbox.call("prompt", context=context_data(llm_context), api_id="assist", template="")
+        copy, apis = {t["name"]: t for t in built["tools"]}, [self.apis] if isinstance(self.apis, str) else self.apis
+        # Each tool the person's assistant has at home: the improver's own, a real read, Assist's own on the copy, or
+        # flagged.
+        tools = [t if _improvers_own(t) else _RealRead(t) if _reads_real(t) else _CopyTool(copy[name], self, t.name)
+                 if (name := _assist_name(t, apis)) in copy else _Flagged(t, self) for t in real.tools]
+        prompt = built["api_prompt"] if apis == [llm.LLM_API_ASSIST] else real.api_prompt
+        return llm.APIInstance(api=self, api_prompt=prompt, llm_context=llm_context, tools=tools,
+                               custom_serializer=serializer)
+
+    def _now(self):
+        """The real home now, as a recording keeps it (snapshot.snapshot), each state with all its attributes: the
+        copy isn't kept, so it has every one Home Assistant's intents read (a humidifier's modes)."""
+        from .serialization import plain
+        from .snapshot import snapshot
+        source = snapshot(self.hass)
+        source["states"] = {s.entity_id: {**source["states"].get(s.entity_id, {}), "state": s.state,
+                                          "attributes": plain(dict(s.attributes))} for s in self.hass.states.async_all()
+                            if s.entity_id in source["states"]}
+        return source
+
+    async def _seed(self, source, llm_context, real):
+        from .sandbox import seed_options
+        from .simulation import reports_movement
+        self.sandbox = await self.start()
+        if self.closed:  # Sandbox mode ended while it started.
+            await self.stop()
+            raise HomeAssistantError("Sandbox mode ended")
+        inner = [_inner(t) for t in real.tools]
+        # The integrations of Home Assistant's own tools are set up in the copy, the household's scripts with them;
+        # its intent scripts and other integrations' never are: their tools are flagged.
+        tools = {"tools": [{"name": t.name} for t in inner if type(t).__module__.startswith("homeassistant.")
+                           and t.name.split("__", 1)[0] != HOUSEHOLD_INTENTS],
+                 "context": {"device_id": llm_context.device_id}}
+        user = await self.hass.auth.async_get_user(llm_context.context.user_id) if llm_context.context else None
+        try:
+            self.lists = self._lists(source)
+            await self.sandbox.call("seed", source=source, user_name=getattr(user, "name", None),
+                                    options=seed_options({"prepared": tools}), scripts=source.get("scripts") or {},
+                                    lists=self.lists, timers=self._timers(),
+                                    moving=reports_movement({"turns": [{"source": source}], "state_changes": []}))
+        except Exception:
+            await self.stop()
+            raise
+        self.synced = source["states"]
+
+    def _timers(self):
+        """The home's running timers, each on its device."""
+        from homeassistant.components.intent.const import TIMER_DATA
+        return [{"device_id": t.device_id, "name": t.name, "seconds_left": t.seconds_left, "language": t.language,
+                 "is_active": t.is_active} for t in getattr(self.hass.data.get(TIMER_DATA), "timers", {}).values()
+                if t.device_id]
+
+    def _lists(self, source):
+        """Each exposed to-do list's items, as Home Assistant's own get_items gives them."""
+        lists, component = {}, self.hass.data.get(TODO_LISTS)
+        for entity_id, exposed in (source.get("exposure") or {}).items():
+            if exposed and entity_id.startswith("todo.") and component is not None and \
+                    (entity := component.get_entity(entity_id)) is not None:
+                lists[entity_id] = [asdict(i, dict_factory=api_items_factory) for i in entity.todo_items or ()]
+        return lists
+
+    async def _mirror(self, source):
+        """The real changes since the last turn that the copy hasn't made itself: on the copy, on top of its own (a
+        to-do list's are its items, below)."""
+        moves = {}
+        for entity_id, now in source["states"].items():
+            was = self.synced.get(entity_id)
+            if entity_id in self.mine or was is None or entity_id.startswith("todo.") or (
+                    now["state"], now["attributes"]) == (was["state"], was["attributes"]):
+                continue
+            moves[entity_id] = {"state": now["state"], "attributes": now["attributes"],
+                                "removed": sorted(set(was["attributes"]) - set(now["attributes"]))}
+        await self.sandbox.call("observe", source={"at": source["at"]}, moves=[moves])
+        self.synced = source["states"]
+
+    async def report_since(self, sandbox):
+        """What the copy changed, and what it couldn't emulate, since the last call: into the recording. As it is now,
+        not waiting on what's still running there (a script's delay), as Home Assistant answers at home: that's
+        reported after the next call."""
+        found = await sandbox.call("snapshot", settle=False)
+        for change in found["changes"][self.reported:]:
+            self.mine.add(change["entity_id"])
+            self.report.changed(change["entity_id"], change["old"], change["new"])
+        self.reported = len(found["changes"])
+        for flag in found["flags"][self.flagged:]:
+            self.report.unsimulated(flag["service"], flag["args"])
+        self.flagged = len(found["flags"])
+
+    async def stop(self):
+        self.closed = True
+        if self.sandbox is not None:
+            sandbox, self.sandbox = self.sandbox, None
+            await sandbox.stop()
+
+
+class PracticeSessions:
+    def __init__(self, hass, start):
+        self.hass, self.start, self.sessions = hass, start, {}
 
     def get(self, conversation_id, recording_id=None):
         now = utcnow()
         for key in [k for k, s in self.sessions.items() if now - s.touched >= SESSION_TTL]:
             journal("info", "Practice session ended: idle for 2 hours", conversation_id=key)
-            del self.sessions[key]
+            self.hass.async_create_task(self.sessions.pop(key).stop(), "assist_improver_practice_stop")
         if conversation_id not in self.sessions:
-            journal("info", "Practice session started: a simulated copy of the home", conversation_id=conversation_id,
+            journal("info", "Practice session started: a copy of the home", conversation_id=conversation_id,
                     recording_id=recording_id)
-            self.sessions[conversation_id] = PracticeSession(self.hass)
+            self.sessions[conversation_id] = LiveHome(self.hass, conversation_id, self.start)
         session = self.sessions[conversation_id]
         session.touched = now
         return session
 
 
 class PracticeMode:
-    """Who is practising, their simulated homes, and the switch's listeners.
+    """Who is practising, their copies of the home, and the switch's listeners.
 
     It stays on for a person until they turn it off, across restarts, so it never switches off by surprise.
     """
 
-    def __init__(self, hass, recorder):
+    def __init__(self, hass, recorder=None):
         from homeassistant.helpers.storage import Store
-        self.hass, self.recorder = hass, recorder
-        self.sessions = PracticeSessions(hass)
+        self.hass, self.recorder = hass, recorder  # No recorder while the improver's entry isn't loaded.
+        self.sessions = PracticeSessions(hass, self.take)
+        self.spare = None  # A sandbox starting or started, for the next conversation (warm).
         self.users = {}  # user_id -> name, for whoever is practising.
         self.listeners = []
         self.store = Store(hass, 1, STORE_KEY, private=True, atomic_writes=True)
@@ -358,8 +376,50 @@ class PracticeMode:
         journal("info", "Practice mode off", user_id=user_id)
         await self._save()
 
+    def warm(self):
+        """While anyone is in sandbox mode, a sandbox is started and waiting (it keeps the replay worker up), so a
+        practice conversation's first turn only seeds it, never waiting for the worker to start (about 1.3 s)."""
+        from .replay import RemoteSandbox
+        if self.users and self.spare is None:
+            self.spare = self.hass.async_create_task(RemoteSandbox.start(self.hass.config.time_zone),
+                                                     "assist_improver_practice_spare")
+
+    async def take(self):
+        """A started sandbox for a new conversation: the spare, then another one warmed for the next."""
+        from .replay import RemoteSandbox
+        spare, self.spare = self.spare, None
+        self.warm()
+        if spare is not None:
+            with suppress(Exception):  # A worker that stopped since: start one now.
+                if (sandbox := await spare).live:
+                    return sandbox
+        return await RemoteSandbox.start(self.hass.config.time_zone)
+
+    async def cool(self):
+        """No one in sandbox mode any more, or the worker's going: the spare goes, and so do the copies."""
+        spare, self.spare = self.spare, None
+        if spare is not None:
+            with suppress(Exception):  # A worker that stopped has stopped it too.
+                await (await spare).stop()
+        for session in list(self.sessions.sessions.values()):
+            await session.stop()
+        self.sessions.sessions.clear()
+
+    async def async_end(self):
+        """Sandbox mode off for everyone, each reminder gone with it: Assist Improver disabled or removed (DETAILS
+        P11.11)."""
+        for user_id in self.users:
+            persistent_notification.async_dismiss(self.hass, reminder_id(user_id))
+        self.users.clear()
+        journal("info", "Practice mode off for everyone: Assist Improver disabled or removed")
+        await self._save()
+
     async def _save(self):
         await self.store.async_save({"users": self.users})
+        if self.users:
+            self.warm()
+        else:
+            await self.cool()
         for listener in list(self.listeners):
             listener()
 
@@ -372,19 +432,19 @@ class PracticeMode:
             return False  # The improver's own AI roles and replays are never practice.
         return bool(context and context.user_id and self.is_on(context.user_id))
 
-    async def provide_llm_data(self, original, chat_log, llm_context, *args, **kwargs):
-        """One practice turn: the assistant's own prompt and tools, acting on the simulated home.
+    async def provide_llm_data(self, original, chat_log, llm_context, user_llm_hass_api=None, *args, **kwargs):
+        """One practice turn: the assistant's own prompt, with the copy's Assist API in place of the real one.
 
         Goals are never asked for: the learning loop works them out, as it does for real use.
         """
         if self.recorder:
             self.recorder.practice(chat_log.conversation_id)  # Marks the recording as practice.
-        await original(chat_log, llm_context, *args, **kwargs)
-        if chat_log.llm_api is not None:
+        if user_llm_hass_api:
             recording_id = getattr(self.recorder, "keys", {}).get(chat_log.conversation_id)
-            chat_log.llm_api = SimulatedAPIInstance(chat_log.llm_api,
-                                                    self.sessions.get(chat_log.conversation_id, recording_id),
-                                                    PracticeReport(self.recorder, chat_log.conversation_id))
+            home = self.sessions.get(chat_log.conversation_id, recording_id)
+            home.apis, home.report = user_llm_hass_api, PracticeReport(self.recorder, chat_log.conversation_id)
+            user_llm_hass_api = home
+        await original(chat_log, llm_context, user_llm_hass_api, *args, **kwargs)
 
     def without_assistant(self, user_input, chat_log):
         """A practice turn with Home Assistant's own agent as Assist's assistant: no assistant can answer on a copy of
@@ -403,8 +463,6 @@ class PracticeMode:
 # triggers; its own intents, when Assist prefers handling commands locally), and as Assist's own assistant.
 BEFORE_ASSISTANT = ("async_handle_sentence_triggers", "async_handle_intents")
 ITSELF = (*BEFORE_ASSISTANT, "_async_handle_message")
-_ORIGINAL = None
-_ITSELF = {}  # The default agent's own methods, while hooked.
 
 
 def _answers_itself(name, original):
@@ -421,13 +479,13 @@ def _answers_itself(name, original):
     return answer
 
 
-def install():
-    """Hook ChatLog.async_provide_llm_data and the default agent's own answers; they pass through unless practice
-    mode applies (the recorder hears who's speaking either way)."""
-    global _ORIGINAL
-    if _ORIGINAL is not None:
-        return
-    _ORIGINAL = original = ChatLog.async_provide_llm_data
+def _hook():
+    """Hook ChatLog.async_provide_llm_data and the default agent's own answers, once, when the improver's code loads,
+    and for as long as Home Assistant runs: they pass through unless sandbox mode applies (the recorder hears who's
+    speaking either way). Sandbox mode itself stays while the improver's entry reloads or fails to set up, so a
+    person in it is never handed the real home; only the recording waits for the improver. While Home Assistant is
+    starting, until the improver has set up, nothing of it holds sandbox mode yet."""
+    original = ChatLog.async_provide_llm_data
 
     async def provide_llm_data(chat_log, llm_context, *args, **kwargs):
         mode = chat_log.hass.data.get(MODE_KEY)
@@ -439,15 +497,7 @@ def install():
 
     ChatLog.async_provide_llm_data = provide_llm_data
     for name in ITSELF:
-        _ITSELF[name] = getattr(DefaultAgent, name)
-        setattr(DefaultAgent, name, _answers_itself(name, _ITSELF[name]))
+        setattr(DefaultAgent, name, _answers_itself(name, getattr(DefaultAgent, name)))
 
 
-def uninstall():
-    global _ORIGINAL
-    if _ORIGINAL is not None:
-        ChatLog.async_provide_llm_data = _ORIGINAL
-        _ORIGINAL = None
-    for name, original in _ITSELF.items():
-        setattr(DefaultAgent, name, original)
-    _ITSELF.clear()
+_hook()
