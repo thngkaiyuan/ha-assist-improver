@@ -25,7 +25,7 @@ from homeassistant.helpers.storage import Store
 from homeassistant.util.dt import utcnow
 
 from . import measures
-from .analyzer import SPEAKING
+from .analyzer import speaking
 from .cases import (CaseError, as_seen, calls_in, digest, recording_turns, replay_readiness, replayed,
                     started_from, transcript)
 from .changes import setup_from_changes
@@ -51,19 +51,19 @@ NOTHING_AGAIN = ("Without the change, nothing the household had trouble with hap
 # time, with the turn they objected to as the example (DETAILS P6.1.9, P6.1.11). Its model is set where the feedback
 # check's was (settings' role key).
 CONDUCT_ROLE = "feedback_check"
-CONDUCT_INSTRUCTIONS = """A household objected to something their home assistant ("Assist") said or did in one turn of a conversation, or had to check on a result because Assist's reply there left them unsure (then what they objected to is a reply that leaves the result unclear). Each objection below has their own words (quote) and, as the example of what they objected to, that turn as it was recorded (objected_to: its turn number, then what the user said, what Assist did, each tool call with Home Assistant's result, what it replied, and what the home did: each message spoken and on which devices, each device it changed, and each script it ran); or "Assist in general" when they named no one turn. Then the same conversation replayed, turn by turn, in the same form, what the home did there being each message spoken and on which devices, each command its devices were sent, and each device whose state changed: a turn with none of these did nothing of the kind. The replay's turn with the same number is the same request asked again. For each objection, judge each replay turn it lists (judge): does that turn show what the household objected to? Answer for each with shows (true or false) and a short reason (why). Judge only what they objected to, from what the turn said and did: the tool calls, their results and what the home did are the facts of what Assist did. A turn that doesn't do it, or does something they didn't object to, doesn't show it."""
+CONDUCT_INSTRUCTIONS = """A household objected to something their home assistant ("Assist") said or did in one turn of a conversation, or had to check on a result because Assist's reply there left them unsure (then what they objected to is a reply that leaves the result unclear). Each objection below has their own words (quote) and, as the example of what they objected to, that turn as it was recorded (objected_to: its turn number, then what the user said, what Assist did, each tool call with Home Assistant's result, what it replied, and what the home did: each message spoken and on which devices, each device it changed, and each script it ran); or "Assist in general" when they named no one turn. Then the same conversation replayed, turn by turn, in the same form, what the home did there being each message spoken or sound played and on which devices, each command its devices were sent, and each device whose state changed: a turn with none of these did nothing of the kind. The replay's turn with the same number is the same request asked again. For each objection, judge each replay turn it lists (judge): does that turn show what the household objected to? Answer for each with shows (true or false) and a short reason (why). Judge only what they objected to, from what the turn said and did: the tool calls, their results and what the home did are the facts of what Assist did. A turn that doesn't do it, or does something they didn't object to, doesn't show it."""
 CONDUCT_STRUCTURE = probatio.Schema({probatio.Required("answers"): [{
     probatio.Required("goal"): str, probatio.Required("turn"): int, probatio.Required("shows"): bool,
     probatio.Required("why"): str}]})
 # Whether a reply gives what the user asked to know (DETAILS P9.7.4): the same small model judges it, one turn at a
 # time, with the home as it was then (the devices the question is about) and the form they asked for.
-FACT_INSTRUCTIONS = """A household asked their home assistant ("Assist") something they wanted to know. Each question below has what they asked (asked: the turn and their words), what the answer needs (needs), the form they asked for the answer in, if any (form: their own words), the turn whose reply to judge (turn), and, when it's about the home, the devices it's about as the home had them when Assist answered (home: each device's name, its state and attributes as that turn started, and what changed in it before the reply). Then each turn to judge (turns), as it went: what the user said, what Assist did (each tool call with Home Assistant's result), what it replied, and what the home did (each message spoken and on which devices, each device changed, and in a replay each command its devices were sent; a replayed turn with none of these did nothing of the kind, while a recorded one names each script it ran). For each question, does that turn's reply give what the answer needs, true to the home as given, in the form asked for (when given)? A question with no home is beyond what the home records: judge only whether the reply answers it in the form asked for, never whether its content is true. Answer for each with gives (true or false) and a short reason (why). Judge only the question: a reply that gives it with more besides still gives it; one that is wrong about the home, leaves out what the answer needs, or ignores the form asked for doesn't."""
+FACT_INSTRUCTIONS = """A household asked their home assistant ("Assist") something they wanted to know. Each question below has what they asked (asked: the turn and their words), what the answer needs (needs), the form they asked for the answer in, if any (form: their own words), the turn whose reply to judge (turn), and, when it's about the home, the devices it's about as the home had them when Assist answered (home: each device's name, its state and attributes as that turn started, and what changed in it before the reply). Then each turn to judge (turns), as it went: what the user said, what Assist did (each tool call with Home Assistant's result), what it replied, and what the home did (each message spoken or sound played and on which devices, each device changed, and in a replay each command its devices were sent; a replayed turn with none of these did nothing of the kind, while a recorded one names each script it ran). For each question, does that turn's reply give what the answer needs, true to the home as given, in the form asked for (when given)? A question with no home is beyond what the home records: judge only whether the reply answers it in the form asked for, never whether its content is true. Answer for each with gives (true or false) and a short reason (why). Judge only the question: a reply that gives it with more besides still gives it; one that is wrong about the home, leaves out what the answer needs, or ignores the form asked for doesn't."""
 FACT_STRUCTURE = probatio.Schema({probatio.Required("answers"): [{
     probatio.Required("goal"): str, probatio.Required("turn"): int, probatio.Required("gives"): bool,
     probatio.Required("why"): str}]})
 # What of a goal decides which turns a replay with the change may skip.
 GOAL_FIELDS = ("key", "label", "kind", "entity_id", "entity_ids", "state", "states", "brightness_pct", "serves",
-               "about", "quote", "fact", "outcome", "message")
+               "about", "quote", "fact", "outcome")
 
 
 class Untestable(CaseError):
@@ -202,18 +202,19 @@ def _turn(number, user, items, home=None):
 
 
 def _spoke(spoken):
-    return [{"message": s["message"], "on": sorted(s["targets"])} for s in spoken]
+    return [{"message": s["message"], **({"media": s["media"]} if s.get("media") else {}), "on": sorted(s["targets"])}
+            for s in spoken]
 
 
 def _replayed_turn(step):
     """A replay's turn as the judge reads it (_turn), with what its sandbox logged the home doing: each message spoken
-    and on which devices, each command its devices were sent, and each device whose state changed."""
+    or sound played and on which devices, each command its devices were sent, and each device whose state changed."""
     return _turn(step["turn"], step["input"], step.get("output") or [], {
         "spoke": _spoke(step.get("spoken") or []),
         "commanded": [f"{c['service']} {c['entity_id']}"  # What was spoken is in spoke, once.
                       + (f" {_clip(json.dumps(c['data'], ensure_ascii=False, sort_keys=True, default=str), 200)}"
                          if c.get("data") else "") for c in step.get("commands") or []
-                      if c["service"] not in SPEAKING],
+                      if not speaking(c["service"])],
         "changed": [f"{t['entity_id']}: {t['old']} → {t['new']}" for t in step.get("transitions") or []]})
 
 

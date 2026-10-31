@@ -93,8 +93,9 @@ export function place(p) {
   const anchor = p.root.querySelector(p.pop.anchor);
   if (!anchor) return;
   const a = anchor.getBoundingClientRect(), w = pop.offsetWidth, h = pop.offsetHeight;
+  const edge = p.root.querySelector(".status-strip").offsetHeight + 8;  // Clear of a phone's status bar.
   const left = Math.min(Math.max(8, a.left), window.innerWidth - w - 8);
-  const top = a.bottom + 6 + h > window.innerHeight - 8 ? Math.max(8, a.top - h - 6) : a.bottom + 6;
+  const top = a.bottom + 6 + h > window.innerHeight - 8 ? Math.max(edge, a.top - h - 6) : a.bottom + 6;
   pop.style.left = `${left}px`;
   pop.style.top = `${top}px`;
 }

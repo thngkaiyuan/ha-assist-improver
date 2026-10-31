@@ -272,6 +272,8 @@ class Flow:
         conv["stage"] = stage
         current["path"].append(stage)
         current["records"].setdefault(stage, {"attempts": []}).update(record)
+        if stage in ENDS and (current["records"].get("Propose") or {}).get("revision"):  # A revision's round ends:
+            self.runtime.improvements.refresh()  # the version it revised waits on the household again, if it's up.
         conv["trace"].append({"at": utcnow().isoformat(), "round": conv["round"], "stage": stage,
                               "goals": list(self._goals(conv))})
 
@@ -821,6 +823,8 @@ class Flow:
                 self._back_to_propose(rid, conv, revision={"improvement": item["id"], "note": note})
                 back.append(rid)
         await self.save()
+        if decision == "revise" and back:  # Being revised now: it waits on the improver, not the household.
+            self.runtime.improvements.refresh()
         return back
 
     def _roots_fixed(self, conv, item):

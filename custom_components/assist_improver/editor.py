@@ -18,7 +18,7 @@ INSTRUCTIONS = """You write the two short texts a household reads first when dec
 
 Write:
 - headline: what the change does, in plain words anyone in the household understands. Start with a verb. At most 60 characters, no full stop. Name things the way the household does (the garage doors, the bedroom lights), never by entity ID. Examples: "Expose garage door controls via scripts", "Turn off only lights when you ask for lights".
-- benefit: what gets easier for them, in one or two short sentences addressed to "you": what they can now say, and what happens, compared with before. When a test's result says it no longer changes a device, or no longer does what they pointed out, say that (name the device, or what they pointed out, in their words). Never present what the result lists as still open as fixed. Only what the tests showed; no promises beyond them, no entity IDs, no technical terms they wouldn't use. A test marked assist_says_more made Assist's replies longer: never call the change briefer or quicker to listen to.
+- benefit: what gets easier for them, in one or two short sentences addressed to "you": what they can now say, and what happens, compared with before. When a test's result says it no longer changes a device, or no longer does what they pointed out, say that (name the device, or what they pointed out, in their words). What's fixed and what's still open come only from the result, never from the replies: never present what it lists as still open as fixed, nor anything else as still open. Only what the tests showed; no promises beyond them, no entity IDs, no technical terms they wouldn't use. A test marked assist_says_more made Assist's replies longer: never call the change briefer or quicker to listen to.
 
 Answer only by calling submit_copy. If it reports problems, fix them and submit again. When it accepts your answer, finish with one short sentence."""
 STRUCTURE = probatio.Schema({probatio.Required("headline"): str, probatio.Required("benefit"): str})
@@ -75,32 +75,41 @@ def payload(item, names=None, assistant=None):
     """The improvement as the editor reads it: its idea, cause and changes in plain words (named as the household
     names things), and its test (improvements.row)."""
     from .improvements import row, wordier
-    from .panel import _change_text, unavailable
+    from .panel import _change_text
     names = names or {}
     assistant = assistant or (item.get("provider") or {}).get("title") or "Assist"
     test = row(item["test"])
     entry = {"goal": test["summary"], "improved": test["improved"], "before": test["before"],
              "with_the_change": test["after"]}
     if test["improved"]:
-        shown = (["goal now met (it went unmet before)"] if test["newly_met"]
-                 else [f"{test['turns_after']} turn(s) instead of {test['turns_before']}"]
-                 if test["turns_after"] < test["turns_before"] or not (test["side_effects_gone"] or test["feedback"])
-                 else [])
-        gone = [s for s in test["side_effects"] if s["entity_id"] in test["side_effects_gone"]]
-        if gone:  # What it no longer changes, by the household's names for the devices.
-            shown.append("no longer changes " + ", ".join(f"{s['name']} (it stays {s['start']})" for s in gone))
-        quoted = lambda quotes: "; ".join(f"\u201c{q}\u201d" for q in quotes)
-        if test["feedback"]:
-            shown.append("no longer does what you pointed out: " + quoted(test["feedback"]))
-        if test["open"]:
-            shown.append("still does what you pointed out: " + quoted(dict.fromkeys(o["quote"] for o in test["open"])))
-        shown += [f"the home couldn't do it: {unavailable([names.get(e, e) for e in g['home_couldnt']])} when asked"
-                  for g in test["goals"] if g.get("home_couldnt")]
-        entry["result"] = "; ".join(shown)
+        entry["result"] = "; ".join(sum(outcome(test, names), []))
     if wordier(test):  # Counted by code: the write-up mustn't call it briefer.
         entry["assist_says_more"] = True
     return {"idea": item.get("title"), "what_was_going_wrong": item.get("cause"),
             "changes": [named(_change_text(c, assistant), names) for c in item.get("changes", [])], "tested": [entry]}
+
+
+def outcome(test, names):
+    """What a validated test showed, from its verdicts (its row, improvements.row), in plain words: (what the change
+    fixed, what it left open)."""
+    from .panel import unavailable
+    fixed = (["goal now met (it went unmet before)"] if test["newly_met"]
+             else [f"{test['turns_after']} turn(s) instead of {test['turns_before']}"]
+             if test["turns_after"] < test["turns_before"] else [])  # A count only where it changed.
+    fixed += [f"part of the goal now met: {part}" for part in test["parts_met"]]
+    fixed += [f"done before you had to ask again: {goal}" for goal in test["sooner"]]
+    gone = [s for s in test["side_effects"] if s["entity_id"] in test["side_effects_gone"]]
+    if gone:  # What it no longer changes, by the household's names for the devices.
+        fixed.append("no longer changes " + ", ".join(f"{s['name']} (it stays {s['start']})" for s in gone))
+    quoted = lambda quotes: "; ".join(f"\u201c{q}\u201d" for q in quotes)
+    if test["feedback"]:
+        fixed.append("no longer does what you pointed out: " + quoted(test["feedback"]))
+    still = (["still does what you pointed out: " + quoted(dict.fromkeys(o["quote"] for o in test["open"]))]
+             if test["open"] else [])
+    still += [f"the home couldn't do it: {unavailable([names.get(e, e) for e in g['home_couldnt']])} when asked"
+              for g in test["goals"] if g.get("home_couldnt")]
+    still += [f"still not done: {goal}" for goal in test["unmet"]]
+    return fixed, still
 
 
 class SubmitCopy(RoleTool):

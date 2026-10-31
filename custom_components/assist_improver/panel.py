@@ -19,8 +19,8 @@ from homeassistant.core import callback
 from .cases import CaseError
 from .changeset import plan_steps
 from .const import DOMAIN, VERSION
-from .improvements import (DECISIONS, KINDS, PENDING, PHYSICAL, benefits, choices, display_title, physical, reasons,
-                           reply_words, row, spared)
+from .improvements import (DECISIONS, KINDS, PENDING, PHYSICAL, choices, display_title, gains, physical, reasons,
+                           reply_words, row)
 from .runtime import loaded
 
 URL_PATH = "assist-improver"  # The panel's address: /assist-improver?id=<improvement>.
@@ -185,8 +185,6 @@ def review(item, planned=None, names=None, hass=None, revising=False, resolvable
     hass: to tell a device that drives a door by its name in Home Assistant too (improvements.physical). revising: its
     revision's round runs (improvements.choices). resolvable: its accept met a conflict, and the household is asked
     to send it back (flow.Flow.resolvable). One whose accept met a conflict shows what that accept met."""
-    enabled, removed = benefits(item)
-    gone, followed = spared(item)
     shown = row(item["test"])
     still = still_open(shown)
     steps, already, conflicts = planned or ((item.get("application") or {}).get("steps") or [], [],
@@ -212,14 +210,16 @@ def review(item, planned=None, names=None, hass=None, revising=False, resolvable
             recent_ok = last.get("status") in ("done", "recorded")
     copy = item.get("copy") or {}
     return {"id": item["id"], "title": display_title(item), "benefit": copy.get("benefit"),
-            "safety": safety(steps), "status": item["status"], "enabled": enabled,
+            "safety": safety(steps), "status": item["status"],
             "recent_outcome": recent, "recent_outcome_ok": recent_ok, "revises": item.get("revises"),
             "unrevised": item.get("unrevised"),
-            "removed": removed, "conflicts": conflicts, "changes": changes, "cause": item["cause"],
-            # Side effects it no longer leaves (each device, left as it was), what the household pointed out that it
-            # fixed (their words) and what it doesn't show fixed.
-            "spared": [f"{g['name']} stays {g['start']}" for g in gone],
-            "followed": [f"\u201c{q}\u201d" for q in followed], "still_open": still,
+            # While its revision's round runs, the note it's being revised for: the panel offers no decision meanwhile.
+            "revising": {"note": next((d.get("note") or "" for d in reversed(item.get("decisions") or [])
+                                       if d.get("decision") == "revise"), "")} if revising else None,
+            "conflicts": conflicts, "changes": changes, "cause": item["cause"],
+            # What it gets the household, counted (the line under its headline, as the list has it), and what the
+            # household pointed out that it doesn't show fixed.
+            **gains(item), "still_open": still,
             # A door's or valve's motion isn't simulated: said where the improvement involves one (its changes, cause
             # and test as the review shows it: not every script and exposed device its replays ran with).
             "physical": bool(PHYSICAL.search(json.dumps([item.get("changes"), item.get("cause"), shown], default=str)))
@@ -321,9 +321,9 @@ def ws_list(hass, connection, msg):
     items = runtime.improvements.listed()
     connection.send_result(msg["id"], {"improvements": [
         {"id": i["id"], "title": display_title(i), "status": i["status"], "pending": i["status"] in PENDING,
-         "enabled": len(benefits(i)[0]), "removed": len(benefits(i)[1]), "revision": bool(i.get("revises")),
-         # Side effects it no longer leaves, and feedback it follows: counted where it has any.
-         **{key: n for key, n in zip(("spared", "followed"), map(len, spared(i))) if n}}
+         **gains(i), "revision": bool(i.get("revises")),  # What it gets the household, counted.
+         # Up for review but being revised: it waits on the improver, not the household.
+         **({"revising": True} if i["status"] in PENDING and runtime.flow.revising(i["id"]) else {})}
         for i in items]})
 
 
@@ -350,9 +350,10 @@ async def ws_get(hass, connection, msg):
     result = review(item, planned, names, hass, runtime.flow.revising(item["id"]), runtime.flow.resolvable(item))
     if improvements.held(item["id"]):  # Not up for review yet: nothing to decide.
         result["choices"] = []
-    if item["status"] not in PENDING:  # Decided: the next one waiting is one click away, as the list has them.
-        nxt = next((i for i in improvements.listed() if i["status"] in PENDING and i["id"] != item["id"]), None)
-        result["next_pending"] = {"id": nxt["id"], "title": display_title(nxt)} if nxt else None
+    # The next one waiting on the household, one click away after a decision (not this one, none being revised).
+    nxt = next((i for i in improvements.listed() if i["status"] in PENDING and i["id"] != item["id"]
+                and not runtime.flow.revising(i["id"])), None)
+    result["next_pending"] = {"id": nxt["id"], "title": display_title(nxt)} if nxt else None
     connection.send_result(msg["id"], result)
 
 
@@ -889,8 +890,10 @@ def set_count(hass, count, *, update=True):
     frontend.async_register_built_in_panel(
         hass, component_name="custom", sidebar_title=f"Assist Improver ({count})" if count else "Assist Improver",
         sidebar_icon="mdi:auto-fix", frontend_url_path=URL_PATH, require_admin=True, update=update,
+        # The panel keeps clear of a phone's status bar and home indicator itself (style.js), so its footer stays put to
+        # the end of a scroll.
         config={"_panel_custom": {"name": "assist-improver-panel", "embed_iframe": False, "trust_external": False,
-                                  "handle_safe_area": False, "module_url": f"{STATIC}/panel.js?v={VERSION}"}})
+                                  "handle_safe_area": True, "module_url": f"{STATIC}/panel.js?v={VERSION}"}})
 
 
 def remove_panel(hass):

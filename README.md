@@ -49,7 +49,7 @@ Every step above works end to end, and runs every day in my household. This is t
 
    ![Assist Improver: 3 improvements to review, each with what it gets you, then your conversations, each with where it stands, and Run for the new ones](https://raw.githubusercontent.com/thngkaiyuan/ha-assist-improver/main/assets/getting-started/panel.png)
 
-   ![A review: what you get, why it's safe, the conversations it was tested on, and what changes, as a diff](https://raw.githubusercontent.com/thngkaiyuan/ha-assist-improver/main/assets/getting-started/review.png)
+   ![A review: what you get, its before and after, and why it's safe](https://raw.githubusercontent.com/thngkaiyuan/ha-assist-improver/main/assets/getting-started/review.png)
 
    ![What changes: a new Movie time script as a diff, and the script made visible to Assist](https://raw.githubusercontent.com/thngkaiyuan/ha-assist-improver/main/assets/getting-started/what-changes.png)
 

@@ -388,8 +388,9 @@ async def run_scripts(recording, turn, definitions, setup, scripts, targets):
                 await sandbox.run(run)
                 runs.append({"script": f"script.{object_id}", "devices_changed": [
                     f"{t['entity_id']}: {t['old']}→{t['new']}" for t in sandbox.transitions[before:]],
-                    **({"spoken": [f"{s['message']!r} on {', '.join(s['targets']) or 'no device'}"
-                                   for s in sandbox.spoken[spoke:]]} if sandbox.spoken[spoke:] else {})})
+                    **({"spoken": [f"{s['message'] or s.get('media') or ''!r} on "  # Its words, or its audio.
+                                   f"{', '.join(s['targets']) or 'no device'}" for s in sandbox.spoken[spoke:]]}
+                       if sandbox.spoken[spoke:] else {})})
             except Exception as err:  # noqa: BLE001
                 runs.append({"script": f"script.{object_id}", "error": str(err)[:300]})
         final = await sandbox.run(lambda hass: _states(hass, [t["entity_id"] for t in targets]))

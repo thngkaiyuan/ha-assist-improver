@@ -103,12 +103,15 @@ async def async_setup_entry(hass, entry):
     try:
         await runtime.replays.start()
         await runtime.role_runs.start()
-        await runtime.improvements.start()  # Recovers a change HA stopped in the middle of.
-        # The review panel, with how many improvements wait for review in its sidebar title.
-        runtime.panel = await panel.async_setup_panel(hass, len(runtime.improvements.pending()))
         from .flow import Flow
         runtime.flow = Flow(hass, entry, runtime)  # Where each conversation is, round by round (SPEC.md P0).
         await runtime.flow.load()
+        # A version being revised waits on the improver, not the household (DETAILS P12.8.6): not counted as waiting,
+        # from the first notification on.
+        runtime.improvements.revising = runtime.flow.revising
+        await runtime.improvements.start()  # Recovers a change HA stopped in the middle of.
+        # The review panel, with how many improvements wait for review in its sidebar title.
+        runtime.panel = await panel.async_setup_panel(hass, len(runtime.improvements.waiting()))
         runtime.pipeline = pipeline = Pipeline(hass, entry, runtime)  # Run now, and the schedule (off by default).
         pipeline.current = next((dict(r) for r in reversed(runtime.role_runs.runs) if r.get("kind") == "pipeline"),
                                 None)
@@ -125,6 +128,7 @@ async def async_setup_entry(hass, entry):
             # What was derived from deleted conversations goes with them: their flow records, run-log records, words
             # and replays (an improvement keeps its own copy of its test).
             await runtime.flow.forget(keys)
+            runtime.improvements.refresh()  # A version being revised for one of them waits on the household again.
             await runtime.role_runs.drop(keys)
             await runtime.transcripts.all()  # Drops what's no longer in the index.
             await runtime.replays.drop(keys)

@@ -68,7 +68,6 @@ class Goal(TypedDict, total=False):
     brightness_pct: int
     fact: str  # Fact: what the answer needs, never the answer.
     outcome: str  # Action: what it does (analyzer.OUTCOMES), whatever service does it.
-    message: str  # Action: the words to speak, the household's own.
     serves: int | None  # A sub-goal: the turn of the goal it serves.
     about: int | str  # Conduct: the turn of the Assist reply the household objected to ("all": Assist in general).
     quote: str  # Conduct: the household's own words; fact: the form they asked for the answer in, in their words.

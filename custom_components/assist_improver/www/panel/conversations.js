@@ -27,7 +27,7 @@ export function state(p) {
   return p.cv || (p.cv = {query: "", days: "", order: null, rows: null, total: 0,
                           opened: null, shown: null, note: "", sent: {}, picked: new Set(), byHand: new Set(),
                           known: new Map(), every: [], error: null, showArchived: false, archivedCount: 0, away: null,
-                          only: null, byStatus: {}, statusMenu: false,
+                          only: null, byStatus: {}, statusMenu: false, sortMenu: false,
                           runnable() { return runnable(this); }});
 }
 
@@ -63,7 +63,7 @@ function shownIn(cv, id) {
   return has(cv, true) ? cv : has(cv.away, true) ? cv.away : has(cv) ? cv : has(cv.away) ? cv.away : null;
 }
 
-async function list(p, cv, {more = false, only = null, draw = true} = {}) {
+async function list(p, cv, {more = false, only = null, draw = true, anew = false} = {}) {
   // The list, and the archived ones below Show archived while it's ticked: both read again from the start, or only
   // one of them (only: "rows" or "away"), or that one's next page (more). Each has its own sequence: a newer read of
   // one never drops the other's.
@@ -123,29 +123,59 @@ async function list(p, cv, {more = false, only = null, draw = true} = {}) {
     if (stale("rows") && (!reads.away || stale("away"))) return;
     cv.error = errText(err);
   }
+  if (anew) p.letGo?.();  // Another list: as long as it is.
   if (draw) p.render();
 }
 
 async function open(p, cv, id) {
   Object.assign(cv, {deleting: null, tidyError: null});
-  if (cv.opened === id) { Object.assign(cv, {opened: null, shown: null}); p.render(); return; }
+  if (cv.opened === id) { Object.assign(cv, {opened: null, shown: null}); steady(p, id); return; }
   Object.assign(cv, {opened: id, shown: null, note: ""});
-  p.render();
-  scrollTo(p, id);
+  steady(p, id);  // One open above it closes as it opens.
   try {
     const shown = await p.ws("conversation", {recording_id: id});
     if (cv.opened === id) cv.shown = shown;
   } catch (err) {
     if (cv.opened === id) cv.shown = {error: errText(err)};
   }
-  p.render();
+  steady(p, id);  // What it brings, or the browser keeping something else in place, may shift the page.
   if (cv.opened === id) scrollTo(p, id);  // Not if it was closed, or another opened, while it loaded.
 }
 
+function steady(p, id) {
+  // Drawn again with the row tapped where it was on the screen: the page is put back at once by however far the row's
+  // head moved (a scroll in between, the household's own, is kept), and at the page's end it has the room to be.
+  const head = () => [...p.root.querySelectorAll("[data-cs]")].find((el) => el.dataset.cs === id)?.getBoundingClientRect().top;
+  const before = head();
+  p.hold();
+  p.render();
+  const after = head();
+  if (before != null && after != null && after !== before) p.scroller().scrollBy({top: after - before, behavior: "instant"});
+  p.fit?.();  // Only as long as where it is now needs.
+}
+
 function scrollTo(p, id) {
-  // The opened conversation, brought into view (above the Run bar), as far as it fits.
+  // Once it's in, the opened conversation's first turn in view above its Send row (and the Run bar under that), scrolled
+  // just that far, and never so far that the row tapped goes under the pinned controls: in view already, nothing moves.
+  // Where the Send row and the controls will stick, not where they are now (before a scroll, neither may be stuck).
   const row = [...p.root.querySelectorAll("[data-cs]")].find((el) => el.dataset.cs === id)?.closest(".cs-row");
-  row?.scrollIntoView?.({block: "nearest", behavior: "smooth"});
+  const first = row?.querySelector(".cs-turn") || row?.querySelector(".cs-read .conflict");  // Or why it couldn't.
+  if (!first) return;
+  const send = row.querySelector(".cs-send"), controls = p.root.querySelector(".cs-controls");
+  const below = send ? parseFloat(getComputedStyle(send).bottom) + send.offsetHeight : Math.max(p.bar || 0, insetBottom(p));
+  const floor = innerHeight - below - 8;
+  const ceiling = (controls ? parseFloat(getComputedStyle(controls).top) + controls.offsetHeight : 0) + 8;
+  const by = Math.min(first.getBoundingClientRect().bottom - floor, row.getBoundingClientRect().top - ceiling);
+  if (by > 0) p.scroller().scrollBy({top: by, behavior: "smooth"});
+}
+
+function insetBottom(p) {
+  // A phone's home indicator's strip (Home Assistant's app), as the panel's style has it.
+  const probe = p.root.appendChild(document.createElement("div"));
+  probe.style.cssText = "position: fixed; visibility: hidden; height: var(--inset-bottom)";
+  const height = probe.offsetHeight;
+  probe.remove();
+  return height;
 }
 
 async function send(p, cv, id) {
@@ -315,25 +345,34 @@ export function dialog(turns, query = "") {
       ${t.assist ? message(C.assist, "cs-assist", t.assist) : ""}</div>`).join("");
 }
 
+// What sending the opened one in did, while it's shown (until the improver has taken it), or what went wrong; and
+// whether its Send row is shown: it can be sent in, and wasn't just.
+const sentNote = (cv, id) => cv.sent[id] && (cv.sent[id].error || cv.shown?.status === "sent") ? cv.sent[id] : null;
+const sending = (cv, id) => !!cv.shown?.sendable && !(sentNote(cv, id) && !sentNote(cv, id).error);
+
 function reading(p, cv, row) {
   // The conversation opened, to read and send in.
   const C = TEXT.conversations, shown = cv.shown;
-  if (!shown) return `<div class="cs-read">${common.loadingRow()}</div>`;
+  // While it loads, a box of its own (cs-wait first): the conversation, once in, is put in anew, so it fades in then.
+  if (!shown) return `<div class="cs-wait cs-read">${common.loadingRow()}</div>`;
   if (shown.error) return `<div class="cs-read"><div class="conflict">${esc(shown.error)}</div></div>`;
   const turns = dialog(shown.turns, cv.query);
-  // What sending it in did: while it's sent in (not once the improver has taken it), or what went wrong.
-  const sent = cv.sent[row.id] && (cv.sent[row.id].error || shown.status === "sent") ? cv.sent[row.id] : null;
+  const sent = sentNote(cv, row.id);
   // Sending it in starts a run for it (on demand), so it looks like Run: the note and the button stay in view while
   // it's read, unless it was just sent in. Archive and Delete wait behind the ⋮ beside it, so the row stays calm.
-  const send = shown.sendable && !(sent && !sent.error)
-    ? `<div class="cs-send"><input class="cs-note" id="cs-note" maxlength="500" placeholder="${esc(C.note)}" value="${esc(cv.note)}">
-        <button class="btn play" id="cs-send" data-id="${esc(row.id)}" ${cv.sending ? "disabled" : ""}>${svg("send")}${
-          esc(cv.sending === row.id ? C.sending : C.send)}</button>${dots(cv, row, shown)}</div>` : "";
-  const note = shown.note ? `<div class="cs-sub">${esc(C.yourNote)} ${esc(shown.note)}</div>` : "";
+  // Delete asks there, in the row's place (in view, where the ⋮ was tapped, and no Send beside it to tap instead).
+  const asking = cv.deleting === row.id;
   const error = cv.tidyError?.id === row.id ? `<div class="conflict" role="status">${esc(cv.tidyError.text)}</div>` : "";
-  const alone = !send && cv.deleting !== row.id ? `<div class="cs-tidy">${dots(cv, row, shown)}</div>` : "";
-  return `<div class="cs-read">${turns}${note}${send}${alone}${confirm(cv, row)}${
-    sent ? `<div class="${sent.error ? "conflict" : "cs-done"}" role="status">${esc(sent.text)}</div>` : ""}${error}</div>`;
+  const send = sending(cv, row.id) && asking ? confirm(cv, row, "cs-send", error)
+    : sending(cv, row.id) ? `<div class="cs-send"><input class="cs-note" id="cs-note" maxlength="500" placeholder="${esc(C.note)}" value="${esc(cv.note)}">
+        <button class="btn play" id="cs-send" data-id="${esc(row.id)}" ${cv.sending ? "disabled" : ""}${
+          cv.sending === row.id ? ' aria-busy="true"' : ""}>${cv.sending === row.id  // On its way: same words, same size.
+          ? `<span class="spinner ic" aria-hidden="true"></span>` : svg("send")}${esc(C.send)}</button>${dots(cv, row, shown)}</div>` : "";
+  const note = shown.note ? `<div class="cs-sub">${esc(C.yourNote)} ${esc(shown.note)}</div>` : "";
+  const alone = !send && !asking ? `<div class="cs-tidy">${dots(cv, row, shown)}</div>` : "";
+  const pinned = send && asking;  // Asking in the Send row's place: why it couldn't is said there, in view.
+  return `<div class="cs-read">${turns}${note}${send}${alone}${send ? "" : confirm(cv, row, "cs-tidy")}${
+    sent ? `<div class="${sent.error ? "conflict" : "cs-done"}" role="status">${esc(sent.text)}</div>` : ""}${pinned ? "" : error}</div>`;
 }
 
 function dots(cv, row, shown) {
@@ -348,13 +387,14 @@ function dots(cv, row, shown) {
       aria-label="${esc(P.more)}" title="${esc(P.more)}">${svg("dots")}</button>${menu}</span>`;
 }
 
-function confirm(cv, row) {
-  // Delete from Assist Improver, asking first.
+function confirm(cv, row, where, error = "") {
+  // Delete from Assist Improver, asking first: in the Send row's place (cs-send, with why if it couldn't), or where
+  // the ⋮ was (cs-tidy).
   const P = TEXT.privacy, busy = cv.tidying ? "disabled" : "", id = esc(row.id);
   if (cv.deleting !== row.id) return "";
-  return `<div class="cs-tidy cs-confirm" role="group" aria-label="${esc(P.delete)}"><span>${esc(P.confirmDelete)}</span>
+  return `<div class="${where} cs-confirm" role="group" aria-label="${esc(P.delete)}"><span>${esc(P.confirmDelete)}</span>
       <button class="link" id="cs-delete-cancel">${esc(P.cancel)}</button>
-      <button class="btn play soft-danger" id="cs-delete" data-id="${id}" ${busy}>${svg("trash")}${esc(P.delete)}</button></div>`;
+      <button class="btn play soft-danger" id="cs-delete" data-id="${id}" ${busy}>${svg("trash")}${esc(P.delete)}</button>${error}</div>`;
 }
 
 function rowHtml(p, cv, row) {
@@ -362,7 +402,8 @@ function rowHtml(p, cv, row) {
   const pick = `<label class="cs-pick" title="${esc(C.pick)}"><input type="checkbox" data-cs-pick="${esc(row.id)}" ${picked ? "checked" : ""}
         aria-label="${esc(fill(C.pickOne, {said: row.said || C.nothing}))}"></label>`;
   const failed = row.failed ? ` · <span class="cs-failed">${esc(plural(row.failed, C.failedStep))}</span>` : "";
-  return `<div class="cs-row ${opened ? "open" : ""} ${picked ? "picked" : ""} ${row.hidden ? "cs-archived" : ""}"><div class="cs-line">${pick}
+  // Keyed, so a row moves whole when the list changes above it (morph): an opened conversation never fades in again.
+  return `<div class="cs-row ${opened ? "open" : ""} ${picked ? "picked" : ""} ${row.hidden ? "cs-archived" : ""}" data-key="cs-${esc(row.id)}"><div class="cs-line">${pick}
       <button class="cs-head" data-cs="${esc(row.id)}" aria-expanded="${opened}">
       <span class="cs-text"><span class="cs-said">${row.said ? marked(row.said, cv.query) : esc(C.nothing)}</span>
         ${row.match ? `<span class="cs-reply cs-match">${marked(row.match, cv.query)}</span>`
@@ -403,14 +444,34 @@ export function section(p) {
       ? listed(cv.away, "cs-more-away") : shown(cv).length ? `<p class="cs-empty">${esc(C.none)}</p>` : ""}</div>` : ""}` : "";
   // How the last run went; what it found is left out once nothing is left to review.
   const run = p.run?.run, last = run && run.status !== "running" ? common.lastRun(run, !!p.list?.some((i) => i.pending)) : "";
-  return `<section class="cs" aria-label="${esc(C.title)}"><h2 class="cs-title">${esc(C.title)}</h2>
-      <p class="cs-lead">${esc(cv.onDemand ? C.leadOnDemand : C.lead)}</p>
+  // What the list is for, on demand: in the bubble beside its title (a note screen readers read in full, the title
+  // left as it is).
+  const intro = cv.onDemand ? C.leadOnDemand : C.lead;
+  const about = `<span class="info-tip" data-tip="${esc(intro)}" tabindex="0" role="note"
+      aria-label="${esc(`About ${C.title}: ${intro}`)}">${svg("info")}</span>`;
+  return `<section class="cs" aria-label="${esc(C.title)}"><div class="cs-top"><h2 class="cs-title">${esc(C.title)}</h2>${about}</div>
       ${last ? `<p class="cs-last">${esc(last)}</p>` : ""}
       ${nothingYet ? "" : `<div class="cs-controls"><div class="cs-bar"><span class="cs-find"><input type="search" id="cs-search" placeholder="${esc(C.search)}"
         aria-label="${esc(C.search)}" value="${esc(cv.query)}">${cv.query ? `<button class="cs-clear-search" id="cs-search-clear"
         type="button" aria-label="${esc(C.clearSearch)}" title="${esc(C.clearSearch)}">&#10005;</button>` : ""}</span>
-        <span class="cs-filters">${seg(DAYS, cv.days, "days")}${statusFilter(cv)}</span>${
-          seg(ORDERS.map((o) => [o, o]), cv.order || (cv.closest ? null : "newest"), "order")}</div>${selectAllBox(cv, "cs-all", false)}</div>`}${rows}${archived}</section>`;
+        <span class="cs-filters">${seg(DAYS, cv.days, "days")}${statusFilter(cv)}</span>${sortMenu(cv)}</div>${
+          selectAllBox(cv, "cs-all", false)}</div>`}${rows}${archived}</section>`;
+}
+
+// A menu's label, its button as wide as its longest choice, as a select is: choosing one moves nothing beside it.
+const sized = (label, choices) => `<span class="cs-sizer" data-choices="${esc(choices.join("\n"))}"><span
+    class="cs-status-label">${esc(label)}</span></span>`;
+
+function sortMenu(cv) {
+  // The order, one compact control beside the search: Newest first, unless another is chosen; none while a time
+  // searched for puts the closest first.
+  const C = TEXT.conversations, on = cv.order || (cv.closest ? null : "newest");
+  const menu = cv.sortMenu ? `<div class="backdrop" id="cs-sort-backdrop"></div><div class="cs-status-menu cs-sort-menu" role="menu"
+      aria-label="${esc(C.sort)}">${ORDERS.map((o) => `<button role="menuitemradio" aria-checked="${o === on}" data-order="${o}"
+      class="${o === on ? "on" : ""}">${esc(C[o])}</button>`).join("")}</div>` : "";
+  return `<span class="cs-status cs-sort"><button class="cs-status-btn" id="cs-sort" aria-haspopup="true"
+      aria-expanded="${!!cv.sortMenu}">${sized(on ? C[on] : C.sort, [...ORDERS.map((o) => C[o]), C.sort])}<span
+      aria-hidden="true">&#9662;</span></button>${menu}</span>`;
 }
 
 // The Status filter's choices, in the order a conversation moves through them.
@@ -431,7 +492,8 @@ function statusFilter(cv) {
       ${box('id="cs-status-all"', !only, C.all, null, only && only.size > 0)}
       ${choosable(cv).map((s) => box(`data-cs-status="${s}"`, !only || only.has(s), C.status[s], standing(cv, s))).join("")}</div>` : "";
   return `<span class="cs-status"><button class="cs-status-btn ${only ? "on" : ""}" id="cs-status" aria-haspopup="true"
-      aria-expanded="${!!cv.statusMenu}">${esc(label)}<span aria-hidden="true">&#9662;</span></button>${menu}</span>`;
+      aria-expanded="${!!cv.statusMenu}">${sized(label, [C.statusAll, ...STATUSES.map((s) => C.status[s]),
+        fill(C.statusSome, {n: STATUSES.length})])}<span aria-hidden="true">&#9662;</span></button>${menu}</span>`;
 }
 
 export function after(p) {
@@ -450,7 +512,9 @@ function runButton(p, preview, running) {
   const {picked} = picking(p), n = common.moves(picked ? runPreview(p, preview) : preview);
   if (!n) return "";
   const words = picked ? fill(TEXT.conversations.runOn, {n, s: n === 1 ? "" : "s"}) : common.runLabel(preview);
-  return `<button class="btn play" id="cs-run">${svg("play")}${esc(words)}</button>`;
+  // A conversation open to send in has the one primary action, Send this one in: Run steps back (same size, same place).
+  const cv = state(p), open = !cv.error && listedRows(cv).some((r) => r.id === cv.opened) && sending(cv, cv.opened);
+  return `<button class="btn play${open ? " quiet" : ""}" id="cs-run">${svg("play")}${esc(words)}</button>`;
 }
 
 function chosen(cv) {
@@ -510,7 +574,7 @@ let typing = null;
 
 function refilter(p, change) {
   Object.assign(p.cv, change, {opened: null, shown: null});
-  list(p, p.cv);
+  list(p, p.cv, {anew: true});
 }
 
 export const actions = {
@@ -519,8 +583,10 @@ export const actions = {
     ["[data-cs-review]", (p, el) => p.go(el.dataset.csReview)],
     ["#cs-status", (p) => { p.cv.statusMenu = !p.cv.statusMenu; p.render(); }],
     ["#cs-status-backdrop", (p) => { p.cv.statusMenu = false; p.render(); }],
+    ["#cs-sort", (p) => { p.cv.sortMenu = !p.cv.sortMenu; p.render(); }],
+    ["#cs-sort-backdrop", (p) => { p.cv.sortMenu = false; p.render(); }],
     ["[data-days]", (p, el) => refilter(p, {days: el.dataset.days})],
-    ["[data-order]", (p, el) => refilter(p, {order: el.dataset.order})],
+    ["[data-order]", (p, el) => { refilter(p, {order: el.dataset.order, sortMenu: false}); p.render(); }],
     ["#cs-more", (p) => list(p, p.cv, {more: true, only: "rows"})],
     ["#cs-more-away", (p) => list(p, p.cv, {more: true, only: "away"})],
     ["#cs-search-clear", (p) => {
@@ -536,8 +602,12 @@ export const actions = {
     ["#cs-menu-close", (p) => { p.cv.menu = null; p.render(); }],
     ["#cs-archive", (p, el) => { p.cv.menu = null; archive(p, p.cv, el.dataset.id, true); }],
     ["#cs-unarchive", (p, el) => { p.cv.menu = null; archive(p, p.cv, el.dataset.id, false); }],
-    ["#cs-delete-ask", (p, el) => { Object.assign(p.cv, {menu: null, deleting: el.dataset.id, tidyError: null}); p.render(); }],
-    ["#cs-delete-cancel", (p) => { p.cv.deleting = null; p.render(); }],
+    ["#cs-delete-ask", (p, el) => {  // The question, Cancel first in focus; back to the ⋮ once it's answered.
+      Object.assign(p.cv, {menu: null, deleting: el.dataset.id, tidyError: null});
+      p.render();
+      p.root.getElementById("cs-delete-cancel")?.focus({preventScroll: true});
+    }],
+    ["#cs-delete-cancel", (p) => { p.cv.deleting = null; p.render(); p.root.getElementById("cs-actions")?.focus({preventScroll: true}); }],
     ["#cs-many-archive", (p) => { const ids = chosen(p.cv).archive; bulk(p, p.cv, ids, "conversations/hide", {recording_ids: ids, hidden: true}); }],
     ["#cs-many-unarchive", (p) => { const ids = chosen(p.cv).unarchive; bulk(p, p.cv, ids, "conversations/hide", {recording_ids: ids, hidden: false}); }],
     ["#cs-many-ask", (p) => { p.cv.asking = true; p.render(); }],

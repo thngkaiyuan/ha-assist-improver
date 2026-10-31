@@ -145,6 +145,8 @@ class Improvements:
         self._locks = {}  # One decision at a time per improvement: two tabs, or auto-accept, never cross.
         self._notified = None  # The improvements the notification listed last (journaled when it changes).
         self._unannounced = set()  # Written up for auto-accept to take: not announced as waiting yet (unannounced).
+        # Whether its revision's round runs (flow.Flow.revising, once the flow is loaded): then it waits on the improver.
+        self.revising = lambda improvement_id: False
 
     async def start(self):
         # An improvement belongs to the one conversation it came from (SPEC.md P0.10); one that names none is an
@@ -259,8 +261,18 @@ class Improvements:
         return sorted(found)
 
     def pending(self):
-        """Improvements waiting on the household: written up, so each reads in plain words."""
+        """Improvements up for review: written up, so each reads in plain words."""
         return [deepcopy(i) for i in self.items.values() if i["status"] in PENDING and i.get("copy")]
+
+    def waiting(self):
+        """What waits on the household, for the notification and the sidebar's count: up for review, but not one
+        being revised, which waits on the improver (DETAILS P12.8.6)."""
+        return [i for i in self.pending() if not self.revising(i["id"])]
+
+    def refresh(self):
+        """What waits on the household changed outside the improvements (a revision's round started or ended): the
+        notification and the sidebar's count follow."""
+        self._sync()
 
     def held(self, improvement_id):
         """Whether its round's write-up still holds it (unannounced): written up, but not up for review yet."""
@@ -346,7 +358,7 @@ class Improvements:
 
     def _sync(self):
         """The notification lists the improvements waiting on the user, each linking to its review in the panel."""
-        wanted = {i["id"]: i for i in self.pending() if i["id"] not in self._unannounced}
+        wanted = {i["id"]: i for i in self.waiting() if i["id"] not in self._unannounced}
         from .panel import set_count
         set_count(self.hass, len(wanted))  # The count beside the panel in the sidebar.
         if self._notified != set(wanted):
@@ -566,13 +578,14 @@ def display_title(item):
 
 def row(test):
     """A test as the screens show it (the review, the editor, read_improvement): the root goals it helped, whether it
-    validated, the turns those whose turns compare took (measures.compared), the goals newly met, the side effects
-    left without the change and those gone with it, what the household objected to that the change fixed (feedback:
-    their words), what it still does (open: their words, the first reply that does it, by its place among the replies with the
-    change, and the judge's reason) and
-    what couldn't be told (set_aside), each goal it helped (goals; with home_couldnt, its devices when the home
-    couldn't do it either way), the conversation as it went beside its replay with the change (with the steps that
-    failed in each turn), and the turns no longer needed."""
+    validated, the turns those whose turns compare took (measures.compared), the goals newly met, the parts of the
+    others (parts_met) and those done before a step asked again (sooner), the side effects left without the change and
+    those gone with it, what the household objected to that the change fixed (feedback: their words), what it still does
+    (open: their words, the first reply that does it, by its place among the replies with the change, and the judge's
+    reason) and what couldn't be told (set_aside), each goal it helped (goals; with home_couldnt, its devices when the
+    home couldn't do it either way), those still unmet with it the home could do (unmet), the conversation as it went
+    beside its replay with the change (with the steps that failed in each turn), and the turns no longer needed."""
+    from .analyzer import REACTIONS
     from .measures import compared, helped
     before, after, judged = test["before"], test["after"], test["judged"]
     roots = set(before["turns_per_root_goal"])
@@ -592,10 +605,18 @@ def row(test):
     return {"summary": "; ".join(judged[r]["summary"] or "" for r in roots_helped),
             "goals": [{"goal": judged[r]["summary"] or "", **({"home_couldnt": judged[r]["devices"]} if judged[r].get(
                 "home_couldnt") and after["goals"].get(r) != "met" else {})} for r in roots_helped],
+            "unmet": [judged[r]["summary"] or "" for r in roots_helped
+                      if after["goals"].get(r) == "unmet" and not judged[r].get("home_couldnt")],
             "improved": test["validated"],
             "turns_before": sum(before["turns_per_root_goal"][r] for r in both),
             "turns_after": sum(after["turns_per_root_goal"][r] for r in both),
             "newly_met": [judged[r]["summary"] for r in newly],
+            "parts_met": [g["summary"] or "" for k, g in judged.items() if k != g["root"] and g["root"] not in newly
+                          and g.get("kind") not in REACTIONS and after["goals"].get(k) == "met"
+                          and before["goals"].get(k) != "met"],
+            "sooner": list(dict.fromkeys(judged[g["root"]]["summary"] or "" for k, g in judged.items()
+                                         if g.get("kind") == "step" and g["root"] not in newly
+                                         and after["goals"].get(k) == "met" and before["goals"].get(k) != "met")),
             "side_effects": [{k: s[k] for k in ("entity_id", "name", "start")} for s in before["side_effects_left"]],
             "side_effects_gone": sorted(gone), "feedback": list(dict.fromkeys(followed)), "open": objected,
             "set_aside": [judged[key].get("quote") or "" for key, found in conduct.items()
@@ -608,15 +629,10 @@ def row(test):
                                  if n <= len(recorded)]}
 
 
-def benefits(item):
-    """(goals now met, turns no longer needed): what accepting gets the user, by its test."""
+def gains(item):
+    """What accepting gets the household, by its test, counted: goals now met (enabled), turns no longer needed
+    (removed), side effects gone (spared), what they pointed out fixed (followed)."""
     shown = row(item["test"])
-    return shown["newly_met"], shown["no_longer_needed"]
-
-
-def spared(item):
-    """(side effects gone, feedback followed), by its test: the devices left as they were ({name, start}), and what the
-    household asked of Assist."""
-    shown = row(item["test"])
-    return ([{"name": s["name"], "start": s["start"]} for s in shown["side_effects"]
-             if s["entity_id"] in shown["side_effects_gone"]], shown["feedback"])
+    return {"enabled": len(shown["newly_met"]), "removed": len(shown["no_longer_needed"]),
+            "spared": sum(s["entity_id"] in shown["side_effects_gone"] for s in shown["side_effects"]),
+            "followed": len(shown["feedback"])}

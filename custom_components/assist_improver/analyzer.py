@@ -35,7 +35,7 @@ List the user's goals. A goal is one thing the user wanted:
 - state: a device ending in a state (entity_id and state; add brightness_pct only if the user asked for a brightness);
 - sequence: a device passing through states in order (entity_id and states), such as a relay pressed off then on;
 - fact: something the user needed to know. fact: what the answer needs (the facts, distinctions or limits it must give, never the answer itself); entity_ids: the devices the answer is about, when it's about the home; quote: the form they asked for the answer in ("in a single brief sentence"), in their own words, only when they asked for one;
-- action: something done that leaves no device in a new state. outcome announce: a message spoken on devices; message: only the words to speak (nothing around them, such as "that"), copied from what the user said (in the request, or in their answer when the assistant asked what to say); entity_ids: every device it's for, in one action (each speaker the household has, when they say all of them). Asked together with a device request, it's a part at that turn;
+- action: something done that leaves no device in a new state. outcome announce: something spoken or played on devices, whatever its content; entity_ids: every device it's for, in one action (each speaker the household has, when they say all of them). Asked together with a device request, it's a part at that turn;
 - ask: devices whose settings the user's words leave open (entity_ids). Don't guess what the user didn't say: list the controls the user should set, as narrow as their words allow. One control when only its value is open (a seat heater with no level given); the related controls of a device when only the device or the theme is clear ("make the car toasty": its heating controls). The user will be shown those controls and set them.
 Give each goal the turn where the user first asked for it. A goal is one state of the home at one time: several things asked for at once are one goal, so give the first device as the goal and each other device as a sub-goal with the same turn that serves it. What later turns reveal changes the earlier goal: a correction or clarification makes it more exact rather than adding a goal. When the assistant asks the user a follow-up question, the answer makes the earlier request more exact: give those details the turn of the original request. When the assistant answers a vague request by guessing and asking what the user wants, the user's reply says what they wanted all along: those goals belong to the vague request's turn, and the assistant's guess is not a goal. When a later turn shows how a goal must be reached (such as a relay pressed off then on), change the earlier goal itself. Once a goal has been reached, asking for the same thing again is a new goal with the new turn. Respect the timing and separation of the user's requests: what they asked for separately, at different times, stays separate goals; what they asked for together is one request. Never turn them into a broader request the user didn't make, even if their intent seems predictable.
 
@@ -88,7 +88,6 @@ STRUCTURE = probatio.Schema({
         probatio.Optional("brightness_pct"): int,
         probatio.Optional("fact"): str,
         probatio.Optional("outcome"): probatio.In(list(OUTCOMES)),  # Action: what it does.
-        probatio.Optional("message"): str,  # Action: the words to speak, the household's own.
         probatio.Optional("serves"): int,
         probatio.Optional("about"): probatio.Any(int, probatio.In(["all"])),  # Conduct: the Assist turn objected to.
         probatio.Optional("quote"): str,  # Conduct: the household's own words; fact: the form they asked for.
@@ -108,7 +107,7 @@ CUT = re.compile(r"…|\.\.\.")  # Where a quote leaves words out.
 def clean_goal(goal):
     """A goal with only the fields its kind uses (some providers send every optional field, as null)."""
     keep = {"state": ("entity_id", "state", "brightness_pct"), "sequence": ("entity_id", "states"),
-            "fact": ("fact", "entity_ids", "quote"), "action": ("outcome", "message", "entity_ids"),
+            "fact": ("fact", "entity_ids", "quote"), "action": ("outcome", "entity_ids"),
             "ask": ("entity_ids",), "step": (),
             "conduct": ("about", "quote", "improvement"), "wrap-up": (), "thanks": ()}[goal["kind"]] + ("serves",)
     return {"turn": goal["turn"], "summary": goal.get("summary", ""), "kind": goal["kind"],
@@ -145,7 +144,8 @@ def destination(goals, step):
     return []
 
 
-SPEAKING = ("tts.speak", "assist_satellite.announce", "media_player.play_media")  # Services that speak a message.
+# Services that speak or play an announcement; a legacy text-to-speech engine's own say service (tts.<engine>_say) too.
+SPEAKING = ("tts.speak", "assist_satellite.announce", "assist_satellite.start_conversation", "media_player.play_media")
 
 
 def state_at(view, entity, turn):
@@ -154,37 +154,49 @@ def state_at(view, entity, turn):
     return ((homes[min(max(turn, 1), len(homes)) - 1].get("states") or {}).get(entity) or {}).get("state")
 
 
+def speaking(service):
+    """Whether a service speaks or plays an announcement (SPEAKING, or a legacy engine's tts.<engine>_say)."""
+    return service in SPEAKING or service.startswith("tts.") and service.endswith("_say")
+
+
 def spoken(calls):
-    """What a turn's calls spoke, and on which devices: [{message, targets}], from a broadcast's result (the
-    satellites it was sent to) and the speaking calls a replay's sandbox logged (service, the devices that spoke, the
-    message)."""
+    """What a turn's calls spoke or played, and on which devices: [{message, media, targets}] (media: the audio an
+    announcement played, such as a chime), from a broadcast's result (the satellites it was sent to) and the speaking
+    calls a replay's sandbox logged (service, the devices that spoke, the message or media)."""
     out = []
     for call in calls:
-        if call.get("service") in SPEAKING:  # Logged by a replay's sandbox, wherever it was called from.
-            out.append({"message": call.get("message") or "", "targets": set(call.get("targets") or [])})
+        if speaking(call.get("service") or ""):  # Logged by a replay's sandbox, wherever it was called from.
+            out.append({"message": call.get("message") or "", "media": call.get("media"),
+                        "targets": set(call.get("targets") or [])})
         elif (call.get("tool") or "").endswith("HassBroadcast"):
             data = (call.get("result") or {}).get("data") if isinstance(call.get("result"), dict) else None
             inner = data.get("data") if isinstance(data, dict) else None
-            out.append({"message": str((call.get("args") or {}).get("message") or ""),
+            out.append({"message": str((call.get("args") or {}).get("message") or ""), "media": None,
                         "targets": {t.get("id") for t in (inner or {}).get("success") or [] if isinstance(t, dict)}})
     return out
 
 
+def carries(goal, announcement):
+    """Whether what an announcement said or played ({message, media}) gets across what an action asked for: always,
+    for now. The one place a check of its content would go (DETAILS P9.10.5)."""
+    return True
+
+
 def announced(view, goal, turns):
-    """Whether an announce action was done over these turns' calls (view.calls): its message, its words in order
-    within what was spoken (case and punctuation aside: "come in" in "Kids, please come in"), spoken on
-    every device it's for, by any call (DETAILS P9.7.6); a device is reached when any of its entities spoke (a voice
-    satellite and its speaker are one device), one unavailable as its turn began (view.sources: each turn's home)
-    speaking nowhere, though a broadcast's result names it. None when that can't be told: no calls kept, or a script
-    ran that a recording doesn't see into (view.scripts_seen: a replay's sandbox logs what scripts speak)."""
+    """Whether an announce action was done over these turns' calls (view.calls): an announcement (words that aren't
+    blank, or audio such as a chime) that carries it, on every device it's for, by any call (DETAILS P9.7.6); a device
+    is reached when any of its entities spoke (a voice satellite and its speaker are one device), one unavailable as
+    its turn began (view.sources: each turn's home) speaking nowhere, though a broadcast's result names it. None when
+    that can't be told: no calls kept, or a script ran that a recording doesn't see into (view.scripts_seen: a
+    replay's sandbox logs what scripts speak)."""
     if getattr(view, "calls", None) is None:
         return None
     entities = view.source.get("entities") or {}
     device = lambda e: (entities.get(e) or {}).get("device_id") or e  # noqa: E731
     calls = [c for t in turns for c in view.calls.get(t, [])]
     reached = {device(e) for t in turns for s in spoken(view.calls.get(t, []))
-               if quoted(goal.get("message") or "", s["message"]) for e in s["targets"]
-               if state_at(view, e, t) != "unavailable"}
+               if (s["message"].strip() or s["media"]) and carries(goal, s)
+               for e in s["targets"] if state_at(view, e, t) != "unavailable"}
     if {device(e) for e in goal.get("entity_ids") or []} <= reached:
         return True
     if not getattr(view, "scripts_seen", False) and ran_scripts(calls):
@@ -451,17 +463,8 @@ def problems(view, answer, note=None, existing=(), revisions=()):
                              "towards it: a check because a reply left them unsure, or an objection, is a conduct goal "
                              "about that reply, and a new request a goal of its own.")
         elif kind == "action":
-            words = [t["user_says"] for t in view.digest["turns"] if t["turn"] >= goal["turn"]] + [
-                words for t, words in note_turns.items() if t >= goal["turn"]]  # The request, or a later answer.
             if not goal.get("outcome"):
                 found.append(f"{where}: an action goal needs outcome: {', '.join(OUTCOMES)}.")
-            if not (goal.get("message") or "").strip():
-                found.append(f"{where}: an action goal needs message: the words to speak, as the user said them.")
-            elif CUT.search(goal["message"]):
-                found.append(f"{where}: message must be the whole words to speak, nothing left out.")
-            elif not any(quoted(goal["message"], said) for said in words):
-                found.append(f"{where}: message must be the words to speak as the user said them, in turn "
-                             f"{goal['turn']} or later, copied exactly.")
             if serves is not None and serves != goal["turn"]:
                 found.append(f"{where}: an action asked at a later turn is a goal of its own (no serves), or a step "
                              "when it asks again.")

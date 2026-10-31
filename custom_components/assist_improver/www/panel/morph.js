@@ -10,10 +10,14 @@
 const KEYS = ["id", "data-key", "data-id", "data-step"];
 const LOOKAHEAD = 8;  // How far ahead an unkeyed element looks for its old self before it's made anew.
 
+let placed = [];  // The nodes the patch in progress put in anew (each the top of what it brought), which morph returns.
+
 export function morph(target, html) {
   const template = document.createElement("template");  // Inert: nothing in it loads or runs until it's placed.
   template.innerHTML = html;
+  placed = [];
   patchChildren(target, template.content);
+  return placed;
 }
 
 const keyOf = (node) => {
@@ -49,6 +53,7 @@ function patchChildren(live, next) {
     const old = find(cursor, node);
     if (!old) {
       remember(node);
+      placed.push(node);
       live.insertBefore(node, cursor);
     } else {
       if (old === cursor) cursor = cursor.nextSibling;

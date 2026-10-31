@@ -1,5 +1,6 @@
-// A review: the improvement shown the way a code review shows a change. A summary on top, the details folded, and one
-// decision at a time in the footer; after a decision the footer says what happened, with Undo and the next review.
+// A review: what you get on top, then the evidence (each test's before and after, open), then why it's safe; what went
+// wrong and what changes folded below, the changes as a code review shows them. One decision at a time in the footer;
+// after a decision the footer says what happened and offers the way on, never another decision where the last one was.
 
 const v = new URL(import.meta.url).search;  // ?v=<version>, passed on to every module this one loads.
 const [{esc, fill}, {STATUS, TEXT}, common, {dialog}] = await Promise.all([
@@ -18,8 +19,10 @@ const section = (p, key, title, inner, rich = false) =>
 const SHORT = 40;  // Diff rows a file can have and still show open at first.
 
 export function opened(r) {
-  // What a review shows open at first: what changes, and each file short enough to read at a glance.
-  return ["changes", ...r.changes.flatMap((c, n) => c.rows.length && c.rows.length <= SHORT ? [`file${n}`] : [])];
+  // What a review shows open at first: each test's before and after; and, once what changes is opened, each file short
+  // enough to read at a glance.
+  return [...r.tests.flatMap((t, n) => t.before?.length || t.after?.length ? [`test${n}`] : []),
+          ...r.changes.flatMap((c, n) => c.rows.length && c.rows.length <= SHORT ? [`file${n}`] : [])];
 }
 
 function bar(added, removed) {
@@ -38,19 +41,28 @@ function diff(rows, change) {
        <td class="sign">${r.sign === " " ? "" : r.sign === "-" ? "&#8722;" : "+"}</td><td class="text">${esc(r.text)}</td></tr>`).join("")}</table>`;
 }
 
-function replay(t) {
-  // What a test replayed: the conversation with the change, then as it went (the turns the test covers), read as the
-  // home page reads a conversation; side by side where there's room, as it went on the left.
-  const R = TEXT.review, before = t.before || [], after = t.after || [];
-  const side = (cls, title, turns, empty) => `<div class="rp-side ${cls}"><div class="rp-head">${esc(title)}</div>${
-    turns.length ? dialog(turns) : `<p class="rp-empty">${esc(empty)}</p>`}</div>`;
-  // Without its recording (tidied away since), only the replay.
-  return `<div class="rp${before.length ? " two" : ""}">${side("rp-after", R.after, after, R.stopped)}${
-    before.length ? side("rp-before", R.before, before) : ""}</div>`;
+function stillOpen(open) {
+  // What the household pointed out that this test doesn't show fixed, in their words, under the replay: each with a
+  // bubble, the reply that still did it and why, or that this test couldn't tell.
+  const R = TEXT.review;
+  return open.length ? `<div class="rp-open"><div class="rp-open-head">${esc(R.open.title)}</div>${open.map((o) =>
+    `<div class="line open" tabindex="0" data-tip="${esc(o.set_aside ? R.open.setAside : fill(R.open.reply, {n: o.reply, why: o.why}))
+    }"><span class="sign">!</span><span>${esc(o.quote)}</span></div>`).join("")}</div>` : "";
 }
 
-function test(p, t, n) {
-  // A test's row: what it tested and what it showed; opened, its replay.
+function replay(t, open) {
+  // What a test replayed: the conversation as it went (the turns the test covers), then with the change, read as the
+  // home page reads a conversation; side by side where there's room. What's still open closes the replay.
+  const R = TEXT.review, before = t.before || [], after = t.after || [];
+  const side = (cls, title, turns, empty, end = "") => `<div class="rp-side ${cls}"><div class="rp-head">${esc(title)}</div>${
+    turns.length ? dialog(turns) : `<p class="rp-empty">${esc(empty)}</p>`}${end}</div>`;
+  // Without its recording (tidied away since), only the replay.
+  return `<div class="rp${before.length ? " two" : ""}">${before.length ? side("rp-before", R.before, before) : ""}${
+    side("rp-after", R.after, after, R.stopped, stillOpen(open))}</div>`;
+}
+
+function test(p, t, n, open) {
+  // A test's row: what it tested and what it showed; opened (at first), its before and after.
   const R = TEXT.review, more = t.more_words;
   const row = `<span class="mark">${t.improved ? "&#10003;" : "&#8211;"}</span><span>${esc(t.summary)}</span>
     <span class="result">${esc(t.result || (t.improved ? "improved" : "not improved"))}</span>${more
@@ -59,8 +71,8 @@ function test(p, t, n) {
         esc(fill(R.open.chip, {n: t.open}))}</span>` : ""}`;
   const key = `test${n}`;
   return `<li class="${t.improved ? "ok" : "no"}">${t.before?.length || t.after?.length
-    ? `<details data-key="${key}" ${p.open.has(key) ? "open" : ""}><summary class="row">${row}</summary>${replay(t)}</details>`
-    : `<div class="row">${row}</div>`}</li>`;
+    ? `<details data-key="${key}" ${p.open.has(key) ? "open" : ""}><summary class="row">${row}</summary>${replay(t, open)}</details>`
+    : `<div class="row">${row}</div>${stillOpen(open)}`}</li>`;
 }
 
 function reasonsFor(r, decision) {
@@ -68,22 +80,37 @@ function reasonsFor(r, decision) {
   return (r.choices.find((c) => c.value === decision)?.reasons || []).filter((key) => TEXT.review.reasons[key]);
 }
 
+function forward(r) {
+  // The way on after a decision: the next review waiting, else back to the list (all caught up, unless this one still
+  // waits for the household).
+  const waits = ["awaiting_review", "needs_attention"].includes(r.status) && !r.revising;
+  return r.next_pending ? `<button class="btn" id="next" data-id="${esc(r.next_pending.id)}">Next: ${esc(r.next_pending.title)} &#8594;</button>`
+    : `<button class="link" id="back-list">${esc(waits ? TEXT.review.back : TEXT.review.caughtUp)}</button>`;
+}
+
 function footer(p, r) {
-  // Right after a decision, the footer says what happened (with Undo) and offers the next review: the page above
+  // Right after a decision, the footer says what happened and offers the way on, where the decision's button was:
+  // never another decision there. What else it offers is a link beside what happened: Undo after an accept, Decide
+  // again once undone, Send it back to resolve once an accept met a conflict. While its revision is worked on, the
+  // same, opened afresh too: the way on, and Decide on this version, the household's way out meanwhile. The page above
   // stays where it was.
-  const said = p.result || r.recent_outcome, ok = p.result ? p.resultOk : r.recent_outcome_ok;
-  const done = said && `<div class="done-msg ${ok ? "ok" : "bad"}"><span class="mark">${ok ? "&#10003;" : "!"}</span><span>${
-    esc(said)}${r.choices.some((c) => c.value === "undo") ? ` <button class="link" id="undo-link">Undo</button>` : ""}</span></div>`;
-  // Undone: up for review again, so the decision is open right here, under what happened; an accept that met a
-  // conflict asks here at once whether to send it back to resolve it.
-  const again = said && ["awaiting_review", "conflict"].includes(r.status) && r.choices.length > 0;
-  if (said && !again) {
-    return `<div class="footer"><div class="footer-inner done-row">${done}
-      ${r.next_pending ? `<button class="btn" id="next" data-id="${esc(r.next_pending.id)}">Next: ${esc(r.next_pending.title)} &#8594;</button>`
-        : `<button class="link" id="back-list">All caught up · back to the list</button>`}</div></div>`;
+  const R = TEXT.review, ok = p.result ? p.resultOk : r.recent_outcome_ok;
+  // An accept that met a conflict: why is under "Can't apply it now:" above, so here only that nothing changed.
+  const restated = !ok && !p.failed && r.status === "conflict" && r.conflicts.length > 0;
+  const said = (p.result || r.recent_outcome) && (restated ? R.nothingChanged : p.result || r.recent_outcome);
+  const has = (value) => r.choices.some((c) => c.value === value), off = p.busy ? "disabled" : "";
+  const link = has("undo") ? `<button class="link" id="undo-link" ${off}>${esc(R.undo)}</button>`
+    : has("resolve") ? `<button class="link" id="resolve-link" ${off}>${esc(r.choices[0].label)}</button>`
+    : has("accept") ? `<button class="link" id="again-link">${esc(r.revising ? R.thisVersion : R.again)}</button>` : "";
+  const message = (withLink) => said && `<div class="done-msg ${ok ? "ok" : "bad"}"><span class="mark">${ok ? "&#10003;" : "!"}</span><span>${
+    esc(said)}${withLink && link ? ` ${link}` : ""}</span></div>`;
+  // A decision that couldn't be made and is still open keeps its bar, with why above it and the note as typed.
+  if ((said || r.revising) && !p.decideAgain && !(p.failed && has(p.failed))) {
+    return `<div class="footer"><div class="footer-inner done-row">${message(true) || `<div class="done-msg">${link}</div>`}${
+      forward(r)}</div></div>`;
   }
-  if (!r.choices.length) return "";
-  const decision = p.decision || r.choices[0].value, R = TEXT.review;
+  if (!r.choices.length) return "";  // Decided and closed: nothing to decide.
+  const decision = p.decision || r.choices[0].value;
   const label = r.choices.find((c) => c.value === decision)?.label || decision;
   const needsNote = !NO_NOTE.includes(decision);
   // Each reason this decision can be given with, a box to tick (ticked, the note asks only for anything to add).
@@ -95,59 +122,54 @@ function footer(p, r) {
                   decline: "Why not? (optional)"}[decision] || "Add a note (optional)";
   const menu = p.menuOpen ? `<div class="menu">${r.choices.map((c) =>
     `<div data-choice="${esc(c.value)}" class="${c.value === decision ? "on" : ""}">${esc(c.label)}</div>`).join("")}</div>` : "";
+  // While a decision is on its way the button keeps its words and size; the arrow turns into a spinner. One choice
+  // alone (Undo changes, Send it back to resolve) has no arrow.
+  const busy = p.busy ? "disabled" : "", one = r.choices.length === 1;
   return `${p.menuOpen ? `<div class="backdrop" id="menu-backdrop"></div>` : ""}<div class="footer"><div class="footer-inner">
-      ${again ? done : ""}${reasons}${needsNote ? `<textarea id="note" placeholder="${esc(prompt)}">${esc(p.note || "")}</textarea>` : ""}
-      <div class="split"><button class="main" id="decide" ${p.busy ? "disabled" : ""}>${esc(p.busy ? "Working…" : label)}</button>
-      <button class="arrow" id="arrow" aria-label="Other decisions" ${p.busy ? "disabled" : ""}>&#9662;</button>${menu}</div>
+      ${said ? message(false) : ""}${reasons}${needsNote ? `<textarea id="note" placeholder="${esc(prompt)}">${esc(p.note || "")}</textarea>` : ""}
+      <div class="split${one ? " one" : ""}" ${p.busy ? 'aria-busy="true"' : ""}><button class="main" id="decide" ${busy}>${esc(label)}</button>${
+        one ? "" : `<button class="arrow" id="arrow" aria-label="Other decisions" ${busy}><span class="caret">&#9662;</span>${
+          p.busy ? `<span class="spinner" aria-hidden="true"></span>` : ""}</button>`}${menu}</div>
     </div></div>`;
 }
 
 export function render(p) {
-  const r = p.review;
-  const R = TEXT.review, spared = r.spared || [], followed = r.followed || [], open = r.still_open || [];
-  const outcome = common.gains({enabled: r.enabled.length, removed: r.removed.length, spared: spared.length,
-                                followed: followed.length});
-  const lines = (cls, sign, items) => `<div class="lines">${items.map((t) =>
-    `<div class="line ${cls}"><span class="sign">${sign}</span><span>${esc(t)}</span></div>`).join("")}</div>`;
+  const r = p.review, R = TEXT.review;
+  const outcome = common.gains(r);
   const files = r.changes.map((c, n) => `<div class="file">${section(p, `file${n}`,
     `<span class="name">${esc(c.name)}</span><span class="kind ${esc(c.kind)}">${esc(c.kind)}</span>
      ${c.added ? `<span class="count-add">+${c.added}</span>` : ""}${c.removed ? `<span class="count-del">&#8722;${c.removed}</span>` : ""}
      ${bar(c.added, c.removed)}`, diff(c.rows, c), true)}</div>`).join("");
-  const tests = r.tests.map((t, n) => test(p, t, n)).join("");
-  // The summary, always open at the top: what you get (the editor's words), why it's safe (stated by code), and
-  // what was tested, each test opening to its replay. The technical cause is last, for whoever wants it.
+  // What the household pointed out that isn't shown fixed goes with the test that counts it (the first, without one).
+  const open = r.still_open, counted = Math.max(0, r.tests.findIndex((t) => t.open));
+  const tests = r.tests.map((t, n) => test(p, t, n, n === counted ? open : [])).join("");
+  // On top, open: what you get (the editor's words), the evidence (each test's before and after), and why it's safe
+  // (stated by code). Below, folded: what went wrong, then what changes.
   const summary = `<div class="card summary">
-    ${r.benefit ? `<div class="label">What you get</div><p class="benefit">${esc(r.benefit)}</p>` : ""}
-    <div class="label">Why it's safe</div><ul class="safe">${r.safety.map((f) =>
-      `<li><span class="mark">&#10003;</span><span>${esc(f)}</span></li>`).join("")}</ul>
-    <div class="label">Tested on</div><ul class="tests">${tests}</ul>
-    ${r.wordier ? `<p class="lead more-words-line">${esc(fill(TEXT.review.moreWordsLine, {n: r.wordier}))}</p>` : ""}</div>`;
+    ${r.benefit ? `<div class="label">${esc(R.get)}</div><p class="benefit">${esc(r.benefit)}</p>` : ""}
+    <div class="label">${esc(R.tested)}</div><ul class="tests">${tests}</ul>
+    ${r.wordier ? `<p class="lead more-words-line">${esc(fill(R.moreWordsLine, {n: r.wordier}))}</p>` : ""}
+    <div class="label">${esc(R.safe)}</div><ul class="safe">${r.safety.map((f) =>
+      `<li><span class="mark">&#10003;</span><span>${esc(f)}</span></li>`).join("")}</ul></div>`;
   const how = `<div class="details-body"><p>${esc(r.cause)}</p>
     ${r.physical ? `<div class="note"><span>&#9432;</span><span>Physical positions aren't simulated in the sandbox: a door's motion, for
     example, is taken as done when its command succeeds.</span></div>` : ""}</div>`;
-  const sections = [
-    r.enabled.length && section(p, "enabled", `New things Assist can do (${r.enabled.length})`, lines("add", "+", r.enabled)),
-    r.removed.length && section(p, "removed", `Turns no longer needed (${r.removed.length})`, lines("del", "−", r.removed)),
-    spared.length && section(p, "spared", esc(fill(R.spared.title, {n: spared.length})), lines("add", "✓", spared)),
-    followed.length && section(p, "followed", esc(fill(R.followed.title, {n: followed.length})), lines("add", "✓", followed)),
-    // Each with a bubble: the reply that still did it and why, or that this test couldn't tell.
-    open.length && section(p, "open", esc(fill(R.open.title, {n: open.length})), `<div class="lines">${open.map((o) =>
-      `<div class="line open" tabindex="0" data-tip="${esc(o.set_aside ? R.open.setAside : fill(R.open.reply, {n: o.reply, why: o.why}))
-      }"><span class="sign">!</span><span>${esc(o.quote)}</span></div>`).join("")}</div>`),
-    section(p, "changes", `What changes (${r.changes.length})`, `<div class="files">${files}</div>`),
-    section(p, "details", "What went wrong", how),
-  ].filter(Boolean).join("");
+  const sections = section(p, "details", esc(R.wrong), how)
+    + section(p, "changes", esc(fill(R.changes, {n: r.changes.length})), `<div class="files">${files}</div>`);
   const conflicts = r.conflicts.length ? `<div class="conflict"><b>Can't apply it now:</b><br>${r.conflicts.map((c) =>
     `${esc(c.what)}: ${esc(c.why)}`).join("<br>")}</div>` : "";
+  // Being revised: the chip says so, and the note it's being revised for is under the headline.
+  const status = r.revising ? "revising" : r.status;
   return {
     bar: common.toolbar("Improvements", true),
     page: `<div class="page">
-    <h1>${esc(r.title)} <span class="chip ${esc(r.status)}">${esc(STATUS[r.status] || r.status)}</span></h1>
+    <h1>${esc(r.title)} <span class="chip ${esc(status)}">${esc(STATUS[status] || status)}</span></h1>
     <div class="outcome">${esc(outcome)}</div>
     ${r.revises ? `<div class="revises">${r.revises.conflict ? `Revised after a conflict on “${esc(r.revises.title)}”`
       : `Revised after your note on “${esc(r.revises.title)}”${r.revises.note ? `: “${esc(r.revises.note)}”` : ""}`}</div>` : ""}
     ${r.unrevised ? `<div class="revises unrevised">${esc(fill(r.unrevised.why ? R.unrevised : R.unrevisedPlain,
       r.unrevised))}</div>` : ""}
+    ${r.revising?.note ? `<div class="revises">${esc(fill(R.revisingNote, r.revising))}</div>` : ""}
     ${conflicts}
     ${summary}<div class="card">${sections}</div></div>`,
     layer: footer(p, r),
@@ -172,9 +194,12 @@ async function decide(p, decision = p.decision || p.review.choices[0].value) {
       ? {...await p.ws("conflict/resolve", {improvement_id: r.id}), ok: true}
       : await p.ws("decide", {improvement_id: r.id, decision, note: NO_NOTE.includes(decision) ? "" : (p.note || ""),
                               ...(reason ? {reason} : {})});
-    Object.assign(p, {result: res.result, resultOk: res.ok, decision: null, note: "", reason: null});
+    Object.assign(p, {result: res.result, resultOk: res.ok, decision: null, note: "", reason: null, decideAgain: false,
+                      failed: null});
   } catch (err) {
-    Object.assign(p, {result: err.message || String(err), resultOk: false});
+    // Not made: if it's still open once the review is read again, its bar stays (footer); if not (decided elsewhere
+    // meanwhile), what's there now never sits where its button was.
+    Object.assign(p, {result: err.message || String(err), resultOk: false, decideAgain: false, failed: decision});
   }
   p.busy = false;
   await p.load();
@@ -189,6 +214,8 @@ export const actions = {
     }],
     ["#decide", (p) => decide(p)],
     ["#undo-link", (p) => decide(p, "undo")],
+    ["#resolve-link", (p) => decide(p, "resolve")],
+    ["#again-link", (p) => { p.decideAgain = true; p.render(); }],
     ["#next", (p, el) => p.go(el.dataset.id)],
     ["#back-list", (p) => p.go(null)],
   ],

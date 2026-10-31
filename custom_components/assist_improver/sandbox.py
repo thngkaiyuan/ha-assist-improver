@@ -37,7 +37,7 @@ from types import ModuleType, SimpleNamespace
 
 import probatio
 from homeassistant.core import SupportsResponse, callback
-from homeassistant.exceptions import HomeAssistantError
+from homeassistant.exceptions import HomeAssistantError, ServiceNotSupported
 from homeassistant.util import dt as dt_util
 
 from . import devices
@@ -436,10 +436,12 @@ class Sandbox:
     def stand_in_missing(self, scripts):
         """The actions the household's scripts name that the sandbox has no service for (a phone's notification, a
         scene it doesn't load): flagged when a script reaches one, and the script runs on, as it would at home."""
+        from .analyzer import speaking
         for name in _actions(scripts or {}):
             domain, _, service = name.partition(".")
-            if service and not self.hass.services.has_service(domain, service):
-                self.hass.services.async_register(domain, service, self._no_service)
+            if service and not self.hass.services.has_service(domain, service):  # A legacy engine's say: spoken.
+                self.hass.services.async_register(domain, service, functools.partial(_speak, self.hass)
+                                                  if speaking(name) else self._no_service)
 
     async def _no_service(self, call):
         from .serialization import plain
@@ -861,42 +863,60 @@ def _stand_in_speakers(hass):
             component._entities.setdefault(entity_id, Speaker(entity_id))  # noqa: SLF001 - as its platform adds one.
 
 
-# A message spoken on devices (DETAILS P9.10.5) leaves no state to emulate: each speaking service (analyzer.SPEAKING)
-# is taken as done, and what it spoke where is logged, whatever called it (a broadcast, a script), for a replay to judge
-# an action by. Nothing is heard on the copy, so sandbox mode flags each, as it flags a command with no emulation.
+# An announcement on devices (DETAILS P9.10.5) leaves no state to emulate: each speaking service (analyzer.speaking)
+# is taken as done, and what it said or played where is logged, whatever called it (a broadcast, a script), for a
+# replay to judge an action by. Nothing is heard on the copy, so sandbox mode flags each, as it flags a command with no
+# emulation.
 def _emulate_speaking(hass):
-    """Registered after the integrations' own and the emulated drivers, before the household's scripts load."""
+    """Registered after the integrations' own and the emulated drivers, before the household's scripts load (a legacy
+    engine's say, configured in YAML, never loads here: stand_in_missing takes it)."""
     from .analyzer import SPEAKING
     for name in SPEAKING:
         hass.services.async_register(*name.split("."), functools.partial(_speak, hass))
 
 
 async def _speak(hass, call):
-    """Log what a speaking call spoke: {service, message, targets}; tts.speak speaks with its engine on its media
-    players, the others on the entities they target. As Home Assistant's entity services skip an entity that's missing
-    or unavailable, nothing is spoken there. A media player's play_media that isn't a spoken message has no
+    """Log what a speaking call said or played: {service, message, targets}, with media for an announcement's audio
+    (a chime); tts.speak speaks with its engine on its media players, a legacy engine's say on the media players it
+    targets, the others on the entities they target. As Home Assistant's entity services skip an entity that's missing
+    or unavailable, nothing is spoken there, and a satellite named that can't announce (or start a conversation)
+    refuses the call. A media player's play_media that's neither a spoken message nor an announcement has no
     emulation."""
+    from homeassistant.helpers import config_validation as cv
     from homeassistant.helpers.service import async_extract_entity_ids
     from .serialization import plain
     sandbox, data, service = hass.data[SANDBOX_KEY], dict(call.data), f"{call.domain}.{call.service}"
     here = lambda e: (state := hass.states.get(e)) is not None and state.state != "unavailable"  # noqa: E731
-    targeted = sorted(e for e in await async_extract_entity_ids(call) if e.split(".", 1)[0] == call.domain and here(e))
-    if call.domain == "tts":
+    found = sorted(e for e in await async_extract_entity_ids(call) if here(e))
+    targeted, media = [e for e in found if e.split(".", 1)[0] == call.domain], None
+    if service == "tts.speak":
         if not targeted:  # No engine to speak with.
             return
         players = data.get("media_player_entity_id") or []
         targets = sorted(p.strip() for p in (players.split(",") if isinstance(players, str) else players) if here(
             p.strip()))
         message = data.get("message")
-    else:
+    elif call.domain == "tts":  # A legacy engine's say, on its media players (named, as its schema reads them, or all).
+        named = data.get("entity_id") or []
+        players = hass.states.async_entity_ids("media_player") if named == "all" else cv.entity_ids(named)
+        targets, message = sorted(e for e in players if e.startswith("media_player.") and here(e)), data.get("message")
+    elif call.domain == "media_player":
         targets = targeted
-        media = data.get("media_content_id") or (data.get("media") or {}).get("media_content_id") or data.get(
-            "media_id")
-        message = data.get("message") if call.service == "announce" else None
-        message = message or _tts_message(media)
-    if message is None:
-        return await sandbox._device_command(call)  # noqa: SLF001 - the driver's, as for any other command.
-    sandbox.spoken.append({"service": service, "message": str(message), "targets": targets})
+        media = data.get("media_content_id") or (data.get("media") or {}).get("media_content_id")
+        message = _tts_message(media)
+        if message is None and not cv.boolean(data.get("announce") or False):
+            return await sandbox._device_command(call)  # noqa: SLF001 - the driver's, as for any other command.
+    else:  # A satellite's announcement, or a conversation it starts: its words, or its audio.
+        start, feature = ("start_", 2) if call.service == "start_conversation" else ("", 1)  # Its feature's bit.
+        able = lambda e: int(hass.states.get(e).attributes.get("supported_features") or 0) & feature  # noqa: E731
+        named = data.get("entity_id") or []
+        if refused := [e for e in targeted if e in cv.entity_ids(named) and not able(e)]:
+            raise ServiceNotSupported(call.domain, call.service, refused[0])
+        targets, media = [e for e in targeted if able(e)], data.get(f"{start}media_id")
+        media = media.get("media_content_id") if isinstance(media, dict) else media  # As the media selector gives it.
+        message = data.get(f"{start}message") or _tts_message(media)
+    sandbox.spoken.append({"service": service, "message": str(message or ""), "targets": targets,
+                           **({"media": str(media)} if media and _tts_message(media) is None else {})})
     if call.domain == "tts":
         sandbox.flags.append({"service": service, "args": plain(data)})
     data = {k: v for k, v in data.items() if k not in ("entity_id", "device_id", "area_id", "floor_id", "label_id")}

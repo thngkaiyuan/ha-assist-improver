@@ -19,7 +19,7 @@ export const TEXT = {
              tip: "When on, ask Assist to file an improvement when something didn't go well: the improver studies it as soon as the conversation ends."},
   // Your conversations, on the home page: find them, read them, send them in.
   conversations: {title: "Your conversations", search: "Search what was said, or when", all: "All", today: "Today", week: "7 days",
-                  month: "30 days", newest: "Newest", effort: "Most back-and-forth", oldest: "Oldest",
+                  month: "30 days", newest: "Newest", effort: "Most back-and-forth", oldest: "Oldest", sort: "Sort",
                   lead: "Pick the ones that didn't go the way you wanted, and run: the improver finds what went wrong and tests fixes.",
                   leadOnDemand: "Pick the ones that didn't go well, and run. Any you send in, or file with Assist, go straight to the improver.",
                   pick: "Select", pickOne: "Select “{said}”", selectAll: "Select all {n}",
@@ -28,7 +28,7 @@ export const TEXT = {
                   deleteAsk: "Delete {n} conversation{s} from Assist Improver? The improver can no longer check changes against {them}.",
                   clearSearch: "Clear search",
                   runOn: "Run on {n} conversation{s}", failedStep: "failed step", failedStepLabel: "Failed step:",
-                  you: "You", assist: "Assist", send: "Send this one in", sending: "Sending…",
+                  you: "You", assist: "Assist", send: "Send this one in",
                   note: "What should have happened? (optional)", yourNote: "Your note:",
                   sentNow: "Sent in. The improver is looking at it now.", sentLater: "Sent in. It goes in with your next run.",
                   // Where each stands: the stage its flow record names, or its outcome (conversations.standing).
@@ -53,17 +53,22 @@ export const TEXT = {
                   more: "Show more", none: "No conversations match.", allArchived: "Nothing needs you right now.", nothing: "(nothing said)",
                   close: "No conversation has all those words. The closest:",
                   empty: "Use Assist as usual: your conversations show up here, ready to send in."},
-  // An improvement's review: each test opens to its conversation as it went, and its replay with the change.
-  review: {before: "Before", after: "With the change", stopped: "The replay stopped before Assist replied.",
+  // An improvement's review: what you get, each test's before and after, and why it's safe; folded below, what went
+  // wrong and what changes. After a decision, the way on, and a link for anything else.
+  review: {get: "What you get", tested: "Before & after", safe: "Why it's safe", wrong: "What went wrong",
+           changes: "What changes ({n})", before: "Before", after: "After", stopped: "The replay stopped before Assist replied.",
+           caughtUp: "All caught up · back to the list", back: "Back to the list", undo: "Undo", again: "Decide again",
+           thisVersion: "Decide on this version", nothingChanged: "Nothing was changed.",
+           // While its revision's round runs: the note it's being revised for, under the headline.
+           revisingNote: "Being revised for your note “{note}”",
            // A revision whose round brought no new version: said with the version still shown, with the proposer's why.
            unrevised: "No new version for your note “{note}”: {why}", unrevisedPlain: "No new version for your note “{note}”.",
-           // What else an improvement gets you, beside new things Assist can do and fewer turns: side effects it no
-           // longer leaves (each device, as it stays) and what you pointed out that it fixed (your words). {n}: how many.
-           spared: {gain: "{n} unwanted change{s} avoided", title: "Unwanted changes avoided ({n})"},
-           followed: {gain: "follows your feedback", title: "What you pointed out, now fixed ({n})"},
-           // What you pointed out that a test doesn't show fixed, in your words: a section, each line's bubble (the
-           // reply that still did it and why, or that it couldn't tell), and an amber chip on its test's row.
-           open: {title: "Still open ({n})", reply: "Reply {n}: {why}",
+           // What else an improvement gets you, beside new things Assist can do and fewer turns, in the line under its
+           // headline: side effects it no longer leaves, and that it fixed what you pointed out. {n}: how many.
+           spared: {gain: "{n} unwanted change{s} avoided"}, followed: {gain: "follows your feedback"},
+           // What you pointed out that a test doesn't show fixed, in your words: under its replay, each line's bubble
+           // (the reply that still did it and why, or that it couldn't tell), and an amber chip on its test's row.
+           open: {title: "Still open", reply: "Reply {n}: {why}",
                   setAside: "It didn't happen without the change either, so this test couldn't show it.",
                   chip: "{n} still open", chipTip: "Something you pointed out still happened in a reply with this change."},
            // A test whose replay made Assist noticeably wordier (counted by code): its chip and tooltip, and a line
@@ -176,4 +181,4 @@ export const COUNTS = {requests: "Your Assist", triage: "Triage", analyze: "Anal
 export const SCHEDULE = Object.entries(TEXT.schedule);
 export const GATE_NAMES = Object.fromEntries(["triage", "analyze", "propose", "write"].map((g) => [g, STEPS[g].title]));
 export const STATUS = {awaiting_review: "To review", needs_attention: "Needs attention", applied: "Applied", undone: "Undone",
-  declined: "Declined", revised: "Replaced by a revision", conflict: "Changed since tested"};
+  declined: "Declined", revised: "Replaced by a revision", conflict: "Changed since tested", revising: "Being revised"};

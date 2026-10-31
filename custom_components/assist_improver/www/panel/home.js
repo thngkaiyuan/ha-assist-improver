@@ -8,20 +8,22 @@ const [{esc, plural}, {TEXT, STATUS}, {COG}, common, conversations] = await Prom
 
 const rows = (items) => items.map((i) => {
   const gains = common.gains(i);
-  // A revision of an earlier improvement says so beside its title.
+  // A revision of an earlier improvement says so beside its title. One to review needs no chip saying so (its heading
+  // does): it opens, as the chevron says. Any other status has its chip, being revised among them.
+  const status = i.revising ? "revising" : i.status;
   return `<button class="item" type="button" data-id="${esc(i.id)}"><span class="title">${esc(i.title)}${
       i.revision ? ` <span class="tag">Revision</span>` : ""}
-      ${gains ? `<span class="gains">${esc(gains)}</span>` : ""}</span>
-      <span class="chip ${esc(i.status)}">${esc(STATUS[i.status] || i.status)}</span></button>`;
+      ${gains ? `<span class="gains">${esc(gains)}</span>` : ""}</span>${status === "awaiting_review"
+      ? `<span class="go" aria-hidden="true">&#8250;</span>` : `<span class="chip ${esc(status)}">${esc(STATUS[status] || status)}</span>`}</button>`;
 }).join("");
 
 function main(p, items) {
   // What waits for the household's decision, then their conversations.
   const {run} = p.run || {};
-  const pending = items.filter((i) => i.pending);
-  const reviews = pending.length ? `<h1>${plural(pending.length, "improvement")} to review</h1>
-      <p class="lead">Each was tested on your own conversations. Open one, check what changes, and decide.</p>
-      <div class="card">${rows(pending)}</div>` : "";
+  // Those being revised wait on the improver: listed after the rest, and not counted as to review.
+  const pending = items.filter((i) => i.pending), waiting = pending.filter((i) => !i.revising).length;
+  const reviews = pending.length ? `${waiting ? `<h1>${plural(waiting, "improvement")} to review</h1>` : ""}
+      <div class="card">${rows([...pending.filter((i) => !i.revising), ...pending.filter((i) => i.revising)])}</div>` : "";
   return `${reviews}${common.failure(p, run)}${history(p, items)}${conversations.section(p)}`;
 }
 

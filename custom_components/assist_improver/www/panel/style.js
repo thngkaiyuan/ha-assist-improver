@@ -1,12 +1,21 @@
 // The panel's styles: Home Assistant's theme variables, with the panel's own tints on top.
 
 export const STYLE = `
-  :host { display: block; min-height: 100vh; background: var(--primary-background-color); color: var(--primary-text-color);
+  /* A column the height of the screen at least: the header, the page, and a footer at the bottom however short the page,
+     so it never sits under a short list and drops away as the page grows. */
+  :host { display: flex; flex-direction: column; min-height: 100vh; background: var(--primary-background-color);
+    color: var(--primary-text-color);
     font-family: var(--paper-font-body1_-_font-family, Roboto, sans-serif);
     --add-bg: rgba(46, 160, 67, 0.15); --add-num: rgba(46, 160, 67, 0.30); --add-fg: #1a7f37;
     --del-bg: rgba(248, 81, 73, 0.15); --del-num: rgba(248, 81, 73, 0.30); --del-fg: #cf222e; --warn-fg: #946100; }
   /* Text in the panel's own tints reads at 3:1 or better: deeper tones on a light theme, the brighter ones on a dark. */
   :host(.dark) { --add-fg: #2da44e; --del-fg: #e5534b; --warn-fg: #c9861a; }
+  /* The screen's safe areas (a phone's status bar and home indicator, its rounded corners in landscape), as Home
+     Assistant gives them: the panel handles them itself (panel.py), so the header runs up under the status bar and
+     the footer down to the bottom edge, with what's in them clear of both, and nothing shifts at the end of a scroll. */
+  :host { --inset-top: var(--safe-area-inset-top, 0px); --inset-bottom: var(--safe-area-inset-bottom, 0px);
+    --inset-left: var(--safe-area-content-inset-left, var(--safe-area-inset-left, 0px));
+    --inset-right: var(--safe-area-inset-right, 0px); }
   .region { display: contents; }
   .menu-slot { display: flex; }
   .loading { display: flex; align-items: center; gap: 10px; padding: 8px 4px; color: var(--secondary-text-color);
@@ -17,12 +26,20 @@ export const STYLE = `
   .dv-loading { display: flex; align-items: center; gap: 8px; }
   @keyframes spin { to { transform: rotate(360deg); } }
   @keyframes appear { from { opacity: 0; } }
-  .toolbar { display: flex; align-items: center; gap: 8px; height: 56px; padding: 0 12px; font-size: 20px;
+  /* Motion: what a tap reveals fades in where it will stay (the panel marks it fresh for the fade, app.js); nothing
+     slides, grows or moves from under the finger. */
+  @media (prefers-reduced-motion: no-preference) { .fresh { animation: appear .16s ease-out; } }
+  /* Under a phone's status bar (Home Assistant's app): the toolbar's colour, pinned, so nothing scrolls under the clock. */
+  .status-strip { position: sticky; top: 0; z-index: 12; flex: none; height: var(--inset-top);
+    background: var(--app-header-background-color, var(--primary-color)); }
+  .toolbar { display: flex; align-items: center; gap: 8px; height: 56px; font-size: 20px;
+    padding: 0 max(12px, var(--inset-right)) 0 max(12px, var(--inset-left));
     background: var(--app-header-background-color, var(--primary-color)); color: var(--app-header-text-color, white); }
   .tb-back { display: inline-flex; align-items: center; gap: 8px; border: none; background: none; color: inherit;
     font: inherit; padding: 6px 8px; margin-left: -8px; border-radius: 8px; cursor: pointer; }
   .tb-back:hover { background: rgba(127, 127, 127, 0.15); }
-  .page { max-width: 960px; margin: 0 auto; padding: 16px 16px 24px; }
+  .page { width: 100%; max-width: 992px; box-sizing: border-box; margin: 0 auto;  /* 960 px of content, as wide as can be. */
+    padding: 16px max(16px, var(--inset-right)) 24px max(16px, var(--inset-left)); }
   a { color: var(--primary-color); text-decoration: none; cursor: pointer; }
   .card { background: var(--card-background-color); border: 1px solid var(--divider-color); border-radius: 12px;
     overflow: hidden; margin-bottom: 12px; }
@@ -31,6 +48,7 @@ export const STYLE = `
   .item:last-child { border-bottom: none; }
   .item:hover { background: var(--secondary-background-color); }
   .item .title { flex: 1; }
+  .item .go { font-size: 22px; line-height: 1; color: var(--secondary-text-color); }
   .item .tag { border: 1px solid var(--divider-color); background: none; margin-left: 4px; vertical-align: 1px; }
   .chip { font-size: 12px; padding: 2px 8px; border-radius: 10px; border: 1px solid var(--divider-color); color: var(--secondary-text-color); white-space: nowrap; }
   .chip.pending, .chip.awaiting_review { border-color: var(--primary-color); color: var(--primary-color); }
@@ -61,9 +79,7 @@ export const STYLE = `
   .count-add { color: var(--add-fg); font-weight: 600; } .count-del { color: var(--del-fg); font-weight: 600; }
   .bar { display: inline-flex; gap: 2px; } .bar i { width: 8px; height: 8px; border-radius: 2px; background: var(--divider-color); }
   .bar i.a { background: var(--add-fg); } .bar i.d { background: var(--del-fg); }
-  .lines { margin: 0 16px 12px; border: 1px solid var(--divider-color); border-radius: 8px; overflow: hidden; }
   .line { display: flex; gap: 8px; padding: 4px 12px; }
-  .line.add { background: var(--add-bg); } .line.del { background: var(--del-bg); }
   .line.open { background: color-mix(in srgb, var(--warn-fg) 10%, transparent); cursor: default; }
   .line.open .sign { color: var(--warn-fg); font-weight: 700; }
   .line .sign { width: 12px; color: var(--secondary-text-color); }
@@ -93,15 +109,18 @@ export const STYLE = `
   .tests .row { display: flex; align-items: baseline; gap: 8px; padding: 3px 0; }
   .tests div.row::before { content: ""; width: 12px; flex: none; }  /* In line with the rows that open. */
   .tests details { border-top: none; }
-  /* A test opened: its replay with the change, then its conversation as it went; side by side where there's room, as
-     it went on the left. */
+  /* A test opened: its conversation as it went, then its replay with the change; side by side where there's room. */
   .rp { display: grid; gap: 18px 24px; padding: 10px 0 16px; }
-  @container (min-width: 620px) { .rp.two { grid-template-columns: 1fr 1fr; } .rp.two .rp-before { grid-area: 1 / 1; }
-    .rp.two .rp-after { grid-area: 1 / 2; } }
+  @container (min-width: 620px) { .rp.two { grid-template-columns: 1fr 1fr; } }
   .rp-side { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
   .rp-head { font-size: 13px; font-weight: 600; color: var(--secondary-text-color); padding-bottom: 6px;
     border-bottom: 1px solid var(--divider-color); }
   .rp-empty { margin: 0; font-size: 14px; color: var(--secondary-text-color); }
+  .tests .ok .rp-after .rp-head { color: var(--add-fg); }  /* Where an improved test's after starts, at a glance. */
+  .rp-open { border: 1px solid var(--divider-color); border-radius: 8px; overflow: hidden; }
+  .tests div.row + .rp-open { margin: 6px 0 4px 20px; }  /* Under a test with no replay to open. */
+  .rp-open-head { font-size: 12px; font-weight: 600; color: var(--warn-fg); padding: 6px 12px 2px;
+    background: color-mix(in srgb, var(--warn-fg) 10%, transparent); }
   .tests .mark { width: 16px; font-weight: 700; } .tests .ok .mark { color: var(--add-fg); }
   .tests .no .mark { color: var(--secondary-text-color); }
   .tests .result { font-size: 12px; padding: 0 8px; border-radius: 10px; white-space: nowrap; }
@@ -118,8 +137,9 @@ export const STYLE = `
     padding-top: 10px; margin-top: 4px; }
   div.conflict { background: var(--del-bg); border: 1px solid var(--del-fg); border-radius: 8px; padding: 10px 14px; margin-bottom: 12px;
     overflow-wrap: anywhere; }
-  .footer { position: sticky; bottom: 0; z-index: 11; background: var(--card-background-color);
-    border-top: 1px solid var(--divider-color); padding: 12px 16px; }
+  .footer { position: sticky; bottom: 0; margin-top: auto; z-index: 11; background: var(--card-background-color);
+    border-top: 1px solid var(--divider-color);
+    padding: 12px max(16px, var(--inset-right)) calc(12px + var(--inset-bottom)) max(16px, var(--inset-left)); }
   .footer-inner { max-width: 960px; margin: 0 auto; display: flex; flex-direction: column; gap: 8px; align-items: flex-end; }
   .reason { align-self: stretch; display: flex; align-items: flex-start; gap: 10px; font-size: 14px; line-height: 1.4;
     cursor: pointer; }
@@ -132,6 +152,11 @@ export const STYLE = `
     background: var(--primary-color); padding: 10px 16px; }
   .split .main { border-radius: 20px 0 0 20px; } .split .arrow { border-radius: 0 20px 20px 0; border-left: 1px solid rgba(255,255,255,.35); padding: 10px 12px; }
   .split button:disabled { opacity: .6; cursor: default; }
+  .split.one .main { border-radius: 20px; }
+  /* A decision on its way: the arrow turns into a spinner, so nothing changes size under the finger. */
+  .split .arrow { position: relative; } .split[aria-busy] .arrow .caret { visibility: hidden; }
+  .split .arrow .spinner { position: absolute; inset: 0; margin: auto; width: 12px; height: 12px;
+    border-color: rgba(255, 255, 255, .35); border-top-color: var(--text-primary-color, white); }
   .menu { position: absolute; right: 0; bottom: 48px; min-width: 260px; background: var(--card-background-color);
     border: 1px solid var(--divider-color); border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,.25); overflow: hidden; }
   .menu div { padding: 10px 14px; cursor: pointer; } .menu div:hover { background: var(--secondary-background-color); }
@@ -156,7 +181,7 @@ export const STYLE = `
   .btn.soft-danger:hover:not(:disabled) { background: color-mix(in srgb, var(--del-fg) 22%, transparent); }
   .stepper { display: flex; gap: 6px; margin: 12px 0 4px; }
   .step { flex: 1; text-align: center; font-size: 12px; color: var(--secondary-text-color); }
-  .step .bar { height: 4px; border-radius: 2px; background: var(--divider-color); margin-bottom: 6px; }
+  .step .bar { display: block; height: 4px; border-radius: 2px; background: var(--divider-color); margin-bottom: 6px; }
   .step.done .bar { background: var(--add-fg); } .step.now .bar { background: var(--primary-color); animation: pulse 1.2s infinite; }
   .step.now { color: var(--primary-text-color); font-weight: 500; }
   @keyframes pulse { 50% { opacity: .45; } }
@@ -166,7 +191,9 @@ export const STYLE = `
   .confirm .c-warn { color: var(--warn-fg); font-size: 13px; }
   .confirm .actions { display: flex; gap: 8px; justify-content: flex-end; }
   .error-text { color: var(--del-fg); font-size: 13px; margin-top: 6px; }
-  @media (max-width: 600px) { table.diff td.num { display: none; } .page { padding: 12px 10px 24px; }
+  /* On a phone the line numbers give way: their columns shrink to nothing (hidden cells would leave a gap row's
+     columns to squeeze the text). */
+  @media (max-width: 600px) { table.diff td.num { width: 0; padding: 0; font-size: 0; } .page { padding: 12px max(10px, var(--inset-right)) 24px max(10px, var(--inset-left)); }
     .run-head { flex-wrap: wrap; } }
   .run > .title { font-size: 16px; font-weight: 500; }
   .hero { background: var(--card-background-color); border: 1px solid var(--divider-color); border-radius: 12px;
@@ -191,6 +218,7 @@ export const STYLE = `
   .footer-inner:not(.done-row) > .done-msg { flex: none; align-self: stretch; }  /* Above a decision open again. */
   .done-msg .mark { font-weight: 700; } .done-msg.ok .mark { color: var(--add-fg); } .done-msg.bad .mark { color: var(--del-fg); }
   .done-row .btn { max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
+  .done-row > :last-child { margin-left: auto; }  /* The way on stays where the decision's button was. */
   .outcome-banner { padding: 10px 14px; border-radius: 8px; margin-bottom: 12px; border: 1px solid; }
   .outcome-banner.ok { background: var(--add-bg); border-color: var(--add-fg); }
   .outcome-banner.bad { background: var(--del-bg); border-color: var(--del-fg); }
@@ -198,7 +226,7 @@ export const STYLE = `
     color: inherit; font: inherit; font-size: 15px; cursor: pointer; padding: 8px; border-radius: 18px; }
   .tb-btn:hover { background: rgba(255, 255, 255, 0.12); }
   .tb-btn svg { width: 22px; height: 22px; fill: currentColor; }
-  .page.wide { max-width: 1180px; }
+  .page.wide { max-width: 1212px; }  /* 1180 px of content. */
   /* The pipeline as a track: one translucent layer of solid strokes (overlaps don't darken), colors blending
      along it; the step cards sit on top. Laid out in _layout(). */
   :host { --track-in: #a3a8af; --track-ai: #a3a8af; --track-out: #a3a8af; --held: #bf9a55; --badge: #8796a8; --done: #6f9e98; }
@@ -226,8 +254,8 @@ export const STYLE = `
   .modal-shade { position: fixed; inset: 0; z-index: 20; background: rgba(0, 0, 0, .45); }
   /* Your conversations, on the home page. */
   .cs { margin-top: 20px; }
-  .cs-title { font-size: 18px; font-weight: 500; margin: 0 0 4px; }
-  .cs-lead { color: var(--secondary-text-color); font-size: 14px; line-height: 1.5; margin: 0 0 12px; }
+  .cs-top { display: flex; align-items: center; gap: 6px; margin: 0 0 12px; }
+  .cs-title { font-size: 18px; font-weight: 500; margin: 0; } .cs-top .info-tip .ic { width: 15px; height: 15px; }
   .cs-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 10px; }
   .cs-find { position: relative; display: flex; flex: 1 1 220px; min-width: 0; }
   .cs-find input { padding-right: 34px; } #cs-search::-webkit-search-cancel-button { display: none; }
@@ -247,7 +275,30 @@ export const STYLE = `
     cursor: pointer; }
   .cs-controls:has(.cs-status-menu) { z-index: 12; }  /* Its menu open: over the list and the Run bar. */
   .cs-status-name { flex: 1; } .cs-status-n { color: var(--secondary-text-color); font-size: 13px; }
-  @media (max-width: 600px) { .cs-filters { display: flex; width: 100%; } .cs-filters .seg { flex: 1 1 auto; width: auto; } }
+  /* Narrow (a phone, or a narrow window beside Home Assistant's sidebar: the band's own width decides): the search and
+     the order share the first row, the search giving way to the order's name, whichever it is; the day filter and
+     Status the next. The order stays at the right end of its row, its menu opening on the screen. */
+  .cs-controls { container-type: inline-size; }
+  .cs-sort { margin-left: auto; }
+  @container (max-width: 780px) {  /* Up to where one row holds them all, whichever order's and status's names (766 px). */
+    .cs-bar .cs-find { flex: 1 1 0; min-width: 0; }
+    .cs-filters { display: flex; width: 100%; order: 1; } .cs-filters .seg { flex: 1 0 auto; width: auto; }
+    /* A long status's name takes its room from the day filter, whose words stay on one line; only on the smallest
+       phones does the name give way, cut short. */
+    .cs-filters .seg button { flex: 1; white-space: nowrap; }
+    .cs-filters .cs-status { flex: 0 1 auto; min-width: 0; } .cs-filters .cs-status-btn { max-width: 100%; }
+    /* The order shares its row with the search, which takes up a change in its width: nothing else moves. */
+    .cs-sort .cs-sizer::after { content: none; } }
+  .cs-status-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+  /* The order's and Status's buttons are as wide as their longest choice (each choice a hidden line, sizing it). */
+  .cs-sizer { display: inline-grid; grid-template-columns: minmax(0, auto); min-width: 0; text-align: left; }
+  .cs-sizer > *, .cs-sizer::after { grid-area: 1 / 1; }
+  .cs-sizer::after { content: attr(data-choices); white-space: pre; visibility: hidden; height: 0; overflow: hidden; }
+  .cs-sort-menu { min-width: 200px; padding: 6px 0; }
+  .cs-sort-menu button { display: block; width: 100%; border: none; background: none; font: inherit; font-size: 14px;
+    color: var(--primary-text-color); text-align: left; padding: 9px 16px; cursor: pointer; }
+  .cs-sort-menu button:hover { background: var(--secondary-background-color); }
+  .cs-sort-menu button.on { color: var(--primary-color); font-weight: 500; }
   .cs-clear-search { position: absolute; right: 4px; top: 50%; transform: translateY(-50%); width: 28px; height: 28px;
     border: none; border-radius: 14px; background: none; color: var(--secondary-text-color); font-size: 15px; cursor: pointer; }
   .cs-clear-search:hover { background: var(--secondary-background-color); }
@@ -257,14 +308,14 @@ export const STYLE = `
   .cs-all input, .cs-pick input { width: 18px; height: 18px; accent-color: var(--primary-color); cursor: pointer; margin: 0; }
   /* Clipped, not hidden: an opened conversation's send row can stick to the bottom of the page (above the Run bar). */
   .cs-list { overflow: clip; }
-  .cs-row { border-bottom: 1px solid var(--divider-color); scroll-margin-bottom: calc(var(--bar, 0px) + 8px);
-    scroll-margin-top: calc(var(--controls, 0px) + 8px); }
+  .cs-row { border-bottom: 1px solid var(--divider-color); }
   /* Search, the day filter, the sort and Select all stay on top while the list scrolls. */
   /* Even padding all round: the bar's own margin would slip out of the box when Select all isn't there. */
-  .cs-controls { position: sticky; top: 0; z-index: 3; margin: 0 -8px 10px; padding: 8px; border-radius: 12px;
+  .cs-controls { position: sticky; top: var(--inset-top); z-index: 3; margin: 0 0 10px; padding: 8px; border-radius: 12px;
     background: var(--card-background-color); box-shadow: 0 1px 0 var(--divider-color); }
   .cs-controls .cs-bar { margin-bottom: 0; }
-  .cs-controls .cs-all { display: flex; width: fit-content; margin: 12px 0 0 16px; }  /* A block: no line box under it. */
+  /* A block (no line box under it), its box in line with each row's below. */
+  .cs-controls .cs-all { display: flex; width: fit-content; margin: 12px 0 0 8px; }
   .cs-row:last-child { border-bottom: none; }
   .cs-row.picked { background: color-mix(in srgb, var(--primary-color) 7%, transparent); }
   .cs-line { display: flex; align-items: stretch; }
@@ -277,7 +328,7 @@ export const STYLE = `
   .cs-sub { font-size: 13px; color: var(--secondary-text-color); } .cs-failed { color: var(--warn-fg); }
   .cs-reply { font-size: 13px; color: var(--secondary-text-color); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .cs-close { font-size: 13px; color: var(--secondary-text-color); margin: 0 0 8px; }
-  .cs-last { font-size: 13px; color: var(--secondary-text-color); margin: -6px 0 12px; }
+  .cs-last { font-size: 13px; color: var(--secondary-text-color); margin: -8px 0 12px; }
   .chip.cs-waiting, .chip.cs-sent, .chip.cs-queued, .chip.cs-working, .chip.cs-writing,
   .chip.cs-unclear { border-color: var(--primary-color); color: var(--primary-color); }
   .chip.cs-cannot { align-self: center; flex: none; margin-right: 16px; border-color: var(--warn-fg); color: var(--warn-fg);
@@ -304,8 +355,8 @@ export const STYLE = `
     color: var(--card-background-color); font-weight: 700; font-size: 12px; display: flex; align-items: center; justify-content: center; }
   .cs-step-label { font-weight: 600; color: var(--warn-fg); } .cs-step-what { overflow-wrap: anywhere; }
   .cs-step-error { display: block; margin-top: 2px; color: var(--secondary-text-color); overflow-wrap: anywhere; }
-  .cs-send { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 4px; padding: 8px 0;
-    position: sticky; bottom: var(--bar, 0px); background: var(--card-background-color); }
+  .cs-send { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 4px; padding: 8px 0; min-height: 40px;
+    position: sticky; bottom: max(var(--bar, 0px), var(--inset-bottom)); background: var(--card-background-color); }
   .cs-row.picked .cs-send { background: linear-gradient(color-mix(in srgb, var(--primary-color) 7%, transparent),
     color-mix(in srgb, var(--primary-color) 7%, transparent)), var(--card-background-color); }
   .cs-done { font-size: 13px; color: var(--add-fg); }
@@ -323,6 +374,7 @@ export const STYLE = `
   .cs-menu button.danger { color: var(--del-fg); }
   .cs-tidy { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px; margin-top: 4px; padding: 8px 0; }
   .cs-confirm { gap: 8px 12px; } .cs-confirm span { flex: 1 1 240px; font-size: 13px; line-height: 1.45; }
+  .cs-confirm > .conflict { flex: 1 1 100%; margin: 0; }
   .cs-archived .cs-text { opacity: .6; }
   .cs-all.cs-show-archived { margin: 12px 0 0 16px; color: var(--secondary-text-color); }
   /* Below Show archived, so ticking it moves nothing: the archived ones, headed by their own Select all. */
@@ -376,7 +428,7 @@ export const STYLE = `
   .kn-line:first-child { border-top: none; }
   .kn-empty { margin: 0; padding: 14px 20px 0; font-size: 14px; line-height: 1.45; color: var(--secondary-text-color); }
   @media (max-width: 600px) { .modal { top: auto; bottom: 0; transform: translateX(-50%); width: 100vw; max-height: 88vh;
-    border-radius: 16px 16px 0 0; } }
+    border-radius: 16px 16px 0 0; padding-bottom: var(--inset-bottom); } }
   .split.down { z-index: 11; }
   .split.down .menu { top: 44px; bottom: auto; z-index: 12; min-width: 250px; width: max-content; max-width: calc(100vw - 32px); }
   .menu .group { padding: 8px 14px 4px; font-size: 12px; color: var(--secondary-text-color); cursor: default;
@@ -399,8 +451,9 @@ export const STYLE = `
     border: 1px solid var(--divider-color); box-shadow: 0 1px 3px rgba(0, 0, 0, .06); }
 
   .glyph { --mdc-icon-size: 16px; width: 16px; height: 16px; color: var(--secondary-text-color); flex: none; display: inline-flex; }
-  .info-tip { flex: none; display: inline-flex; color: var(--secondary-text-color); opacity: .7; cursor: help; }
-  .info-tip .ic { width: 13px; height: 13px; } .info-tip:hover { opacity: 1; }
+  /* An ⓘ reads at 3:1 or better, as any mark that says something is there to open. */
+  .info-tip { flex: none; display: inline-flex; color: var(--secondary-text-color); cursor: help; }
+  .info-tip .ic { width: 13px; height: 13px; } .info-tip:hover { color: var(--primary-text-color); }
   .chip-row { display: flex; align-items: center; gap: 6px; justify-content: center; max-width: 100%; min-width: 0; }
   .tip { position: fixed; z-index: 30; max-width: 260px; padding: 7px 10px; border-radius: 8px; pointer-events: none;
     font-size: 12.5px; line-height: 1.4; color: #fff; background: rgba(40, 42, 46, .96); box-shadow: 0 4px 14px rgba(0, 0, 0, .25); }
@@ -414,7 +467,7 @@ export const STYLE = `
   :host(.dark) .gate { background: #2b2c2f; border-color: rgba(255, 255, 255, .24); color: #d0d0d0; }
   :host(.dark) .gate.paused { background: var(--held); border-color: var(--held); color: #fff; }
   :host(.dark) .glyph { color: #cfcfcf; }
-  :host(.dark) .info-tip { color: #c4c4c4; opacity: .9; }
+  :host(.dark) .info-tip { color: #c4c4c4; } :host(.dark) .info-tip:hover { color: var(--primary-text-color); }
   :host(.dark) .stream-label { color: #b9b9b9; }
   :host(.dark) .chev { stroke: #d0d0d0; stroke-opacity: .5; }
   :host(.dark) .badge { --badge: #93a3b8; }
@@ -431,6 +484,7 @@ export const STYLE = `
   .s-head { display: flex; align-items: center; gap: 6px; min-width: 0; }
   .s-title { flex: 1; font-size: 13px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .ic { width: 16px; height: 16px; fill: currentColor; flex: none; }
+  .btn .spinner { border-color: color-mix(in srgb, currentColor 35%, transparent); border-top-color: currentColor; }
   .gate { flex: none; width: 22px; height: 22px; border-radius: 11px; border: 1px solid var(--divider-color); padding: 0;
     display: inline-grid; place-items: center; line-height: 0; box-sizing: border-box; cursor: pointer;
     background: var(--card-background-color); color: var(--secondary-text-color); }
@@ -469,7 +523,8 @@ export const STYLE = `
   .pop { position: fixed; z-index: 11; width: 320px; max-height: 70vh; overflow: auto; box-sizing: border-box;
     background: var(--card-background-color); border: 1px solid var(--divider-color); border-radius: 12px;
     box-shadow: 0 8px 28px rgba(0, 0, 0, .3); padding: 6px 0; }
-  .pop.sheet { left: 0 !important; right: 0; top: auto !important; bottom: 0; width: auto; border-radius: 16px 16px 0 0; max-height: 80vh; }
+  .pop.sheet { left: 0 !important; right: 0; top: auto !important; bottom: 0; width: auto; border-radius: 16px 16px 0 0; max-height: 80vh;
+    padding-bottom: calc(6px + var(--inset-bottom)); }
   .pop-head { padding: 8px 14px 2px; font-size: 14px; }
   .pop-lead { padding: 0 14px 8px; font-size: 12.5px; color: var(--secondary-text-color); line-height: 1.4; }
   .opt { padding: 8px 14px; cursor: pointer; } .opt:hover { background: var(--secondary-background-color); }
