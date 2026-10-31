@@ -518,11 +518,11 @@ function runButton(p, preview, running) {
 }
 
 function chosen(cv) {
-  // What the selection's actions apply to: archive (those not archived that can be; or, while archived ones are
-  // shown, unarchive those archived), and delete (every one selected).
-  const ids = [...cv.picked], archived = ids.filter((id) => cv.known.get(id)?.hidden);
-  return cv.showArchived ? {unarchive: archived, delete: ids}
-    : {archive: ids.filter((id) => cv.known.get(id)?.archivable && !cv.known.get(id).hidden), delete: ids};
+  // What the selection's actions apply to: archive (those not archived that can be), unarchive (those archived), and
+  // delete (every one selected). The same whether archived ones are shown or not: ticking Show archived moves nothing.
+  const ids = [...cv.picked], known = (id) => cv.known.get(id) || {};
+  return {archive: ids.filter((id) => known(id).archivable && !known(id).hidden),
+          unarchive: ids.filter((id) => known(id).hidden), delete: ids};
 }
 
 export function bar(p, preview, running) {
