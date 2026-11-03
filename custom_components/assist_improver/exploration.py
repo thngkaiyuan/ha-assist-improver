@@ -91,7 +91,8 @@ class SessionView:
         self.assistant = next(((t["prepared"].get("provider_config") or [None])[0] for t in turns
                                if t.get("prepared") and t["prepared"].get("provider_config")), None)
         practice = recording.get("practice")
-        self._by_results = set()  # (entity, at) of changes only Assist's results named as its (_who).
+        # {(entity, at): 1 if Assist's request is only its context's parent, 2 if only Assist's results name it} (_who).
+        self._indirect = {}
         self.changes = self._changes(practice["simulated_changes"] if practice else recording.get("state_changes", []))
         self.notes = {}  # Its notes, where the analyzer hears them, by their turns after those said (read_turn).
         # Each turn's calls with Home Assistant's results, for what leaves no device state (analyzer.announced); a
@@ -134,10 +135,11 @@ class SessionView:
         changed (ever before it in the session), the state it set, reported again or settling (a blind opening, then
         open), with nothing it set set back; on another entity of the same physical device, one Assist never changed,
         the device's own reaction (a fan's climate turning off with it). Anything else is someone's, a correction
-        above all. One only Assist's results named (no context of its), after Assist's own change in the same turn
-        came through under its request, is held to carrying that change through too. What a template entity Assist
-        changed switches with its own actions, under the same request (a template light's helper), is that entity's
-        follow-on (simulation.template_follow_ons)."""
+        above all. One credited to Assist only indirectly (_who) is held to carrying through Assist's change to it
+        earlier in that turn when it comes after a more direct one (an automation Assist's change set off) or, named
+        only by Assist's results, after the turn's reply: else it's someone's, putting it back. What a template entity
+        Assist changed switches with its own actions, under the same request (a template light's helper), is that
+        entity's follow-on (simulation.template_follow_ons)."""
         for turn, source in enumerate(self.sources, 1):
             mine = {e: [c for c in cs if c["during_turn"] == turn and c["by"] == "assistant"]
                     for e, cs in changes.items()}
@@ -150,9 +152,11 @@ class SessionView:
         near = []  # [(device, when)] of Assist's changes so far
         for at, entity_id, c in stamped:
             device, own = self._device(entity_id), assists.get(entity_id, [])
-            if c["by"] == "assistant" and (entity_id, c["at"]) in self._by_results and any(
-                    a["during_turn"] == c["during_turn"] and (entity_id, a["at"]) not in self._by_results
-                    for a in own) and not _carries(own, c):  # Assist's own came through first, in this turn.
+            how = self._indirect.get((entity_id, c["at"]))
+            late = how == 2 and at > datetime.fromisoformat(self.replies[c["during_turn"] - 1] or c["at"])
+            if c["by"] == "assistant" and how and any(
+                    a["during_turn"] == c["during_turn"] and (late or self._indirect.get((entity_id, a["at"]), 0) < how)
+                    for a in own) and not _carries(own, c):
                 c["by"] = "not the assistant (a person at the device or app, an automation, or the device itself)"
             if c["by"] == "assistant":
                 assists.setdefault(entity_id, []).append(c)
@@ -173,13 +177,15 @@ class SessionView:
         """Assist, a signed-in person, or something else; recordings before identity capture use Assist's results."""
         turn_context = self.contexts[turn - 1] if 0 < turn <= len(self.contexts) else {}
         if turn_context.get("id") and turn_context["id"] in (context.get("id"), context.get("parent_id")):
+            if context.get("id") != turn_context["id"]:  # What its request set off (a sentence trigger, an automation).
+                self._indirect[(entity_id, at)] = 1
             return "assistant"
         # A person's own action, in the app or panel; before identity capture Assist's own carried the person's too.
         if turn_context.get("id") and context.get("user_id") and not context.get("parent_id"):
             return "a person (signed in to Home Assistant)"
         found = next((t for t in self.digest["turns"] if t["turn"] == turn), None)
         if found and any(entity_id in str(step.get("result", "")) for step in found["assistant"]):
-            self._by_results.add((entity_id, at))  # Only its results say so (_mark_follow_ons reads them again).
+            self._indirect[(entity_id, at)] = 2  # Only its results say so (_mark_follow_ons reads them again).
             return "assistant"
         if context.get("user_id"):
             return "a person (signed in to Home Assistant)"

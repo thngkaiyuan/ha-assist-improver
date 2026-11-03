@@ -132,7 +132,7 @@ def cant_improve(hass, question):
     return {"quote": quote, "assistant": voice_assistant(hass, question.get("pipeline_id"), question.get("agent_id"))}
 
 
-ORDERS = {  # How a list can be sorted: newest, oldest, or the most effort first (more turns, then failed calls).
+ORDERS = {  # How a list sorts: newest, oldest, or the most back-and-forth first (more turns, then failed calls).
     "newest": lambda r: r["started"] or "", "oldest": lambda r: r["started"] or "",
     "effort": lambda r: (r["turns"] or 0, r["failed"], r["started"] or "")}
 

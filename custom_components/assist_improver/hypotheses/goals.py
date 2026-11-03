@@ -21,7 +21,7 @@ FRICTION_KINDS = {  # What each kind of friction means, for the roles that read 
     "unmet": "a goal that wasn't met: Assist guessed or missed what the user wanted, or its reply didn't give what "
              "they asked to know (why); with home_couldnt, the home couldn't do it",
     "ask": "settings the user's words left open, which the user then chose",
-    "side effect": "a device Assist changed that no goal asked for and that didn't end as it started",
+    "side effect": "a device Assist changed that no goal asked for and that Assist didn't leave as it started",
     "conduct": "what the household objected to in what Assist said or did in one of its turns (about_assist_turn), "
                "in their own words (quote), in a later turn, in the note it was sent in with, or in a revision note",
 }

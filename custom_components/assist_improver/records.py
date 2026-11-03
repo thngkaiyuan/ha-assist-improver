@@ -79,10 +79,10 @@ class Goal(TypedDict, total=False):
 
 
 class SideEffect(TypedDict, total=False):
-    """A device Assist changed that no goal asked for, that didn't end as it started."""
+    """A device Assist changed that no goal asked for, that Assist didn't leave as it started."""
     entity_id: str
     start: str | None
-    end: str | None
+    end: str | None  # As Assist left it, whatever anyone did to it later.
     turn: int | None  # The turn of Assist's change.
 
 

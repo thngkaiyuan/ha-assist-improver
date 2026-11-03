@@ -54,6 +54,11 @@ def explained(message):
     return NO_TOOLS_MESSAGE if NO_TOOLS.search(message or "") else message
 
 
+def task_text(instructions, payload):
+    """What a role's AI Task is told: its instructions, then its input as JSON."""
+    return f"{instructions}\n\nInput (JSON):\n{json.dumps(payload, ensure_ascii=False, sort_keys=True)}"
+
+
 async def run_role(hass, *, role, entity_id, instructions, payload, structure, llm_api=None,
                    allow_paid_inference=False):
     """One AI Task call. Returns a run record; never retries or resamples."""
@@ -61,7 +66,7 @@ async def run_role(hass, *, role, entity_id, instructions, payload, structure, l
         raise CaseError("Paid inference has not been authorized")
     if not entity_id:
         raise CaseError("No AI Task entity is configured for the improver; open its Configure screen")
-    text = f"{instructions}\n\nInput (JSON):\n{json.dumps(payload, ensure_ascii=False, sort_keys=True)}"
+    text = task_text(instructions, payload)
     record = {"role": role, "entity_id": entity_id, "started": utcnow().isoformat(),
               "instructions_sha256": digest(instructions), "input_sha256": digest(payload),
               "input_chars": len(text), "status": "running", "output": None, "error": None, **ids()}
