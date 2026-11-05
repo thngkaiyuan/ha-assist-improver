@@ -18,7 +18,7 @@ from homeassistant.data_entry_flow import UnknownFlow
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.storage import Store
 
-RECOMMENDED = {"chat_model": "claude-opus-5-5", "max_tokens": 16000, "thinking_effort": "high"}
+RECOMMENDED = {"chat_model": "claude-opus-5-5", "max_tokens": 16000, "effort": "high"}
 RECOMMENDED_NAME = "Assist Improver"
 CREATED_KEY = "assist_improver.created"  # The AI Tasks the improver set up in providers, removed when uninstalled.
 RECOMMENDED_MODEL = re.compile(r"claude-opus-5[.-]5")
@@ -99,10 +99,10 @@ def assess(hass, entity_id):
         except ImportError:
             DEFAULT = {}
         defaults = DEFAULT if isinstance(DEFAULT, dict) else {}
-        model, effort, max_tokens = defaults.get("chat_model"), defaults.get("thinking_effort"), defaults.get("max_tokens")
+        model, effort, max_tokens = defaults.get("chat_model"), defaults.get("effort"), defaults.get("max_tokens")
         result["uses_recommended_defaults"] = True
     else:
-        model, effort, max_tokens = data.get("chat_model"), data.get("thinking_effort"), data.get("max_tokens")
+        model, effort, max_tokens = data.get("chat_model"), data.get("effort"), data.get("max_tokens")
     result.update(model=model, effort=effort, max_tokens=max_tokens)
     if model and any(word in model.lower() for word in WEAK_MODEL_WORDS):
         result["warnings"].append(f"It uses {model}, a small model. Claude Opus 5.5 is recommended for the improver.")

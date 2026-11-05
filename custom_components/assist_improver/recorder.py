@@ -105,12 +105,18 @@ def _pipeline_ran(hass, conversation_id):
 
 
 def _agent(content, chat_log):
-    """The conversation agent answering, where an event shows it: a tool result's or a reply's agent_id (HA sends
-    no event for a reply itself; the chat log the recorder observes has them)."""
+    """The conversation agent answering, where an event shows it: its content's agent_id (a reply's or a tool
+    result's), else the last reply's in the chat log it carries."""
     if isinstance(content, dict) and content.get("agent_id"):
         return content["agent_id"]
     replies = [c for c in (chat_log or {}).get("content") or [] if c.get("role") == "assistant" and c.get("agent_id")]
     return replies[-1]["agent_id"] if replies else None
+
+
+def _given_this_turn(chat_log):
+    """The AI was given the chat log up to the latest user words (not just an earlier turn's)."""
+    users = [i for i, c in enumerate(chat_log.content) if c.role == "user"]
+    return bool(users) and chat_log.llm_input_provided_index == users[-1] + 1
 
 
 class Recorder:
@@ -208,11 +214,10 @@ class Recorder:
         self.hass.async_create_task(self.flush(due_only=True), "assist_improver_save")
 
     def observe_logs(self):
-        # HA omits some final assistant notifications. Retain only active logs
-        # and sample their serialized state; never attach/replace a listener.
+        # Retain only active logs and sample their serialized state; never attach/replace a listener.
         for key, log in list(self.logs.items()):
             session = self.sessions[key]
-            # Read again only once it grew: HA adds to a chat log, and opens the next request with a new one.
+            # Read again only once it grew: HA adds to a conversation's chat log, request after request.
             last = log.content[-1] if log.content else None
             before = self.sampled.get(key)
             if before is None or before[0] is not log or before[1] != len(log.content) or before[2] is not last:
@@ -232,7 +237,7 @@ class Recorder:
 
     def _sample(self, key, session, log):
         current = plain(log.as_dict())
-        self._pin(key, _agent(None, current))  # A first reply without a tool call shows its assistant only here.
+        self._pin(key, _agent(None, current))
         if any(getattr(c, "native", None) is not None for c in log.content):
             limitation = "provider_native_history_omitted; replay adapter must check compatibility"
             if limitation not in session["limitations"]:
@@ -376,15 +381,25 @@ class Recorder:
             self.sourcing.add(task)
             task.add_done_callback(self.sourcing.discard)
         active = current_chat_log.get()
-        if active and active.conversation_id == conversation_id and kind == "updated":
+        if not active or active.conversation_id != conversation_id:
+            active = None
+        given = data.get("chat_log") if active and kind == "updated" else None  # The chat log as the AI was given it.
+        # Home Assistant gives a turn like the last one the last turn's prompt and tools, without an update: read at
+        # its first answer.
+        kept = (given is None and active and active.llm_api and content.get("role") == "assistant" and session["turns"]
+                and "prepared" not in session["turns"][-1] and _given_this_turn(active))
+        if kept:
+            given = {**active.as_dict(),
+                     "content": [c.as_dict() for c in active.content[:active.llm_input_provided_index]]}
+        if given is not None:
             self.logs[key] = active
             if session["turns"]:
-                session["turns"][-1].setdefault("preparations", []).append(plain(data.get("chat_log")))
+                session["turns"][-1].setdefault("preparations", []).append(plain(given))
                 if active.llm_api is None:
                     session["turns"][-1]["context_limitations"] = [
                         "No selected LLM API: identity, device and tool metadata unavailable from ChatLog"
                     ]
-        if active and active.conversation_id == conversation_id and active.llm_api and kind == "updated":
+        if given is not None and active.llm_api:
             api = active.llm_api
             metadata = {"context": plain(api.llm_context), "api_id": api.api.id,
                         "api_prompt": api.api_prompt, "tools": [],
@@ -395,11 +410,13 @@ class Recorder:
                     "integration": tool.integration,
                     "parameters": plain(probatio.to_openapi(tool.parameters,
                         custom_serializer=api.custom_serializer, openapi_version="3.1.0"))})
+            if kept:  # The last turn's, not built at this turn's time: a replay holds it to the last turn's.
+                metadata["prompt_kept"] = True
             if session["turns"]:
                 session["turns"][-1]["prepared"] = metadata
         if "pipeline_id" not in session:  # Its voice assistant, whose settings say what Assist may do.
             found = None
-            if active and active.conversation_id == conversation_id and kind == "updated":  # An AI preparing.
+            if given is not None:  # An AI preparing.
                 device = active.llm_api.llm_context.device_id if active.llm_api else None
                 found = _pipeline(self.hass, device) or _pipeline_ran(self.hass, conversation_id)
             elif kind == "content_added" and content.get("role") == "assistant":  # Home Assistant's own reply.

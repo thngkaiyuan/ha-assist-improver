@@ -667,8 +667,8 @@ async def run_turn(hass, text, conversation_id, context, language, agent_id, dev
     sandbox, usage = hass.data[SANDBOX_KEY], []
     before = {e: dict(state.attributes) for e in watch if (state := hass.states.get(e)) is not None}
     marks = {k: len(getattr(sandbox, k)) for k in MARKED}
-    with _as_recorded(hass), chat_session.async_get_chat_session(
-            hass, sandbox.conversations.get(conversation_id, conversation_id)) as session, \
+    with _as_recorded(hass), chat_session.async_get_chat_session(  # Its owner: whoever says the turn (async_converse).
+            hass, sandbox.conversations.get(conversation_id, conversation_id), context=None) as session, \
             conversation.async_get_chat_log(hass, session) as chat_log:
         sandbox.conversations[conversation_id] = session.conversation_id
         start = len(chat_log.content)

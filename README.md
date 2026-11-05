@@ -6,7 +6,7 @@
 
 [![Open Assist Improver in your Home Assistant](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=thngkaiyuan&repository=ha-assist-improver&category=integration)
 
-> **Early release.** Used every day in my household, on Home Assistant 2026.10.4. Tell me how it works in yours: [open an issue](https://github.com/thngkaiyuan/ha-assist-improver/issues).
+> **Early release.** Used every day in my household, on Home Assistant 2026.11.0. Tell me how it works in yours: [open an issue](https://github.com/thngkaiyuan/ha-assist-improver/issues).
 
 ![Saying you are cold: three turns today, one turn with exact words after the first improvement, one natural turn after the second](https://raw.githubusercontent.com/thngkaiyuan/ha-assist-improver/main/assets/smoother.png)
 
@@ -35,7 +35,7 @@ Every step above works end to end, and runs every day in my household. This is t
 
 ## Getting started
 
-1. **Install:** the button at the top opens Assist Improver in [HACS](https://hacs.xyz) (the Marketplace from Home Assistant 2026.11). Download it, and restart Home Assistant. Or add this repository there yourself, as a custom repository of type **Integration**.
+1. **Install:** the button at the top opens Assist Improver in Home Assistant's [Marketplace](https://www.home-assistant.io/integrations/marketplace/). Install it there, or find it by searching for **Assist Improver**.
 2. **Add it:** the button below, or Settings → Devices & services → Add integration → **Assist Improver**. Keep the recommended AI model: Claude Opus 5.5 does the thinking, and a small model is added for the quick steps.
 
    [![Add Assist Improver](https://my.home-assistant.io/badges/config_flow_start.svg)](https://my.home-assistant.io/redirect/config_flow_start/?domain=assist_improver)

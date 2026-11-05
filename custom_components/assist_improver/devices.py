@@ -8,11 +8,6 @@ would report back. Commands without a model here are reported as done and flagge
 
 from homeassistant.components.media_player import MediaPlayerEntityStateAttribute
 
-try:  # Home Assistant 2026.11 moved it into media_player.entity.
-    from homeassistant.components.media_player.entity import PROP_TO_ATTR
-except ImportError:
-    from homeassistant.components.media_player import PROP_TO_ATTR
-
 ON_OFF = {"light", "switch", "fan", "input_boolean", "siren", "remote", "humidifier", "media_player",
           "water_heater", "automation"}
 COLOUR_MODES = {"hs", "xy", "rgb", "rgbw", "rgbww"}
@@ -27,8 +22,9 @@ ASLEEP = {"off", "unknown"}
 UNDERWAY = {"open": "opening", "closed": "closing", "locked": "locking", "unlocked": "unlocking"}
 MOVERS = ("cover", "valve", "lock")
 # What Home Assistant's own media player shows only while it isn't off (MediaPlayerEntity.state_attributes): what's
-# playing, how loud, from where.
-MEDIA_WHILE_ON = {str(a) for a in (*PROP_TO_ATTR.values(), MediaPlayerEntityStateAttribute.ENTITY_PICTURE_LOCAL)}
+# playing, how loud, from where. Its group's members it shows whatever its state.
+MEDIA_WHILE_ON = {str(a) for a in MediaPlayerEntityStateAttribute
+                  if a is not MediaPlayerEntityStateAttribute.GROUP_MEMBERS}
 
 
 def _brightness(attrs, data):

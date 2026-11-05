@@ -4,7 +4,7 @@ DOMAIN = "assist_improver"
 NAME = "Assist Improver"
 # The manifest's version (build_package.py keeps them equal), read where nothing can be awaited: a recording's stamp,
 # the panel script's ?v=. Home Assistant's loader gives it only by an await.
-VERSION = "0.40.17"
+VERSION = "0.40.18"
 # Conversation providers whose replays are tested end to end; others replay with a "not yet tested" label.
 TESTED_PROVIDERS = {"anthropic", "open_router"}
 STORAGE_VERSION = 1
@@ -47,7 +47,7 @@ ATTRIBUTES = LIVE_CONTEXT_ATTRIBUTES | {
 }
 PROVIDER_OPTIONS = {
     "prompt", "llm_hass_api", "model", "chat_model", "max_tokens", "temperature",
-    "top_p", "thinking_budget", "thinking_effort", "prompt_caching", "code_execution",
+    "top_p", "thinking_budget", "thinking_type", "effort", "prompt_caching", "code_execution",
     "tool_search", "web_search", "web_fetch", "recommended",
     "web_search_max_uses", "web_fetch_max_uses", "user_location",
     "city", "region", "country", "timezone",

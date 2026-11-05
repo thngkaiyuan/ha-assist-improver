@@ -40,6 +40,7 @@ class SandboxHome:
         self.tools = None  # Assist's tools as HA built them in the sandbox: name, description, parameters.
         self.watch = sorted(watch)
         self.prompt = None  # The system prompt HA builds in the sandbox, for comparison with the recorded one.
+        self.checked = None  # The last turn faithful found rebuilt exactly.
 
     async def start(self):
         if self.sandbox is not None:
@@ -114,16 +115,22 @@ class SandboxHome:
     async def faithful(self, turn, llm_context):
         """Whether Home Assistant, in the sandbox, builds this turn's recorded system prompt and tools exactly, with
         the recorded instructions: the model sees what the sandbox builds, so a replay runs only where that's the
-        recording (DETAILS P6.2.6). Before the turn's model call."""
-        options = turn["prepared"]["provider_config"][0]["options"]
-        saved = self.prompt_template
-        self.prompt_template = options.get("prompt")
-        try:
-            await self.prepare(turn, llm_context)
-        finally:
-            self.prompt_template = saved
-        return self.prompt == turn["history"][0]["content"] and [t["name"] for t in self.tools] == [
-            t["name"] for t in turn["prepared"]["tools"]]
+        recording (DETAILS P6.2.6). Before the turn's model call. A turn Home Assistant gave the last turn's prompt
+        and tools (recorded prompt_kept) gets them in the sandbox too: its recorded prompt must be the last turn's."""
+        if turn["prepared"].get("prompt_kept") and self.checked is not None:
+            same = turn["history"][0]["content"] == self.checked["history"][0]["content"]
+        else:
+            options = turn["prepared"]["provider_config"][0]["options"]
+            saved = self.prompt_template
+            self.prompt_template = options.get("prompt")
+            try:
+                await self.prepare(turn, llm_context)
+            finally:
+                self.prompt_template = saved
+            same = self.prompt == turn["history"][0]["content"]
+        same = same and [t["name"] for t in self.tools] == [t["name"] for t in turn["prepared"]["tools"]]
+        self.checked = turn if same else None
+        return same
 
     async def turn(self, turn, agent_id, conversation_id):
         """One recorded turn said to the household's assistant in the sandbox (sandbox.run_turn), in the context it
