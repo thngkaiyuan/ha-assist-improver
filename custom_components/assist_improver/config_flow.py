@@ -4,9 +4,8 @@ Setup (and the Repairs fix) choose the AI Task entity the improver's own roles
 call. One list offers a new recommended entry (created through the provider's
 own flow) and the household's existing AI Tasks; a weak choice is confirmed.
 First setup also gives Triage and Write up a small model: an AI Task that has
-one, or a new one beside a new recommended entry, and turns on-demand improvements
-on (an older entry without that setting keeps it off). Every other setting lives
-in the panel; Configure links there.
+one, or a new one beside a new recommended entry. Every other setting lives in
+the panel; Configure links there.
 """
 
 import probatio
@@ -15,7 +14,7 @@ from homeassistant.core import callback
 from homeassistant.helpers.selector import SelectOptionDict, SelectSelector, SelectSelectorConfig, SelectSelectorMode
 
 from . import ai_setup, settings
-from .const import CONF_ACCEPTED_WEAK, CONF_AI_TASK, CONF_HOUSEHOLD, CONF_ON_DEMAND, DOMAIN, NAME
+from .const import CONF_ACCEPTED_WEAK, CONF_AI_TASK, DOMAIN, NAME
 
 CREATE = "create"  # List values "create:<config entry>:<recommended|default>" add a new AI Task.
 USE_ANYWAY = "use_anyway"
@@ -49,6 +48,7 @@ class _AiTaskSteps:
             name = state.attributes.get("friendly_name", entity_id) if state else entity_id
             model = settings.model_label(self.hass, entity_id)
             model = f"Claude {model}" if settings.CLAUDE.search(assessment.get("model") or "") else model
+            # Labels stay English: the options are entity IDs and provider entries, and HA translates fixed values only.
             label = f"{model} · {name}" if model != name else name
             if ai_setup.is_recommended(assessment):
                 label += " · recommended"
@@ -138,16 +138,13 @@ class AssistantImproverConfigFlow(_AiTaskSteps, ConfigFlow, domain=DOMAIN):
     _first_setup = True
 
     async def async_step_user(self, user_input=None):
-        await self.async_set_unique_id(DOMAIN)
-        self._abort_if_unique_id_configured()
         return await self._choose(user_input, None, "user")
 
     async def _back(self):
         return await self.async_step_user()
 
     def _finish(self, choice):
-        return self.async_create_entry(title=NAME, data={},
-                                       options=self._options({CONF_ON_DEMAND: True, CONF_HOUSEHOLD: True}, choice))
+        return self.async_create_entry(title=NAME, data={}, options=self._options({}, choice))
 
 
 class AssistantImproverOptionsFlow(OptionsFlow):

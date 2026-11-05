@@ -2,9 +2,10 @@
 rounds, what each run took in, and each trip back with what paid for it.
 
 A run admits conversations, and only what it admits moves (P0.7). Each moves through the stages one at a time, whole
-(P0.5), until its round ends: something waits at Your review, it ends in Your household, or it's held for a problem
-(P0.6, P0.8). The stages' work is done by their workers (analysis, proposal, simulate, improvements); this decides
-who moves, where, and when, and keeps the record every screen and stage reads (P0.2).
+(P0.5), until its round stops: something waits at Your review (an improvement, or a question for the household), it
+ends in Your household, or it's held for a problem (P0.6, P0.8). The stages' work is done by their workers (analysis,
+proposal, simulate, improvements); this decides who moves, where, and when, and keeps the record every screen and
+stage reads (P0.2).
 """
 
 import asyncio
@@ -14,8 +15,11 @@ import logging
 from homeassistant.helpers.storage import Store
 from homeassistant.util.dt import utcnow
 
+from . import stamps
+from .analysis import analyze, deliberate
+from .proposal import propose
 from .cases import CaseError
-from .const import CONF_AUTO_ACCEPT, DOMAIN
+from .const import DOMAIN
 from .trace import span
 
 HOME_ASSISTANT, SENTENCE = "conversation.home_assistant", "sentence_trigger"  # Who answers a turn, not an AI.
@@ -28,14 +32,6 @@ KEYS = {"Triage": "triage", "Analyze": "analyze", "Propose": "propose", "Write u
 ENDS = ("Your review", "Your household")  # Where a round stops moving.
 RETRIES = 3  # The tries a stage gives a conversation in one run before holding it ("a few", P0.8).
 CLOSED = ("session_expired", "interrupted", "capture_timed_out")  # A conversation Assist has closed.
-
-
-def deliberate(sent):
-    """Whether a conversation was sent in with a clear sign it needs a closer look, so it goes straight to Analyze, past
-    the quick check (sent: its mark, Flow.sent_in; DETAILS P9.3.1): a note written as it was sent in, filed from Assist,
-    or sent in again after an earlier round looked at it. One picked, or sent in from the panel without a note, gets
-    the quick check, as a full run's conversations do."""
-    return bool(sent) and bool(sent.get("note") or sent.get("via") == "assist" or sent.get("again"))
 
 
 def analysed_turns(analysis):
@@ -123,11 +119,19 @@ class Flow:
         return conv["rounds"].get(str(number if number is not None else conv["round"]))
 
     def question(self, rid):
-        """The question for the household it waits at Your review with, or None."""
+        """The question for the household it waits at Your review with, or None: the analyzer's or the proposer's, or,
+        when Home Assistant answered a turn itself, records.CantImprove."""
         conv = self.record(rid)
         current = conv["rounds"].get(str(conv["round"])) or {}
         return (current.get("records", {}).get("Your review") or {}).get("question") \
             if conv["stage"] == "Your review" else None
+
+    def questions(self):
+        """The questions waiting for the household's answer (P0.11), oldest conversation first, not one being deleted
+        or Home Assistant answered itself: {id: question}."""
+        index = self.runtime.recorder.index
+        return {rid: question for rid, summary in sorted(index.items(), key=lambda kv: kv[1].get("started") or "")
+                if not summary.get("deleting") and isinstance(question := self.question(rid), str)}
 
     def waiting(self, rid):
         """New and waiting for a run to admit it: at Your Assist, closed, with turns, not archived or being deleted."""
@@ -155,7 +159,7 @@ class Flow:
         new = [rid for rid in index if self.waiting(rid)]
         held = [rid for rid in index if self.record(rid)["held"] and not self._deleted(rid)]
         trigger, only, picked = run["trigger"], run.get("only"), run.get("picked")
-        if trigger in ("revision", "conflict"):
+        if trigger in ("revision", "conflict", "answer"):
             return [run["conversation"]], []
         if isinstance(picked, list):  # A picked run, and the fast lane (filed): those, new or held.
             return [rid for rid in picked if rid in new], [rid for rid in picked if rid in held]
@@ -181,7 +185,7 @@ class Flow:
         async def moved():
             if on_move is not None:
                 await on_move()
-        person = run["trigger"] in ("manual", "revision", "conflict", "filed")
+        person = run["trigger"] in ("manual", "revision", "conflict", "answer", "filed")
         for rid in released:  # Each release gives one more try, paid for by the person who started the run: a retry
             conv = self.record(rid)  # of a stage that failed is a way back (P0.13); picking up a cut-off round isn't.
             if person and (conv["held"] or {}).get("cause") == "failures":
@@ -189,8 +193,8 @@ class Flow:
             conv["held"] = None
         for rid in admitted:
             conv = self.record(rid)
-            if run["trigger"] in ("revision", "conflict"):
-                continue  # Its new round, at Propose, was started by the decision.
+            if run["trigger"] in ("revision", "conflict", "answer"):
+                continue  # The household's move set where it goes on: a new round at Propose, or its round, answered.
             self._start_round(rid, conv)
         await self.save()
         pending = list(run["moved"])
@@ -266,14 +270,17 @@ class Flow:
         round starts, and its path and trace show it."""
         if self._taken_out(conv) and stage != "Your household":
             raise TakenOut()
-        current = conv["rounds"][str(conv["round"])]
-        if conv["stage"] != stage:  # A move: one stage hands it to the next (or, from Your review, to a new round).
-            current["handoffs"].append(self._handoff(conv, conv["stage"], stage, record))
+        current, left = conv["rounds"][str(conv["round"])], conv["stage"]
+        if left != stage:  # A move: one stage hands it to the next (or, from Your review, to a new round).
+            current["handoffs"].append(self._handoff(conv, left, stage, record))
         conv["stage"] = stage
         current["path"].append(stage)
         current["records"].setdefault(stage, {"attempts": []}).update(record)
-        if stage in ENDS and (current["records"].get("Propose") or {}).get("revision"):  # A revision's round ends:
-            self.runtime.improvements.refresh()  # the version it revised waits on the household again, if it's up.
+        # What waits on the household follows at once: into Your review or out of it (a question, an improvement), or
+        # a revision's round ending, when the version it revised waits on the household again, if it's up.
+        revising = (current["records"].get("Propose") or {}).get("revision")
+        if "Your review" in (left, stage) or stage in ENDS and revising:
+            self.runtime.improvements.refresh()
         conv["trace"].append({"at": utcnow().isoformat(), "round": conv["round"], "stage": stage,
                               "goals": list(self._goals(conv))})
 
@@ -287,14 +294,17 @@ class Flow:
             kind, record = records.Admitted, base
         elif start == "Triage":
             kind, record = records.Checked, {**base, "smooth": False}
+        elif end == "Your review" and "question" in data:
+            kind, record = records.Asked, {**base, "question": data["question"]}
+        elif start == "Your review" and "answers" in data:
+            kind, record = records.Answered, {**base, "answer": data["answers"][-1]["answer"]}
         elif start == "Analyze":
-            kind, record = records.Analysed, {**base, "goals": self._goals(conv), "question": data.get("question")}
+            kind, record = records.Analysed, {**base, "goals": self._goals(conv)}
         elif start == "Propose":
-            kind, record = records.Proposed, {**base, "question": data.get("question"), "improvements": list(
+            kind, record = records.Proposed, {**base, "improvements": list(
                 data.get("improvements") or ([data["waiting"]] if data.get("waiting") else []))}
         elif start == "Write up":
-            kind, record = records.Written, {**base, "question": data.get("question"),
-                                             "improvements": self._improvements(conv["id"], pending=True)}
+            kind, record = records.Written, {**base, "improvements": self._improvements(conv["id"], pending=True)}
         elif start == "Your review" and end == "Propose":
             sent = data.get("revision") or data.get("conflict") or {}
             kind, record = records.SentBack, {**base, "improvement": sent.get("improvement"),
@@ -347,7 +357,7 @@ class Flow:
     @staticmethod
     def _in_round(conv):
         """Whether it's in a round still going: one started, not yet ended in Your household, and still where its round
-        took it (one sent in as the answer to its question waits at Your Assist for a run to start its next round)."""
+        took it (one unarchived waits at Your Assist for a run to start its next round)."""
         current = conv["rounds"].get(str(conv["round"])) or {}
         return bool(current.get("path")) and current["path"][-1] == conv["stage"] != "Your household"
 
@@ -394,15 +404,8 @@ class Flow:
                 return
             run["stage"] = key
             await moved()
-            # Auto-accept, once written up, as it's set then (P12.9): not Write up's work, so a run cut off meanwhile
-            # holds nothing at Your review (P0.8); one deleted while it was written up has left the run (P5.1.3). What
-            # it applies never waited on the household, so what this round writes up is announced as waiting only after.
-            write_up = stage == "Write up"
-            async with self.runtime.improvements.unannounced(self._written(conv) if write_up else ()):
-                if not await self._work(rid, conv, run, stage, tries):
-                    return
-                if write_up and self.entry.options.get(CONF_AUTO_ACCEPT) and not self._deleted(rid):
-                    await self._auto_accept(conv)
+            if not await self._work(rid, conv, run, stage, tries):
+                return
             tries = RETRIES  # A stage it reaches afterwards, in the same run, gives it its full tries.
 
     @staticmethod
@@ -464,12 +467,12 @@ class Flow:
             return
         trouble = set(friction_by_goal(analysis))
         covered = {d.get("goal_turn"): d.get("improvement") for d in analysis.get("duplicates") or []}
-        if not trouble and analysis.get("question_for_user"):  # It travels the line to wait at Your review (P0.4).
-            self._enter(conv, "Propose", question=analysis["question_for_user"])
+        if not trouble and analysis.get("question_for_user"):  # Straight to Your review: the round pauses (P0.6).
+            self._enter(conv, "Your review", question=analysis["question_for_user"])
         elif not trouble:
             self._end(conv, "no trouble found")
         elif local := await self._answered_locally(rid):  # No replay can run it, so no fix can be tested (P9.9.9),
-            self._enter(conv, "Propose", question=local)  # and none reaches it while Home Assistant answers first.
+            self._enter(conv, "Your review", question=local)  # and none reaches it while Home Assistant answers first.
         elif not trouble - set(covered):
             self._end(conv, "duplicate", covered_by=next(iter(covered.values())))
         else:
@@ -511,21 +514,22 @@ class Flow:
         return analysis
 
     async def _analysis(self, rid, **kwargs):
-        """The quick check or the analysis, by today's worker, with how the conversation was last sent in; None when no
-        role can read the conversation (it ends as couldn't be read)."""
-        from .analysis import analyze
+        """The quick check or the analysis, by today's worker, with how the conversation was last sent in and the
+        household's answers to the analyzer's questions since then; None when no role can read the conversation (it
+        ends as couldn't be read)."""
         conv = self.record(rid)
         sent_in = max((int(n) for n, r in conv["rounds"].items() if "Your Assist" in r["records"]), default=None)
         try:
             return await analyze(self.hass, self.entry, self.runtime, rid,
-                                 sent=self._sent(conv, sent_in) if sent_in else None, **kwargs)
+                                 sent=self._sent(conv, sent_in) if sent_in else None,
+                                 answered=self._answers(conv, "Analyze", since=sent_in or 0), **kwargs)
         except asyncio.CancelledError:
             raise
         except CaseError as err:
             self._end(self.record(rid), "couldn't be read", why=str(err)[:500])
             return None
         except Exception as err:
-            _LOGGER.exception("Assist Improver couldn't analyse conversation %s", rid)
+            _LOGGER.exception("Couldn't analyse conversation %s", rid)
             raise Failed(f"{type(err).__name__}: {err}") from err
 
     def tests(self, rid, number=None):
@@ -585,12 +589,7 @@ class Flow:
         from . import contracts, records
         from .cases import digest
         from .hypotheses import REVIEWS_PER_ROUND
-        from .proposal import propose
         from .improvements import PENDING
-        from . import stamps
-        if question := self._carried(conv, "Propose"):  # Nothing to propose: a question passes on.
-            self._enter(conv, "Write up", question=question)
-            return
         kept = conv["rounds"][str(conv["round"])]["records"]
         if (kept.get("Propose") or {}).get("revision") and not (kept.get("Analyze") or {}).get("analysis"):
             # A revision's round reads the conversation afresh first, its note a turn with its goals (P12.8.1).
@@ -631,6 +630,7 @@ class Flow:
         try:
             generator = await propose(self.hass, self.entry, self.runtime, [analysis], tester=tester,
                                       feedback=improvements.feedback(), sent_back=sent_back, so_far=so_far,
+                                      answered=self._answers(conv, "Propose"),
                                       existing=improvements.catalog(asking=rid, detailed=True))
         except Exception as err:
             raise Failed(f"{type(err).__name__}: {err}") from err
@@ -676,6 +676,9 @@ class Flow:
             {**idea, "given": had(key), "stamps": stamps.of(reviews, tests, idea["hypothesis"]), "sent_on": key in sent,
              "why": None if key in sent else held_back(submitted.get(key, idea["hypothesis"]))
              or "The proposer didn't send it on."} for key, idea in ideas.items()])
+        if question := (answer.get("question_for_user") or "").strip():  # Nothing goes on: the round pauses (P0.6).
+            self._enter(conv, "Your review", question=question)
+            return
         stopped = getattr(asked.get("ask"), "stopped", False)
         crashed = getattr(asked.get("tester"), "crashed", None)
         if not sent and (stopped or crashed):  # A stamp it couldn't get: a failure of Propose's (P0.4, P0.8).
@@ -713,30 +716,11 @@ class Flow:
         """The editor's write-up; a failed one is a failure of this stage like any other (P0.8): the improvement
         isn't up for review until it's written up."""
         from .pipeline import editor_model
-        if question := self._carried(conv, "Write up"):  # Nothing to write up: a question passes on.
-            self._enter(conv, "Your review", question=question)
-            return
         improvements = self.runtime.improvements
         unwritten = [item["id"] for item in improvements.unwritten() if item["id"] in self._improvements(rid)]
         if unwritten and await improvements.write_copy(editor_model(self.entry), unwritten):
             raise Failed("The write-up didn't finish.")
         self._enter(conv, "Your review")
-
-    async def _auto_accept(self, conv):
-        """Auto-accept (DETAILS P12.9): each low-risk improvement this round wrote up is applied at once, and its
-        conversation ends improved, as the household's accept would end it; one that isn't low-risk, can't apply or
-        meets a conflict stays up for review."""
-        improvements = self.runtime.improvements
-        written = self._written(conv)
-        await improvements.auto_accept(written)
-        for iid in written:
-            if (item := improvements.items.get(iid)) and item["status"] == "applied":
-                await self.decided(item, "accept")
-
-    @staticmethod
-    def _written(conv):
-        """The improvements this round sent on to Write up."""
-        return (conv["rounds"][str(conv["round"])]["records"].get("Write up") or {}).get("improvements") or []
 
     def _improvements(self, rid, pending=False):
         """The improvements of a conversation: those it came from (P0.10)."""
@@ -770,9 +754,13 @@ class Flow:
         None."""
         return (conv["rounds"][str(number or conv["round"])]["records"].get("Your Assist") or {}).get("sent")
 
-    def _carried(self, conv, stage):
-        """The question for the household the conversation carries at this stage in its round, if any."""
-        return (conv["rounds"][str(conv["round"])]["records"].get(stage) or {}).get("question")
+    @staticmethod
+    def _answers(conv, stage, since=None):
+        """The household's answers to the questions this stage asked in the conversation's round, or in every round
+        from `since` on, in order: [{question, answer}]."""
+        first = conv["round"] if since is None else since
+        return [deepcopy(a) for n, r in sorted(conv["rounds"].items(), key=lambda kv: int(kv[0])) if int(n) >= first
+                for a in (r["records"].get(stage) or {}).get("answers") or []]
 
     def _record(self, conv, stage, **data):
         conv["rounds"][str(conv["round"])]["records"].setdefault(stage, {"attempts": []}).update(deepcopy(data))
@@ -823,8 +811,6 @@ class Flow:
                 self._back_to_propose(rid, conv, revision={"improvement": item["id"], "note": note})
                 back.append(rid)
         await self.save()
-        if decision == "revise" and back:  # Being revised now: it waits on the improver, not the household.
-            self.runtime.improvements.refresh()
         return back
 
     def _roots_fixed(self, conv, item):
@@ -858,6 +844,22 @@ class Flow:
     def _back_to_propose(self, rid, conv, **record):
         self._trip(conv, "Your review", "Propose", "person")
         self._start_round(rid, conv, at="Propose", **record)
+
+    async def answered(self, rid, answer):
+        """The household's answer to the question it waits at Your review with: it goes straight back to the stage that
+        asked, in the same round, with every answer that stage has had this round (P0.6, P0.7); a way back a person
+        takes (P0.13). Not one Home Assistant answered itself: no answer changes that. Whether it went back, for a run
+        of its own."""
+        conv, answer = self.record(rid), (answer or "").strip()[:500]
+        if not isinstance(question := self.question(rid), str) or not answer:
+            return False
+        current = conv["rounds"][str(conv["round"])]
+        asker = current["path"][-2]  # A question goes to Your review straight from the stage that asked.
+        del current["records"]["Your review"]["question"]
+        self._trip(conv, "Your review", asker, "person")
+        self._enter(conv, asker, answers=self._answers(conv, asker) + [{"question": question, "answer": answer}])
+        await self.save()
+        return True
 
     def waits(self, rid):
         """Whether an improvement of this conversation (P0.10) waits for the household: up for review (the earlier
@@ -924,7 +926,7 @@ class Flow:
         """The improvement of this conversation (P0.10) waiting for the household's review, written up, or None."""
         improvements = self.runtime.improvements
         return next((iid for iid in self._improvements(rid, pending=True)
-                     if improvements.items[iid].get("copy") and not improvements.held(iid)), None)
+                     if improvements.items[iid].get("copy")), None)
 
     async def mark_test(self, rid):
         """The household marked it a test: it ends in Your household as one (P0.12), from wherever it stood; not while
@@ -953,12 +955,12 @@ class Flow:
 
     async def sent_in(self, rid, note="", via="panel", by=None):
         """Sent in: from the panel (Send this one in, or picked from Your household) or filed from Assist (via). New,
-        it's marked as it waits at Your Assist; from Your household, or as the answer to its question, it goes back
-        there for a run to take it in, for a new round (P0.12, P0.11). A note sent before is kept when it's sent in
-        again without one (DETAILS P8.9.4); again: an earlier round looked at it (Triage or Analyze). Anywhere else
-        it's in the pipeline already, and nothing changes."""
+        it's marked as it waits at Your Assist; from Your household, it goes back there for a run to take it in, for a
+        new round (P0.12). A note sent before is kept when it's sent in again without one (DETAILS P8.9.4); again: an
+        earlier round looked at it (Triage or Analyze). Anywhere else it's in the pipeline already, and nothing
+        changes."""
         conv = self.record(rid)
-        if conv["stage"] == "Your household" or self.question(rid):
+        if conv["stage"] == "Your household":
             self._trip(conv, conv["stage"], "Your Assist", "person")  # A way back a person takes (P0.13).
             conv.update(stage="Your Assist", held=None, archived=False)
             conv.pop("before_archive", None)

@@ -66,7 +66,7 @@ class contained:
             self.error = str(err)
             return True
         self.error = (f"{self.step}: " if self.step else "") + f"{kind.__name__}: {err}"[:500]
-        _LOGGER.error("Assist Improver: %s failed on %s", self.stage, self.item, exc_info=(kind, err, tb))
+        _LOGGER.error("%s failed on %s", self.stage, self.item, exc_info=(kind, err, tb))
         problem = {"stage": self.stage, "item": self.item, "error": self.error}
         if (problems := _PROBLEMS.get()) is not None and problem not in problems:
             problems.append(problem)

@@ -12,10 +12,10 @@ provider's own flow.
 import re
 
 from homeassistant.config_entries import ConfigEntryState
+from homeassistant.data_entry_flow import UnknownFlow
 
 from . import ai_setup
-from .const import (CONF_ACCEPTED_WEAK, CONF_AI_TASK, CONF_AUTO_ACCEPT, CONF_CHECK_AI_TASK, CONF_DEVELOPER,
-                    CONF_HOUSEHOLD, CONF_ON_DEMAND, CONF_OPT_OUT, CONF_PAUSED, CONF_RECORDING, CONF_SCHEDULE,
+from .const import (CONF_ACCEPTED_WEAK, CONF_AI_TASK, CONF_CHECK_AI_TASK, CONF_DEVELOPER, CONF_PAUSED, CONF_SCHEDULE,
                     CONF_TESTS_PER_GOAL, CONF_TRIAGE_AI_TASK, DEFAULT_TESTS_PER_GOAL)
 
 # Large roles need judgement (a strong model); small ones a quick, cheap one.
@@ -30,8 +30,7 @@ ROLES = {
 }
 OPTIONAL = {role for role, spec in ROLES.items() if not spec["fallback"]}  # Off while unset.
 LIVE = {spec["key"] for spec in ROLES.values()} | {CONF_AI_TASK, CONF_ACCEPTED_WEAK, CONF_TESTS_PER_GOAL, CONF_SCHEDULE,
-                                                   CONF_PAUSED, CONF_AUTO_ACCEPT, CONF_ON_DEMAND,
-                                                   CONF_RECORDING, CONF_OPT_OUT, CONF_HOUSEHOLD}  # Read when used.
+                                                   CONF_PAUSED}  # Read when used.
 GATES = ("triage", "analyze", "propose", "write")  # Stages that can be paused, in order.
 STAGE_ROLES = {"triage": ("triage",), "analyze": ("analyzer",),  # The roles each stage calls; Simulate's feedback
                "propose": ("generator", "reviewer", "feedback_check"),  # check is Propose's stamp (P0.4).
@@ -119,15 +118,8 @@ def providers(hass):
             if getattr(e, "state", None) is ConfigEntryState.LOADED and "ai_task_data" in e.supported_subentry_types]
 
 
-def people(hass):
-    """{user ID: name}: the household's people, as Home Assistant's person entities with a user."""
-    return {state.attributes["user_id"]: state.name for state in hass.states.async_all("person")
-            if state.attributes.get("user_id")}
-
-
-def view(hass, entry, user_id=None):
+def view(hass, entry):
     """Everything the settings view shows: each role's model, the AI Tasks to choose from, and the rest."""
-    from .practice import MODE_KEY
     tasks = []
     for entity_id in ai_setup.ai_task_entities(hass):
         assessment = ai_setup.assess(hass, entity_id)
@@ -139,29 +131,17 @@ def view(hass, entry, user_id=None):
                       "strong": ai_setup.is_recommended(assessment),
                       "weak": not assessment["ok"] or any(w in model for w in ai_setup.WEAK_MODEL_WORDS),
                       "small": any(w in model for w in ai_setup.WEAK_MODEL_WORDS), "known": bool(model)})
-    mode = hass.data.get(MODE_KEY)
     issues = problems(hass, entry)
-    users = dict(getattr(mode, "users", {}))
-    recording_on, opted_out = bool(entry.options.get(CONF_RECORDING, True)), set(entry.options.get(CONF_OPT_OUT, []))
     return {"roles": {role: {"entity_id": role_model(entry, role), "size": spec["size"], "optional": role in OPTIONAL,
                              "problem": issues.get(role)} for role, spec in ROLES.items()},
             "ai_tasks": tasks, "providers": providers(hass), "recommended": is_recommended_setup(hass, entry),
             "tests_per_goal": int(entry.options.get(CONF_TESTS_PER_GOAL, DEFAULT_TESTS_PER_GOAL)),
             "schedule": entry.options.get(CONF_SCHEDULE, "off"), "paused": sorted(paused(entry)),
-            "auto_accept": bool(entry.options.get(CONF_AUTO_ACCEPT, False)),
-            "on_demand": bool(entry.options.get(CONF_ON_DEMAND, False)),
-            "household_knowledge": bool(entry.options.get(CONF_HOUSEHOLD, True)),
-            "recording": recording_on, "recording_people": [
-                {"user_id": uid, "name": name, "on": recording_on and uid not in opted_out}
-                for uid, name in sorted(people(hass).items(), key=lambda person: person[1].casefold())],
-            "developer": bool(entry.options.get(CONF_DEVELOPER)),
-            "practice": {"on": bool(user_id and user_id in users),
-                         "others": sorted(name for uid, name in users.items() if uid != user_id)}}
+            "developer": bool(entry.options.get(CONF_DEVELOPER))}
 
 
 def updated(hass, entry, *, role=None, entity_id=None, tests_per_goal=None, schedule=None, stage=None,
-            pause=None, auto_accept=None, on_demand=None, household_knowledge=None, recording=None, person=None,
-            developer_services=None):
+            pause=None, developer_services=None):
     """The entry's options with one setting changed, checked first."""
     options = dict(entry.options)
     if role is not None:
@@ -188,25 +168,6 @@ def updated(hass, entry, *, role=None, entity_id=None, tests_per_goal=None, sche
             raise SettingsError(f"Unknown stage {stage}")
         stages = paused(entry) | {stage} if pause else paused(entry) - {stage}
         options[CONF_PAUSED] = [s for s in GATES if s in stages]
-    if auto_accept is not None:
-        options[CONF_AUTO_ACCEPT] = bool(auto_accept)
-    if on_demand is not None:  # The fast lane: one filed or sent in gets a run of its own as it ends.
-        options[CONF_ON_DEMAND] = bool(on_demand)
-    if household_knowledge is not None:  # Whether every assistant on Assist reads the household's lines.
-        options[CONF_HOUSEHOLD] = bool(household_knowledge)
-    if recording is not None:  # Whether new conversations are kept: the household's, or one person's (person).
-        everyone, out = set(people(hass)), set(options.get(CONF_OPT_OUT, []))
-        if person is None:  # The household's switch: every person's goes with it.
-            options[CONF_RECORDING], out = bool(recording), set() if recording else out | everyone
-        elif person not in everyone:
-            raise SettingsError("That person isn't set up in Home Assistant.")
-        elif recording:  # One person on turns the household's on; the others stay as they were (off, if it was).
-            if not options.get(CONF_RECORDING, True):
-                out |= everyone
-            options[CONF_RECORDING], out = True, out - {person}
-        else:
-            out.add(person)
-        options[CONF_OPT_OUT] = sorted(out)
     if developer_services is not None:  # Hidden (no control in the panel): set for debugging and evaluation rounds.
         options[CONF_DEVELOPER] = bool(developer_services)
     return options
@@ -241,10 +202,10 @@ async def provider_models(hass, config_entry_id):
                 break
             result = await manager.async_configure(result["flow_id"], answer)
     finally:
-        if result.get("type") == "form" and result.get("flow_id"):
+        if result.get("flow_id") and result.get("type") not in ("create_entry", "abort"):  # Stopped midway.
             try:
                 manager.async_abort(result["flow_id"])
-            except Exception:  # Already closed.
+            except UnknownFlow:  # Already closed.
                 pass
     found["suggested"] = {size: (pick(found["models"], size) or {}).get("value") for size in ("large", "small")}
     return found
@@ -307,7 +268,7 @@ async def small_ai_task(hass, entry_id):
     (None, why not)."""
     try:
         found = await provider_models(hass, entry_id)
-    except Exception as err:  # The provider's flow refused.
+    except Exception as err:  # noqa: BLE001 - a provider's flow may refuse with anything: said, not raised.
         return None, f"The provider couldn't list its models ({err})."
     model = pick(found["models"], "small")
     if model is None:

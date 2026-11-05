@@ -4,20 +4,23 @@ Each recording's start, close and storage changes go in today's trace (trace.py)
 timed there too.
 
 A recording keeps the state changes some reader uses (digest.worth_keeping). An active one is saved when a turn is
-added, when it closes, and otherwise at most every SAVE_EVERY seconds, so a crash loses at most those seconds; saves
-serialize off the event loop."""
+added, when it closes, and otherwise at most every SAVE_EVERY seconds, so a crash loses at most those seconds; saves,
+and each turn's snapshot of the home, serialize off the event loop."""
 
 import asyncio
 from copy import deepcopy
 from datetime import datetime, timedelta
 from hashlib import sha256
 import logging
+import re
 from uuid import uuid4
 
 import probatio
+# Not exported by the conversation root; the only way to observe Assist conversations passively.
 from homeassistant.components.conversation.chat_log import async_subscribe_chat_logs, current_chat_log
 from homeassistant.const import EVENT_HOMEASSISTANT_STOP, EVENT_STATE_CHANGED, __version__ as CORE_VERSION
 from homeassistant.core import callback
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.storage import Store
 from homeassistant.util.dt import utcnow
 
@@ -27,11 +30,14 @@ from .digest import flap, worth_keeping
 from .records import Recording, RecordingSummary
 from .reflective import ROLE_ACTIVE
 from .serialization import plain
-from .snapshot import answering, provider_config, snapshot, state_record, subentry_of
+from .snapshot import answering, home, provider_config, state_record, subentry_of, taken
 from .trace import journal, span, timed
 
+# Its error logs name only the exception's type: a message can carry what the household said or has.
 _LOGGER = logging.getLogger(__name__)
 SAVE_EVERY = 15  # Seconds an active recording's changes may wait to be saved, unless a turn was added or it closed.
+# A voice device's Assistant select (assist_pipeline's AssistPipelineSelect), by its unique ID: one per wake word.
+PIPELINE_SELECT = re.compile(r".+-pipeline(_\d+)?")
 
 
 def _frozen(session):
@@ -41,9 +47,12 @@ def _frozen(session):
         return {k: list(v) if isinstance(v, list) else v for k, v in mapping.items()}
     out = copied(session)
     out["turns"] = [copied(turn) for turn in session.get("turns", [])]
-    if isinstance(session.get("practice"), dict):
-        out["practice"] = copied(session["practice"])
     return out
+
+
+def _copied(recording):
+    """A recording as readers get it: their own copy, unpacked (retention.unpack)."""
+    return unpack(deepcopy(recording))
 
 
 def _requests(session):
@@ -54,20 +63,44 @@ def _requests(session):
     return found
 
 
-def _pipeline(hass, conversation_id):
-    """The voice assistant (Assist pipeline) a request ran through, by Home Assistant's own log of its runs: the run
-    whose intent step names this conversation. None for a request that came another way (a conversation service
-    call)."""
-    try:
-        from homeassistant.components.assist_pipeline.pipeline import KEY_ASSIST_PIPELINE
-        runs = hass.data[KEY_ASSIST_PIPELINE].pipeline_debug
-    except (ImportError, KeyError, AttributeError):
+def _pipeline(hass, device_id):
+    """The voice assistant (Assist pipeline) a request ran through, as the voice device it came from chooses it: its
+    Assistant select, read as the device reads it ("preferred": Home Assistant's preferred assistant). None for a
+    request from anywhere else (the app, a browser, an action) or a device with several assistants set (_pipeline_ran
+    may tell)."""
+    if not device_id or "assist_pipeline" not in hass.config.components:  # Loaded: importing it reads no files.
         return None
-    for pipeline_id, kept in list(runs.items()):
-        for run in reversed(list(kept.values())):
-            if any(e.type == "intent-start" and (e.data or {}).get("conversation_id") == conversation_id
-                   for e in run.events):
-                return pipeline_id
+    from homeassistant.components.assist_pipeline import (OPTION_PREFERRED, PipelineNotFound, async_get_pipeline,
+                                                          async_get_pipelines)
+    chosen = {state.state for entry in er.async_entries_for_device(er.async_get(hass), device_id)
+              if entry.domain == "select" and PIPELINE_SELECT.fullmatch(entry.unique_id)
+              and (state := hass.states.get(entry.entity_id)) is not None}
+    if len(chosen) != 1:
+        return None
+    name = chosen.pop()
+    try:
+        if name == OPTION_PREFERRED:
+            return async_get_pipeline(hass).id
+        return next((p.id for p in async_get_pipelines(hass) if p.name == name), None)
+    except (KeyError, PipelineNotFound):  # assist_pipeline not set up after all, or no preferred one: not known.
+        return None
+
+
+def _pipeline_ran(hass, conversation_id):
+    """The voice assistant a request ran through where its device can't say (_pipeline: the app, a browser, a device
+    with several assistants set, a turn Home Assistant answered itself), by Home Assistant's log of its last runs: the
+    run whose intent step names this conversation. None for one that didn't run through one (an action), or once that
+    log can't be read: the household's view then names the assistant by the AI that answered
+    (household.voice_assistant)."""
+    try:  # No public API names a conversation's pipeline run: assist_pipeline's own debug log of runs, read only here.
+        from homeassistant.components.assist_pipeline.pipeline import KEY_ASSIST_PIPELINE
+        for pipeline_id, runs in list(hass.data[KEY_ASSIST_PIPELINE].pipeline_debug.items()):
+            for run in reversed(list(runs.values())):
+                if any(e.type == "intent-start" and (e.data or {}).get("conversation_id") == conversation_id
+                       for e in run.events):
+                    return pipeline_id
+    except Exception:  # noqa: BLE001 - not set up, or Home Assistant changed it: not known.
+        return None
     return None
 
 
@@ -86,8 +119,10 @@ class Recorder:
         self.index_store = Store(hass, STORAGE_VERSION, f"{DOMAIN}.index", private=True, atomic_writes=True)
         self.index: dict[str, RecordingSummary] = {}
         self.sessions: dict[str, Recording] = {}  # The recordings still going, or not yet written.
-        self.keys = {}
+        self.keys = {}  # Conversation ID -> recording ID, while Home Assistant keeps the conversation or the recording.
         self.logs = {}
+        self.sampled = {}  # Recording ID -> its chat log as observe_logs last read it: (log, length, last item).
+        self.sourcing = set()  # Turns' homes being serialized off the event loop (_serialized).
         self.dirty = set()
         self.urgent = set()  # Unsaved recordings with a turn added: saved at the next tick, not within SAVE_EVERY.
         self.saved = {}  # Loop time of each live recording's last save.
@@ -102,10 +137,7 @@ class Recorder:
         self.answering = {}  # Recording ID -> the subentry of the assistant answering it, once it has.
         self.brief_cache = None  # Each recording's brief (sessions.BriefCache), loaded when a proposal first needs it.
         self.on_forgotten = None  # Awaited with a forgotten recording's ID: what was derived from it goes too.
-        # Privacy controls (settings): whether new conversations are kept, and whether a person's switch is off.
-        self.recording_on = lambda: True
-        self.opted_out = lambda user_id: False
-        self.ignored = set()  # Conversations not kept (a person whose switch is off): never recorded again.
+        self.ignored = set()  # Conversations not kept (not Assist's, or deleted while going): never recorded again.
 
     def store(self, key):
         # Serializes in an executor: flush hands it a copy the event loop doesn't change (_frozen).
@@ -179,20 +211,13 @@ class Recorder:
         # HA omits some final assistant notifications. Retain only active logs
         # and sample their serialized state; never attach/replace a listener.
         for key, log in list(self.logs.items()):
-            current = plain(log.as_dict())
             session = self.sessions[key]
-            self._pin(key, _agent(None, current))  # A first reply without a tool call shows its assistant only here.
-            if any(getattr(c, "native", None) is not None for c in log.content):
-                limitation = "provider_native_history_omitted; replay adapter must check compatibility"
-                if limitation not in session["limitations"]:
-                    session["limitations"].append(limitation)
-                    self.dirty.add(key)
-            if current != session.get("chat_log"):
-                session["chat_log"] = current
-                session["last_activity"] = utcnow().isoformat()
-                session["events"].append({"at": utcnow().isoformat(),
-                                          "type": "log_observed", "data": current})
-                self.dirty.add(key)
+            # Read again only once it grew: HA adds to a chat log, and opens the next request with a new one.
+            last = log.content[-1] if log.content else None
+            before = self.sampled.get(key)
+            if before is None or before[0] is not log or before[1] != len(log.content) or before[2] is not last:
+                self.sampled[key] = (log, len(log.content), last)
+                self._sample(key, session, log)
             # An exception in an upstream conversation can omit cleanup events.
             # Close only the capture, retain it, and make the gap explicit.
             if (session["status"] == "active" and
@@ -204,6 +229,27 @@ class Recorder:
                         user_turns=len(session["turns"]))
                 self.dirty.add(key)
                 self._closed(key)
+
+    def _sample(self, key, session, log):
+        current = plain(log.as_dict())
+        self._pin(key, _agent(None, current))  # A first reply without a tool call shows its assistant only here.
+        if any(getattr(c, "native", None) is not None for c in log.content):
+            limitation = "provider_native_history_omitted; replay adapter must check compatibility"
+            if limitation not in session["limitations"]:
+                session["limitations"].append(limitation)
+                self.dirty.add(key)
+        if current != session.get("chat_log"):
+            session["chat_log"] = current
+            session["last_activity"] = utcnow().isoformat()
+            session["events"].append({"at": utcnow().isoformat(),
+                                      "type": "log_observed", "data": current})
+            self.dirty.add(key)
+
+    async def _sourced(self):
+        """Once every turn's home being serialized is attached to its turn (_serialized): a recording is copied or
+        saved only then."""
+        while self.sourcing:
+            await asyncio.wait(set(self.sourcing))
 
     async def flush(self, due_only=False):
         """Save the unsaved recordings: all of them, or (due_only: the timer's ticks) those due a save."""
@@ -232,6 +278,7 @@ class Recorder:
 
     async def save(self, keys, now):
         for key in keys:  # A closed recording is stored packed (retention.py); readers get it unpacked.
+            await self._sourced()
             async with span("recorder.pack", recording_id=key):
                 stored = _frozen(self.sessions[key])
                 if stored.get("status") in CLOSED:  # Packing copies the whole recording: done off the event loop.
@@ -248,7 +295,7 @@ class Recorder:
         for key in keys:
             if key not in self.dirty and self.sessions[key]["status"] != "active":
                 self.sessions.pop(key)
-                for kept in (self.logs, self.saved, self.answering):
+                for kept in (self.logs, self.sampled, self.saved, self.answering):
                     kept.pop(key, None)
 
     async def stop(self):
@@ -269,23 +316,32 @@ class Recorder:
         if not self.running:  # A replay's chat log is its sandbox's: none reaches here.
             return
         if kind == "deleted":  # HA's cleanup, minutes later, in whatever context set its timer (an AI role's, say).
-            if self.keys.get(conversation_id) not in self.sessions:
-                return  # It ended unrecorded (an AI Task's chat log, say): nothing to keep.
+            if self.keys.get(conversation_id) not in self.sessions or conversation_id in self.ignored:
+                self._ended(conversation_id)  # It ended unrecorded (an AI Task's chat log, say): nothing to keep.
+                return
         elif ROLE_ACTIVE.get():  # The improver's own AI-role calls are never household sessions.
             return
-        if conversation_id in self.ignored or (conversation_id not in self.keys and not self.recording_on()):
-            return  # Recording is off (new conversations aren't kept), or the speaker's switch is.
+        if conversation_id in self.ignored:
+            return
         try:
             self.capture(conversation_id, str(kind), data)
-        except Exception as err:
-            # A recorder error must never break an ordinary assistant request.
-            self.last_error = type(err).__name__
-            self.capture_error = self.last_error
-            _LOGGER.error("Conversation capture incomplete (%s)", type(err).__name__)
-            key = self.keys.get(conversation_id)
-            if key in self.sessions:
-                self.sessions[key]["limitations"].append(f"capture_error:{type(err).__name__}")
-                self.schedule(key)
+        except Exception as err:  # A recorder error must never break an ordinary assistant request.
+            self._failed(self.keys.get(conversation_id), err)
+
+    def _failed(self, key, err):
+        self.last_error = self.capture_error = type(err).__name__
+        _LOGGER.error("Conversation capture incomplete (%s)", type(err).__name__)
+        if key in self.sessions:
+            self.sessions[key]["limitations"].append(f"capture_error:{type(err).__name__}")
+            self.schedule(key)
+
+    def _ended(self, conversation_id):
+        """Home Assistant ended a conversation the recorder isn't following, for good (an ID used again starts a new
+        one): it isn't ignored any more, and its recording's ID isn't kept unless its recording is (an ignored one's is
+        going)."""
+        if self.keys.get(conversation_id) not in self.index or conversation_id in self.ignored:
+            self.keys.pop(conversation_id, None)
+        self.ignored.discard(conversation_id)
 
     def capture(self, conversation_id, kind, data):
         key = self.keys.get(conversation_id)
@@ -312,12 +368,13 @@ class Recorder:
         content = data.get("content", {})
         turn_added = kind == "content_added" and content.get("role") == "user"
         self._pin(key, _agent(content, data.get("chat_log")))
-        if turn_added:
-            with span("recorder.snapshot", recording_id=key):  # The whole home, on the event loop: watched.
-                source = snapshot(self.hass)
-            session["turns"].append({"user": plain(content), "source": source})
-            if "pipeline_id" not in session and (found := _pipeline(self.hass, conversation_id)):
-                session["pipeline_id"] = found  # Its voice assistant, whose settings say what Assist may do.
+        if turn_added:  # The home as the user's words came: read now, serialized off the event loop.
+            with span("recorder.snapshot", recording_id=key):  # On the event loop: watched.
+                read = taken(self.hass)
+            session["turns"].append(turn := {"user": plain(content)})
+            task = self.hass.async_create_task(self._serialized(key, turn, read), "assist_improver_snapshot")
+            self.sourcing.add(task)
+            task.add_done_callback(self.sourcing.discard)
         active = current_chat_log.get()
         if active and active.conversation_id == conversation_id and kind == "updated":
             self.logs[key] = active
@@ -340,6 +397,15 @@ class Recorder:
                         custom_serializer=api.custom_serializer, openapi_version="3.1.0"))})
             if session["turns"]:
                 session["turns"][-1]["prepared"] = metadata
+        if "pipeline_id" not in session:  # Its voice assistant, whose settings say what Assist may do.
+            found = None
+            if active and active.conversation_id == conversation_id and kind == "updated":  # An AI preparing.
+                device = active.llm_api.llm_context.device_id if active.llm_api else None
+                found = _pipeline(self.hass, device) or _pipeline_ran(self.hass, conversation_id)
+            elif kind == "content_added" and content.get("role") == "assistant":  # Home Assistant's own reply.
+                found = _pipeline_ran(self.hass, conversation_id)
+            if found:
+                session["pipeline_id"] = found
         if "chat_log" in data:
             session["chat_log"] = plain(data["chat_log"])
         if kind == "deleted":
@@ -353,17 +419,19 @@ class Recorder:
         if kind == "deleted":
             self._closed(key)
 
-    def heard(self, conversation_id, user_id):
-        """Who's speaking in a conversation, once Home Assistant says (practice.py): as an assistant prepares its
-        answer, or as Home Assistant answers a request itself. One whose recording switch is off isn't kept: it's
-        forgotten now, and not recorded again. Whether it was."""
-        if not user_id or not self.opted_out(user_id):
-            return False
-        if conversation_id not in self.ignored:
-            self.ignored.add(conversation_id)
-            if (key := self.keys.get(conversation_id)) in self.sessions or key in self.index:
-                self.hass.async_create_task(self.forget(key), "assist_improver_forget")
-        return True
+    async def _serialized(self, key, turn, now):
+        """A turn's home, as snapshot.taken read it on the event loop, serialized in the executor and attached to the
+        turn; a recording is copied or saved once it is (_sourced)."""
+        try:
+            async with span("recorder.serialize", recording_id=key):
+                turn["source"] = await self.hass.async_add_executor_job(home, now)
+        except Exception as err:  # noqa: BLE001 - a recorder error must never break an ordinary assistant request.
+            self._failed(key, err)
+        finally:  # A turn without its home isn't kept (it can't be read or replayed), as when reading it failed.
+            if "source" not in turn and (session := self.sessions.get(key)) is not None:
+                session["turns"] = [t for t in session["turns"] if t is not turn]
+                if key in self.index:
+                    self.index[key]["user_turns"] = len(session["turns"])
 
     def _pin(self, key, agent_id):
         """Now it's known which of the provider's assistants answers: its configuration is the one kept (P8.2.3)."""
@@ -401,20 +469,11 @@ class Recorder:
         if self.on_filed_closed is not None:
             self.on_filed_closed(key)
 
-    def practice(self, conversation_id):
-        """The practice part of a session's recording, created on first use; None if not recorded."""
-        session = self.sessions.get(self.keys.get(conversation_id))
-        if session is None:
-            return None
-        self.schedule(session["id"])
-        return session.setdefault("practice", {"simulated_changes": [], "unsimulated_actions": []})
-
     @callback
     def on_state(self, event):
         if not self.running:
             return
-        # A practice recording's readers read its simulated changes; its real ones are someone else's.
-        watching = [s for s in self.sessions.values() if s["status"] == "active" and "practice" not in s]
+        watching = [s for s in self.sessions.values() if s["status"] == "active"]
         if not watching:
             return
         change = {"at": plain(event.time_fired), "entity_id": event.data["entity_id"],
@@ -433,10 +492,13 @@ class Recorder:
         if key not in self.index:
             raise ValueError("Unknown recording ID")
         await self.flush(due_only=True)  # Samples the chat logs; a live recording is read from memory.
-        data = self.sessions.get(key) or await self.store(key).async_load()
-        if data is None:
+        await self._sourced()
+        if key in self.sessions:  # Still changing on the event loop: the copy starts from it as it is now.
+            data = _frozen(self.sessions[key])
+        elif (data := await self.store(key).async_load()) is None:
             raise ValueError("Recording is unavailable")
-        return unpack(deepcopy(data))
+        # Copying and unpacking the whole recording: done off the event loop.
+        return await self.hass.async_add_executor_job(_copied, data)
 
     async def save_index(self):
         await self.index_store.async_save({"sessions": deepcopy(self.index)})
@@ -444,22 +506,29 @@ class Recorder:
     async def delete(self, key):
         """Remove a recording and its index entry for good."""
         async with self.lock:  # After a save in progress, and with nothing left to save, so none lands after this.
-            for kept in (self.sessions, self.logs, self.saved, self.answering):
-                kept.pop(key, None)
-            self.dirty.discard(key)
-            self.urgent.discard(key)
+            self._drop(key)
             await self.store(key).async_remove()
             self.index.pop(key, None)
             await self.index_store.async_save({"sessions": deepcopy(self.index)})
 
-    def _conversations(self, keys):
-        """The Assist conversation IDs of these recordings, while this run of Home Assistant knows them."""
-        return {cid for cid, key in self.keys.items() if key in keys}
+    def _drop(self, key):
+        """What's kept in memory of a recording going for good, its conversation's ID among it."""
+        for kept in (self.sessions, self.logs, self.sampled, self.saved, self.answering):
+            kept.pop(key, None)
+        self.dirty.discard(key)
+        self.urgent.discard(key)
+        for conversation_id in [c for c, k in self.keys.items() if k == key]:
+            del self.keys[conversation_id]
+
+    def _going(self, keys):
+        """The Assist conversations of these recordings Home Assistant may still be having (not those it ended)."""
+        return {cid for cid, key in self.keys.items()
+                if key in keys and (self.index.get(key) or {}).get("status") != "session_expired"}
 
     async def forget_later(self, *keys):
         """Delete conversations once the run in progress ends (Pipeline._ran: forget_queued), or at the next start:
         out of view at once, and not taken in or recorded any further meanwhile."""
-        self.ignored |= self._conversations(set(keys))
+        self.ignored |= self._going(set(keys))
         for key in keys:
             self.index[key]["deleting"] = True
         await self.save_index()
@@ -501,13 +570,10 @@ class Recorder:
         (their run-log records, their briefs, and what on_forgotten drops), go for good, each store written once
         however many go. Improvements already built from them stay. One still going isn't recorded again."""
         gone = set(keys)
-        self.ignored |= self._conversations(gone)
+        self.ignored |= self._going(gone)
         async with self.lock:  # After a save in progress, and with nothing left to save, so none lands after this.
             for key in gone:
-                for kept in (self.sessions, self.logs, self.saved, self.answering):
-                    kept.pop(key, None)
-                self.dirty.discard(key)
-                self.urgent.discard(key)
+                self._drop(key)
                 await self.store(key).async_remove()
                 self.index.pop(key, None)
             await self.index_store.async_save({"sessions": deepcopy(self.index)})

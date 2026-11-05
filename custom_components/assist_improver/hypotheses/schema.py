@@ -44,6 +44,8 @@ HYPOTHESES = probatio.Schema({
     # Goals with friction an existing improvement (waiting for review, or applied) already addresses.
     probatio.Optional("already_addressed"): [{probatio.Required("session"): str, probatio.Required("goal_turn"): int,
                                               probatio.Required("improvement"): str, probatio.Required("why"): str}],
+    # Instead, one question only the household can answer, whose answer would change what it proposes.
+    probatio.Optional("question_for_user"): str,
 })
 # Review comments in the Conventional Comments style (conventionalcomments.org), outcomes as in GitHub reviews.
 LABELS = ("issue", "suggestion", "todo", "nitpick", "question", "thought", "praise")

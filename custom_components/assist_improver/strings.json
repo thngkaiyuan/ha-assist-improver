@@ -21,9 +21,6 @@
         }
       }
     },
-    "abort": {
-      "already_configured": "Assist Improver is already set up."
-    },
     "error": {
       "create_failed": "Couldn't add it for you: {reason} You can add an AI Task yourself under Settings → Devices & services → your AI provider."
     },
@@ -118,7 +115,8 @@
           "create_failed": "Couldn't add it for you: {reason} You can add an AI Task yourself under Settings → Devices & services → your AI provider."
         },
         "abort": {
-          "no_choice": "No AI model was chosen, so nothing can be analyzed yet."
+          "no_choice": "No AI model was chosen, so nothing can be analyzed yet.",
+          "not_set_up": "Assist Improver isn't set up anymore."
         }
       }
     },
@@ -127,16 +125,18 @@
       "description": "The AI model chosen for {steps} isn't available anymore. Runs wait until you choose another in [Assist Improver's settings]({link})."
     }
   },
-  "entity": {
-    "switch": {
-      "sandbox_mode": {
-        "name": "Sandbox mode"
-      }
-    }
-  },
   "exceptions": {
-    "sandbox_needs_person": {
-      "message": "Sandbox mode is per person: turn it on while signed in to Home Assistant."
+    "unknown_recording": {
+      "message": "Unknown recording ID."
+    },
+    "paid_inference_not_allowed": {
+      "message": "Paid inference has not been authorized."
+    },
+    "recording_unavailable": {
+      "message": "Recording is unavailable."
+    },
+    "cannot_replay": {
+      "message": "Can't replay: {error}"
     }
   }
 }

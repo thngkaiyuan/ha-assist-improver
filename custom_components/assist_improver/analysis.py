@@ -5,18 +5,25 @@ from uuid import uuid4
 
 from homeassistant.util.dt import utcnow
 
-from . import analyzer, trace, triage
-from . import contracts, records
+from . import analyzer, contracts, records, trace, triage
 from .cases import CaseError, digest as content_digest
-from .exploration import ListImprovements, ReadImprovement, SessionAPI, SessionView, related_improvements
+from .exploration import ListImprovements, ReadImprovement, SessionAPI, related_improvements, session_view
 from .failures import closing
-from .flow import deliberate
 from .records import Analysis
 from .reflective import index_of, run_role
 from .settings import role_model
 
 
-async def analyze(hass, entry, runtime, recording_id, triage_only=False, sent=None, revisions=()) -> Analysis:
+def deliberate(sent):
+    """Whether a conversation was sent in with a clear sign it needs a closer look, so it goes straight to Analyze, past
+    the quick check (sent: its mark, flow.Flow.sent_in; DETAILS P9.3.1): a note written as it was sent in, filed from
+    Assist, or sent in again after an earlier round looked at it. One picked, or sent in from the panel without a note,
+    gets the quick check, as a full run's conversations do."""
+    return bool(sent) and bool(sent.get("note") or sent.get("via") == "assist" or sent.get("again"))
+
+
+async def analyze(hass, entry, runtime, recording_id, triage_only=False, sent=None, revisions=(),
+                  answered=()) -> Analysis:
     """Journey analyzer on one recording: one paid AI Task call with read-only session tools, recorded either way.
 
     The answer comes from the submit_goals tool, not the model's final text: the last accepted submission, or
@@ -24,11 +31,12 @@ async def analyze(hass, entry, runtime, recording_id, triage_only=False, sent=No
     triage model set); a session it's sure was smooth is recorded as one without friction, and one that needs
     analysis as waiting for it, with the verdict kept so the check isn't paid for twice. sent: how it was sent in
     (its round's mark, flow.Flow.sent_in), if it was; revisions: the revision notes since, in order ({round, note,
-    title, changes, roots}, flow.Flow.revisions), each a turn of the conversation too (DETAILS P12.8.1).
+    title, changes, roots}, flow.Flow.revisions), each a turn of the conversation too (DETAILS P12.8.1); answered:
+    the household's answers to the analyzer's questions since ([{question, answer}]), which are no turns (P0.3).
     """
     entity_id = role_model(entry, "analyzer")
     recorder = runtime.recorder
-    view = SessionView(await recorder.export(recording_id))
+    view = await session_view(hass, await recorder.export(recording_id))
     run = {"id": uuid4().hex, "kind": analyzer.ROLE, "recording_id": recording_id, "status": "running",
            "digest_sha256": content_digest(view.digest), "entity_id": entity_id, "agentic": True, **trace.ids()}
     async with closing(runtime.role_runs.record, run) as keep:  # Kept before any inference; closed however it ends.
@@ -52,7 +60,8 @@ async def analyze(hass, entry, runtime, recording_id, triage_only=False, sent=No
         if triage_only:  # Not judged smooth (or not checked): the session waits for analysis.
             run.update(status="held", answer_status="awaiting_analysis")
             return await keep(run)
-        instructions, payload, tools, submit, mark = analyzer_input(runtime, recording_id, view, sent, revisions)
+        instructions, payload, tools, submit, mark = analyzer_input(runtime, recording_id, view, sent, revisions,
+                                                                answered)
         result = await run_role(hass, role=analyzer.ROLE, entity_id=entity_id, instructions=instructions,
                                 payload=payload, structure=None, llm_api=SessionAPI(hass, view, tools),
                                 allow_paid_inference=True)
@@ -72,8 +81,8 @@ async def analyze(hass, entry, runtime, recording_id, triage_only=False, sent=No
             notes = [{"sent": True}] * bool((submit.note or "").strip()) + [{"revision": r["round"]} for r in revisions]
             analysis = analyzer.to_analysis(recording_id, answer, view, notes)
             # What the user asked to know, judged once on the reply that ends its run (DETAILS P9.7.4, P9.10).
-            from .simulate import answered, judge_model
-            facts, heard = await answered(hass, judge_model(entry), view, analysis["goals"])
+            from . import simulate
+            facts, heard = await simulate.answered(hass, simulate.judge_model(entry), view, analysis["goals"])
             for n, goal in enumerate(analysis["goals"]):  # Each its own: two questions may share a turn.
                 if n in facts:
                     goal.update(reached=facts[n]["gives"], answered=facts[n])
@@ -86,14 +95,15 @@ async def analyze(hass, entry, runtime, recording_id, triage_only=False, sent=No
         return await keep(run)
 
 
-def analyzer_input(runtime, recording_id, view, sent=None, revisions=()):
+def analyzer_input(runtime, recording_id, view, sent=None, revisions=(), answered=()):
     """What the analyzer gets for one session, by code alone: (instructions, payload, its tools, the submit tool, the
     duplicate-marking tool). Existing improvements come along, so a goal one of them already fixes stops there
     (mark_duplicate) instead of going on. sent: how it was sent in (flow.Flow.sent_in), if it was; revisions: the
-    revision notes since (analyze). The preflight builds the same (tools/preflight.py)."""
+    revision notes since, and answered: the household's answers (analyze). The preflight builds the same
+    (tools/preflight.py)."""
     improvements = getattr(runtime, "improvements", None)
     existing = improvements.catalog(asking=recording_id, detailed=True) if improvements is not None else []
-    # Sent in with a clear sign (flow.deliberate): the analyzer hears it, with the note if any. One picked, or sent in
+    # Sent in with a clear sign (deliberate): the analyzer hears it, with the note if any. One picked, or sent in
     # without a note, that passed the quick check is analysed as any other (DETAILS P9.3.2).
     told = sent if deliberate(sent) else None
     mark = analyzer.MarkDuplicate(view, existing)
@@ -105,12 +115,12 @@ def analyzer_input(runtime, recording_id, view, sent=None, revisions=()):
     instructions = (analyzer.INSTRUCTIONS + (analyzer.FILED if told else "")
                     + (analyzer.REVISION if revisions else "") + (analyzer.DUPLICATES if existing else ""))
     # The instructions Assist ran with (who's speaking, the household knowledge), as the quick check gets them.
-    from .triage import instructions_seen
     try:
-        seen = instructions_seen(view)
+        seen = triage.instructions_seen(view)
     except (CaseError, KeyError, TypeError):  # A turn Home Assistant handled itself, or an older shape: left out.
         seen = {}
     payload = {**view.overview(), **seen, **({"filed_by_user": {"note": told.get("note", "")}} if told else {}),
+               **({"answered_by_user": list(answered)} if answered else {}),
                **({"improvements_on_these_devices": related} if related else {})}
     # The note it was sent in with, then each revision note, are the conversation's last turns (SPEC.md P0.3), which
     # need their goals too; they read with read_turn as any turn does.

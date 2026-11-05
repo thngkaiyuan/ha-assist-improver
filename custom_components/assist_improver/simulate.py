@@ -16,6 +16,7 @@ from pathlib import Path
 from uuid import uuid4
 
 import probatio
+# No public route: only a trace of its own keeps a replay's model and tool reports out of the caller's.
 from homeassistant.components.conversation.trace import async_conversation_trace
 from homeassistant.const import __version__ as CORE_VERSION
 from homeassistant.core import Context
@@ -26,8 +27,8 @@ from homeassistant.util.dt import utcnow
 
 from . import measures
 from .analyzer import speaking
-from .cases import (CaseError, as_seen, calls_in, digest, recording_turns, replay_readiness, replayed,
-                    started_from, transcript)
+from .cases import (CaseError, calls_in, digest, recording_turns, replay_readiness, replayed, started_from,
+                    transcript)
 from .changes import setup_from_changes
 from .const import DOMAIN, STORAGE_VERSION, TESTED_PROVIDERS
 from .digest import _clip, _naming
@@ -94,6 +95,8 @@ REPLAY_ENGINE = engine_version(Path(__file__).parent)  # Read once, as the integ
 def before_plan(recording):
     """The replay without a change: the whole recorded conversation, as its assistant ran it. It doesn't depend on
     the goals, so a conversation has one (P6.6.6). Untestable (conversation) when it can't be replayed."""
+    if "practice" in recording:  # Left by earlier versions: its devices were simulated, so there's nothing to match.
+        raise Untestable("It can't be replayed: it was recorded in sandbox mode", conversation=True)
     try:
         readiness = replay_readiness(recording)
         turns = recording_turns(recording)
@@ -110,10 +113,7 @@ def before_plan(recording):
             "core_version": CORE_VERSION, "replay_engine": REPLAY_ENGINE, "agent_id": agents.pop(),
             "provider": deepcopy(first["prepared"]["provider_config"][0]), "platform": platform,
             "provider_tested": platform in TESTED_PROVIDERS,
-            # What a turn's effects are compared with: the real changes HA recorded; for a practice session, what
-            # today's engine does with the recorded calls (the practice engine of the recording day may have
-            # emulated less).
-            "expected_effects": "recorded_calls_rerun" if recording.get("practice") else "recorded_changes",
+            "expected_effects": "recorded_changes",  # What a turn's effects are compared with.
             "user_inputs": [t["messages"][0]["content"] for t in turns],
             "prompt_digests": [digest(t["history"][0]["content"]) for t in turns],
             "tool_digests": [digest(t["prepared"]["tools"]) for t in turns],
@@ -259,15 +259,14 @@ def question_of(goal, view, turn, user_said, world=None):
     out = {"asked": [{"turn": goal["turn"]}, {"user_said": user_said}], "needs": goal.get("fact") or "", "turn": turn}
     if (goal.get("quote") or "").strip():
         out["form"] = goal["quote"]
-    start = as_seen(view.recording, view.sources[turn - 1]) if 1 <= turn <= len(view.sources) else {}
+    start = (view.sources[turn - 1].get("states") or {}) if 1 <= turn <= len(view.sources) else {}
     replied = view.replies[turn - 1] if 1 <= turn <= len(view.replies) else None
     changes, home = (world or view).changes, []
     for e in [e for e in goal.get("entity_ids") or [] if e in start]:
         state = start[e].get("state")
         if world is not None:
             before = [c for c in changes.get(e, []) if c["during_turn"] < turn]
-            state = before[-1]["new"] if before else (as_seen(view.recording, view.sources[0]).get(e) or {}).get(
-                "state")
+            state = before[-1]["new"] if before else ((view.sources[0].get("states") or {}).get(e) or {}).get("state")
         changed = [{k: c[k] for k in ("old", "new", "by")} for c in changes.get(e, []) if c["during_turn"] == turn
                    and (world is not None and c["by"] == "assistant" or "between turns" not in c["by"] and (
                        replied is None or datetime.fromisoformat(c["at"]) <= datetime.fromisoformat(replied)))]
@@ -519,10 +518,11 @@ class Trial:
     the turn `through`, for a developer's replay): the before, each turn's effects on the devices the recorded Assist
     changed matching the recording's (not_reproducible at the first that doesn't), or the after, with the change in
     the sandbox, saying only the turns it can't skip (DETAILS P6.4), with the judge (judge: its model) asked about
-    the objections as it goes. It runs once; its sandbox closes however it ends."""
+    the objections as it goes (session: the recording as the analysis read it, exploration.SessionView, where the
+    caller has one). It runs once; its sandbox closes however it ends."""
 
     def __init__(self, hass, plan, recording, *, before=None, goals=None, setup=None, aside=(), judge=None,
-                 through=None):
+                 through=None, session=None):
         self.hass, self.plan, self.recording = hass, plan, recording
         self.assistant = before or plan  # Whose plan names the assistant and its recorded settings: the before's.
         self.goals, self.setup, self.after, self.aside = goals or [], setup or {}, plan["kind"] == "after", set(aside)
@@ -531,7 +531,7 @@ class Trial:
         self.through = through or len(self.turns)
         # The devices the recorded Assist changed itself, in any turn: what a before is judged on.
         self.mine = {t["entity_id"] for turn in self.turns for t in assist_transitions(recording, turn)}
-        self.home, self.agent, self.session, self._rerun = None, None, None, None
+        self.home, self.agent, self.session = None, None, session
         self.conversation_id, self.usage = f"improver-replay-{uuid4()}", []  # In its sandbox only.
         self.entry = {"plan": deepcopy(plan), "recording_id": recording["id"], "at": utcnow().isoformat(),
                       "status": "running", "error": None, "notes": list(plan.get("notes") or []), "usage": None,
@@ -550,6 +550,9 @@ class Trial:
         entry, setup, turns = self.entry, self.setup, self.turns
         source = turns[0]["source"]
         try:
+            if self.after and self.session is None:  # What the replay with the change is judged on.
+                from .exploration import session_view
+                self.session = await session_view(self.hass, self.recording)
             self.home = home = SandboxHome(
                 self.hass, self.recording, turns[0], self.conversation_id,
                 scripts={**source["scripts"], **(setup.get("scripts") or {})}, automations=source["automations"],
@@ -598,7 +601,7 @@ class Trial:
             g["label"] == number or measures.root_of(goals, g) in roots and (
                 not isinstance(g["label"], int) or g["label"] < number and g["key"] not in self.states))]
         hangs = {g["key"] for g in goals if g["label"] == number and g.get("kind") in ("step", "wrap-up")}
-        questions = [q for q in questions_in(goals, self._session(), self.aside) if measures.under(goals, q) & hangs]
+        questions = [q for q in questions_in(goals, self.session, self.aside) if measures.under(goals, q) & hangs]
         if (asked or questions) and not measures.needed(  # It decides: asked, all met would skip the turn.
                 goals, self._view(), number, self.aside, {**self.states, **{g["key"]: "met" for g in asked}},
                 {**self.facts, **{q["key"]: [{"turn": 0, "gives": True}] for q in questions}}):
@@ -608,21 +611,14 @@ class Trial:
                 self.states.update({k: state_of(answers) for k, answers in found.items()})
             if questions:
                 found, self.entry["verdicts"] = await judged_facts(
-                    self.hass, self.judge, self.recording, self._session(), self.entry["steps"], questions, goals,
+                    self.hass, self.judge, self.recording, self.session, self.entry["steps"], questions, goals,
                     self.entry["verdicts"], upto=number)
                 self.facts.update(found)
         return measures.needed(goals, self._view(), number, self.aside, self.states, self.facts)
 
-    def _session(self):
-        """The recording as the analysis read it (exploration.SessionView), made once."""
-        if self.session is None:
-            from .exploration import SessionView
-            self.session = SessionView(self.recording)
-        return self.session
-
     def _view(self):
         """What the home did in this replay so far, as measures judge it."""
-        return measures.replay_view(self.turns, self._session(), self.entry["steps"])
+        return measures.replay_view(self.turns, self.session, self.entry["steps"])
 
     async def _turn(self, turn):
         """Replay one turn and keep it as a step; False when the before's turn didn't go as recorded."""
@@ -664,13 +660,13 @@ class Trial:
             return True
         # The conversation goes as it went: the devices the recorded Assist changed get the same effects, however the
         # model phrased its calls. It may vary elsewhere (a question, another device): kept as notes.
-        expected = await self._expected(turn)
+        expected = assist_transitions(self.recording, turn)
         mine = self.mine
         actual_by, expected_by = per_entity(setting_off(transitions)), per_entity(setting_off(expected))
         # Their lights' brightness too, where the replay knows it: a light switched on with none named comes on at the
         # level it remembers, which only the real light knew.
-        lights = [] if self.recording.get("practice") else sorted(
-            e for e in mine if e.startswith("light.") and (attributes.get(e) or {}).get("brightness") is not None)
+        lights = sorted(e for e in mine
+                        if e.startswith("light.") and (attributes.get(e) or {}).get("brightness") is not None)
         then = recorded_attributes(self.recording, turn, lights)
         step.update(recorded_transitions=expected,
                     matched=all(same_effects(actual_by.get(e, []), expected_by.get(e, [])) for e in mine)
@@ -682,16 +678,6 @@ class Trial:
         if not step["matched"]:
             self.entry["status"] = "not_reproducible"
         return step["matched"]
-
-    async def _expected(self, turn):
-        if self.plan["expected_effects"] != "recorded_calls_rerun":
-            return assist_transitions(self.recording, turn)
-        if self._rerun is None:
-            from .evidence import recorded_call_effects
-            source = self.turns[0]["source"]
-            self._rerun = await recorded_call_effects(self.recording, {"scripts": source["scripts"],
-                                                                       "automations": source["automations"]}) or {}
-        return self._rerun.get(turn["number"], [])
 
 
 def usage_report(events):
@@ -761,7 +747,7 @@ async def test(hass, entry, runtime, rid, goals, hypothesis):
     P0.1.1's measures, and whether the change made the goals strictly easier (validated). goals: the conversation's,
     as measures.goals_of gives them. Untestable: why it can't be tested (conversation: no idea can be, on this
     conversation); Transient: the machinery's doing, and it can run again."""
-    from .exploration import SessionView
+    from .exploration import session_view
     replays = runtime.replays
     try:
         recording = await runtime.recorder.export(rid)
@@ -769,11 +755,11 @@ async def test(hass, entry, runtime, rid, goals, hypothesis):
         raise Untestable(str(err), conversation=True) from err
     if not reaches(hypothesis, recording):
         raise Untestable(NOT_REACHED)
-    before = before_plan(recording)
+    before = await hass.async_add_executor_job(before_plan, recording)  # Its digest reads it all: off the loop.
     without = await _settled(hass, replays, before, before, recording)
     if without["status"] != "reproduced":
         raise Untestable(_why(without), conversation=True)
-    turns, session = recording_turns(recording), SessionView(recording)
+    turns, session = recording_turns(recording), await session_view(hass, recording)
     went = measures.judge(goals, session, range(1, len(turns) + 1), measures.CONVERSATION)
     home = measures.replay_view(turns, session, without["steps"])
     # What code judges first: a before that didn't go as the conversation went costs no judge's call. What it can't
@@ -816,7 +802,7 @@ async def test(hass, entry, runtime, rid, goals, hypothesis):
     except CaseError as err:
         raise Untestable(str(err)) from err
     with_change = await _settled(hass, replays, after_plan(before, setup, goals, aside, model), before, recording,
-                                 goals=goals, setup=setup, aside=aside, judge=model)
+                                 goals=goals, setup=setup, aside=aside, judge=model, session=session)
     if with_change["status"] != "done":  # It can't run with this change: the idea's, not counted (P6.3.5).
         raise Untestable(_why(with_change))
     heard_after = {k: {} for k in heard_before if k in aside}  # Set aside: not judged again.
@@ -845,7 +831,7 @@ async def replay_recording(hass, recorder, recording_id, last_turn=1):
     checked against what the recorded assistant did: for checking the replay engine end to end (DETAILS P6.12, a
     developer service). Paid: the assistant's own model. Nothing is kept."""
     recording = await recorder.export(recording_id)
-    plan = before_plan(recording)
+    plan = await hass.async_add_executor_job(before_plan, recording)
     found = await Trial(hass, plan, recording, through=last_turn).run()
     return {"agent_id": plan["agent_id"], "model": (plan["provider"].get("options") or {}).get("chat_model"),
             **{k: v for k, v in found.items() if k != "plan"}}

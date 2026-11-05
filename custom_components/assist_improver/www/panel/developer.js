@@ -132,16 +132,7 @@ async function moreLogs(p) {
 }
 
 async function copy(p, text, el) {
-  let ok = false;
-  try { await navigator.clipboard.writeText(text); ok = true; } catch (err) {
-    // No clipboard API (as on a page served over plain http): the old way.
-    const area = document.createElement("textarea");
-    area.value = text; area.style.cssText = "position:fixed;top:0;left:0;opacity:0";
-    p.root.appendChild(area); area.select();
-    try { ok = document.execCommand("copy"); } catch (e) { ok = false; }
-    area.remove();
-  }
-  if (!ok) return;
+  if (!await common.copy(p, text)) return;
   el.classList.add("done"); el.innerHTML = svg("check");
   setTimeout(() => { el.classList.remove("done"); el.innerHTML = svg("copy"); }, 1200);
 }
@@ -233,15 +224,14 @@ function conversations(dev, p, state) {
   const needle = conv.search.trim().toLowerCase();
   let shown = 0, size = 0;
   const body = rows.map((r) => {
-    const text = [r.id, r.stage, r.outcome, r.held && `held ${r.held.cause}`, r.status, r.stored, r.practice && "practice",
+    const text = [r.id, r.stage, r.outcome, r.held && `held ${r.held.cause}`, r.status, r.stored,
                   r.covered_by, ...(r.improvements || []), ...(r.replays || []), ...(r.runs || [])].filter(Boolean).join(" ").toLowerCase();
     const hit = (!conv.stage || r.stage === conv.stage) && (!needle || text.includes(needle));
     if (hit) { shown += 1; size += Number(r.bytes) || 0; }
     return `<tr data-stage="${esc(r.stage)}" ${hit ? "" : "hidden"}>
       <td class="sticky">${idLink(r.id)}</td>
       <td>${stageChip(r.stage)}${r.held ? ` ${heldChip(r.held)}` : ""}${r.outcome ? ` <span class="dv-dim">${esc(r.outcome)}</span>` : ""}${
-        r.covered_by ? ` <span class="dv-tag">covered_by ${idLink(r.covered_by)}</span>` : ""}${
-        r.practice ? ` <span class="dv-tag">practice</span>` : ""}${r.filed ? ` <span class="dv-tag">filed</span>` : ""}</td>
+        r.covered_by ? ` <span class="dv-tag">covered_by ${idLink(r.covered_by)}</span>` : ""}${r.filed ? ` <span class="dv-tag">filed</span>` : ""}</td>
       <td class="n">${r.round ? num(r.round) : ""}</td><td class="n">${bytes(r.bytes)}</td><td class="n">${num(r.user_turns)}</td>
       <td><span title="${esc(r.started)}">${esc(stamp(r.started, "min"))}</span></td>
       <td class="n">${num(r.goals)}</td><td class="n">${num(r.friction)}</td><td class="n">${r.failed ? num(r.failed) : ""}</td>
@@ -345,14 +335,14 @@ function health(dev, p, state) {
   const forms = Object.entries(disk.recordings_by_storage || {}).map(([form, n]) => `${esc(form)} ${num(n)}`).join(" · ");
   const diskCard = card("Disk", `${bytes(diskBytes)} in .storage`, table(["Store", "Size "], storeRows) +
     (forms ? `<div class="dv-note dv-pad">Recordings by storage: ${forms}</div>` : ""));
-  const practice = mem["practice sessions"], traced = Array.isArray(mem["active traces"]) ? mem["active traces"] : [];
+  const traced = Array.isArray(mem["active traces"]) ? mem["active traces"] : [];
   const memRows = memParts.map(([name, x]) => `<tr><td>${esc(name)}</td><td class="n">${num(x.items)}</td><td class="n">${bytes(x.bytes)}</td>
     <td class="n">${dur(x.ms)}</td></tr>`);
   const traceRows = traced.map((t) => `<tr><td>${idLink(t.id)}</td><td>${esc(t.kind)}</td><td>${esc(stamp(t.started))}</td>
     <td class="n">${num(t.spans)}</td><td class="n">${num(t.journal)}</td><td class="n">${num(t.open)}</td>
     <td class="n">${num((t.dropped?.spans || 0) + (t.dropped?.journal || 0))}</td></tr>`);
   const memCard = card("Memory", `estimated on request as JSON size, ${dur(memMs)}`, table(["Structure", "Items ", "Size ", "Took "], memRows) +
-    (practice ? sub("Practice sessions") + pad(kv(practice)) : "") + sub("Active traces", "in memory") +
+    sub("Active traces", "in memory") +
     table(["Trace", "Kind", "Started", "Spans ", "Journal ", "Open ", "Dropped "], traceRows));
   const tasks = now.tasks || [];
   // sandbox.STATS: counts, and seconds (the *_seconds totals and the slowest_* ones).

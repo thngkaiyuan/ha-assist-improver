@@ -14,7 +14,7 @@ from homeassistant.helpers import llm
 
 from .cases import calls_in, recording_turns
 from .digest import (ACTION_DOMAINS, NOISE_DOMAINS, OWN_REPORTS, _clip, _entity_card, _naming, _text,
-                     background, build_digest)
+                     async_time_zone, background, build_digest, time_zone)
 from .simulation import template_follow_ons
 from .trace import traced_tool
 
@@ -73,14 +73,23 @@ def _carries(assists, later):
                    if k in left)
 
 
-class SessionView:
-    """One recording, sliced for the tools."""
+async def session_view(hass, recording):
+    """A SessionView for code on the event loop, made off it: its time zone (digest.time_zone), then the view, which
+    reads every turn of a recording of megabytes."""
+    first = (recording.get("turns") or [{}])[0].get("source") or {}
+    return await hass.async_add_executor_job(SessionView, recording, await async_time_zone(first.get("time_zone")))
 
-    def __init__(self, recording):
+
+class SessionView:
+    """One recording, sliced for the tools. zone: its time zone, which code on the event loop resolves first
+    (session_view)."""
+
+    def __init__(self, recording, zone=None):
         self.recording = recording
-        self.digest = build_digest(recording)
-        turns = recording_turns(recording, replay=False)
+        self.turns = turns = recording_turns(recording, replay=False)  # As analysis reads them; never changed.
         self.source = turns[0]["source"]
+        self.zone = zone or time_zone(self.source.get("time_zone"))
+        self.digest = build_digest(recording, self.zone)
         self.starts = [t["messages"][0]["created"] for t in turns]
         self.replies = [max((m["created"] for m in t["messages"][1:] if m.get("role") == "assistant"), default=None)
                         for t in turns]
@@ -90,10 +99,9 @@ class SessionView:
         # The assistant's configuration as of this session (its instructions template among it), where recorded.
         self.assistant = next(((t["prepared"].get("provider_config") or [None])[0] for t in turns
                                if t.get("prepared") and t["prepared"].get("provider_config")), None)
-        practice = recording.get("practice")
         # {(entity, at): 1 if Assist's request is only its context's parent, 2 if only Assist's results name it} (_who).
         self._indirect = {}
-        self.changes = self._changes(practice["simulated_changes"] if practice else recording.get("state_changes", []))
+        self.changes = self._changes(recording.get("state_changes", []))
         self.notes = {}  # Its notes, where the analyzer hears them, by their turns after those said (read_turn).
         # Each turn's calls with Home Assistant's results, for what leaves no device state (analyzer.announced); a
         # script's own calls aren't recorded.
@@ -103,7 +111,7 @@ class SessionView:
         return sum(1 for start in self.starts if datetime.fromisoformat(at) >= datetime.fromisoformat(start))
 
     def _changes(self, raw):
-        """Real (or practice-simulated) changes by entity: turn, old and new state, changed attributes, and who."""
+        """Real changes by entity: turn, old and new state, changed attributes, and who."""
         out = {}
         for change in raw:
             if background(change):  # The rule the recorder keeps changes by (digest.worth_keeping).
@@ -192,7 +200,7 @@ class SessionView:
         return "not the assistant (a person at the device or app, an automation, or the device itself)"
 
     def _card(self, entity_id, detailed=False):
-        card = _entity_card(self.source, entity_id, detailed)
+        card = _entity_card(self.source, entity_id, self.zone, detailed)
         card["state_at_start"] = card.pop("state")
         changes = self.changes.get(entity_id)
         card["state_at_end"] = changes[-1]["new"] if changes else "unchanged"
@@ -210,7 +218,7 @@ class SessionView:
         if not hasattr(self, "_names"):
             self._names = {}
             for entity_id in self._entities():
-                if self._wanted(entity_id, False) and _entity_card(self.source, entity_id, False).get("exposed"):
+                if self._wanted(entity_id, False) and _entity_card(self.source, entity_id, self.zone).get("exposed"):
                     self._names.setdefault(_naming(self.source, entity_id)[0], []).append(entity_id)
         return self._names
 
@@ -255,7 +263,7 @@ class SessionView:
         """{turn: [each of Assist's calls that acted on something: the call, and the devices HA's response says
         it acted on or failed on, or the error it returned]}. Calls that only read (live context) are left out."""
         out = {}
-        for turn in recording_turns(self.recording, replay=False):
+        for turn in self.turns:
             calls = {c["id"]: c for m in turn["messages"] if m["role"] == "assistant" for c in m.get("tool_calls") or []}
             for message in turn["messages"]:
                 if message["role"] != "tool_result" or not isinstance(message.get("result"), dict):

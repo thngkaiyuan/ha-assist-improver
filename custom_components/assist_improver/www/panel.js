@@ -10,7 +10,7 @@
 //   panel/app.js        the controller: state, loading, drawing, events
 //   panel/home.js       home: what to review, else a run to start
 //   panel/review.js     a review, and the decision on it
-//   panel/settings.js   the pipeline as a track, the switches and the history (track.js, pickers.js, household.js)
+//   panel/settings.js   the pipeline as a track, the run control and the history (track.js, pickers.js, household.js)
 //   panel/developer.js  the developer view (devparts.js)
 //   panel/common.js     what the views share; format.js, text.js (every word), icons.js, style.js, morph.js
 

@@ -22,6 +22,48 @@ const REVEALS = ".done-msg, .done-row > :last-child, .menu, .cs-read, .cs-confir
 
 const STILL = matchMedia("(prefers-reduced-motion: reduce)");  // The household asked for less motion: no fades.
 
+// The script saver (panel.py's ScriptChannel). The improver never writes a configuration file itself: it asks the panel
+// to save a script, or delete one (config null), through Home Assistant's own script editor, with the signed-in admin's
+// session, and the panel answers how it went. One per connection, kept while Home Assistant makes the panel again (a
+// change may be under way). A reconnect (Home Assistant restarted, say) drops it, and it isn't renewed by itself (the
+// improver may not be set up again yet): it's subscribed again at the next finish, and after a refusal at the one after.
+const saver = {hass: null, connection: null, ready: null, stale: true, drop: null, saving: new Set()};
+
+function saveScripts(hass, again = false) {
+  saver.hass = hass;
+  const {connection} = hass;
+  if (!connection || (connection === saver.connection && !(again && saver.stale))) return saver.ready;
+  if (connection !== saver.connection) {
+    saver.connection = connection;
+    connection.addEventListener("ready", () => { if (saver.connection === connection) saver.drop(); });
+  }
+  saver.stale = false;
+  saver.ready = new Promise((resolve) => {
+    const drop = saver.drop = () => { saver.stale = true; resolve(); };  // Never left waiting on a lost socket.
+    connection.subscribeMessage(saveScript, {type: "assist_improver/scripts"}, {resubscribe: false}).then(resolve, drop);
+  });
+  return saver.ready;
+}
+
+function saveScript(asked) {
+  // Each save is kept until it's answered: finish waits for them, so a change is never finished before one lands.
+  const saving = save(asked).finally(() => saver.saving.delete(saving));
+  saver.saving.add(saving);
+}
+
+async function save({key, object_id, config}) {
+  const {hass} = saver;
+  let error;
+  try {
+    await hass.callApi(config ? "POST" : "DELETE", `config/script/config/${object_id}`, config || undefined);
+  } catch (err) {
+    error = String(err?.body?.message || err?.error || err?.message || err);  // Home Assistant's reason, as it says it.
+  }
+  try {
+    await hass.callWS({type: "assist_improver/scripts/saved", key, ...(error ? {error} : {})});
+  } catch (err) { /* Not waited for any more: the change is finished from where it stands (finish). */ }
+}
+
 function fade(el) {
   // Marked for the fade (style.js .fresh) until it ends: moved or patched later, it never fades again.
   if (STILL.matches) return;
@@ -66,8 +108,10 @@ export class PanelApp {
       // The conversations' Status and order menus, an opened one's ⋮, and Delete's question (focus back to its ⋮).
       const lists = this.cv?.statusMenu || this.cv?.sortMenu || this.cv?.menu || this.cv?.deleting;
       const asked = this.cv?.deleting;
-      if (ev.key !== "Escape" || !(this.pop || this.runMenu || this.confirming || this.asking || this.menuOpen || lists)) return;
-      Object.assign(this, {pop: null, runMenu: false, confirming: false, picking: false, asking: null, menuOpen: false});
+      const leaving = this.uninstall && !this.uninstall.busy;  // Uninstall's question, until it's on its way.
+      if (ev.key !== "Escape" || !(this.pop || this.runMenu || this.confirming || this.menuOpen || lists || leaving)) return;
+      Object.assign(this, {pop: null, runMenu: false, confirming: false, picking: false, menuOpen: false});
+      if (leaving) this.uninstall = null;
       if (this.cv) Object.assign(this.cv, {statusMenu: false, sortMenu: false, menu: null, deleting: null});
       this.render();
       if (asked) this.root.getElementById("cs-actions")?.focus({preventScroll: true});
@@ -99,6 +143,7 @@ export class PanelApp {
   setHass(hass) {
     const first = !this.hass;
     this.hass = hass;
+    saveScripts(hass);
     this.menuButton();
     if (first) {
       this.render();  // At once: the toolbar, and a spinner while the first replies are on their way.
@@ -115,6 +160,18 @@ export class PanelApp {
 
   ws(type, extra = {}) {
     return this.hass.callWS({type: `assist_improver/${type}`, ...extra});
+  }
+
+  async finish() {
+    // A change left open (Home Assistant stopped in the middle of it, or a panel went away) is finished first, its
+    // scripts saved from here once this panel's own saves are answered: what it did ({result}), or nothing.
+    try {
+      await saveScripts(this.hass, true);
+      await Promise.all(saver.saving);
+      return await this.ws("changeset/finish");
+    } catch (err) {
+      return null;  // Tried again at the next load.
+    }
   }
 
   go(id) {
@@ -139,6 +196,7 @@ export class PanelApp {
     const seq = this.loadSeq = (this.loadSeq || 0) + 1, current = () => seq === this.loadSeq;
     this.error = null;
     clearTimeout(this.devTimer);
+    if (!own) await this.finish();  // Before anything is read.
     try {
       if (params.get("view") === "developer") {
         KEPT.page = null;
@@ -171,8 +229,8 @@ export class PanelApp {
         const [found, run, options] = await Promise.all([this.ws("improvements"), this.ws("run"),
                                                          this.ws("settings").catch(() => null), conversations.load(this)]);
         if (!current()) return;
-        Object.assign(this, {list: found.improvements, developer: !!options?.developer, review: null, view: "home",
-                             pop: null});
+        Object.assign(this, {list: found.improvements, questions: found.questions || [], developer: !!options?.developer,
+                             review: null, view: "home", pop: null});
         if (fromReview) this.scroller().scrollTop = 0;  // Back from a review: home starts at its top.
         this.setRun(run);
         KEPT.page = null;
@@ -279,7 +337,9 @@ export class PanelApp {
     this.confirmShown = confirming;
     view.after?.(this);
     this.unhold();
-    if (this.tipAnchor && !this.tipAnchor.isConnected) this.root.getElementById("tip").hidden = true;  // Its control is gone.
+    const tip = this.root.getElementById("tip"), words = this.tipAnchor?.dataset.tip;
+    if (this.tipAnchor && !this.tipAnchor.isConnected) tip.hidden = true;  // Its control is gone.
+    else if (!tip.hidden && words && words !== tip.textContent) this.tip({target: this.tipAnchor}, true);  // Its words changed.
   }
 
   barHeight() {

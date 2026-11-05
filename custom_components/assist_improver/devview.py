@@ -47,7 +47,7 @@ def _recording_sizes(hass):
     path, prefix = hass.config.path(".storage"), f"{DOMAIN}.session_"
     out = {}
     for name in os.listdir(path) if os.path.isdir(path) else []:
-        if name.startswith(prefix):
+        if name.startswith(prefix) and name != f"{prefix}briefs":
             try:
                 out[name[len(prefix):]] = os.path.getsize(os.path.join(path, name))
             except FileNotFoundError:
@@ -78,8 +78,8 @@ def _attempts(conv, number=None):
 
 
 def conversation_rows(runtime, sizes=None):
-    """One row per recording, newest first: {id, short, started, ended, user_turns, status, stored, bytes, practice,
-    filed, stage, round, held, outcome, covered_by, failed, goals, friction, improvements, replays, runs}, where it
+    """One row per recording, newest first: {id, short, started, ended, user_turns, status, stored, bytes, filed,
+    stage, round, held, outcome, covered_by, failed, goals, friction, improvements, replays, runs}, where it
     stands read from its flow record (flow.Flow.place): failed counts the attempts that failed in its round, runs are
     the runs that worked on it, and goals and friction are its latest analysis's."""
     flow, sizes, improvements = runtime.flow, sizes or {}, _improvements(runtime)
@@ -93,7 +93,6 @@ def conversation_rows(runtime, sizes=None):
                      "ended": summary.get("updated"), "user_turns": summary.get("user_turns"),
                      "status": summary.get("status"), "stored": summary.get("stored", "full"),
                      "bytes": sizes.get(rid),
-                     "practice": bool((runtime.recorder.sessions.get(rid) or {}).get("practice")) or None,
                      "filed": (flow.sent(rid) or {}).get("at"),  # When the user sent it in.
                      **{k: place[k] for k in ("stage", "round", "held", "outcome", "covered_by")},
                      "failed": sum(1 for *_, a in _attempts(conv, conv["round"]) if a["status"] == "failed"),
@@ -279,8 +278,8 @@ def improvement_timeline(runtime, improvement_id):
     events.append(_event(test["at"], "test", f"Validated on its conversation: {', '.join(test['gains'])}",
                          recording=item["conversation"], replay=test["after"]["plan"]))
     for decision in item.get("decisions", []):
-        events.append(_event(decision.get("at"), "decision", f"{decision.get('decision')}: {decision.get('outcome')}"
-                             + (" (automatically)" if decision.get("auto") else ""), improvement=improvement_id))
+        events.append(_event(decision.get("at"), "decision", f"{decision.get('decision')}: {decision.get('outcome')}",
+                             improvement=improvement_id))
     for happened in item.get("history", []):
         events.append(_event(happened.get("at"), "history", f"{happened.get('event')}: {happened.get('status', '')}",
                              improvement=improvement_id))
@@ -346,8 +345,7 @@ def _measured(value):
     return size, round((time.perf_counter() - began) * 1000, 1)
 
 
-def _memory(hass, runtime):
-    from .practice import MODE_KEY
+def _memory(runtime):
     parts = {"live recordings": runtime.recorder.sessions, "recordings index": runtime.recorder.index,
              "run log": getattr(runtime.role_runs, "runs", []), "improvements": runtime.improvements.items,
              "replays": runtime.replays.items, "hot spots": trace.HOT}
@@ -357,11 +355,6 @@ def _memory(hass, runtime):
             continue
         size, ms = _measured(value)
         out[name] = {"items": len(value) if hasattr(value, "__len__") else None, "bytes": size, "ms": ms}
-    mode = hass.data.get(MODE_KEY)
-    sessions = getattr(getattr(mode, "sessions", None), "sessions", {}) or {}
-    out["practice sessions"] = {  # Each a copy of the home in the replay worker (practice.LiveHome).
-        "items": len(sessions), "copies running": sum(1 for s in sessions.values() if s.sandbox is not None),
-        "devices changed": sum(len(s.mine) for s in sessions.values())}
     out["active traces"] = trace.active_summary()
     return out
 
@@ -373,7 +366,7 @@ def _tasks():
         coro = task.get_coro()
         module = getattr(getattr(coro, "cr_code", None), "co_filename", "") or ""
         name = task.get_name()
-        if "assist_improver" in name or "Practice timer" in name or f"{os.sep}assist_improver{os.sep}" in module:
+        if "assist_improver" in name or f"{os.sep}assist_improver{os.sep}" in module:
             mine.append(name if not name.startswith("Task-") else f"{name} ({getattr(coro, '__qualname__', '?')})")
     return sorted(mine)
 
@@ -402,17 +395,17 @@ def _max_rss():
 
 async def health(hass, runtime):
     from .diagnostics import _storage
-    from .worker import STATS
+    from .worker import KEY, STATS
     disk = await hass.async_add_executor_job(_storage, hass.config.path(".storage"))
     pipeline = runtime.pipeline
     current = pipeline.current or {}
     return {
         "version": VERSION,
         "disk": {**disk, "recordings_by_storage": dict(Counter(s.get("stored", "full") for s in runtime.recorder.index.values()))},
-        "memory": _memory(hass, runtime),
+        "memory": _memory(runtime),
         "now": {"run": {"running": current.get("status") == "running", "stage": current.get("stage"),
                         "id": current.get("id")},
-                "tasks": _tasks(), "sandboxes": {**STATS, "running": STATS.get("started", 0) - STATS.get("stopped", 0)},
+                "tasks": _tasks(), "sandboxes": {**STATS, "running": len(hass.data.get(KEY, ()))},
                 "pending_writes": runtime.recorder.status().get("pending_writes")},
         "hot": sorted(({"name": name, **row} for name, row in trace.HOT.items()), key=lambda r: -r["total_ms"]),
         "ai_calls": _ai_calls(runtime),

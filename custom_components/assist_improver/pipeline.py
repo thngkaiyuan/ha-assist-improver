@@ -5,10 +5,10 @@ How runs start (trigger):
 - manual: Run in the panel, after the household confirms what it will spend (preview, read from the flow record). A
   full run, or one on the conversations picked (picked); Run one step runs one stage (only).
 - scheduled: a full run at 03:00, daily or weekly (schedule; off by default).
-- filed: the fast lane (on-demand improvements, a setting): a conversation sent in gets a run of its own once it ends,
-  or right after the run in progress; after a restart, so does each one sent in and still waiting.
-- revision or conflict: a conversation the household sent back to Propose gets a run of its own, now or right after
-  the run in progress (P0.7).
+- filed: the fast lane: a conversation sent in gets a run of its own once it ends, or right after the run in
+  progress; after a restart, so does each one sent in and still waiting.
+- revision, conflict or answer: a conversation the household sent back (to Propose, or with its answer to the stage
+  that asked) gets a run of its own, now or right after the run in progress (P0.7).
 
 A run that needs a stage whose AI model isn't available doesn't start (refusal); one nobody is watching is kept as
 failed, with why. A run's record is kept from the start and after each move, so a restart that cuts it off shows it
@@ -25,9 +25,9 @@ from homeassistant.core import callback
 from homeassistant.util.dt import utcnow
 
 from .cases import CaseError
-from .const import CONF_ON_DEMAND
 from . import failures
-from .flow import KEYS, deliberate
+from .analysis import deliberate
+from .flow import KEYS
 from .records import PipelineRun
 from .reflective import index_of
 from .settings import GATES, blocked_stages, listed, paused, role_model
@@ -50,11 +50,7 @@ class Pipeline:
         self._cancelled = False  # The household cancelled the run in progress (else a stop cut it off: interrupted).
         self._stopping = False  # Unloading: nothing new starts.
 
-    # On-demand improvements.
-
-    @property
-    def on_demand(self):
-        return bool(self.entry.options.get(CONF_ON_DEMAND))
+    # The fast lane.
 
     def filed(self, rid):
         """Sent in, and waiting for a run (its mark on the flow record, flow.Flow.sent_in): the fast lane's."""
@@ -62,11 +58,10 @@ class Pipeline:
 
     @callback
     def request(self, *recording_ids):
-        """Filed conversations ended, or were waiting at a restart (on-demand improvements): each gets a run of its own
-        (the fast lane, SPEC.md P0.7), one after another, now or right after the run in progress."""
-        if self.on_demand:
-            self._filed += [rid for rid in recording_ids if rid not in self._filed]
-            self._next_filed()
+        """Filed conversations ended, or were waiting at a restart: each gets a run of its own (the fast lane, SPEC.md
+        P0.7), one after another, now or right after the run in progress."""
+        self._filed += [rid for rid in recording_ids if rid not in self._filed]
+        self._next_filed()
 
     def _next_filed(self):
         while self._filed and not self.running:
@@ -77,8 +72,8 @@ class Pipeline:
 
     @callback
     def send_back(self, recording_id, trigger):
-        """A conversation sent back to Propose (trigger: revision, or conflict) gets a run of its own: now, or right
-        after the run in progress (SPEC.md P0.7)."""
+        """A conversation sent back (trigger: revision or conflict, to Propose; answer, to the stage that asked) gets a
+        run of its own: now, or right after the run in progress (SPEC.md P0.7)."""
         self._sent_back.append((recording_id, trigger))
         self._next_sent_back()
 
@@ -92,13 +87,14 @@ class Pipeline:
 
     @callback
     def _ran(self, task):
-        # Conversations deleted during the run go now; none of them is taken in again meanwhile (flow.Flow.waiting).
-        self.hass.async_create_task(self.recorder.forget_queued(), "assist_improver_forget_queued")
         # What was sent back or filed meanwhile gets its own run now, in turn, also after the household cancelled this
-        # one; not while stopping.
-        if not self._stopping and not self.hass.is_stopping:
-            self._next_sent_back()
-            self._next_filed()
+        # one; not while stopping (conversations deleted during the run then go at the next start).
+        if self._stopping or self.hass.is_stopping:
+            return
+        # Conversations deleted during the run go now; none of them is taken in again meanwhile (flow.Flow.waiting).
+        self.entry.async_create_task(self.hass, self.recorder.forget_queued(), "assist_improver_forget_queued")
+        self._next_sent_back()
+        self._next_filed()
 
     # What a run would do, for the confirmation before it starts.
 
@@ -108,9 +104,9 @@ class Pipeline:
         releases there: it takes in nothing new, P0.7); what a manual full run would move (flow.Flow.admitted), less
         what would stop at a blocked stage: the new ones it admits (admits, and which: a few of them by their first
         words) and the held ones it releases, by stage (releases); how many quick checks and analyses that takes, for
-        the cost line (quick: new ones without a clear sign, flow.deliberate, and those released at Triage; analyses:
-        all but those released past Analyze); and the rest the panel reads (no per-call cost accounting: coarse
-        controls)."""
+        the cost line (quick: new ones without a clear sign, analysis.deliberate, and those released at Triage;
+        analyses: all but those released past Analyze); and the rest the panel reads (no per-call cost accounting:
+        coarse controls)."""
         flow, blocked = self.runtime.flow, paused(self.entry)
         new, released = flow.admitted({"trigger": "manual"})
 
@@ -173,8 +169,8 @@ class Pipeline:
         return None
 
     def start(self, *, trigger, only=None, picked=None, conversation=None):
-        """trigger: manual or scheduled (a full run, unless picked), filed (the fast lane), or revision or conflict
-        (the one conversation sent back to Propose: conversation). only: run just that stage. picked: the recording
+        """trigger: manual or scheduled (a full run, unless picked), filed (the fast lane), or revision, conflict or
+        answer (the one conversation sent back: conversation). only: run just that stage. picked: the recording
         ids of the conversations the user picked (or filed, for the fast lane): it admits only those
         (flow.Flow.admitted)."""
         if self.running:
@@ -186,7 +182,8 @@ class Pipeline:
                                 "started": now, "finished": now, "stage": None, "progress": {}, "error": reason,
                                 "only": None}
                 journal("warning", f"{trigger.capitalize()} run not started: {reason}", run_id=self.current["id"])
-                self.hass.async_create_task(self.runtime.role_runs.record(self.current))
+                self.entry.async_create_task(self.hass, self.runtime.role_runs.record(self.current),
+                                             "assist_improver_run_record")
             raise CaseError(reason)
         run_id = uuid4().hex
         self._cancelled = False
@@ -194,7 +191,8 @@ class Pipeline:
                         "started": utcnow().isoformat(), "stage": None, "progress": {}, "error": None,
                         "only": only, "trace_id": run_id, **({"picked": list(picked)} if picked is not None else {}),
                         **({"conversation": conversation} if conversation else {})}
-        self._task = self.hass.async_create_background_task(self._run(), "assist_improver_pipeline", eager_start=False)
+        self._task = self.entry.async_create_background_task(self.hass, self._run(), "assist_improver_pipeline",
+                                                             eager_start=False)
         self._task.add_done_callback(self._ran)
         return deepcopy(self.current)
 
@@ -230,7 +228,7 @@ class Pipeline:
         except Exception as err:  # Outside any stage (its trace, say): the run's record still closes.
             if run["status"] != "running":
                 raise
-            _LOGGER.exception("Assist Improver: the run failed")
+            _LOGGER.exception("The run failed")
             await self._finish("failed", error=f"{type(err).__name__}: {err}"[:500])
 
     async def _flowing(self):
@@ -245,7 +243,7 @@ class Pipeline:
             await self._finish("cancelled" if self._cancelled else "interrupted")
             raise
         except Exception as err:  # A run never takes the integration down; its error is kept for the panel.
-            _LOGGER.exception("Assist Improver: the run failed")
+            _LOGGER.exception("The run failed")
             await self._finish("failed", error=f"{type(err).__name__}: {err}"[:500])
 
     async def _finish(self, status, *, note=None, error=None):

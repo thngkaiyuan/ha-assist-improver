@@ -176,7 +176,8 @@ async def prune(recorder, referenced, now=None, named=None):
     newest = {k for k in closed if recorder.index[k].get("user_turns")}
     newest = set(sorted(newest, key=lambda k: recorder.index[k].get("started") or "", reverse=True)[:KEEP_NEWEST])
     for key in closed:
-        summary = recorder.index[key]
+        if (summary := recorder.index.get(key)) is None:
+            continue  # Deleted since the tidy-up began.
         if summary.get("user_turns") == 0:
             await recorder.delete(key)
             done["deleted"] += 1
@@ -187,20 +188,24 @@ async def prune(recorder, referenced, now=None, named=None):
         due = old and not (key in referenced or key in newest)
         if summary.get("stored") == "compact" or (summary.get("stored") == "packed" and not due):
             continue  # The index says how it's stored: nothing to load.
-        if (data := await recorder.store(key).async_load()) is None:
-            continue
-        if due:
-            await recorder.store(key).async_save(compact(data, (named or {}).get(key, ())))
-            summary["stored"] = "compact"
-            done["compacted"] += 1
-            journal("info", f"Recording compacted: older than {KEEP_FULL_DAYS} days and nothing needs it in full",
-                    recording_id=key)
-        else:
-            if not data.get("packed"):
-                await recorder.store(key).async_save(pack(data))
-                done["packed"] += 1
-                journal("info", "Recording packed", recording_id=key)
-            summary["stored"] = "packed"
+        async with recorder.lock:  # No save, forget or delete of it lands between reading it and writing it back.
+            if (recorder.index.get(key) is not summary or summary.get("deleting") or key in recorder.sessions
+                    or (data := await recorder.store(key).async_load()) is None):
+                continue  # Going, or still the recorder's to save.
+            # Compacting and packing copy the whole recording: done off the event loop.
+            if due:
+                compacted = await recorder.hass.async_add_executor_job(compact, data, (named or {}).get(key, ()))
+                await recorder.store(key).async_save(compacted)
+                summary["stored"] = "compact"
+                done["compacted"] += 1
+                journal("info", f"Recording compacted: older than {KEEP_FULL_DAYS} days and nothing needs it in full",
+                        recording_id=key)
+            else:
+                if not data.get("packed"):
+                    await recorder.store(key).async_save(await recorder.hass.async_add_executor_job(pack, data))
+                    done["packed"] += 1
+                    journal("info", "Recording packed", recording_id=key)
+                summary["stored"] = "packed"
     await recorder.save_index()
     return done
 

@@ -1,42 +1,31 @@
-"""Read local state/registries without polling integrations or calling services."""
+"""Read local state/registries without polling integrations or calling services.
 
-import functools
-import logging
+A snapshot of the home is taken in two steps, so a recorded turn holds the event loop only for what has to be read
+there: taken(hass) on the event loop, at the moment of the turn (the State objects, registry entries and script and
+automation configurations as they are then, by reference: Home Assistant replaces them, never changes them; exposure,
+which can write the entity registry; and what's small), then home(taken) in any thread, which serializes it.
+snapshot(hass) does both at once."""
 
+from copy import deepcopy
+
+from homeassistant.components.automation import DATA_COMPONENT as AUTOMATIONS
 from homeassistant.components.homeassistant.exposed_entities import async_should_expose
 from homeassistant.helpers import area_registry as ar, device_registry as dr, entity_registry as er
+from homeassistant.helpers.entity_component import EntityComponent
 from homeassistant.util.dt import utcnow
+from homeassistant.util.hass_dict import HassKey
 
-from .const import ATTRIBUTES, DOMAIN, PROVIDER_OPTIONS
+from .const import ATTRIBUTES, PROVIDER_OPTIONS
+from .household import KEY as HOUSEHOLD
 from .serialization import plain, SECRET
 
-_LOGGER = logging.getLogger(__name__)
-
-
-@functools.cache
-def live_context_attributes():
-    """The state attributes Home Assistant's live context shows Assist (its GetLiveContext tool), read from HA's own
-    code so a recording follows the Home Assistant that made it: interesting_attributes, a set local to
-    async_get_exposed_entities, which Python keeps as the one frozenset among that function's constants. Anything else
-    (HA moved it): none, said once, and recordings keep the replay engine's attributes alone. Never raises: a
-    recording never fails for it."""
-    try:
-        from homeassistant.components.homeassistant import llm
-        code = llm.async_get_exposed_entities.__code__
-        found = [c for c in code.co_consts if "interesting_attributes" in code.co_varnames
-                 and isinstance(c, frozenset) and c and all(isinstance(name, str) for name in c)]
-    except Exception:  # noqa: BLE001 - HA changed under us; the fallback below says so.
-        found = []
-    if len(found) != 1:
-        _LOGGER.warning("Home Assistant's live-context attributes weren't found in its code: recordings keep the "
-                        "replay engine's attributes only")
-        return frozenset()
-    return found[0]
-
-
-@functools.cache
-def _kept_attributes():
-    return frozenset(ATTRIBUTES | live_context_attributes())
+# No public accessor gives script or automation configurations: they're read from the entity components the two
+# integrations keep in hass.data (automation's typed key; script keeps its component under its domain, untyped).
+SCRIPTS: HassKey[EntityComponent] = HassKey("script")
+# What a recording's states keep of their attributes, as its snapshot says (allowlist-v1, in older recordings: the
+# replay engine's attributes alone).
+ATTRIBUTE_POLICY = ("allowlist-v2: the replay engine's attributes and what Assist's live context shows (Home "
+                    "Assistant 2026.10's list); omitted attributes are not recorded")
 
 
 def state_record(state):
@@ -44,30 +33,47 @@ def state_record(state):
         return None
     if SECRET.search(state.entity_id):
         return {"entity_id": state.entity_id, "state": "[redacted]", "attributes": {}}
-    kept = _kept_attributes()
     return {"entity_id": state.entity_id, "state": state.state,
-            "attributes": plain({k: v for k, v in state.attributes.items() if k in kept}),
+            "attributes": plain({k: v for k, v in state.attributes.items() if k in ATTRIBUTES}),
             "last_changed": plain(state.last_changed), "last_updated": plain(state.last_updated),
             "context": plain(state.context.as_dict())}
 
 
-def attribute_policy():
-    """What a recording's states keep of their attributes, as its snapshot says: allowlist-v1 is the replay engine's
-    attributes alone (older recordings, or Home Assistant's list not found)."""
-    if live_context_attributes():
-        return ("allowlist-v2: the replay engine's attributes and what Assist's live context shows (Home Assistant's "
-                "own list); omitted attributes are not recorded")
-    return "allowlist-v1; omitted attributes are not recorded"
-
-
 def snapshot(hass):
-    states = {s.entity_id: state_record(s) for s in hass.states.async_all()}
-    registry = er.async_get(hass)
+    return home(taken(hass))
+
+
+def taken(hass):
+    """What a snapshot reads of Home Assistant, on the event loop: home() serializes it, in any thread."""
+    states, entries = hass.states.async_all(), list(er.async_get(hass).entities.values())
+    exposure = {}
+    for entity_id in {s.entity_id for s in states} | {e.entity_id for e in entries}:
+        try:
+            exposure[entity_id] = async_should_expose(hass, "conversation", entity_id)
+        except KeyError:
+            exposure[entity_id] = None
+    scripts, automations = _definitions(hass)
+    household = hass.data.get(HOUSEHOLD)
+    return {"at": utcnow().isoformat(), "time_zone": hass.config.time_zone, "home_name": hass.config.location_name,
+            "states": states, "entries": entries,
+            "aliases": {e.entity_id: er.async_get_entity_aliases(hass, e) for e in entries},
+            "devices": list(dr.async_get(hass).devices),
+            "areas": {a.id: {"name": a.name, "aliases": sorted(a.aliases)} for a in ar.async_get(hass).areas.values()},
+            "exposure": exposure, "scripts": scripts, "automations": automations,
+            "template_actions": template_actions(hass),
+            # The household knowledge then, and whether Assist read it, so a replay rebuilds the same prompt.
+            "household": plain(getattr(household, "knowledge", None)),
+            "household_on": bool(getattr(household, "on", False))}
+
+
+def home(taken):
+    """The snapshot as a recording keeps it: what taken() read, serialized (a copy; nothing of Home Assistant's)."""
+    states = {s.entity_id: state_record(s) for s in taken["states"]}
     entities = {}
-    for e in registry.entities.values():
+    for e in taken["entries"]:
         entities[e.entity_id] = plain({
             "name": e.name, "original_name": e.original_name,
-            "aliases": er.async_get_entity_aliases(hass, e),
+            "aliases": taken["aliases"][e.entity_id],
             # HA 2026.10 uses an ordered list with a computed-name sentinel.
             # Preserve the declaration separately from its resolved names.
             "alias_entries": [None if a is er.COMPUTED_NAME else a for a in e.aliases],
@@ -79,27 +85,15 @@ def snapshot(hass):
         })
         if sensor_options := _sensor_options(e):  # Only where set.
             entities[e.entity_id]["sensor_options"] = sensor_options
-    exposure = {}
-    for entity_id in states.keys() | entities.keys():
-        try:
-            exposure[entity_id] = async_should_expose(hass, "conversation", entity_id)
-        except KeyError:
-            exposure[entity_id] = None
     # Do not copy network connections, serial numbers or complete config entries.
     devices = {d.id: plain({"name": d.name, "name_by_user": d.name_by_user, "area_id": d.area_id,
                             "manufacturer": d.manufacturer, "model": d.model})
-               for d in dr.async_get(hass).devices}
-    areas = {a.id: {"name": a.name, "aliases": sorted(a.aliases)}
-             for a in ar.async_get(hass).areas.values()}
-    scripts, automations = live_definitions(hass)
-    return {"at": utcnow().isoformat(), "time_zone": hass.config.time_zone,
-            "home_name": hass.config.location_name, "states": states,
-            "entities": entities, "devices": devices, "areas": areas, "exposure": exposure,
-            "scripts": plain(scripts), "automations": plain(automations), "template_actions": template_actions(hass),
-            # The household knowledge then, and whether Assist read it, so a replay rebuilds the same prompt.
-            "household": plain(getattr(hass.data.get(f"{DOMAIN}_household"), "knowledge", None)),
-            "household_on": bool(getattr(hass.data.get(f"{DOMAIN}_household"), "on", False)),
-            "attribute_policy": attribute_policy()}
+               for d in taken["devices"]}
+    return {"at": taken["at"], "time_zone": taken["time_zone"], "home_name": taken["home_name"], "states": states,
+            "entities": entities, "devices": devices, "areas": taken["areas"], "exposure": taken["exposure"],
+            "scripts": plain(taken["scripts"]), "automations": plain(taken["automations"]),  # plain() copies.
+            "template_actions": taken["template_actions"], "household": taken["household"],
+            "household_on": taken["household_on"], "attribute_policy": ATTRIBUTE_POLICY}
 
 
 def _sensor_options(entry):
@@ -135,29 +129,37 @@ def subentry_of(hass, agent_id):
 
 
 def live_definitions(hass):
-    """The script and automation configurations, as the household has them now."""
-    from copy import deepcopy
+    """The script and automation configurations, as the household has them now (a copy)."""
+    return deepcopy(_definitions(hass))
+
+
+def _definitions(hass):
+    """The script and automation configurations, each the one Home Assistant holds (a reload replaces it)."""
     scripts, automations = {}, []
-    if (component := hass.data.get("script")) is not None:
+    if (component := hass.data.get(SCRIPTS)) is not None:
         for entity in getattr(component, "entities", ()):
             if getattr(entity, "raw_config", None):
-                scripts[entity.entity_id.split(".", 1)[1]] = deepcopy(dict(entity.raw_config))
-    if (component := hass.data.get("automation")) is not None:
+                scripts[entity.entity_id.split(".", 1)[1]] = dict(entity.raw_config)
+    if (component := hass.data.get(AUTOMATIONS)) is not None:
         for entity in getattr(component, "entities", ()):
             if getattr(entity, "raw_config", None):
-                automations.append(deepcopy(dict(entity.raw_config)))
+                automations.append(dict(entity.raw_config))
     return scripts, automations
 
 
 def template_actions(hass):
     """{template entity: the entities its own actions act on}, as Home Assistant's script engine finds them: what HA
-    itself switches, under the request, when the entity is commanded (a template light's helper)."""
+    itself switches, under the request, when the entity is commanded (a template light's helper). An entity whose
+    actions can't be read this way (Home Assistant changed them) acts on none known: a recording never fails for it."""
     from homeassistant.helpers.entity_platform import async_get_platforms
     found = {}
     for platform in async_get_platforms(hass, "template"):
         for entity_id, entity in platform.entities.items():
-            acts_on = {e for script in getattr(entity, "_action_scripts", {}).values()
-                       for e in script.referenced_entities} - {entity_id}
+            try:  # No public API gives a template entity's actions, YAML ones included; its scripts hold them.
+                acts_on = {e for script in getattr(entity, "_action_scripts", {}).values()
+                           for e in script.referenced_entities} - {entity_id}
+            except Exception:  # noqa: BLE001 - see the docstring.
+                continue
             if acts_on:
                 found[entity_id] = sorted(acts_on)
     return found
@@ -165,9 +167,8 @@ def template_actions(hass):
 
 def live_script_definitions(hass, entities):
     """Current UI/YAML script configs; later observations, never historical snapshots."""
-    from copy import deepcopy
     from .cases import CaseError
-    component = hass.data.get("script")
+    component = hass.data.get(SCRIPTS)
     definitions = {}
     for entity in entities:
         script = component.get_entity(entity) if component else None

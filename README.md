@@ -45,7 +45,7 @@ Every step above works end to end, and runs every day in my household. This is t
 
    ![A conversation opened: what was said, the step that failed, and Send this one in](https://raw.githubusercontent.com/thngkaiyuan/ha-assist-improver/main/assets/getting-started/conversation.png)
 
-5. **Review:** you're told when improvements are ready. Open one, check what changes, and accept it. Turn on auto-accept for low-risk changes in the settings, and those fixes apply themselves (you're told each time, and can undo).
+5. **Review:** you're told when improvements are ready. Open one, check what changes, and accept it.
 
    ![Assist Improver: 3 improvements to review, each with what it gets you, then your conversations, each with where it stands, and Run for the new ones](https://raw.githubusercontent.com/thngkaiyuan/ha-assist-improver/main/assets/getting-started/panel.png)
 
@@ -62,13 +62,22 @@ That's it. Good to know:
 
 ![The settings: your conversations flow through triage, analysis, proposals, simulation and write-up to your review, each step naming its AI model](https://raw.githubusercontent.com/thngkaiyuan/ha-assist-improver/main/assets/getting-started/settings.png)
 
+## Actions
+
+For bug reports (Developer tools → Actions, administrators only):
+
+- **Recording status:** whether it's recording, how many conversations it keeps, and its last error.
+- **Export recording:** one conversation as JSON, with what was said.
+
+Developer mode (hidden, for debugging) adds List recordings, List improvements, Check replay fidelity and Replay a recording.
+
 ## Your data
 
 - **Kept in your Home Assistant:** your Assist conversations (what was said, what Assist did, and how your home was at each turn), stored next to the history Home Assistant already keeps.
 - **Sent during a run:** the AI models you chose get what they need to do their work. Nothing comes to us.
 - **For how long:** conversations are kept in full for at least 30 days, then condensed, keeping enough for the improver to see your household's needs as a whole. Its own logs are kept only as long as they're useful, a year at most.
 - **Uninstalling** removes everything the improver stored and the AI Tasks it set up. Your accepted improvements stay.
-- **You decide what's kept:** turn recording off for anyone, archive a conversation, or delete it for good.
+- **You decide what's kept:** archive a conversation, or delete it for good.
 
 ## License
 

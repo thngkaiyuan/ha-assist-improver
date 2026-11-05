@@ -3,8 +3,7 @@
 // check; and the assistant Your Assist uses.
 
 const v = new URL(import.meta.url).search;  // ?v=<version>, passed on to every module this one loads.
-const [{esc, fill}, {TEXT, STEPS}, {switchRow}] = await Promise.all(
-  ["format", "text", "common"].map((name) => import(`./${name}.js${v}`)));
+const [{esc, fill}, {TEXT, STEPS}] = await Promise.all(["format", "text"].map((name) => import(`./${name}.js${v}`)));
 
 export const task = (s, entityId) => s.ai_tasks.find((t) => t.entity_id === entityId);
 
@@ -24,23 +23,13 @@ function options(s, role, roleName) {
       <span class="opt-label">${esc(roleName === "triage" ? TEXT.passThrough.label : "Off")}</span></div></div>` : "");
 }
 
-function privacy(s) {
-  // What's kept: recording for the household, and for each of its people (an admin sets each; they flip together).
-  const P = TEXT.privacy, people = s.recording_people || [];
-  return `<div class="pop-privacy">${switchRow("recording", s.recording !== false, P.recording, P.recordingTip, "pop-toggle")}
-    ${people.length ? `<div class="pop-people" role="group" aria-label="${esc(P.people)}"><div class="pop-sub">${esc(P.people)}</div>${
-      people.map((x, n) => switchRow(`recording-person-${n}`, x.on, x.name, "", "pop-toggle",
-                                     `data-recording-person="${esc(x.user_id)}"`)).join("")}</div>` : ""}</div>`;
-}
-
 const PICKERS = {
   assist(p, s) {
     const list = p.household?.pipelines || [];
     return `<div class="pop-head"><b>Your Assist</b> uses</div>` + (list.length ? list.map((x) =>
       `<div class="opt" data-prefer="${esc(x.id)}"><div class="opt-main"><span class="check">${x.preferred ? "&#10003;" : ""}</span>
         <span class="opt-label">${esc(x.name)}</span></div></div>`).join("")
-      : `<div class="pop-lead">${esc(TEXT.assistant.none)}</div>`) +
-      privacy(s);
+      : `<div class="pop-lead">${esc(TEXT.assistant.none)}</div>`);
   },
   test(p, s) {
     const n = s.tests_per_goal;
@@ -149,7 +138,12 @@ export const actions = {
       p.saveSetting({role, entity_id: el.dataset.pick || null});
     }],
     ["[data-prefer]", async (p, el) => {
-      try { await p.ws("assistant/prefer", {pipeline_id: el.dataset.prefer}); } catch (err) { alert(err.message || String(err)); }
+      // Home Assistant's own command, as Settings > Voice assistants sets it.
+      try {
+        await p.hass.callWS({type: "assist_pipeline/pipeline/set_preferred", pipeline_id: el.dataset.prefer});
+      } catch (err) {
+        alert(err.code === "not_found" ? "That assistant isn't in Home Assistant any more." : err.message || String(err));
+      }
       p.pop = null;
       await p.reloadHousehold();
     }],

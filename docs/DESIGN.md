@@ -16,6 +16,8 @@ New conversations wait at the start until a run takes them in; then each step wo
 
 Assist Improver should need almost no explanation: not because it does little, but because each screen asks for one thing, the best choice is already made, and it tells you when it needs you.
 
+**The rules:** the least words, and plain ones; what matters most, first; one thing at a time; communicate better, not more; one coherent design; a seamless flow.
+
 - **One thing at a time.** Each screen leads to one decision, with the recommended answer ready: the panel shows the next thing to do, a review opens with its summary on top and the details folded, **Accept changes** is the default, and the next review is one click away.
 - **Written for the household.** Each improvement leads with a plain headline (what it does) and what you get, written by a small AI editor and checked by code (short, no entity IDs, no jargon). Why it's safe is never written by a model: code states it from the tests and the changeset.
 - **Optimized by default.** The recommended setup is preselected: Claude Opus 5.5 for the steps that need judgement, and a small model (Claude Haiku, or the provider's own small one) for Triage and Write up, so a conversation that needs nothing costs little. The safe choices are the defaults, and no setting is needed to get good results. If you change things, one click in any model menu (Use recommended setup) brings it back.
@@ -24,7 +26,7 @@ Assist Improver should need almost no explanation: not because it does little, b
 - **Safe by default.** Nothing in your home changes without your review; a run says what it will spend before it starts; changes apply all or nothing and can be undone.
 - **Never repeats itself.** A run leaves out goals that already have an improvement, and the same change is never shown twice. Asking for a revision brings back a new version, linked to your note.
 - **Takes care of itself.** Household knowledge reaches every assistant without setup; an assistant added later is offered in the panel and in Repairs.
-- **Settings you can see.** The panel's settings draw the pipeline as a track: requests merge onto the improvement loop, the proposer and reviewer go round their own small loop, revisions go round again, and what you accept peels off to the household. Each step has a glyph; each AI step names its model (one click to change it or add a new AI Task) and shows its backlog; a step can be blocked, or run on its own from the Run now menu. Your Assist names the assistant Assist uses by default; Your household opens what the household knowledge holds, beside its one switch (on by default). Auto-accept (off by default) applies each improvement as soon as it's written up. A history below lists runs, improvements going up for review, and decisions. Text is kept to a minimum: explanations are tooltip bubbles, there when you hover.
+- **Settings you can see.** The panel's settings draw the pipeline as a track: requests merge onto the improvement loop, the proposer and reviewer go round their own small loop, revisions go round again, and what you accept peels off to the household. Each step has a glyph; each AI step names its model (one click to change it or add a new AI Task) and shows its backlog; a step can be blocked, or run on its own from the Run now menu. Your Assist names the assistant Assist uses by default; Your household opens what the household knowledge holds. A history below lists runs, improvements going up for review, and decisions. Text is kept to a minimum: explanations are tooltip bubbles, there when you hover.
 
 ### The stories
 
@@ -81,8 +83,8 @@ Models answer through tools that validate their answer against the household and
 
 - **Reviewed like a pull request.** Each tested improvement has its own page in the Assist Improver panel: what it gets you, its before and after on the conversations it was tested on, and why it's safe; folded below, what went wrong and the changeset as files with line-numbered diffs. The notification links straight to each one.
 - **Your choices:** accept, ask for a revision (with a note on what should change), or decline, with an optional note; tick "Not an issue" when it went fine or you were only trying Assist out. An applied improvement can be undone.
-- **All of it or none of it.** Every change is checked before anything is written: a value you changed since the improvement was tested is a conflict, reported instead of overwritten, and Home Assistant validates scripts and instructions first. Changes then go in a safe order (scripts, saved but not exposed; aliases; exposure; instruction lines last), with a journal saved before each write. A failure undoes the steps already done; if Home Assistant stops midway, the next start undoes them and tells you. Every value is read back before the improvement counts as applied.
-- **Household knowledge, shared by every assistant.** Household lines go into one place, the household knowledge: lines for everyone, and lines for one person that only their requests see. Every assistant that controls the home reads it: the lines come with Home Assistant's own Assist, so there's no second option to choose, nothing to turn on for each assistant, and no tool offered twice. One switch in the settings turns them off for every assistant (on by default). A line already there isn't added twice.
+- **All of it or none of it.** Every change is checked before anything is written: a value you changed since the improvement was tested is a conflict, reported instead of overwritten, and Home Assistant validates scripts and instructions first. Changes then go in a safe order (scripts, saved but not exposed; aliases; exposure; instruction lines last), with a journal saved before each write. The improver never writes a configuration file itself: the panel saves scripts through Home Assistant's script editor. A failure undoes the steps already done; if Home Assistant stops midway, the next start undoes them (a script, once the panel is next opened) and tells you. Every value is read back before the improvement counts as applied.
+- **Household knowledge, shared by every assistant.** Household lines go into one place, the household knowledge: lines for everyone, and lines for one person that only their requests see. Every assistant that controls the home reads it: the lines come with Home Assistant's own Assist, so there's no second option to choose, nothing to turn on for each assistant, and no tool offered twice. A line already there isn't added twice.
 
 ## Shared knowledge
 
@@ -91,9 +93,8 @@ Models answer through tools that validate their answer against the household and
 
 ## Safety
 
-- **Nothing in your home moves during testing.** Replays run in a sandboxed Home Assistant with no device integrations, and sandbox mode runs against a simulated copy of the home; only commands to devices are intercepted.
-- **Sandbox mode is per person.** It affects only the signed-in person who turned it on; others and voice satellites are never affected.
-- **Changes are ordinary Home Assistant configuration.** They are shown to you before they apply, nothing runs when they do, and they stay if you uninstall Assist Improver: scripts, aliases and exposure are Home Assistant's own, and uninstalling moves the household knowledge into each assistant's own instructions and switches it back to Assist.
+- **Nothing in your home moves during testing.** Replays run in a sandboxed Home Assistant with no device integrations; only commands to devices are intercepted.
+- **Changes are ordinary Home Assistant configuration.** They are shown to you before they apply, nothing runs when they do, and they stay if you uninstall Assist Improver: scripts, aliases and exposure are Home Assistant's own.
 
 ## Cost and data
 

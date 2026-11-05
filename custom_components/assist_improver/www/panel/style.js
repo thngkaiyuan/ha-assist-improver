@@ -50,6 +50,13 @@ export const STYLE = `
   .item .title { flex: 1; }
   .item .go { font-size: 22px; line-height: 1; color: var(--secondary-text-color); }
   .item .tag { border: 1px solid var(--divider-color); background: none; margin-left: 4px; vertical-align: 1px; }
+  /* A question for the household: what it asks, what was said first, then the answer's box and button on one line. */
+  .q { padding: 14px 16px; border-bottom: 1px solid var(--divider-color); overflow-wrap: anywhere; }
+  .q:last-child { border-bottom: none; }
+  .q-said { margin-top: 2px; font-size: 13px; color: var(--secondary-text-color); }
+  .q-answer { display: flex; gap: 8px; margin-top: 10px; }
+  .q-answer .btn { display: inline-flex; align-items: center; gap: 6px; }
+  .q > .conflict { margin: 10px 0 0; }
   .chip { font-size: 12px; padding: 2px 8px; border-radius: 10px; border: 1px solid var(--divider-color); color: var(--secondary-text-color); white-space: nowrap; }
   .chip.pending, .chip.awaiting_review { border-color: var(--primary-color); color: var(--primary-color); }
   .chip.applied { border-color: var(--add-fg); color: var(--add-fg); }
@@ -232,15 +239,7 @@ export const STYLE = `
   :host { --track-in: #a3a8af; --track-ai: #a3a8af; --track-out: #a3a8af; --held: #bf9a55; --badge: #8796a8; --done: #6f9e98; }
   :host(.dark) { --track-in: #d4d7dc; --track-ai: #d4d7dc; --track-out: #d4d7dc; }
   .flow-card { padding: 12px 16px 16px; overflow: visible; }
-  .flow-head { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; }
-  .flow-head .spacer { flex: 1; }
-  .practice { display: inline-flex; align-items: center; gap: 10px; font-size: 14px; cursor: pointer; user-select: none; }
-  .flow-head { align-items: flex-start; } .toggles { display: flex; flex-direction: column; gap: 10px; }
-  .toggle-row { display: flex; align-items: center; gap: 4px; }
-  .flow-head .info-tip { margin-left: 2px; } .flow-head .info-tip .ic { width: 15px; height: 15px; }
-  /* On a phone the run control gets a row of its own, above the switches, so its words fit on one line. */
-  @media (max-width: 600px) { .flow-head { flex-direction: column-reverse; align-items: stretch; }
-    .flow-head .spacer { display: none; } .flow-head > :last-child { align-self: flex-end; } }
+  .flow-head { display: flex; justify-content: flex-end; margin-bottom: 16px; }
   .glyph.in-chip { --mdc-icon-size: 14px; width: 14px; height: 14px; margin-right: 4px; vertical-align: -2px; }
   .history { margin-top: 12px; } .history .h-title { font-size: 14px; font-weight: 500; padding: 12px 16px 4px; }
   .h-row { display: flex; align-items: center; gap: 10px; padding: 8px 16px; font-size: 13.5px; }
@@ -385,10 +384,6 @@ export const STYLE = `
   .cs-ask span { flex: 1 1 220px; font-size: 14px; line-height: 1.45; }
   @media (max-width: 600px) { .cs-footer #cs-run { flex: 1 1 100%; } .cs-footer .btn { flex: 1 1 auto; } }
   @media (max-width: 600px) { .cs-read { padding-left: 16px; } .cs-send .btn, .cs-confirm .btn { flex: 1 1 auto; } }
-  .pop-privacy { border-top: 1px solid var(--divider-color); margin-top: 6px; padding-top: 6px; }
-  .pop-toggle { padding: 6px 14px; }
-  .pop-sub { padding: 6px 14px 0 28px; font-size: 12.5px; color: var(--secondary-text-color); }
-  .pop-people .pop-toggle { padding-left: 28px; }
   .modal { position: fixed; z-index: 21; left: 50%; top: 50%; transform: translate(-50%, -50%); width: min(560px, calc(100vw - 32px));
     max-height: min(80vh, 720px); display: flex; flex-direction: column; box-sizing: border-box; border-radius: 16px;
     background: var(--card-background-color); color: var(--primary-text-color); box-shadow: 0 16px 48px rgba(0, 0, 0, .35); }
@@ -424,7 +419,22 @@ export const STYLE = `
     font-size: 14px; border: 1px solid var(--primary-color); background: var(--primary-background-color); color: var(--primary-text-color); resize: vertical; }
   .kn-buttons, .kn-confirm { display: flex; gap: 8px; justify-content: flex-end; align-items: center; margin-top: 8px; }
   .kn-confirm span { flex: 1; color: var(--secondary-text-color); font-size: 13px; }
-  .btn.danger { background: var(--del-fg); } .kn-add { list-style: none; padding: 6px 2px 2px; } .kn-add-me { padding: 8px 22px 0; }
+  .btn.danger { background: var(--del-fg); }
+  /* Uninstall: at the end of the settings; its step's lines in a small box that scrolls, with a quiet copy button
+     pinned in its top-right corner (centred on the first line), the lines kept clear of it as they scroll. */
+  .end-row { display: flex; justify-content: flex-end; margin: 16px 0 8px; }
+  .u-box { position: relative; margin-bottom: 14px; border-radius: 8px; background: var(--secondary-background-color);
+    box-shadow: inset 0 0 0 1px var(--divider-color); }
+  .u-text { margin: 0; max-height: 9em; overflow: auto; padding: 10px 44px 10px 12px; border-radius: 8px; white-space: pre-wrap;
+    overflow-wrap: anywhere; font: inherit; font-size: 14px; line-height: 1.5; }
+  .u-copy { position: absolute; top: 4px; right: calc(4px + var(--scrollbar, 0px)); width: 32px; height: 32px; padding: 0; border: none;
+    border-radius: 50%; display: grid; place-items: center; background: none; color: var(--secondary-text-color); cursor: pointer; }
+  .u-copy:hover, .u-copy:focus-visible { background: color-mix(in srgb, var(--primary-text-color) 10%, transparent);
+    color: var(--primary-text-color); }
+  .u-copy .ic { width: 18px; height: 18px; } .u-copy.done { color: var(--add-fg); }
+  .modal-body.confirm.u-body { padding-bottom: 4px; }
+  .u-foot { flex: none; display: flex; gap: 8px; justify-content: flex-end; padding: 12px 20px 18px; }
+  .kn-add { list-style: none; padding: 6px 2px 2px; } .kn-add-me { padding: 8px 22px 0; }
   .kn-line:first-child { border-top: none; }
   .kn-empty { margin: 0; padding: 14px 20px 0; font-size: 14px; line-height: 1.45; color: var(--secondary-text-color); }
   @media (max-width: 600px) { .modal { top: auto; bottom: 0; transform: translateX(-50%); width: 100vw; max-height: 88vh;
@@ -556,11 +566,6 @@ export const STYLE = `
     color: var(--primary-text-color); border-left: 1px solid var(--divider-color); }
   .seg button:first-child { border-left: none; }
   .seg button.on { background: var(--primary-color); color: var(--text-primary-color, white); }
-  .toggle { flex: none; width: 44px; height: 24px; border-radius: 12px; border: none; cursor: pointer; position: relative;
-    background: var(--divider-color); transition: background .15s; }
-  .toggle::after { content: ""; position: absolute; top: 3px; left: 3px; width: 18px; height: 18px; border-radius: 9px;
-    background: white; transition: left .15s; box-shadow: 0 1px 2px rgba(0,0,0,.3); }
-  .toggle.on { background: var(--primary-color); } .toggle.on::after { left: 23px; }
   .uses { display: flex; flex-wrap: wrap; gap: 6px 14px; margin-top: 6px; font-size: 13px; }
   .uses .ok { color: var(--add-fg); }
   @media (max-width: 600px) { .rows .row { flex-wrap: wrap; } .seg { width: 100%; } .seg button { flex: 1; padding: 7px 4px; } }

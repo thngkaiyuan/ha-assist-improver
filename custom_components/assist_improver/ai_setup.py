@@ -12,6 +12,9 @@ import asyncio
 import re
 
 from homeassistant.config_entries import ConfigEntryState
+from homeassistant.const import EVENT_STATE_CHANGED
+from homeassistant.core import callback
+from homeassistant.data_entry_flow import UnknownFlow
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.storage import Store
 
@@ -22,6 +25,7 @@ RECOMMENDED_MODEL = re.compile(r"claude-opus-5[.-]5")
 MIN_MAX_TOKENS = 8000
 WEAK_EFFORTS = {"low"}
 WEAK_MODEL_WORDS = ("haiku", "mini", "nano", "flash", "lite")
+APPEAR_TIMEOUT = 10  # Seconds a provider gets to add a new AI Task's entity (it reloads to add it).
 # Providers the improver can add an AI Task to, and how.
 PROVIDERS = {"anthropic": ("Anthropic", "recommended"), "open_router": ("OpenRouter", "recommended"),
              "openai_conversation": ("OpenAI", "default"),
@@ -34,7 +38,8 @@ def ai_task_entities(hass):
 
 
 def suggested_entity(hass):
-    preferred = None
+    """Home Assistant's own default AI Task, else the first one."""
+    # No public route: ai_task offers this preference only over its websocket API.
     try:
         from homeassistant.components.ai_task.const import DATA_PREFERENCES
         preferred = hass.data[DATA_PREFERENCES].gen_data_entity_id
@@ -87,11 +92,14 @@ def assess(hass, entity_id):
             result["warnings"].append("It works, but Claude Opus 5.5 is recommended for the improver.")
         return result
     if data.get("recommended", False):
+        # No public route: what Anthropic's recommended settings stand for is only in its constants (the device
+        # registry names the model, not the effort or output limit judged here).
         try:
             from homeassistant.components.anthropic.const import DEFAULT
         except ImportError:
             DEFAULT = {}
-        model, effort, max_tokens = DEFAULT.get("chat_model"), DEFAULT.get("thinking_effort"), DEFAULT.get("max_tokens")
+        defaults = DEFAULT if isinstance(DEFAULT, dict) else {}
+        model, effort, max_tokens = defaults.get("chat_model"), defaults.get("thinking_effort"), defaults.get("max_tokens")
         result["uses_recommended_defaults"] = True
     else:
         model, effort, max_tokens = data.get("chat_model"), data.get("thinking_effort"), data.get("max_tokens")
@@ -147,6 +155,7 @@ async def create_ai_task(hass, config_entry_id, kind, model=None, name=None):
               {"name": name or RECOMMENDED_NAME, "recommended": False, "chat_model": model, "model": model})
     before = set(entry.subentries)
     manager = hass.config_entries.subentries
+    result = {}
     try:
         result = await manager.async_init((config_entry_id, "ai_task_data"), context={"source": "user"})
         for _ in range(6):
@@ -170,21 +179,59 @@ async def create_ai_task(hass, config_entry_id, kind, model=None, name=None):
             result = await manager.async_configure(result["flow_id"], answer)
         else:
             return None, "The provider's setup took more steps than expected"
-    except Exception as err:  # Never leave setup half-done silently.
+    except Exception as err:  # noqa: BLE001 - a provider's flow may raise anything; never left half-done silently.
         return None, f"The provider's setup failed ({type(err).__name__})"
+    finally:
+        if result.get("flow_id") and result.get("type") not in ("create_entry", "abort"):  # Stopped midway: closed.
+            try:
+                manager.async_abort(result["flow_id"])
+            except UnknownFlow:  # Already closed.
+                pass
     if result["type"] != "create_entry":
         return None, f"The provider's setup ended with {result['type']}"
     entry = hass.config_entries.async_get_entry(config_entry_id)
     created = [sid for sid, sub in entry.subentries.items()
                if sub.subentry_type == "ai_task_data" and sid not in before]
     await remember_created(hass, config_entry_id, created)
-    registry = er.async_get(hass)
-    for _ in range(20):  # The provider reloads to add the entity; give it a moment.
-        for item in er.async_entries_for_config_entry(registry, config_entry_id):
-            if item.domain == "ai_task" and item.config_subentry_id in created:
-                return item.entity_id, None
-        await asyncio.sleep(0.5)
+    if entity_id := await _appeared(hass, config_entry_id, created):
+        return entity_id, None
     return None, "The entry was created, but its AI Task entity has not appeared yet; choose it after a moment"
+
+
+async def _appeared(hass, config_entry_id, created):
+    """The new AI Task's entity once the provider has added it (it reloads to add it) and it has a state, or None
+    after a while."""
+    registry = er.async_get(hass)
+
+    def found():
+        return next((item.entity_id for item in er.async_entries_for_config_entry(registry, config_entry_id)
+                     if item.domain == "ai_task" and item.config_subentry_id in created
+                     and hass.states.get(item.entity_id) is not None), None)
+
+    if (entity_id := found()) is not None:
+        return entity_id
+    added = asyncio.Event()
+
+    @callback
+    def changed(_event):
+        if found() is not None:
+            added.set()
+
+    @callback
+    def ai_task(data):
+        return data["entity_id"].startswith("ai_task.")
+
+    unsubscribers = [hass.bus.async_listen(er.EVENT_ENTITY_REGISTRY_UPDATED, changed),
+                     hass.bus.async_listen(EVENT_STATE_CHANGED, changed, event_filter=ai_task)]
+    try:
+        async with asyncio.timeout(APPEAR_TIMEOUT):
+            await added.wait()
+    except TimeoutError:
+        pass
+    finally:
+        for unsubscribe in unsubscribers:
+            unsubscribe()
+    return found()
 
 
 def _created(hass):
@@ -201,15 +248,14 @@ async def remember_created(hass, entry_id, subentry_ids):
 
 
 async def remove_created(hass):
-    """Uninstalling: the AI Tasks the improver set up go too: those it kept a record of, and those named as it names
-    them (set up before it kept one). Returns how many it removed."""
+    """Uninstalling: the AI Tasks the improver set up go too, only those it kept a record of (remember_created), still
+    there. Any other AI Task stays, whatever its name. Returns how many it removed."""
     saved = (await _created(hass).async_load()) or {}
-    recorded = {(t["entry_id"], t["subentry_id"]) for t in saved.get("ai_tasks", [])}
     removed = 0
-    for entry in hass.config_entries.async_entries():
-        for subentry_id, sub in list(entry.subentries.items()):
-            if sub.subentry_type == "ai_task_data" and (
-                    (entry.entry_id, subentry_id) in recorded or (sub.title or "").startswith(RECOMMENDED_NAME)):
-                hass.config_entries.async_remove_subentry(entry, subentry_id)
-                removed += 1
+    for task in saved.get("ai_tasks", []):
+        entry = hass.config_entries.async_get_entry(task["entry_id"])
+        sub = entry.subentries.get(task["subentry_id"]) if entry else None
+        if sub is not None and sub.subentry_type == "ai_task_data":
+            hass.config_entries.async_remove_subentry(entry, task["subentry_id"])
+            removed += 1
     return removed

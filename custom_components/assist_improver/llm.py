@@ -1,20 +1,23 @@
-"""What the improver adds to Assist: the household knowledge, and the tool for on-demand improvements.
+"""What the improver adds to Assist: the household knowledge, and the tool that files an improvement.
 
 Home Assistant's llm integration gathers each integration's tools and prompt from its llm platform (this module) for
 the Assist API, so every assistant on Assist gets both:
-- the household's lines (household.py), while the Household knowledge switch is on;
-- with on-demand improvements on, a tool to file the conversation it's in, when the user asks ("file an improvement");
-  the improver takes it in as soon as it ends (pipeline.py). The improver's own AI roles never get it;
-  a replay of a conversation that had it gets one that files nothing.
+- the household's lines (household.py);
+- a tool to file the conversation it's in, when the user asks ("file an improvement"); the improver takes it in as
+  soon as it ends (pipeline.py). The improver's own AI roles never get it; a replay of a conversation that had it gets
+  one that files nothing.
 """
 
 import probatio
+# Not exported by the conversation root; the only way a tool finds the conversation it's called in.
+from homeassistant.components.conversation.chat_log import current_chat_log
 from homeassistant.components.llm import LLMTools
 from homeassistant.core import callback
 from homeassistant.helpers import llm
+from homeassistant.util.hass_dict import HassKey
 
 from . import household
-from .const import CONF_ON_DEMAND, DOMAIN
+from .const import DOMAIN
 from .runtime import loaded
 
 
@@ -31,10 +34,8 @@ class FileImprovement(llm.Tool):
     parameters = probatio.Schema({probatio.Optional("what_to_improve"): str})
     annotations = llm.ToolAnnotations(destructive=False, idempotent=True, open_world=False)
     integration = DOMAIN
-    improver_own = True  # It only writes the improver's own record: sandbox mode lets it run (practice.py).
 
     async def async_call(self, hass, tool_input, llm_context):
-        from homeassistant.components.conversation.chat_log import current_chat_log
         runtime, chat_log = loaded(hass), current_chat_log.get()
         user_id = getattr(getattr(llm_context, "context", None), "user_id", None)
         key = await runtime.recorder.file(chat_log.conversation_id, tool_input.tool_args.get("what_to_improve"),
@@ -45,7 +46,8 @@ class FileImprovement(llm.Tool):
         return llm.ToolResult(data={"filed": True, "next": "The Assist Improver will study this conversation once it ends."})
 
 
-REPLAYED_FILING = f"{DOMAIN}_replayed_filing"  # In a sandbox: the recorded Assist could file (sandbox.seed).
+# In a sandbox's own instance: the recorded Assist could file (sandbox.seed).
+REPLAYED_FILING: HassKey[bool] = HassKey(f"{DOMAIN}_replayed_filing")
 
 
 class ReplayedFiling(FileImprovement):
@@ -58,12 +60,12 @@ class ReplayedFiling(FileImprovement):
 
 @callback
 def async_get_tools(hass, llm_context, api_id):
-    """For the Assist API: the household's lines as its prompt, and the file_improvement tool while on-demand
-    improvements are on. None when there's neither."""
+    """For the Assist API: the household's lines as its prompt, and the file_improvement tool while the improver is
+    loaded. None when there's neither."""
     if api_id != llm.LLM_API_ASSIST:
         return None
     pipeline = getattr(loaded(hass), "pipeline", None)  # None while the improver starts, and in a sandbox.
-    files = pipeline is not None and pipeline.entry.options.get(CONF_ON_DEMAND) and not role_active()
+    files = pipeline is not None and not role_active()
     tools = [FileImprovement()] if files else [ReplayedFiling()] if hass.data.get(REPLAYED_FILING) else []
     prompt = household.prompt(hass, llm_context)
     return LLMTools(tools=tools, prompt=prompt) if tools or prompt else None

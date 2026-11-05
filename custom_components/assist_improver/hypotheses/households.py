@@ -3,6 +3,7 @@
 from copy import deepcopy
 import json
 
+from .. import evidence
 from ..cases import CaseError
 from ..exploration import related_improvements
 from ..failures import contained
@@ -26,6 +27,7 @@ class Sessions(Assistants, SessionSet):
         self.evidence, self.capability_facts = None, None
         self.feedback = []  # The household's decisions on earlier improvements.
         self.sent_back = None  # What the household sent back for this round: a revision or a conflict (flow.py).
+        self.answered = []  # The household's answers to the proposer's questions this round: [{question, answer}].
         self.so_far = {}  # The round's tests and reviews, for a proposer picking it up (stamps.so_far).
         self.existing = []  # Improvements waiting for review or applied (Improvements.catalog), for list_improvements.
         self._upfront = None  # The open friction the generator gets in full (prepare).
@@ -35,11 +37,11 @@ class Sessions(Assistants, SessionSet):
         checking drafts. definitions: the household's scripts and automations, for recordings without them. Facts
         the household's conversation can't give are left out (each device's are unknown; a problem of the run's
         unless the sandbox said it can't); the rest goes on."""
-        from ..evidence import Evidence, capabilities as probe
-        self.evidence, self.capability_facts = Evidence(self, definitions), {}
+        self.evidence, self.capability_facts = evidence.Evidence(self, definitions), {}
         session = short(self.household.recording["id"])
         async with contained("propose", session, step=PROBE, expected=(CaseError,)):  # CaseError: it can't.
-            self.capability_facts = await probe(self.household.recording, self._entities_in_friction(), definitions)
+            self.capability_facts = await evidence.capabilities(self.household.recording, self._entities_in_friction(),
+                                                                definitions)
 
     def open_friction(self):
         """[(session, its goal turns with friction)], newest first: what the generator has to place, each goal in a
@@ -83,8 +85,8 @@ class Sessions(Assistants, SessionSet):
 
     def overview(self):
         """Background; the newest open friction as scripts (within a budget) and the rest of it one line per goal;
-        what the household decided and sent back; the round's tests and reviews so far, with what's left; counts,
-        and how to reach every other session."""
+        what the household decided, sent back and answered; the round's tests and reviews so far, with what's left;
+        counts, and how to reach every other session."""
         upfront = self._upfront if self._upfront is not None else self._select(
             {s: v for s, _ in self.open_friction() if (v := self.views.get(s)) is not None})
         shown = {u["session"] for u in upfront}
@@ -101,7 +103,8 @@ class Sessions(Assistants, SessionSet):
                 "other_sessions": (f"{counts.get('without_friction', 0)} sessions without friction, "
                                    f"{counts.get('not_analysed', 0)} not analysed: list_sessions finds them"),
                 **({"household_decisions": decisions(self.feedback)} if self.feedback else {}),
-                **({"sent_back": deepcopy(self.sent_back)} if self.sent_back else {}), **deepcopy(self.so_far),
+                **({"sent_back": deepcopy(self.sent_back)} if self.sent_back else {}),
+                **({"answered": deepcopy(self.answered)} if self.answered else {}), **deepcopy(self.so_far),
                 **({"related_improvements": related} if (related := self.related(
                     [(s, t) for s, turns in self.open_friction() for t in turns])) else {})}
 
@@ -166,8 +169,8 @@ class Sessions(Assistants, SessionSet):
 
     def summary(self):
         """For the reviewer: the home, how many sessions there are by state, the user's known choices (newest
-        first), the household's decisions and what they sent back for this round, as the generator gets them. Each
-        draft brings the sessions where it would apply."""
+        first), the household's decisions, what they sent back for this round and their answers, as the generator gets
+        them. Each draft brings the sessions where it would apply."""
         chosen = [{"session": s, "started": ((self.briefs.get(s) or {}).get("started") or "")[:16],
                    **{k: f[k] for k in ("summary", "user_chose")}}
                   for s, a in self.analyses.items() for f in friction(a) if f["kind"] == "ask"]
@@ -177,7 +180,8 @@ class Sessions(Assistants, SessionSet):
                 "known_choices": chosen[:CHOICES_SHOWN],
                 **({"more_known_choices": len(chosen) - CHOICES_SHOWN} if len(chosen) > CHOICES_SHOWN else {}),
                 **({"household_decisions": decisions(self.feedback)} if self.feedback else {}),
-                **({"sent_back": deepcopy(self.sent_back)} if self.sent_back else {})}
+                **({"sent_back": deepcopy(self.sent_back)} if self.sent_back else {}),
+                **({"answered": deepcopy(self.answered)} if self.answered else {})}
 
 
 PROBE = "capability probe"  # What load_evidence tries on the household's conversation (failures.contained's step).

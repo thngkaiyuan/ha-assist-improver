@@ -9,13 +9,6 @@ export const toolbar = (title, back, end = "") => `<div class="toolbar">${back
   ? `<button id="back" class="tb-back" type="button"><span aria-hidden="true">&#8592;</span><span>${esc(title)}</span></button>`
   : `<span id="menu" class="menu-slot" data-keep></span><span>${esc(title)}</span>`}${end}</div>`;
 
-// A labelled switch (HA's own when the page has it) with an optional ⓘ tip, and any attributes the switch needs; its
-// clicks are the settings view's.
-export const toggle = (id, on, attrs) => customElements.get("ha-switch") ? `<ha-switch id="${id}" ${attrs} ${on ? "checked" : ""}></ha-switch>`
-  : `<button class="toggle ${on ? "on" : ""}" id="${id}" ${attrs} role="switch" aria-checked="${on}"></button>`;
-export const switchRow = (id, on, text, tip, cls = "", attrs = "") => `<div class="toggle-row ${cls}"><label class="practice">${toggle(id, on, attrs)}${esc(text)}</label>
-    ${tip ? `<span class="info-tip" data-tip="${esc(tip)}" tabindex="0" aria-label="About ${esc(text)}">${svg("info")}</span>` : ""}</div>`;
-
 // What an improvement gets you, in a line (the home list and the review's header): new things Assist can do, fewer
 // turns, unwanted changes avoided, your feedback followed. Each a count.
 export const gains = ({enabled, removed, spared, followed}) => {
@@ -28,6 +21,20 @@ export const gains = ({enabled, removed, spared, followed}) => {
 export const devLink = () =>
   `<button class="tb-btn tb-text" id="open-developer" title="Developer view" aria-label="Developer view">${svg("code")}Developer</button>`;
 
+export async function copy(p, text) {
+  // Text to the clipboard; whether it went.
+  try { await navigator.clipboard.writeText(text); return true; } catch (err) {
+    // No clipboard API (as on a page served over plain http): the old way.
+    const area = document.createElement("textarea");
+    area.value = text; area.style.cssText = "position:fixed;top:0;left:0;opacity:0";
+    p.root.appendChild(area); area.select();
+    let ok = false;
+    try { ok = document.execCommand("copy"); } catch (e) { ok = false; }
+    area.remove();
+    return ok;
+  }
+}
+
 // A spinner beside the word, which fades in only if the wait is noticeable.
 export const loadingRow = (cls = "loading") => `<div class="${cls}" role="status"><span class="spinner" aria-hidden="true"></span>Loading…</div>`;
 
@@ -37,12 +44,12 @@ export const errorPage = {render: (p) => ({bar: toolbar("Assist Improver", true)
                                            page: `<div class="page"><div class="conflict">${esc(p.error)}</div></div>`})};
 
 export function runTitle(run) {
-  // Which run this is: one step, what was sent in (on-demand's own run), a revision's or a conflict's own run, the
-  // conversations picked on the home page, or a full run on the new ones it took in (how many, once it has).
+  // Which run this is: one step, what was sent in (the fast lane's own run), a revision's, a conflict's or an answer's
+  // own run, the conversations picked on the home page, or a full run on the new ones it took in (how many, once it has).
   const P = TEXT.progress, n = run.progress?.taken_in || 0;
   return run.only ? fill(P.step, {step: GATE_NAMES[run.only] || run.only}) : run.trigger === "filed" ? P.sent
     : run.trigger === "revision" ? P.revision : run.trigger === "conflict" ? P.conflict
-    : run.picked ? P.picked : n > 1 ? fill(P.all, {n}) : n ? P.one : P.working;
+    : run.trigger === "answer" ? P.answer : run.picked ? P.picked : n > 1 ? fill(P.all, {n}) : n ? P.one : P.working;
 }
 
 export function progress(run, cancelling) {
@@ -80,16 +87,6 @@ export function details(p, key, lines) {
   // A run's technical details, folded away for a bug report (and kept open, once opened, while it's shown).
   return `<details class="h-details" data-key="${esc(key)}" ${p.open.has(key) ? "open" : ""}><summary>${esc(TEXT.failure.details)}</summary><code>${
     lines.map(esc).join("\n")}</code></details>`;
-}
-
-export function askAutoAccept() {
-  const A = TEXT.autoAccept;
-  return `<div class="modal-shade ask-cancel"></div><div class="modal confirm-modal" role="dialog" aria-modal="true" aria-label="${esc(A.confirm)}">
-      <div class="modal-head"><b>${esc(A.confirm)}</b><span class="kn-count"></span>
-        <button class="modal-close ask-cancel" aria-label="${esc(TEXT.confirm.notNow)}">&#10005;</button></div>
-      <div class="modal-body confirm"><p class="c-what">${esc(A.confirmText)}</p>
-      <div class="actions"><button class="btn ghost ask-cancel">${esc(TEXT.confirm.notNow)}</button>
-      <button class="btn" id="ask-ok">${esc(A.on)}</button></div></div></div>`;
 }
 
 // How many conversations a run moves (Pipeline.preview, or a picked run's: conversations.runPreview): the new ones it

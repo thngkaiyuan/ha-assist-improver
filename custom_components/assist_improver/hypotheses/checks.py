@@ -44,8 +44,9 @@ def problems(sessions, answer, schema=HYPOTHESES):
         for change in hypothesis["changes"]:
             found += _change_problems(where, change, known, sessions.household, template)
         found += _edit_problems(sessions, where, hypothesis, facts_added)
-    if schema is HYPOTHESES:
-        found += _addressed_problems(sessions, answer) + _open_goals(sessions, answer)
+    if schema is HYPOTHESES:  # A question for the household leaves the goals open until it's answered.
+        found += _addressed_problems(sessions, answer) + (
+            [] if (answer.get("question_for_user") or "").strip() else _open_goals(sessions, answer))
     return found
 
 

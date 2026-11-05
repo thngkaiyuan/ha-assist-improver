@@ -82,8 +82,8 @@ function reasonsFor(r, decision) {
 
 function forward(r) {
   // The way on after a decision: the next review waiting, else back to the list (all caught up, unless this one still
-  // waits for the household).
-  const waits = ["awaiting_review", "needs_attention"].includes(r.status) && !r.revising;
+  // waits for the household, or a question does).
+  const waits = ["awaiting_review", "needs_attention"].includes(r.status) && !r.revising || r.questions > 0;
   return r.next_pending ? `<button class="btn" id="next" data-id="${esc(r.next_pending.id)}">Next: ${esc(r.next_pending.title)} &#8594;</button>`
     : `<button class="link" id="back-list">${esc(waits ? TEXT.review.back : TEXT.review.caughtUp)}</button>`;
 }
@@ -133,13 +133,17 @@ function footer(p, r) {
     </div></div>`;
 }
 
+// One change as a code review shows a file: its name, kind and counts, its diff folded under them (key: what keeps it
+// open).
+const file = (p, c, key, attrs = "") => `<div class="file" ${attrs}>${section(p, key,
+  `<span class="name">${esc(c.name)}</span><span class="kind ${esc(c.kind)}">${esc(c.kind)}</span>
+   ${c.added ? `<span class="count-add">+${c.added}</span>` : ""}${c.removed ? `<span class="count-del">&#8722;${c.removed}</span>` : ""}
+   ${bar(c.added, c.removed)}`, diff(c.rows, c), true)}</div>`;
+
 export function render(p) {
   const r = p.review, R = TEXT.review;
   const outcome = common.gains(r);
-  const files = r.changes.map((c, n) => `<div class="file">${section(p, `file${n}`,
-    `<span class="name">${esc(c.name)}</span><span class="kind ${esc(c.kind)}">${esc(c.kind)}</span>
-     ${c.added ? `<span class="count-add">+${c.added}</span>` : ""}${c.removed ? `<span class="count-del">&#8722;${c.removed}</span>` : ""}
-     ${bar(c.added, c.removed)}`, diff(c.rows, c), true)}</div>`).join("");
+  const files = r.changes.map((c, n) => file(p, c, `file${n}`)).join("");
   // What the household pointed out that isn't shown fixed goes with the test that counts it (the first, without one).
   const open = r.still_open, counted = Math.max(0, r.tests.findIndex((t) => t.open));
   const tests = r.tests.map((t, n) => test(p, t, n, n === counted ? open : [])).join("");
@@ -189,6 +193,8 @@ async function decide(p, decision = p.decision || p.review.choices[0].value) {
   p.busy = true;
   p.render();
   try {
+    // A change left open is finished first, and a script saver lost to a reconnect renewed: neither refuses this one.
+    if (decision !== "resolve") await p.finish();
     const reason = reasonsFor(r, decision).includes(p.reason) ? p.reason : null;  // Ticked for this decision.
     const res = decision === "resolve"  // Sent back to resolve its conflict: not a decision on it.
       ? {...await p.ws("conflict/resolve", {improvement_id: r.id}), ok: true}
@@ -198,8 +204,11 @@ async function decide(p, decision = p.decision || p.review.choices[0].value) {
                       failed: null});
   } catch (err) {
     // Not made: if it's still open once the review is read again, its bar stays (footer); if not (decided elsewhere
-    // meanwhile), what's there now never sits where its button was.
-    Object.assign(p, {result: err.message || String(err), resultOk: false, decideAgain: false, failed: decision});
+    // meanwhile), what's there now never sits where its button was. Interrupted midway, it's finished now: what that
+    // did is said instead.
+    const done = err?.code === "interrupted" ? await p.finish() : null;
+    Object.assign(p, {result: done?.result || err.message || String(err), resultOk: false, decideAgain: false,
+                      failed: decision});
   }
   p.busy = false;
   await p.load();

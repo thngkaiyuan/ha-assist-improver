@@ -1,15 +1,17 @@
 """Diagnostics for a bug report or a performance question: versions and settings, how much is stored and how, the
 last runs with where their time went and what went wrong, the AI roles' calls, and the replay sandboxes' timings.
-No conversation content: a recording itself needs the explicit export_recording action."""
+No conversation content: a recording itself needs the explicit export_recording action. No one's user ID: only the
+improver's own settings are shown, never a key an older version left."""
 
 import os
 from collections import Counter, defaultdict
 
 from homeassistant.const import __version__ as CORE_VERSION
 
-from .const import DOMAIN, VERSION
+from .const import CONF_DEVELOPER, DOMAIN, VERSION
+from .household import KEY as HOUSEHOLD
 from .worker import STATS
-from .settings import ROLES, role_model
+from .settings import LIVE, ROLES, role_model
 
 RUNS_SHOWN = 10
 CALLS_SHOWN = 200
@@ -22,7 +24,7 @@ def _storage(path):
     for name in sorted(os.listdir(path)) if os.path.isdir(path) else []:
         if name.startswith(f"{DOMAIN}."):
             size = os.path.getsize(os.path.join(path, name))
-            if name.startswith(f"{DOMAIN}.session_"):
+            if name.startswith(f"{DOMAIN}.session_") and name != f"{DOMAIN}.session_briefs":
                 sessions.append(size)
             elif name.startswith(f"{DOMAIN}.trace_"):
                 traces.append(size)
@@ -48,11 +50,11 @@ async def async_get_config_entry_diagnostics(hass, entry):
             role["failed"] += 1
             role["errors"] = (role["errors"] + [(run.get("error") or {}).get("message")])[-3:]
     index = recorder.index.values()
-    household = hass.data.get(f"{DOMAIN}_household")
+    household = hass.data.get(HOUSEHOLD)
     knowledge = getattr(household, "knowledge", {}) or {}
     return {
         "versions": {"integration": VERSION, "home_assistant": CORE_VERSION},
-        "settings": dict(entry.options),
+        "settings": {key: value for key, value in entry.options.items() if key in LIVE | {CONF_DEVELOPER}},
         "models": {role: role_model(entry, role) for role in ROLES},
         "storage": await hass.async_add_executor_job(_storage, hass.config.path(".storage")),
         "recordings": {"by_status": dict(Counter(s.get("status") for s in index)),

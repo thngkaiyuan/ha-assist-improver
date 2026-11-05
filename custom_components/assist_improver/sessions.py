@@ -88,9 +88,9 @@ class BriefCache:
         kept = self.briefs.get(recording_id)
         if kept and kept.get("stamp") == stamp:
             return kept["brief"], None
-        from .exploration import SessionView
-        view = SessionView(await recorder.export(recording_id))
-        made = brief(view, recording_id)
+        from .exploration import session_view
+        view = await session_view(recorder.hass, await recorder.export(recording_id))
+        made = await recorder.hass.async_add_executor_job(brief, view, recording_id)  # Reads it all: off the loop.
         self.briefs[recording_id] = {"stamp": stamp, "brief": made}
         return made, view
 
@@ -114,11 +114,13 @@ def _stamp(summary):
 async def catalog(recorder, recording_ids):
     """(briefs, the household's view, the assistant's view) for these recordings, reading in full only those with
     no brief yet (one at a time) and the two views the whole run needs."""
-    from .exploration import SessionView
+    from .exploration import session_view
     cache = getattr(recorder, "brief_cache", None)
     if cache is None:
         cache = recorder.brief_cache = BriefCache(recorder.hass)
-    briefs, kept = [], {}
+    # The newest so far that could be the household's view (replayable, else any) or the assistant's, each with its
+    # view if this run read it in full: no other view is held (each is megabytes), and an earlier one wins a tie.
+    briefs, best = [], {}
     for recording_id in recording_ids:
         # Still being recorded, or not a conversation the tools can read (expected): left out. Anything else is a
         # problem of the run's, and the others go on.
@@ -127,17 +129,22 @@ async def catalog(recorder, recording_ids):
         if one.failed:
             continue
         briefs.append(made)
-        if view is not None:
-            kept[recording_id] = view
+        for role, fits in (("replayable", made["replayable"]), ("any", "replayable" not in best),
+                           ("assistant", made["assistant"])):
+            if fits and (role not in best or (made["started"] or "") > (best[role][0]["started"] or "")):
+                best[role] = (made, view)
+        if "replayable" in best:
+            best.pop("any", None)
+        del view  # Not held while the next is read.
     await cache.save(recorder)
-    newest = sorted(briefs, key=lambda b: b["started"] or "", reverse=True)
-    household_id = next((b["recording_id"] for b in newest if b["replayable"]), newest[0]["recording_id"] if newest else None)
-    assistant_id = next((b["recording_id"] for b in newest if b["assistant"]), None)
+    kept = {made["recording_id"]: view for made, view in best.values() if view is not None}
+    household_id = next((best[r][0]["recording_id"] for r in ("replayable", "any") if r in best), None)
+    assistant_id = best["assistant"][0]["recording_id"] if "assistant" in best else None
 
     async def view_of(recording_id):
         if recording_id is None:
             return None
-        return kept.get(recording_id) or SessionView(await recorder.export(recording_id))
+        return kept.get(recording_id) or await session_view(recorder.hass, await recorder.export(recording_id))
     household = await view_of(household_id)
     assistant = household if assistant_id == household_id else await view_of(assistant_id)
     return briefs, household, assistant

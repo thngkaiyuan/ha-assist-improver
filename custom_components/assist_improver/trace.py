@@ -1,8 +1,8 @@
 """Traces: what the improver did and where its time went, for debugging without AI help (the developer view).
 
 A trace is a pipeline run's (its id is the run's id) or a day's ("day_YYYYMMDD", the local date): recordings
-starting, closing and changing storage, the daily tidy-up, decisions, apply and undo, notifications, practice
-sessions and settings changes. Each trace has its own private store, saved about every SAVE_DELAY seconds while
+starting, closing and changing storage, the daily tidy-up, decisions, apply and undo, notifications and settings
+changes. Each trace has its own private store, saved about every SAVE_DELAY seconds while
 active, and for good at the end of a run, on unload and when Home Assistant stops. Only active traces stay in
 memory; readers load the rest. The daily tidy-up deletes them (retention.prune_traces); the run log keeps each run's
 record for a year, so nothing long-term needs a trace.
@@ -33,12 +33,13 @@ The spans, nested as they run (own tags in brackets):
     conversation [recording_id, steps, triage, status, answer_status] > ai.triage, ai.journey_analyzer
     propose [sessions, status, generator_run] > evidence.load, ai.hypothesis_generator, ai.hypothesis_reviewer
     replay [kind: "before" | "after", plan_id, status] > replay.turn [replay: "before" | "after", turn] >
-        replay.tool [tool]; sandbox.start, sandbox.seed, sandbox.stop > sandbox.teardown; ai.feedback_check
+        replay.tool [tool]; sandbox.start, sandbox.seed, sandbox.stop; ai.feedback_check
     write [improvement_id, status] > ai.editor
     ai.<role> [role, model, input_chars, status, tokens] > tool.<name> [accepted, or answer: "error"]
         (tool.ask_reviewer > evidence.check)
-    tidy, in today's trace; recorder.flush, recorder.pack, recorder.snapshot [recording_id] wherever a trace is
-    current. HOT only: store.role_runs, store.improvements, store.recordings, store.recordings_index.
+    tidy, in today's trace; recorder.flush, recorder.pack, recorder.snapshot and recorder.serialize [recording_id]
+    wherever a trace is current. HOT only: store.role_runs, store.improvements, store.recordings,
+    store.recordings_index.
 
 A run's records in the run log (reflective.RoleRuns) carry its "run_id" and "trace_id"; the run's own record carries
 "trace_id" (its id). Older records have neither.
@@ -54,6 +55,7 @@ trace_id), spans(trace, **tags) and entries(trace, ...) for one, find_entries(ha
 """
 
 import asyncio
+from collections import deque
 from contextlib import asynccontextmanager, contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field, replace
@@ -149,15 +151,28 @@ class _Trace:
         self.dropped = {"spans": 0, "journal": 0, **(saved.get("dropped") or {})}
         self.open = {}
         self.pending = False  # A save is scheduled.
+        self.tracebacks = deque()  # (entry copied from the log, its exc_info): tracebacks to format, off the loop.
         for cut in saved.get("open") or []:  # Spans a restart cut off: kept, closed at the last save.
             ms = (_time(saved.get("updated")) - _time(cut.get("at"))) * 1000 if saved.get("updated") else 0.0
             self.spans.append({**cut, "ms": round(max(ms, 0.0), 3), "status": "cancelled",
                                "error": "Cut off: Home Assistant stopped before it finished"})
 
+    def format_tracebacks(self):
+        """Each entry copied from the log with an exception gets its full traceback: that reads source files, so this
+        runs in the executor (a save, or a reader of the trace in memory)."""
+        while True:
+            try:
+                entry, exc_info = self.tracebacks.popleft()
+            except IndexError:
+                return
+            entry["exception"] = _text("".join(traceback.format_exception(*exc_info)), tail=True)
+
     def snapshot(self, saving=True):
-        """The trace as stored; shallow copies, so it can be serialized while the trace grows."""
+        """The trace as stored; shallow copies, so it can be serialized while the trace grows. Saving, it runs in the
+        executor (the store serializes there) and formats the tracebacks first."""
         if saving:
             self.pending = False  # First: an entry added from here on schedules the next save.
+            self.format_tracebacks()
         return {"id": self.id, "kind": self.kind, "started": self.started, "updated": _now(),
                 "finished": self.finished, "spans": list(self.spans), "journal": list(self.journal),
                 "open": list(self.open.values()), "dropped": dict(self.dropped)}
@@ -222,22 +237,25 @@ class Tracer:
         self.touch(trace)
 
     def add_entry(self, trace, entry):
-        if len(trace.journal) >= MAX_JOURNAL:
-            trace.dropped["journal"] += 1
-        else:
+        """Whether the entry was kept (beyond MAX_JOURNAL, it's counted instead)."""
+        kept = len(trace.journal) < MAX_JOURNAL
+        if kept:
             trace.journal.append(entry)
+        else:
+            trace.dropped["journal"] += 1
         self.touch(trace)
+        return kept
 
     async def finish(self, trace):
         """Save a trace for good and let it go from memory."""
         try:
-            await trace.store.async_save(trace.snapshot())
+            await trace.store.async_save(await self.hass.async_add_executor_job(trace.snapshot))
         finally:
             self.active.pop(trace.id, None)
 
     async def flush(self):
         for trace in list(self.active.values()):
-            await trace.store.async_save(trace.snapshot())
+            await trace.store.async_save(await self.hass.async_add_executor_job(trace.snapshot))
 
     @callback
     def on_stop(self, _event):
@@ -245,7 +263,7 @@ class Tracer:
         self.hass.async_create_task(self.flush(), "assist_improver_trace_save")
 
 
-_TRACER = None
+_TRACER = None  # Module-level: span(), journal() and the log handler run with no hass, in any thread.
 
 
 def _tracer():
@@ -429,7 +447,7 @@ def _journal(level, message, tags, keep=True):
         _write(level, message, tags)
 
 
-def _write(level, message, tags, **extra):
+def _write(level, message, tags, exc_info=None, **extra):
     if (tracer := _tracer()) is None:
         return
     context = _CURRENT.get()
@@ -437,14 +455,17 @@ def _write(level, message, tags, **extra):
     if trace is None:
         return
     spanned = context.span is not None and context.span.trace is trace
-    tracer.add_entry(trace, {"at": _now(), "level": level, "message": _text(message),
-                             "tags": {**context.tags, **_clean(tags)}, "span": context.span.id if spanned else None,
-                             **extra})
+    entry = {"at": _now(), "level": level, "message": _text(message), "tags": {**context.tags, **_clean(tags)},
+             "span": context.span.id if spanned else None, **extra}
+    if tracer.add_entry(trace, entry) and exc_info:
+        trace.tracebacks.append((entry, exc_info))
 
 
 class _JournalHandler(logging.Handler):
     """Copies the integration's log records into the journal: those that pass Home Assistant's configured level,
-    as the handler sits on the integration's logger and changes no level."""
+    as the handler sits on the integration's logger and changes no level. It runs in the thread that logs (the event
+    loop, mostly), so it reads no files: an exception is copied without its traceback, which the trace gets in the
+    executor (_Trace.format_tracebacks)."""
 
     def emit(self, record):
         if getattr(record, _MARK, False):
@@ -455,8 +476,8 @@ class _JournalHandler(logging.Handler):
         try:
             extra = {"logger": record.name}
             if record.exc_info:
-                extra["exception"] = _text("".join(traceback.format_exception(*record.exc_info)), tail=True)
-            _write(record.levelname.lower(), record.getMessage(), {}, **extra)
+                extra["exception"] = _text("".join(traceback.format_exception_only(*record.exc_info[:2])), tail=True)
+            _write(record.levelname.lower(), record.getMessage(), {}, exc_info=record.exc_info, **extra)
         except Exception:  # noqa: BLE001 - logging must never fail the caller.
             self.handleError(record)
 
@@ -578,6 +599,8 @@ async def load(hass, trace_id):
         return None
     tracer = _tracer()
     if tracer is not None and (trace := tracer.active.get(trace_id)) is not None:
+        if trace.tracebacks:
+            await hass.async_add_executor_job(trace.format_tracebacks)
         return trace.snapshot(saving=False)
     store = (tracer.stores.get(trace_id) if tracer is not None else None) or Store(
         hass, 1, STORE_PREFIX + trace_id, private=True)

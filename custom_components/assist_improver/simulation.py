@@ -20,26 +20,22 @@ class UnsupportedSimulation(CaseError):
 
 
 def _request_changes(recording, turn, until=None):
-    """The changes the assistant made during one recorded turn, attributes too: practice's simulated changes, until
-    the reply; or the real changes HA attributes to the turn's request, until as long after the reply as HA puts what
-    a device reports down to a command it got (CONTEXT_RECENT_TIME_SECONDS): a real device may report a little after
-    the reply (a garage relay's press, its last step 60 ms after). until: a later end."""
-    start, practice = turn["source"]["at"], recording.get("practice")
-    end = until or (turn["ended"] if practice else (datetime.fromisoformat(turn["ended"])
-                                                     + timedelta(seconds=CONTEXT_RECENT_TIME_SECONDS)).isoformat())
-    if practice:
-        changes = practice["simulated_changes"]
-    else:
-        request = (turn.get("prepared") or {}).get("context", {}).get("context", {}).get("id")
-        changes = [c for c in recording.get("state_changes", [])
-                   if request and request in ((c.get("new") or {}).get("context") or {}).values()]
+    """The changes the assistant made during one recorded turn, attributes too: the real changes HA attributes to the
+    turn's request, until as long after the reply as HA puts what a device reports down to a command it got
+    (CONTEXT_RECENT_TIME_SECONDS): a real device may report a little after the reply (a garage relay's press, its last
+    step 60 ms after). until: a later end."""
+    start = turn["source"]["at"]
+    end = until or (datetime.fromisoformat(turn["ended"]) + timedelta(seconds=CONTEXT_RECENT_TIME_SECONDS)).isoformat()
+    request = (turn.get("prepared") or {}).get("context", {}).get("context", {}).get("id")
+    changes = [c for c in recording.get("state_changes", [])
+               if request and request in ((c.get("new") or {}).get("context") or {}).values()]
     return [c for c in changes if start <= c["at"] <= end and c.get("old") and c.get("new")
             and c["entity_id"].split(".", 1)[0] not in MACHINERY]
 
 
 def recorded_transitions(recording, turn):
-    """The state changes the assistant's request made during one recorded turn: practice's simulated changes, or the
-    real changes HA attributes to the turn's request, a template entity's own follow-ons among them."""
+    """The state changes the assistant's request made during one recorded turn: the real changes HA attributes to the
+    turn's request, a template entity's own follow-ons among them."""
     return [{"entity_id": c["entity_id"], "old": c["old"]["state"], "new": c["new"]["state"]}
             for c in _request_changes(recording, turn) if c["old"]["state"] != c["new"]["state"]]
 
@@ -58,14 +54,14 @@ def moved_by_others(recording, turns, turn):
     door closed, past what Home Assistant puts down to the request). A replay applies them on top of what it did
     itself (sandbox.observe). {entity_id: {"state"?: new, "attributes": {name: new}, "removed": [name]}}"""
     before = turns[turn["number"] - 2]
-    start, end, practice = before["source"]["at"], turn["source"]["at"], recording.get("practice")
+    start, end = before["source"]["at"], turn["source"]["at"]
     requests = {(t["prepared"]["context"].get("context") or {}).get("id") for t in turns} - {None}
     left, moving = dict(before["source"]["states"]), {}  # moving: Assist's last state for each device, from the start.
-    for change in sorted((c for c in (practice["simulated_changes"] if practice else recording.get("state_changes", []))
-                          if c["at"] < end and c.get("old") and c.get("new")), key=lambda c: c["at"]):
+    changes = (c for c in recording.get("state_changes", []) if c["at"] < end and c.get("old") and c.get("new"))
+    for change in sorted(changes, key=lambda c: c["at"]):
         entity_id, old, new = change["entity_id"], change["old"]["state"], change["new"]["state"]
         context = change["new"].get("context") or {}
-        own = practice or requests & {context.get("id"), context.get("parent_id")} or (
+        own = requests & {context.get("id"), context.get("parent_id")} or (
             moving.get(entity_id) == old and UNDERWAY.get(new) == old)
         if own or new != old:  # A door's own reports on its way (its position) leave it moving.
             moving[entity_id] = new if own else None

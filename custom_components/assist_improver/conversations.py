@@ -3,13 +3,13 @@
 Each conversation's chip, whether the list shows it, and what can be done with it come from its flow record (flow.py,
 P0.2): where it is, its outcome, its sent-in mark and the question it waits with (standing, row). Sending one in marks
 it on that record (flow.Flow.sent_in), as Assist's file_improvement tool does (llm.py): it goes in at the next run that
-admits it, with the user's note; with on-demand improvements on, a run starts for it as soon as it has ended.
+admits it, with the user's note, and a run starts for it as soon as it has ended.
 
-The list shows only conversations that may need the household (DETAILS P14.4): one archived, in Your household, or up
-for review (its improvement waits at the top of the home page) is left out, unless the household unarchived it where
-it stands now (flow.Flow.unarchived). Archiving one takes it out of the pipeline, to Your household (P0.12); it's kept,
-so later changes are still checked against it. Deleting one (Recorder.forget) removes it, with what the improver
-derived from it.
+The list shows only conversations that may need the household (DETAILS P14.4): one archived, in Your household, up
+for review or asking the household (its improvement or question waits at the top of the home page) is left out, unless
+the household unarchived it where it stands now (flow.Flow.unarchived). Archiving one takes it out of the pipeline, to
+Your household (P0.12); it's kept, so later changes are still checked against it. Deleting one (Recorder.forget)
+removes it, with what the improver derived from it.
 
 What a conversation said (the user's words, and Assist's last reply to each) is read from its recording once and
 kept in a small store of its own, so listing, searching and reading conversations never reopens the recordings.
@@ -39,6 +39,7 @@ class Transcripts:
         self.recorder = recorder
         self.store = Store(hass, STORAGE_VERSION, f"{DOMAIN}.transcripts", private=True, atomic_writes=True)
         self.kept = None
+        self.unsaved = False  # A delayed save is due.
         self.lock = asyncio.Lock()
 
     async def all(self):
@@ -64,8 +65,20 @@ class Transcripts:
                                              **({"failed": t["failed"]} if t.get("failed") else {})} for t in turns]}
                 changed = True
             if changed:
-                self.store.async_delay_save(lambda: {"transcripts": self.kept}, 5)
+                self.unsaved = True
+                self.store.async_delay_save(self._saved, 5)
             return self.kept
+
+    def _saved(self):
+        self.unsaved = False
+        return {"transcripts": self.kept}
+
+    async def close(self):
+        """Unloading: what's due to be saved is saved now, so no save is left pending after the entry (a read still
+        going first finishes)."""
+        async with self.lock:
+            if self.unsaved:
+                await self.store.async_save(self._saved())
 
 
 # The chip of each outcome in Your household (P0.12), and of the stages between (P14.3).
@@ -99,8 +112,8 @@ def standing(runtime, rid, place=None):
 
 def row(runtime, rid):
     """Where a conversation stands, as the list and its page read it: its chip (status); hidden: left out of the list
-    (archived, in Your household, or up for review), unless unarchived where it stands now; sendable: it can be sent
-    in (from Your household, P0.12; at Your Assist, unheld; or as the answer to its question, P0.11); runnable: a
+    (archived, in Your household, up for review, or asking the household), unless unarchived where it stands now;
+    sendable: it can be sent in (from Your household, P0.12; or at Your Assist, unheld); runnable: a
     picked run can take it (new and waiting, or held anywhere, P0.7; or in Your household, sent in first when picked
     by hand: the panel never picks those with Select all); archivable: it can be archived (not while an improvement of
     it waits for the household, flow.Flow.waits); and its stage, hold, and the improvement a duplicate points to; and,
@@ -108,15 +121,25 @@ def row(runtime, rid):
     flow = runtime.flow
     place = flow.place(rid)
     status, stage = standing(runtime, rid, place), place["stage"]
-    off = place["archived"] or stage == "Your household" or status == "review"
+    off = place["archived"] or stage == "Your household" or status in ("review", "unclear")
     held = place["held"]
     return {"status": status, "hidden": bool(off) and not flow.unarchived(rid),
-            "sendable": stage == "Your household" or (stage == "Your Assist" and not held) or status == "unclear",
+            "sendable": stage == "Your household" or (stage == "Your Assist" and not held),
             "runnable": flow.waiting(rid) or bool(held) or stage == "Your household",
             "archivable": not flow.waits(rid),
             "stage": stage, "held": {"cause": held["cause"], "why": held["why"]} if held else None,
             "covered_by": place["covered_by"],
             **({"cant_improve": cant_improve(flow.hass, flow.question(rid))} if status == "cannot" else {})}
+
+
+async def questions(runtime):
+    """The questions waiting for the household at Your review (P0.11), as the top of the home page asks them, each with
+    what was said first in its conversation: [{id, question, said}], oldest first (flow.Flow.questions)."""
+    asking = runtime.flow.questions()
+    kept = await runtime.transcripts.all() if asking else {}
+    return [{"id": rid, "question": question,
+             "said": ((kept.get(rid) or {}).get("turns") or [{}])[0].get("you", "")[:SAID]}
+            for rid, question in asking.items()]
 
 
 QUOTED = 60  # Characters of what the household said that a chip's bubble quotes.
@@ -313,7 +336,6 @@ def listed(runtime, kept, query=None, days=None, order=None, offset=0, limit=PAG
     if close:  # The most words matched first, each group in the chosen order.
         found.sort(key=lambda r: r["matched"], reverse=True)
     return {"conversations": found[offset:offset + limit], "total": len(found), "close": close, "closest": closest,
-            "on_demand": runtime.pipeline.on_demand,
             "every": [{k: r[k] for k in ("id", "status", "stage", "hidden", "runnable", "archivable")} for r in found],
             "hidden": out_of_view, "by_status": by_status, "stands": stands}
 
@@ -327,5 +349,4 @@ def kept(runtime, rid):
 def shown(runtime, kept, rid):
     """One conversation to read: what was said, turn by turn, and where it stands (row)."""
     return {"id": rid, "started": runtime.recorder.index[rid].get("started"), **row(runtime, rid),
-            "turns": (kept.get(rid) or {}).get("turns", []), "note": (runtime.flow.sent(rid) or {}).get("note"),
-            "on_demand": runtime.pipeline.on_demand}
+            "turns": (kept.get(rid) or {}).get("turns", []), "note": (runtime.flow.sent(rid) or {}).get("note")}

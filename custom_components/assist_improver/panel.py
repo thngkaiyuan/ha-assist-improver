@@ -3,22 +3,30 @@
 A sidebar panel (admins only) served from this integration: a web component in
 www/panel.js (the modules it loads are in www/panel/, under the same ?v=VERSION)
 that talks to Home Assistant over websocket commands (improvements and
-decisions, runs, household knowledge, settings). Each review has its own
+decisions, runs, household knowledge, settings, Uninstall). Each review has its own
 address, so the notification links straight to it; settings are at
-/assist-improver?view=settings.
+/assist-improver?view=settings. The panel also saves the scripts a change writes,
+through Home Assistant's own script editor (ScriptChannel).
 """
 
+import asyncio
 import difflib
 import json
 from pathlib import Path
+import uuid
 
 import probatio
+import yaml
 from homeassistant.components import websocket_api
-from homeassistant.core import callback
+from homeassistant.core import CoreState, callback
+from homeassistant.exceptions import HomeAssistantError
+from homeassistant.util.hass_dict import HassKey
 
+from . import conversations
 from .cases import CaseError
-from .changeset import plan_steps
+from .changeset import BUSY, NoPanel, plan_steps
 from .const import DOMAIN, VERSION
+from .devview import COMMANDS as DEVELOPER_COMMANDS
 from .improvements import (DECISIONS, KINDS, PENDING, PHYSICAL, choices, display_title, gains, physical, reasons,
                            reply_words, row)
 from .runtime import loaded
@@ -26,10 +34,73 @@ from .runtime import loaded
 URL_PATH = "assist-improver"  # The panel's address: /assist-improver?id=<improvement>.
 STATIC = f"/{DOMAIN}_static"
 CONTEXT = 2  # Unchanged lines shown around each change.
-PANEL_KEY = f"{DOMAIN}_panel"  # Set while the panel is registered.
+# hass.data, not runtime_data, for what outlives an entry's reload: the frontend's panel, the static path (set once per
+# run) and the panels' open connections with their script saves.
+PANEL_KEY: HassKey[bool] = HassKey(f"{DOMAIN}_panel")  # Set while the panel is registered.
+STATIC_KEY: HassKey[bool] = HassKey(f"{DOMAIN}_static")  # Set once the static path is registered.
 # What an accept that met a conflict asks the household before its conversation goes back in at Propose (P0.7).
 RESOLVE = {"value": "resolve", "label": "Send it back to resolve"}
 REVISING = "Thanks. The improver is revising it now."  # After a revision, or a conflict sent back to resolve.
+# {id of a websocket connection: its panel's ScriptChannel}
+CHANNELS: HassKey[dict[int, "ScriptChannel"]] = HassKey(f"{DOMAIN}_script_channels")
+# {key of a save asked for: (id of its connection, the panel's answer to come)}
+ANSWERS: HassKey[dict[str, tuple[int, asyncio.Future]]] = HassKey(f"{DOMAIN}_script_answers")
+
+
+class ScriptChannel:
+    """The panel's script saver on one websocket connection (assist_improver/scripts). The improver never writes a
+    configuration file itself: asked here, the panel saves a script, or deletes one (None), through Home Assistant's
+    own script editor (POST or DELETE /api/config/script/config/<id>, with the signed-in admin's session), where HA
+    validates, writes and reloads it, then answers how it went (assist_improver/scripts/saved)."""
+
+    TIMEOUT = 60  # Seconds the panel may take to answer: past it, the panel counts as gone.
+
+    def __init__(self, hass, connection, msg_id):
+        self.hass, self.connection, self.msg_id = hass, connection, msg_id
+        self.asked = set()  # The keys of saves waiting for its answer.
+        self.late = set()  # Those it didn't answer in time: one may still land, so no change is finished meanwhile.
+
+    async def save(self, object_id, config):
+        """Has the panel save the script (or delete it: None). HomeAssistantError with HA's reason if it wasn't; NoPanel
+        if the panel went away or didn't answer."""
+        key, answer = uuid.uuid4().hex, asyncio.get_running_loop().create_future()
+        self.hass.data.setdefault(ANSWERS, {})[key] = (id(self.connection), answer)
+        self.asked.add(key)
+        try:
+            self.connection.send_message(websocket_api.event_message(
+                self.msg_id, {"key": key, "object_id": object_id, "config": config}))
+            async with asyncio.timeout(self.TIMEOUT):
+                error = await answer
+        except TimeoutError:
+            self.late.add(key)
+            raise NoPanel from None
+        finally:
+            self.asked.discard(key)
+            self.hass.data[ANSWERS].pop(key, None)
+        if error:
+            raise HomeAssistantError(error)
+
+    def close(self):
+        """The panel's subscription ended (it unsubscribed, or its connection closed): what it was asked gets no
+        answer."""
+        channels = self.hass.data.get(CHANNELS, {})
+        if channels.get(id(self.connection)) is self:
+            del channels[id(self.connection)]
+        for key in list(self.asked):
+            _, answer = self.hass.data.get(ANSWERS, {}).get(key, (None, None))
+            if answer is not None and not answer.done():
+                answer.set_exception(NoPanel())
+
+
+def saver(hass, connection):
+    """The panel's script saver on this connection (ScriptChannel.save), or None if it has none."""
+    channel = hass.data.get(CHANNELS, {}).get(id(connection))
+    return channel.save if channel else None
+
+
+def late(hass):
+    """A save some panel didn't answer in time may still land: until it answers, or goes, no change is finished."""
+    return any(channel.late for channel in hass.data.get(CHANNELS, {}).values())
 
 
 def review_url(improvement_id):
@@ -55,10 +126,9 @@ def numbered_diff(old, new):
 
 
 def _yaml(config):
-    import yaml
-    from annotatedyaml.dumper import FastestAvailableSafeDumper
+    # As homeassistant.util.yaml.dump, but each value on one line (it folds lines at 80 characters): a diff reads best.
     return yaml.dump(config, default_flow_style=False, allow_unicode=True, sort_keys=False, width=10**6,
-                     Dumper=FastestAvailableSafeDumper).replace(": null\n", ":\n").splitlines()
+                     Dumper=getattr(yaml, "CSafeDumper", yaml.SafeDumper)).replace(": null\n", ":\n").splitlines()
 
 
 def change_rows(step, names=None):
@@ -80,6 +150,13 @@ def change_rows(step, names=None):
     if kind == "script":
         return numbered_diff(_yaml(before) if before else [], _yaml(after))
     return numbered_diff((before or "").splitlines(), (after or "").splitlines())
+
+
+def change_file(step, names=None):
+    """One planned step as the panel shows a change: a file in a code review, with its diff and counts."""
+    rows = change_rows(step, names)
+    return {"name": step["what"], "kind": KINDS[step["kind"]], "rows": rows,
+            "added": sum(r["sign"] == "+" for r in rows), "removed": sum(r["sign"] == "-" for r in rows)}
 
 
 def test_result(test):
@@ -189,11 +266,7 @@ def review(item, planned=None, names=None, hass=None, revising=False, resolvable
     still = still_open(shown)
     steps, already, conflicts = planned or ((item.get("application") or {}).get("steps") or [], [],
                                             item.get("conflicts") or [] if item["status"] == "conflict" else [])
-    changes = []
-    for step in steps:
-        rows = change_rows(step, names)
-        changes.append({"name": step["what"], "kind": KINDS[step["kind"]], "rows": rows,
-                        "added": sum(r["sign"] == "+" for r in rows), "removed": sum(r["sign"] == "-" for r in rows)})
+    changes = [change_file(step, names) for step in steps]
     changes += [{"name": a["what"], "kind": KINDS[a["kind"]], "rows": [], "added": 0, "removed": 0,
                  "already": True} for a in already]
     if not changes:  # Decided already and nothing applied: the changes as proposed.
@@ -314,8 +387,9 @@ def _runtime(hass, connection, msg):
 
 @websocket_api.websocket_command({probatio.Required("type"): f"{DOMAIN}/improvements"})
 @websocket_api.require_admin
-@callback
-def ws_list(hass, connection, msg):
+@websocket_api.async_response
+async def ws_list(hass, connection, msg):
+    """The improvements, and the questions waiting for the household beside them (conversations.questions)."""
     if (runtime := _runtime(hass, connection, msg)) is None:
         return
     items = runtime.improvements.listed()
@@ -324,7 +398,7 @@ def ws_list(hass, connection, msg):
          **gains(i), "revision": bool(i.get("revises")),  # What it gets the household, counted.
          # Up for review but being revised: it waits on the improver, not the household.
          **({"revising": True} if i["status"] in PENDING and runtime.flow.revising(i["id"]) else {})}
-        for i in items]})
+        for i in items], "questions": await conversations.questions(runtime)})
 
 
 @websocket_api.websocket_command({probatio.Required("type"): f"{DOMAIN}/improvement",
@@ -348,12 +422,12 @@ async def ws_get(hass, connection, msg):
                 user = await hass.auth.async_get_user(user_id) if getattr(hass, "auth", None) else None
                 names[user_id] = getattr(user, "name", None) or user_id
     result = review(item, planned, names, hass, runtime.flow.revising(item["id"]), runtime.flow.resolvable(item))
-    if improvements.held(item["id"]):  # Not up for review yet: nothing to decide.
-        result["choices"] = []
     # The next one waiting on the household, one click away after a decision (not this one, none being revised).
     nxt = next((i for i in improvements.listed() if i["status"] in PENDING and i["id"] != item["id"]
                 and not runtime.flow.revising(i["id"])), None)
     result["next_pending"] = {"id": nxt["id"], "title": display_title(nxt)} if nxt else None
+    # A question waiting for the household too: not all caught up.
+    result["questions"] = len(await conversations.questions(runtime))
     connection.send_result(msg["id"], result)
 
 
@@ -368,9 +442,13 @@ async def ws_decide(hass, connection, msg):
     try:
         item = await runtime.improvements.decide(msg["improvement_id"], msg["decision"], note=msg["note"],
                                                   user_id=connection.user.id, reason=msg.get("reason"),
-                                                  revising=runtime.flow.revising(msg["improvement_id"]))
+                                                  revising=runtime.flow.revising(msg["improvement_id"]),
+                                                  scripts=saver(hass, connection))
     except CaseError as err:
         connection.send_error(msg["id"], "decision", str(err))
+        return
+    except NoPanel:  # The panel stopped answering mid-change: it's finished from where it stands (changeset/finish).
+        connection.send_error(msg["id"], "interrupted", "It was interrupted before it finished.")
         return
     # Where its conversation goes (flow.py); a revision goes straight back in at Propose, on a run of its own.
     _send_back(runtime, await runtime.flow.decided(item, msg["decision"], msg["note"]), "revision")
@@ -382,9 +460,49 @@ async def ws_decide(hass, connection, msg):
                                           if conflict else {})})
 
 
+@websocket_api.websocket_command({probatio.Required("type"): f"{DOMAIN}/scripts"})
+@websocket_api.require_admin
+@callback
+def ws_scripts(hass, connection, msg):
+    """The panel saves scripts for the improver on this connection (ScriptChannel), while it's subscribed."""
+    channel = hass.data.setdefault(CHANNELS, {})[id(connection)] = ScriptChannel(hass, connection, msg["id"])
+    connection.subscriptions[msg["id"]] = channel.close
+    connection.send_result(msg["id"])
+
+
+@websocket_api.websocket_command({probatio.Required("type"): f"{DOMAIN}/scripts/saved", probatio.Required("key"): str,
+                                  probatio.Optional("error"): str})
+@websocket_api.require_admin
+@callback
+def ws_scripts_saved(hass, connection, msg):
+    """The panel's answer to a save it was asked for (ScriptChannel.save): done, or HA's reason it wasn't."""
+    asked, answer = hass.data.get(ANSWERS, {}).get(msg["key"], (None, None))
+    if asked == id(connection) and not answer.done():
+        answer.set_result(msg.get("error") or None)
+    elif channel := hass.data.get(CHANNELS, {}).get(id(connection)):
+        channel.late.discard(msg["key"])  # Too late to wait for, but it's landed (or HA refused it).
+    connection.send_result(msg["id"])
+
+
+@websocket_api.websocket_command({probatio.Required("type"): f"{DOMAIN}/changeset/finish"})
+@websocket_api.require_admin
+@websocket_api.async_response
+async def ws_changeset_finish(hass, connection, msg):
+    """Before anything else, the panel finishes a change left open (HA stopped in the middle of it, or a panel went
+    away) from where it stands, saving its scripts: {result: what it did, for the improvement's own review} once it's
+    final, {} if there's none to finish now (none open; HA hasn't started yet, when its start undoes what the improver
+    writes itself first; or a save a panel didn't answer in time may still land)."""
+    if (runtime := _runtime(hass, connection, msg)) is None:
+        return
+    scripts = saver(hass, connection)
+    outcome = (await runtime.improvements.recover(scripts, lambda: late(hass))
+               if scripts and hass.state is CoreState.running else None)
+    connection.send_result(msg["id"], {"result": outcome["brief"]} if outcome and "brief" in outcome else {})
+
+
 def _send_back(runtime, rids, trigger):
-    """A run of its own for each conversation sent back to Propose (a revision, or a conflict the household agreed
-    to resolve): now, or right after the run in progress."""
+    """A run of its own for each conversation sent back (to Propose for a revision, or a conflict the household
+    agreed to resolve; to the stage that asked, with its answer): now, or right after the run in progress."""
     for rid in rids:
         runtime.pipeline.send_back(rid, trigger)
 
@@ -396,10 +514,9 @@ def _send_back(runtime, rids, trigger):
 async def ws_conversation_test(hass, connection, msg):
     """The household marks a conversation as only a test: it ends in Your household as marked as a test; not while an
     improvement of it waits for the household (flow.Flow.waits). Whether it was marked."""
-    from .conversations import kept
     if (runtime := _runtime(hass, connection, msg)) is None:
         return
-    if not kept(runtime, msg["recording_id"]):
+    if not conversations.kept(runtime, msg["recording_id"]):
         connection.send_error(msg["id"], "not_found", "That conversation isn't kept.")
         return
     connection.send_result(msg["id"], {"marked": await runtime.flow.mark_test(msg["recording_id"])})
@@ -425,20 +542,38 @@ async def ws_conflict_resolve(hass, connection, msg):
     connection.send_result(msg["id"], {"sent_back": True, "result": REVISING})
 
 
+@websocket_api.websocket_command({probatio.Required("type"): f"{DOMAIN}/answer",
+                                  probatio.Required("recording_id"): str,
+                                  probatio.Required("answer"): probatio.All(str, probatio.Length(min=1, max=500))})
+@websocket_api.require_admin
+@websocket_api.async_response
+async def ws_answer(hass, connection, msg):
+    """The household answers the question a conversation waits at Your review with: it goes straight back to the
+    stage that asked, in the same round, on a run of its own (flow.Flow.answered, P0.7)."""
+    if (runtime := _runtime(hass, connection, msg)) is None:
+        return
+    if not await runtime.flow.answered(msg["recording_id"], msg["answer"]):
+        connection.send_error(msg["id"], "not_asking", "That conversation has no question waiting.")
+        return
+    _send_back(runtime, [msg["recording_id"]], "answer")
+    connection.send_result(msg["id"], {})
+
+
 @websocket_api.websocket_command({probatio.Required("type"): f"{DOMAIN}/household"})
 @websocket_api.require_admin
 @websocket_api.async_response
 async def ws_household(hass, connection, msg):
-    """The household knowledge (everyone's lines, then each person's), and Home Assistant's assistants."""
-    from .household import KEY, normalized, pipelines
+    """The household knowledge (everyone's lines, then each person's; and as one plain text, which the settings'
+    Uninstall shows to save), and Home Assistant's assistants."""
+    from .household import KEY, normalized, pipelines, plain, user_names
     knowledge = normalized(getattr(hass.data.get(KEY), "knowledge", None))
     lines = len(knowledge["everyone"]) + sum(len(v) for v in knowledge["people"].values())
-    people = []
-    for user_id, mine in sorted(knowledge["people"].items()):
-        user = await hass.auth.async_get_user(user_id) if getattr(hass, "auth", None) else None
-        people.append({"user_id": user_id, "name": getattr(user, "name", None) or "Someone", "lines": list(mine)})
+    names = await user_names(hass, knowledge["people"])
+    people = [{"user_id": user_id, "name": names.get(user_id) or "Someone", "lines": list(mine)}
+              for user_id, mine in sorted(knowledge["people"].items())]
     me = connection.user
     connection.send_result(msg["id"], {"lines": lines, "everyone": list(knowledge["everyone"]), "people": people,
+                                       "text": plain(knowledge, names),
                                        "me": {"user_id": me.id, "name": getattr(me, "name", None) or "You"},
                                        "pipelines": pipelines(hass)})
 
@@ -481,21 +616,6 @@ async def ws_household_edit(hass, connection, msg):
     connection.send_result(msg["id"], {"lines": sum(len(v) for v in [knowledge["everyone"], *knowledge["people"].values()])})
 
 
-@websocket_api.websocket_command({probatio.Required("type"): f"{DOMAIN}/assistant/prefer",
-                                  probatio.Required("pipeline_id"): str})
-@websocket_api.require_admin
-@callback
-def ws_assistant_prefer(hass, connection, msg):
-    """Make one of Home Assistant's assistants the preferred one (as Settings, Voice assistants does)."""
-    from homeassistant.components.assist_pipeline.pipeline import KEY_ASSIST_PIPELINE
-    try:
-        hass.data[KEY_ASSIST_PIPELINE].pipeline_store.async_set_preferred_item(msg["pipeline_id"])
-    except Exception:  # Unknown assistant.
-        connection.send_error(msg["id"], "not_found", "That assistant isn't in Home Assistant any more.")
-        return
-    connection.send_result(msg["id"], {"preferred": msg["pipeline_id"]})
-
-
 @websocket_api.websocket_command({probatio.Required("type"): f"{DOMAIN}/run"})
 @websocket_api.require_admin
 @callback
@@ -517,7 +637,6 @@ async def ws_run_start(hass, connection, msg):
     (the home page's Run with some picked): a picked run, which admits only those it can take (conversations.row:
     runnable); one picked from Your household is sent in first (flow.Flow.sent_in), for a new round.
     Neither: a manual full run."""
-    from .conversations import kept, row
     if (runtime := _runtime(hass, connection, msg)) is None:
         return
     picked = msg.get("conversations")  # None: not a picked run.
@@ -527,11 +646,11 @@ async def ws_run_start(hass, connection, msg):
     if reason := runtime.pipeline.refusal(msg.get("only")):  # Before anything is sent in.
         connection.send_error(msg["id"], "busy", reason)
         return
-    if missing := [rid for rid in picked or [] if not kept(runtime, rid)]:
+    if missing := [rid for rid in picked or [] if not conversations.kept(runtime, rid)]:
         connection.send_error(msg["id"], "not_found", f"{len(missing)} of those conversations aren't kept.")
         return
     for rid in picked or []:
-        if runtime.flow.place(rid)["stage"] == "Your household" and row(runtime, rid)["runnable"]:
+        if runtime.flow.place(rid)["stage"] == "Your household" and conversations.row(runtime, rid)["runnable"]:
             await runtime.flow.sent_in(rid, by=connection.user.id)
     try:
         run = runtime.pipeline.start(trigger="manual", only=msg.get("only"), picked=picked)
@@ -565,37 +684,31 @@ def ws_settings(hass, connection, msg):
     from .settings import view
     if (entry := _entry(hass, connection, msg)) is None:
         return
-    connection.send_result(msg["id"], view(hass, entry, connection.user.id))
+    connection.send_result(msg["id"], view(hass, entry))
 
 
 @websocket_api.websocket_command({probatio.Required("type"): f"{DOMAIN}/settings/set",
                                   probatio.Optional("role"): str, probatio.Optional("entity_id"): probatio.Any(str, None),
                                   probatio.Optional("tests_per_goal"): int, probatio.Optional("schedule"): str,
                                   probatio.Optional("stage"): str, probatio.Optional("pause"): bool,
-                                  probatio.Optional("auto_accept"): bool, probatio.Optional("on_demand"): bool,
-                                  probatio.Optional("household_knowledge"): bool,
-                                  probatio.Optional("recording"): bool, probatio.Optional("person"): str,
                                   probatio.Optional("developer_services"): bool})
 @websocket_api.require_admin
 @callback
 def ws_settings_set(hass, connection, msg):
-    """Change one setting; it applies right away, even during a run. recording with person (a user ID) is that
-    person's switch; without, the household's."""
+    """Change one setting; it applies right away, even during a run."""
     from .settings import SettingsError, updated, view
     if (entry := _entry(hass, connection, msg)) is None:
         return
     try:
         options = updated(hass, entry, role=msg.get("role"), entity_id=msg.get("entity_id"),
                           tests_per_goal=msg.get("tests_per_goal"), schedule=msg.get("schedule"),
-                          stage=msg.get("stage"), pause=msg.get("pause"), auto_accept=msg.get("auto_accept"),
-                          on_demand=msg.get("on_demand"), household_knowledge=msg.get("household_knowledge"),
-                          recording=msg.get("recording"), person=msg.get("person"),
+                          stage=msg.get("stage"), pause=msg.get("pause"),
                           developer_services=msg.get("developer_services"))
     except SettingsError as err:
         connection.send_error(msg["id"], "invalid", str(err))
         return
     hass.config_entries.async_update_entry(entry, options=options)
-    connection.send_result(msg["id"], view(hass, entry, connection.user.id))
+    connection.send_result(msg["id"], view(hass, entry))
 
 
 @websocket_api.websocket_command({probatio.Required("type"): f"{DOMAIN}/settings/models",
@@ -607,7 +720,7 @@ async def ws_settings_models(hass, connection, msg):
     from .settings import provider_models
     try:
         connection.send_result(msg["id"], await provider_models(hass, msg["entry_id"]))
-    except Exception as err:  # The provider's flow refused; say why instead of failing silently.
+    except Exception as err:  # noqa: BLE001 - a provider's flow may refuse with anything: said, not raised.
         connection.send_error(msg["id"], "provider", f"The provider couldn't list its models ({err}).")
 
 
@@ -635,7 +748,7 @@ async def ws_settings_create(hass, connection, msg):
     except SettingsError as err:
         connection.send_error(msg["id"], "invalid", str(err))
         return
-    connection.send_result(msg["id"], view(hass, entry, connection.user.id))
+    connection.send_result(msg["id"], view(hass, entry))
 
 
 @websocket_api.websocket_command({probatio.Required("type"): f"{DOMAIN}/settings/recommended"})
@@ -653,27 +766,7 @@ async def ws_settings_recommended(hass, connection, msg):
         connection.send_error(msg["id"], "invalid", str(err))
         return
     hass.config_entries.async_update_entry(entry, options=options)
-    connection.send_result(msg["id"], {**view(hass, entry, connection.user.id), "notes": notes})
-
-
-@websocket_api.websocket_command({probatio.Required("type"): f"{DOMAIN}/practice", probatio.Required("on"): bool})
-@websocket_api.require_admin
-@websocket_api.async_response
-async def ws_practice(hass, connection, msg):
-    """Practice mode for whoever is signed in (as the switch does): on or off."""
-    from .practice import MODE_KEY
-    from .settings import view
-    if (entry := _entry(hass, connection, msg)) is None:
-        return
-    if (mode := hass.data.get(MODE_KEY)) is None:
-        connection.send_error(msg["id"], "not_loaded", "Assist Improver isn't loaded.")
-        return
-    user = connection.user
-    if msg["on"]:
-        await mode.async_turn_on(user.id, user.name or "Someone")  # DETAILS P11.13.
-    else:
-        await mode.async_turn_off(user.id)
-    connection.send_result(msg["id"], view(hass, entry, user.id))
+    connection.send_result(msg["id"], {**view(hass, entry), "notes": notes})
 
 
 @websocket_api.websocket_command({probatio.Required("type"): f"{DOMAIN}/log"})
@@ -700,15 +793,12 @@ async def ws_log(hass, connection, msg):
                            **({"picked": True} if run.get("trigger") == "manual" and "picked" in run else {})})
     for item in runtime.improvements.items.values():
         title = display_title(item)
-        first = (item.get("decisions") or [{}])[0]
-        # One auto-accept applied before it was ever announced as waiting never went up for review (DETAILS P12.9).
-        if item.get("copy") and not (first.get("unannounced") and first.get("outcome") == "done"):
+        if item.get("copy"):
             events.append({"at": item.get("created"), "kind": "posted", "id": item["id"], "title": title})
         for decision in item.get("decisions", []):
             events.append({"at": decision.get("at"), "kind": "decision", "id": item["id"], "title": title,
                            "decision": decision["decision"], "reason": decision.get("reason"),
-                           "outcome": decision.get("outcome"),
-                           "auto": decision.get("auto", False), "by": await name(decision.get("by"))})
+                           "outcome": decision.get("outcome"), "by": await name(decision.get("by"))})
     events.sort(key=lambda e: e.get("at") or "", reverse=True)
     connection.send_result(msg["id"], {"events": events[:100]})
 
@@ -727,13 +817,12 @@ async def ws_conversations(hass, connection, msg):
     """A page of the kept conversations, found by what was said and when (conversations.listed); the archived ones
     instead if asked for, only those standing as asked (statuses), and where each of ids stands, whatever the
     filters."""
-    from .conversations import listed
     if (runtime := _runtime(hass, connection, msg)) is None:
         return
     kept = await runtime.transcripts.all()
-    connection.send_result(msg["id"], listed(runtime, kept, msg.get("query"), msg.get("days"), msg.get("order"),
-                                             msg.get("offset", 0), archived=msg.get("archived", False),
-                                             statuses=msg.get("statuses"), ids=msg.get("ids", ())))
+    connection.send_result(msg["id"], conversations.listed(
+        runtime, kept, msg.get("query"), msg.get("days"), msg.get("order"), msg.get("offset", 0),
+        archived=msg.get("archived", False), statuses=msg.get("statuses"), ids=msg.get("ids", ())))
 
 
 @websocket_api.websocket_command({probatio.Required("type"): f"{DOMAIN}/conversation",
@@ -742,13 +831,13 @@ async def ws_conversations(hass, connection, msg):
 @websocket_api.async_response
 async def ws_conversation(hass, connection, msg):
     """One conversation to read: what was said, turn by turn, and where it stands."""
-    from .conversations import kept, shown
     if (runtime := _runtime(hass, connection, msg)) is None:
         return
-    if not kept(runtime, msg["recording_id"]):
+    if not conversations.kept(runtime, msg["recording_id"]):
         connection.send_error(msg["id"], "not_found", "That conversation isn't kept.")
         return
-    connection.send_result(msg["id"], shown(runtime, await runtime.transcripts.all(), msg["recording_id"]))
+    shown = conversations.shown(runtime, await runtime.transcripts.all(), msg["recording_id"])
+    connection.send_result(msg["id"], shown)
 
 
 @websocket_api.websocket_command({probatio.Required("type"): f"{DOMAIN}/conversation/send",
@@ -758,26 +847,24 @@ async def ws_conversation(hass, connection, msg):
 @websocket_api.async_response
 async def ws_conversation_send(hass, connection, msg):
     """Send a conversation in (flow.Flow.sent_in), as Assist's file_improvement tool does, so the pipeline takes it in
-    (at its next run; right away with on-demand improvements on), past the quick check with a note, or sent in again
-    after an earlier round looked at it (flow.deliberate). One in the pipeline already isn't sent in again. One in
+    (right away once it ends: the fast lane), past the quick check with a note, or sent in again
+    after an earlier round looked at it (analysis.deliberate). One in the pipeline already isn't sent in again. One in
     Your household goes in again: it gets one fresh full analysis that reads the note as feedback, and a new round
     with fresh tests. It answers where it stands now (status), and whether the list leaves it out (hidden)."""
-    from .conversations import kept, row
     if (runtime := _runtime(hass, connection, msg)) is None:
         return
     rid = msg["recording_id"]
-    if not kept(runtime, rid):
+    if not conversations.kept(runtime, rid):
         connection.send_error(msg["id"], "not_found", "That conversation isn't kept.")
         return
-    if not row(runtime, rid)["sendable"]:  # In the pipeline already (Your household, or new, can be sent in).
+    if not conversations.row(runtime, rid)["sendable"]:  # In the pipeline already (Your household, or new, can go in).
         connection.send_error(msg["id"], "already_in", "The improver already has that conversation.")
         return
     await runtime.flow.sent_in(rid, msg.get("note", ""), by=connection.user.id)
-    if runtime.recorder.index[rid].get("status") != "active":  # Ended: on-demand, it gets its run now.
+    if runtime.recorder.index[rid].get("status") != "active":  # Ended: it gets its run now.
         runtime.pipeline.request(rid)
-    now = row(runtime, rid)
-    connection.send_result(msg["id"], {"status": now["status"], "on_demand": runtime.pipeline.on_demand,
-                                       "hidden": now["hidden"]})
+    now = conversations.row(runtime, rid)
+    connection.send_result(msg["id"], {"status": now["status"], "hidden": now["hidden"]})
 
 
 @websocket_api.websocket_command({probatio.Required("type"): f"{DOMAIN}/conversation/hide",
@@ -790,14 +877,13 @@ async def ws_conversation_hide(hass, connection, msg):
     and kept there while it stands where it does (flow.Flow.archive). It's kept, to check later changes against. One
     an improvement of which waits for the household isn't archived (flow.Flow.waits). Whether the list leaves it out
     now (hidden)."""
-    from .conversations import kept, row
     if (runtime := _runtime(hass, connection, msg)) is None:
         return
-    if not kept(runtime, msg["recording_id"]):
+    if not conversations.kept(runtime, msg["recording_id"]):
         connection.send_error(msg["id"], "not_found", "That conversation isn't kept.")
         return
     await runtime.flow.archive(msg["recording_id"], archived=msg.get("hidden", True))
-    connection.send_result(msg["id"], {"hidden": row(runtime, msg["recording_id"])["hidden"]})
+    connection.send_result(msg["id"], {"hidden": conversations.row(runtime, msg["recording_id"])["hidden"]})
 
 
 @websocket_api.websocket_command({probatio.Required("type"): f"{DOMAIN}/conversation/delete",
@@ -807,14 +893,17 @@ async def ws_conversation_hide(hass, connection, msg):
 async def ws_conversation_delete(hass, connection, msg):
     """Delete a conversation for good (Recorder.forget): its recording and what the improver derived from it. During
     a run it's queued (Recorder.forget_later): gone from view at once, and deleted when the run ends."""
-    from .conversations import kept
     if (runtime := _runtime(hass, connection, msg)) is None:
         return
-    if not kept(runtime, msg["recording_id"]):
+    if not conversations.kept(runtime, msg["recording_id"]):
         connection.send_error(msg["id"], "not_found", "That conversation isn't kept.")
         return
     queued = runtime.pipeline.running
     await (runtime.recorder.forget_later if queued else runtime.recorder.forget)(msg["recording_id"])
+    # Queued, a question it waited with goes from the count and the notification at once (deleted now, it goes
+    # through Recorder.on_forgotten).
+    if queued:
+        runtime.improvements.refresh()
     connection.send_result(msg["id"], {"deleted": msg["recording_id"], **({"queued": True} if queued else {})})
 
 
@@ -827,10 +916,9 @@ async def ws_conversations_hide(hass, connection, msg):
     """Archive many conversations at once (the home page's selection), or (hidden: false) unarchive them; those no
     longer kept are left out, and so are those an improvement of which waits for the household, from an archive
     (flow.Flow.waits). How many changed."""
-    from .conversations import kept
     if (runtime := _runtime(hass, connection, msg)) is None:
         return
-    keys = [rid for rid in dict.fromkeys(msg["recording_ids"]) if kept(runtime, rid)]
+    keys = [rid for rid in dict.fromkeys(msg["recording_ids"]) if conversations.kept(runtime, rid)]
     changed = await runtime.flow.archive(*keys, archived=msg.get("hidden", True)) if keys else []
     connection.send_result(msg["id"], {"changed": len(changed)})
 
@@ -842,48 +930,68 @@ async def ws_conversations_hide(hass, connection, msg):
 async def ws_conversations_delete(hass, connection, msg):
     """Delete many conversations at once (the home page's selection), as conversation/delete does one: during a run
     they're queued. Those no longer kept are left out."""
-    from .conversations import kept
     if (runtime := _runtime(hass, connection, msg)) is None:
         return
-    keys = [rid for rid in dict.fromkeys(msg["recording_ids"]) if kept(runtime, rid)]
+    keys = [rid for rid in dict.fromkeys(msg["recording_ids"]) if conversations.kept(runtime, rid)]
     queued = runtime.pipeline.running
     if keys:
         await (runtime.recorder.forget_later if queued else runtime.recorder.forget)(*keys)
+        if queued:  # As conversation/delete.
+            runtime.improvements.refresh()
     connection.send_result(msg["id"], {"deleted": keys, **({"queued": True} if queued else {})})
 
 
+@websocket_api.websocket_command({probatio.Required("type"): f"{DOMAIN}/uninstall"})
+@websocket_api.require_admin
+@websocket_api.async_response
+async def ws_uninstall(hass, connection, msg):
+    """Uninstall, from the settings: the improver's config entry is removed, as Home Assistant's own page removes it,
+    with no notification of the household's lines, as its step showed them."""
+    from .household import SHOWN
+    if (runtime := _runtime(hass, connection, msg)) is None:
+        return
+    entry = runtime.pipeline.entry  # Kept: the integration unloads as it's removed.
+    if runtime.improvements.changesets.busy:  # Removing it would lose a change left open.
+        connection.send_error(msg["id"], "busy", BUSY)
+        return
+    hass.data[SHOWN] = True
+    try:
+        await hass.config_entries.async_remove(entry.entry_id)
+    finally:
+        hass.data.pop(SHOWN, None)
+    connection.send_result(msg["id"], {"removed": True})
+
+
 def register_commands(hass):
-    for handler in (ws_list, ws_get, ws_decide, ws_household, ws_run_status, ws_run_start,
-                    ws_run_cancel, ws_settings, ws_settings_set, ws_settings_models, ws_settings_create,
-                    ws_settings_recommended, ws_practice, ws_assistant_prefer, ws_log, ws_household_edit,
-                    ws_conversations, ws_conversation, ws_conversation_send, ws_conversation_hide,
+    for handler in (ws_list, ws_get, ws_decide, ws_scripts, ws_scripts_saved, ws_changeset_finish, ws_household,
+                    ws_run_status, ws_run_start, ws_run_cancel, ws_settings, ws_settings_set, ws_settings_models,
+                    ws_settings_create, ws_settings_recommended, ws_log,
+                    ws_household_edit, ws_conversations, ws_conversation, ws_conversation_send, ws_conversation_hide,
                     ws_conversation_delete, ws_conversations_hide, ws_conversations_delete, ws_conflict_resolve,
-                    ws_conversation_test):
+                    ws_answer, ws_conversation_test, ws_uninstall):
         websocket_api.async_register_command(hass, handler)
-    from .devview import COMMANDS  # The developer view's: they answer only in developer mode.
-    for handler in COMMANDS:
+    for handler in DEVELOPER_COMMANDS:  # The developer view's: they answer only in developer mode.
         websocket_api.async_register_command(hass, handler)
 
 
-async def async_setup_panel(hass, pending=0):
+async def async_setup_panel(hass, count=0):
     """The sidebar panel and its script, where Home Assistant's frontend runs (not in offline tests)."""
-    register_commands(hass)
     if "frontend" not in hass.config.components or getattr(hass, "http", None) is None:
         return False
     from homeassistant.components.http import StaticPathConfig
-    if not hass.data.get(f"{DOMAIN}_static"):  # Static paths can't be removed, so only once per run.
+    if not hass.data.get(STATIC_KEY):  # Static paths can't be removed, so only once per run.
         await hass.http.async_register_static_paths([StaticPathConfig(
             STATIC, str(Path(__file__).parent / "www"), cache_headers=False)])
-        hass.data[f"{DOMAIN}_static"] = True
+        hass.data[STATIC_KEY] = True
     hass.data[PANEL_KEY] = True
-    set_count(hass, pending, update=False)
+    set_count(hass, count, update=False)
     return True
 
 
 def set_count(hass, count, *, update=True):
-    """The panel's sidebar title, with how many improvements wait for review: HA's sidebar has no badges for
-    integrations' panels, but a panel's title can change. Registered as panel_custom registers panels, so the
-    title can be updated in place."""
+    """The panel's sidebar title, with how many questions and improvements wait on the household: HA's sidebar has
+    no badges for integrations' panels, but a panel's title can change. Registered as panel_custom registers panels,
+    so the title can be updated in place."""
     if not hass.data.get(PANEL_KEY):
         return
     from homeassistant.components import frontend

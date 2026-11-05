@@ -119,10 +119,9 @@ def scenario(analysis, view):
     by_goal = friction_by_goal(analysis)
     owner = {f["turn"]: t for t, items in by_goal.items() for f in items if f["kind"] == "extra turn"}
     turns = []
-    zone = view.digest.get("time_zone")
     for line in view.conversation():
         n = line["turn"]
-        turn = {"turn": n, "at": _local(line["at"], zone), "user": line["user_says"].strip(),
+        turn = {"turn": n, "at": _local(line["at"], view.zone), "user": line["user_says"].strip(),
                 "assist": line["assistant_says"]}
         heard = view.heard_by[n - 1] if n <= len(view.heard_by) else None
         device = (view.source.get("devices", {}).get(heard or "") or {}) if heard else {}
@@ -185,12 +184,12 @@ def _objection(goal, goals):
 
 
 def _local(at, zone):
-    """A turn's time in the household's time zone, as people read it (weekday and time)."""
+    """A turn's time in the household's time zone (the view's: resolved once, off the event loop), as people read it
+    (weekday and time)."""
     from datetime import datetime
-    from zoneinfo import ZoneInfo
     try:
-        moment = datetime.fromisoformat(at).astimezone(ZoneInfo(zone)) if zone else datetime.fromisoformat(at)
-    except (ValueError, KeyError):
+        moment = datetime.fromisoformat(at).astimezone(zone)
+    except ValueError:
         return at
     return moment.strftime("%a %Y-%m-%d %H:%M")
 

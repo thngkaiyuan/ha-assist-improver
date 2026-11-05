@@ -16,9 +16,10 @@ import re
 
 import orjson
 from homeassistant.components import ai_task
-from homeassistant.components.conversation.trace import (
-    ConversationTraceEventType, async_conversation_trace,
-)
+from homeassistant.components.conversation import ConversationTraceEventType
+# Not exported by the conversation root. An AI Task's result carries no usage: a trace of the call's own holds what
+# the provider reports.
+from homeassistant.components.conversation.trace import async_conversation_trace
 from homeassistant.helpers.json import json_bytes
 from homeassistant.helpers.storage import Store
 from homeassistant.util.dt import parse_datetime, utcnow

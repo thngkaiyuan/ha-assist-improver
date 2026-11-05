@@ -100,8 +100,7 @@ async function list(p, cv, {more = false, only = null, draw = true, anew = false
     if (found) {
       Object.assign(cv, {rows: keep(cv.rows, page(cv.rows, found)), total: found.total, close: !!found.close,
                          closest: !!found.closest, archivedCount: found.hidden || 0,
-                         every: (found.every || []).map((r) => r.id), byStatus: found.by_status || {},
-                         onDemand: found.on_demand, error: null});
+                         every: (found.every || []).map((r) => r.id), byStatus: found.by_status || {}, error: null});
     }
     if (away) {
       cv.away = {rows: keep(cv.away?.rows, page(cv.away?.rows, away)), total: away.total, close: !!away.close,
@@ -184,7 +183,7 @@ async function send(p, cv, id) {
   p.render();
   try {
     const result = await p.ws("conversation/send", {recording_id: id, note: cv.note || ""});
-    cv.sent[id] = {text: result.on_demand ? C.sentNow : C.sentLater};
+    cv.sent[id] = {text: C.sentNow};
     // One settled (archived on its own, opened while archived ones are shown) is back in the list once sent in again:
     // the lists are read again below (it stays where it's read till it's closed).
     const hidden = result.hidden ?? cv.known.get(id)?.hidden, back = cv.known.get(id)?.hidden && !hidden;
@@ -305,8 +304,7 @@ function marked(text, query) {
 function badge(row) {
   // Where it stands; one up for review is its own button beside the row (reviewLink), so it can open that review.
   // Its tooltip says what comes next, or, held, why (flow.py's words).
-  const C = TEXT.conversations, tips = {smooth: C.smoothTip, nofix: C.nofixTip, fine: C.fineTip, unclear: C.unclearTip,
-                                        duplicate: C.duplicateTip};
+  const C = TEXT.conversations, tips = {smooth: C.smoothTip, nofix: C.nofixTip, fine: C.fineTip, duplicate: C.duplicateTip};
   const text = row.held ? fill(C.heldTip, {why: row.held.why}) : tips[row.status];
   const tip = text ? ` title="${esc(text)}"` : "";
   return row.status === "review" && row.review || cannot(row) ? ""
@@ -432,10 +430,12 @@ export function section(p) {
     + `<div class="card cs-list">${shown(list).map((row) => rowHtml(p, cv, row)).join("")}</div>`
     + (served(list.rows) < list.total ? `<button class="link cs-more" id="${more}">${esc(C.more)}</button>` : "");
   const nothingYet = !cv.query && !cv.days && !cv.only && !cv.total && !cv.archivedCount;
-  // Every one archived (settled, or by hand), no search or filter on: nothing left for the household here.
+  // Every one archived (settled, or by hand), no search or filter on: nothing left for the household here, said only
+  // while nothing waits at the top of home either (a question, or an improvement up for review).
   const allAway = !cv.query && !cv.days && !cv.only && !cv.total && cv.archivedCount;
+  const waits = p.questions?.length || p.list?.some((i) => i.pending);
   const rows = cv.error ? `<div class="conflict">${esc(cv.error)}</div>` : shown(cv).length ? listed(cv, "cs-more")
-    : `<p class="cs-empty">${esc(nothingYet ? C.empty : allAway ? C.allArchived : C.none)}</p>`;
+    : allAway && waits ? "" : `<p class="cs-empty">${esc(nothingYet ? C.empty : allAway ? C.allArchived : C.none)}</p>`;
   // Show archived, and the archived ones below it, so ticking it moves nothing on the screen. None of them matching
   // is said there only when the list above has some: otherwise its own words say it for both.
   const archived = cv.archivedCount && !cv.error ? `<label class="cs-all cs-show-archived"><input type="checkbox" id="cs-archived" ${
@@ -446,9 +446,8 @@ export function section(p) {
   const run = p.run?.run, last = run && run.status !== "running" ? common.lastRun(run, !!p.list?.some((i) => i.pending)) : "";
   // What the list is for, on demand: in the bubble beside its title (a note screen readers read in full, the title
   // left as it is).
-  const intro = cv.onDemand ? C.leadOnDemand : C.lead;
-  const about = `<span class="info-tip" data-tip="${esc(intro)}" tabindex="0" role="note"
-      aria-label="${esc(`About ${C.title}: ${intro}`)}">${svg("info")}</span>`;
+  const about = `<span class="info-tip" data-tip="${esc(C.lead)}" tabindex="0" role="note"
+      aria-label="${esc(`About ${C.title}: ${C.lead}`)}">${svg("info")}</span>`;
   return `<section class="cs" aria-label="${esc(C.title)}"><div class="cs-top"><h2 class="cs-title">${esc(C.title)}</h2>${about}</div>
       ${last ? `<p class="cs-last">${esc(last)}</p>` : ""}
       ${nothingYet ? "" : `<div class="cs-controls"><div class="cs-bar"><span class="cs-find"><input type="search" id="cs-search" placeholder="${esc(C.search)}"

@@ -1,5 +1,5 @@
 // Settings: the pipeline drawn as a track (track.js), each AI step's model a click away (pickers.js), the household
-// knowledge (household.js), the switches, one run control, and the history of what the improver did.
+// knowledge (household.js), one run control, the history of what the improver did, and Uninstall.
 
 const v = new URL(import.meta.url).search;  // ?v=<version>, passed on to every module this one loads.
 const [{esc, plural, fill, listed, ago}, {TEXT, STAGES, STEPS, AT_WORK, COUNTS, SCHEDULE, GATE_NAMES}, {svg, glyph},
@@ -42,11 +42,9 @@ function step(p, id, L, s) {
     chip = `<div class="chip-row"><button class="chip-model" data-assist="1" data-tip="${esc(TEXT.assistant.tip)}">${
       esc(pipeline?.name || "Choose…")} &#9662;</button></div>`;
   } else if (id === "household") {
-    // Its one switch, whether every assistant on Assist reads the lines, beside the lines themselves (dimmed while off).
-    const lines = p.household?.lines || 0, K = TEXT.knowledge, on = s.household_knowledge !== false;
-    const tip = fill(K[on ? "on" : "off"], {lines: plural(lines, "line")});
-    chip = `<div class="chip-row">${common.toggle("household-knowledge", on, `aria-label="${esc(K.label)}" data-tip="${esc(tip)}"`)}<button
-      class="chip-model ${on ? "" : "off"}" data-knowledge="1" data-tip="${esc(K.tip)}">${
+    // The lines learned, and how many improvements were applied.
+    const lines = p.household?.lines || 0, K = TEXT.knowledge;
+    chip = `<div class="chip-row"><button class="chip-model" data-knowledge="1" data-tip="${esc(K.tip)}">${
       glyph("mdi:book-heart-outline", "in-chip")}${esc(fill(K[L.vertical ? "chipShort" : "chip"], {n: plural(lines, "line")}))}</button>${
       preview.applied ? `<span class="done-count" data-tip="${esc(fill(B.applied, {n: preview.applied}))}">${svg("check")}${preview.applied}</span>` : ""}</div>`;
   }
@@ -63,8 +61,8 @@ function step(p, id, L, s) {
 }
 
 function head(p, s) {
-  // The switches, and one run control: Run now (on all a full run moves), and its menu for when it runs on its own
-  // and for running one step (on what's held there).
+  // One run control: Run now (on all a full run moves), and its menu for when it runs on its own and for running one
+  // step (on what's held there).
   const running = p.run?.run?.status === "running";
   const preview = p.run?.preview || {};
   const last = esc(common.lastRun(p.run?.run) || "No runs yet");
@@ -81,12 +79,7 @@ function head(p, s) {
         ${p.cancelling ? "disabled" : ""}>${p.cancelling ? "Cancelling…" : "Cancel run"}</button>`
     : `<div class="split down"><button class="main" id="run-now" data-tip="${last}">${svg("play")}${esc(runWords)}</button>
        <button class="arrow" id="run-menu" aria-label="When it runs, or run one step" data-tip="${esc(when[1])}">${s.schedule === "off" ? "&#9662;" : svg("clock")}</button>${menu}</div>`;
-  const sandboxTip = TEXT.sandbox.tip + (s.practice.others.length ? " " + fill(TEXT.sandbox.others, {names: s.practice.others.join(", ")}) : "");
-  const row = common.switchRow;
-  return `<div class="flow-head"><div class="toggles">${row("on-demand", s.on_demand, TEXT.onDemand.label, TEXT.onDemand.tip)}
-    ${row("practice", s.practice.on, TEXT.sandbox.label, sandboxTip)}
-    ${row("auto-accept", s.auto_accept, TEXT.autoAccept.label, TEXT.autoAccept.tip)}</div>
-    <span class="spacer"></span>${run}</div>`;
+  return `<div class="flow-head">${run}</div>`;
 }
 
 function history(p) {
@@ -115,8 +108,7 @@ function history(p) {
   };
   const rows = shown.map((e) => {
     const [title, sub, more = ""] = e.kind === "run" ? runText(e) : e.kind === "posted" ? [H.posted, e.title]
-      : [e.auto ? H.auto : H.decisions[e.reason || e.decision] || e.decision,
-         e.title + (e.by && !e.auto ? ` · ${e.by}` : "")];
+      : [H.decisions[e.reason || e.decision] || e.decision, e.title + (e.by ? ` · ${e.by}` : "")];
     const glyphName = e.kind === "decision" ? icon[e.decision] || "mdi:account-check-outline" : icon[e.kind];
     return `<div class="h-row ${e.id ? "h-link" : ""}" ${e.id ? `data-open="${esc(e.id)}"` : ""}>${glyph(glyphName)}
       <div class="h-text"><div>${esc(title)}</div>${sub ? `<div class="h-sub">${esc(sub)}</div>` : ""}${more}</div>
@@ -124,6 +116,50 @@ function history(p) {
   }).join("");
   return `<div class="card history"><div class="h-title">${esc(H.title)}</div>${rows || `<div class="h-empty">${esc(H.empty)}</div>`}
     ${events.length > shown.length ? `<div class="h-more"><button class="link" id="history-more">${esc(H.more)}</button></div>` : ""}</div>`;
+}
+
+function uninstall(p) {
+  // Uninstall's one step, in a modal: what it removes; with lines learned, the household's lines as one text to keep
+  // if it likes (a copy button in the box's corner), and a box to tick before it can go. Uninstall removes the
+  // integration, then Home Assistant's integrations page opens.
+  const U = TEXT.uninstall, u = p.uninstall, text = p.household?.text || "", copy = u.copied ? U.copied : U.copy;
+  const keep = text ? `<div class="u-box"><pre class="u-text" tabindex="0">${esc(text)}</pre><button class="u-copy ${
+        u.copied ? "done" : ""}" id="u-copy" aria-label="${esc(copy)}" data-tip="${esc(copy)}">${svg(u.copied ? "check" : "copy")}</button></div>
+      <label class="reason"><input type="checkbox" id="u-saved" ${u.saved ? "checked" : ""}><span class="reason-label">${
+        esc(U.saved)}</span></label>` : "";
+  return `<div class="modal-shade u-cancel"></div><div class="modal confirm-modal" role="dialog" aria-modal="true" aria-label="${esc(U.title)}">
+      <div class="modal-head"><b>${esc(U.title)}</b><span class="kn-count"></span>
+        <button class="modal-close u-cancel" aria-label="${esc(TEXT.confirm.notNow)}">&#10005;</button></div>
+      <div class="modal-body confirm u-body"><p class="c-what">${esc(`${U.what} ${U.stay}${text ? ` ${U.keep}` : ""}`)}</p>${keep}${
+        u.error ? `<div class="error-text">${esc(u.error)}</div>` : ""}</div>
+      <div class="u-foot"><button class="btn ghost u-cancel" ${u.busy ? "disabled" : ""}>${esc(TEXT.confirm.notNow)}</button>
+      <button class="btn danger" id="u-confirm" ${u.busy || (text && !u.saved) ? "disabled" : ""}>${
+        esc(u.busy ? U.busy : U.button)}</button></div></div>`;
+}
+
+async function copyLines(p) {
+  // The lines to the clipboard; the button shows they went (a check mark) for a moment.
+  const u = p.uninstall;
+  if (!await common.copy(p, p.household?.text || "") || p.uninstall !== u) return;
+  u.copied = true;
+  p.render();
+  clearTimeout(u.copiedTimer);
+  u.copiedTimer = setTimeout(() => { u.copied = false; if (p.uninstall === u) p.render(); }, 2000);
+}
+
+async function confirmUninstall(p) {
+  const u = p.uninstall;
+  Object.assign(u, {busy: true, error: null});
+  p.render();
+  try {
+    await p.ws("uninstall");
+  } catch (err) {
+    Object.assign(u, {busy: false, error: err.message || String(err)});
+    p.render();
+    return;
+  }
+  p.uninstall = null;
+  p.nav("/config/integrations/dashboard");  // The panel goes with the integration.
 }
 
 export function render(p) {
@@ -136,13 +172,14 @@ export function render(p) {
     esc(L.vertical ? TEXT.revise.short : TEXT.revise.label)}</span>`;
   const flow = `<div class="card flow-card">${head(p, s)}<div class="track ${L.vertical ? "vertical" : ""}" style="height:${L.H}px">
     ${track.trackSvg(L, running)}${IDS.map((id) => step(p, id, L, s)).join("")}${label}</div></div>`;
-  const confirm = p.confirming && preview ? common.confirm(p, preview) : p.asking === "auto-accept" ? common.askAutoAccept() : "";
+  const confirm = p.confirming && preview ? common.confirm(p, preview) : "";
   const shade = p.runMenu ? `<div class="backdrop" id="menu-backdrop"></div>` : "";
   const pop = p.pop?.kind === "knowledge" ? household.modal(p) : pickers.render(p, s);
+  const end = `<div class="end-row"><button class="btn soft-danger" id="uninstall">${esc(TEXT.uninstall.button)}</button></div>`;
   return {
     bar: common.toolbar("Settings", true, s.developer ? common.devLink() : ""),
-    page: `<div class="page wide">${flow}${history(p)}</div>`,
-    layer: `${shade}${pop}${confirm}`,
+    page: `<div class="page wide">${flow}${history(p)}${end}</div>`,
+    layer: `${shade}${pop}${confirm}${p.uninstall ? uninstall(p) : ""}`,
   };
 }
 
@@ -189,54 +226,22 @@ export function after(p) {
   measure(p);
   pickers.place(p);
   household.after(p);
-}
-
-// Each switch: whether it's on, and what flipping it does.
-const SWITCHES = {
-  "on-demand": [(s) => s.on_demand, (p) => p.saveSetting({on_demand: !p.settings.on_demand})],
-  "household-knowledge": [(s) => s.household_knowledge !== false,
-                          (p) => p.saveSetting({household_knowledge: p.settings.household_knowledge === false})],
-  recording: [(s) => s.recording !== false, (p) => p.saveSetting({recording: p.settings.recording === false})],
-  "auto-accept": [(s) => s.auto_accept, (p) => {
-    if (p.settings.auto_accept) return p.saveSetting({auto_accept: false});
-    p.asking = "auto-accept";  // Turning it on says what it will change first.
-    p.render();
-  }],
-  practice: [(s) => s.practice.on, async (p) => {
-    try { p.settings = await p.ws("practice", {on: !p.settings.practice.on}); } catch (err) { alert(err.message || String(err)); }
-    p.render();
-  }],
-};
-
-function personSwitched(p, el, ev) {
-  // One person's recording switch (Your Assist), shown as it's stored until the save comes back.
-  const person = (p.settings.recording_people || []).find((x) => x.user_id === el.dataset.recordingPerson);
-  ev.preventDefault();
-  if (!person) return;
-  if (el.tagName === "HA-SWITCH") el.checked = person.on;
-  p.saveSetting({recording: !person.on, person: person.user_id});
-}
-
-function switched(p, el, ev) {
-  // A switch shows the setting until it's saved: a save that fails, or a confirmation turned down, leaves it as it was.
-  const [on, flip] = SWITCHES[el.id];
-  ev.preventDefault();
-  if (el.tagName === "HA-SWITCH") el.checked = on(p.settings);
-  flip(p);
+  const lines = p.root.querySelector(".u-text");  // Uninstall's copy button stays clear of the box's scrollbar, if it takes room.
+  lines?.parentElement.style.setProperty("--scrollbar", `${lines.offsetWidth - lines.clientWidth}px`);
 }
 
 export const actions = {
   click: [
-    ...Object.keys(SWITCHES).map((id) => [`button#${id}`, switched]),
-    ["button[data-recording-person]", personSwitched],
-    ["#ask-ok", (p) => { p.asking = null; p.saveSetting({auto_accept: true}); }],
-    [".ask-cancel", (p) => { p.asking = null; p.render(); }],
     ["#run-menu", (p) => { p.runMenu = !p.runMenu; p.render(); }],
     ["[data-schedule]", (p, el) => { p.runMenu = false; p.saveSetting({schedule: el.dataset.schedule}); }],
     ["[data-only]", (p, el) => { Object.assign(p, {runMenu: false, only: el.dataset.only, confirming: true}); p.render(); }],
     ["[data-gate]", (p, el) => p.saveSetting({stage: el.dataset.gate, pause: !p.settings.paused.includes(el.dataset.gate)})],
     ["#history-more", (p) => { p.historyAll = true; p.render(); }],
     ["[data-open]", (p, el) => p.go(el.dataset.open)],
+    ["#uninstall", (p) => { p.uninstall = {saved: false, copied: false, error: null, busy: false}; p.render(); }],
+    [".u-cancel", (p) => { if (!p.uninstall?.busy) { p.uninstall = null; p.render(); } }],
+    ["#u-copy", (p) => copyLines(p)],
+    ["#u-confirm", (p) => confirmUninstall(p)],
   ],
-  change: [...Object.keys(SWITCHES).map((id) => [`ha-switch#${id}`, switched]), ["ha-switch[data-recording-person]", personSwitched]],
+  change: [["#u-saved", (p, el) => { p.uninstall.saved = el.checked; p.render(); }]],
 };

@@ -6,37 +6,59 @@ places with no shared transaction, so a changeset is made atomic here:
 1. Plan every step first, each with the value HA has now (before) and the one it
    gets (after), checked three ways against what the replays were tested on; a
    value the user changed since is a conflict, reported instead of overwritten.
-   HA validates scripts and instruction templates before anything is written.
+   HA checks each script's actions and the instruction templates here; its script
+   editor checks each script whole before it writes it (a refusal undoes the rest).
 2. Apply in a safe order: scripts (saved, not exposed: inert), aliases, exposure,
    then the household knowledge and assistants' own instructions (instruction
    lines tell the assistant to use the rest). Nothing runs. An edit of one
    assistant's instructions goes to that assistant, and is a conflict when its
    instructions changed after the improvement was tested.
 3. A journal is saved before each write; a failed step undoes the done steps in
-   reverse order. A journal left unfinished by a restart is undone at startup.
+   reverse order. A journal left unfinished (HA stopped, or the panel went away)
+   is undone from where it stands: at startup as far as the improver writes
+   itself, then its scripts by the panel when it's next opened. Scripts come first
+   on apply and last on undo, so what waits for the panel is inert.
 4. Every written value is read back before the changeset counts as applied.
+
+The improver never writes a configuration file itself: the panel saves scripts
+through Home Assistant's own script editor, with the signed-in admin's session
+(panel.ScriptChannel), and HA validates, writes and reloads them. The rest is
+written here, through HA's APIs.
 """
 
+import asyncio
 from copy import deepcopy
 import json
+import os
 
 from homeassistant.components.homeassistant.exposed_entities import async_expose_entity, async_should_expose
-from homeassistant.helpers import entity_registry as er
+from homeassistant.config import SCRIPT_CONFIG_PATH
+from homeassistant.core import callback
+from homeassistant.exceptions import HomeAssistantError, TemplateError
+from homeassistant.helpers import config_validation as cv, entity_registry as er
+from homeassistant.helpers.script import async_validate_actions_config
 from homeassistant.helpers.storage import Store
+from homeassistant.util.yaml import load_yaml
 
 from .const import DOMAIN, STORAGE_VERSION
 
 # assistant_api: an assistant switched to the household API (up to 0.37), last; still undone, never planned now.
 ORDER = ("script", "alias", "exposure", "household", "prompt", "assistant_api")
-SCRIPTS_FILE = "scripts.yaml"  # Where HA's script editor keeps scripts (homeassistant.config.SCRIPT_CONFIG_PATH).
+LOAD_TIMEOUT = 30  # Seconds HA may take to load a script the panel saved, or let go of one it deleted.
 
 
 CHANGED_SINCE = "It was changed in Home Assistant after the improvement was tested."  # A conflict on the tested base.
+BUSY = "Another change is still being applied."  # Another is refused while one applies, or is left open (busy).
 BASES = {"script": "scripts", "exposure": "exposure", "prompt": "prompts"}  # Where tested keeps each kind's base.
 
 
 class Conflict(Exception):
     """HA's value isn't the one the step was planned against."""
+
+
+class NoPanel(Exception):
+    """A script step needs the panel, which saves scripts through HA's script editor, and none is there (or it went
+    away): the change stays in the journal, from where it stands, until a panel finishes it (Changesets.resume)."""
 
 
 def _same(a, b):
@@ -46,19 +68,16 @@ def _same(a, b):
 # Reading and writing each kind of value, through HA's own APIs.
 
 async def _read_scripts(hass):
-    from homeassistant.util.yaml import load_yaml
-    import os
-    path = hass.config.path(SCRIPTS_FILE)
+    """The scripts HA's script editor keeps, read as its own GET does (load_yaml of SCRIPT_CONFIG_PATH). Read here, not
+    through the panel: a review is planned as the page opens, and a change cut off is finished at startup, both before
+    any panel's saver is there."""
+    path = hass.config.path(SCRIPT_CONFIG_PATH)
     return (await hass.async_add_executor_job(lambda: load_yaml(path) if os.path.isfile(path) else None)) or {}
 
 
-async def _write_scripts(hass, scripts):
-    """As HA's script editor saves: the whole file, written atomically, then a script reload."""
-    from homeassistant.util.file import write_utf8_file_atomic
-    from homeassistant.util.yaml import dump
-    contents = dump(scripts)  # Before opening the file, so a dump error can't truncate it.
-    await hass.async_add_executor_job(write_utf8_file_atomic, hass.config.path(SCRIPTS_FILE), contents)
-    await hass.services.async_call("script", "reload", blocking=True)
+def _aliases(entry):
+    """An entity's aliases as plain values: None for its own name (HA's COMPUTED_NAME)."""
+    return [None if a is er.COMPUTED_NAME else a for a in entry.aliases]
 
 
 async def read(hass, kind, target):
@@ -66,7 +85,7 @@ async def read(hass, kind, target):
         return deepcopy((await _read_scripts(hass)).get(target))
     if kind == "alias":
         entry = er.async_get(hass).async_get(target)
-        return None if entry is None else er._serialize_aliases(entry.aliases)
+        return None if entry is None else _aliases(entry)
     if kind == "exposure":
         return async_should_expose(hass, "conversation", target)
     if kind in ("prompt", "assistant_api"):
@@ -86,19 +105,10 @@ async def read(hass, kind, target):
 
 
 async def write(hass, kind, target, value):
-    if kind == "script":
-        scripts = await _read_scripts(hass)
-        if value is None:
-            scripts.pop(target, None)
-        else:
-            scripts[target] = deepcopy(value)
-        await _write_scripts(hass, scripts)
-        if value is None:  # As HA's script editor deletes: the script's registry entry goes too.
-            registry = er.async_get(hass)
-            if entity_id := registry.async_get_entity_id("script", "script", target):
-                registry.async_remove(entity_id)
-    elif kind == "alias":
-        er.async_get(hass).async_update_entity(target, aliases=er._deserialize_aliases(value))
+    """Everything but a script, which only the panel saves (Changesets._write)."""
+    if kind == "alias":
+        aliases = [er.COMPUTED_NAME if a is None else a for a in value]  # None: its own name (_aliases).
+        er.async_get(hass).async_update_entity(target, aliases=aliases)
     elif kind == "exposure":
         async_expose_entity(hass, "conversation", target, value)
     elif kind in ("prompt", "assistant_api"):
@@ -114,6 +124,27 @@ async def write(hass, kind, target, value):
         raise ValueError(kind)
 
 
+async def loaded(hass, object_id, value):
+    """Waits until HA has loaded a script the panel saved (its registry entry is there, so exposing it lands on it), or
+    let go of one it deleted (value None): HA's script editor reloads after it answers. Conflict if it doesn't."""
+    registry, changed = er.async_get(hass), asyncio.Event()
+
+    @callback
+    def registry_updated(_event):
+        changed.set()
+    unsubscribe = hass.bus.async_listen(er.EVENT_ENTITY_REGISTRY_UPDATED, registry_updated)
+    try:
+        async with asyncio.timeout(LOAD_TIMEOUT):
+            while (registry.async_get_entity_id("script", "script", object_id) is None) != (value is None):
+                changed.clear()
+                await changed.wait()
+    except TimeoutError:
+        raise Conflict("Home Assistant didn't load it." if value is not None
+                       else "Home Assistant didn't remove it.") from None
+    finally:
+        unsubscribe()
+
+
 # Planning: every step, checked before anything is written.
 
 async def plan_steps(hass, proposal):
@@ -122,8 +153,6 @@ async def plan_steps(hass, proposal):
     tested holds the values the replays started from (the recorded home); a live value that's neither that nor
     the proposed one was changed by the user since, and is a conflict. user_ids: the people it was tested for (a line
     for the person speaking goes to each)."""
-    from homeassistant.components.script.config import async_validate_config_item
-    from homeassistant.exceptions import HomeAssistantError
     from homeassistant.helpers.template import Template
     import probatio
     setup, tested = proposal["setup"], proposal["tested"]
@@ -138,7 +167,7 @@ async def plan_steps(hass, proposal):
         else:
             steps.append({"kind": kind, "target": target, "before": before, "after": after, "what": what})
 
-    stored = await _read_scripts(hass)
+    stored = await _read_scripts(hass) if setup.get("scripts") else {}
     for object_id, config in sorted(setup.get("scripts", {}).items()):
         base = tested["scripts"].get(object_id)  # None: a new script.
         live = deepcopy(stored.get(object_id))
@@ -150,8 +179,8 @@ async def plan_steps(hass, proposal):
                               "why": "It isn't stored in scripts.yaml (where the script editor keeps scripts), so it "
                                      "can't be changed here."})
             continue
-        try:
-            await async_validate_config_item(hass, object_id, config)
+        try:  # Its actions, as HA's own editors check them (validate_config); the editor checks it whole as it saves.
+            await async_validate_actions_config(hass, cv.SCRIPT_SCHEMA(config.get("sequence")))
         except (probatio.Invalid, HomeAssistantError) as err:
             conflicts.append({"kind": "script", "target": object_id, "what": what,
                               "why": f"Home Assistant doesn't accept it: {err}"})
@@ -164,10 +193,10 @@ async def plan_steps(hass, proposal):
             conflicts.append({"kind": "alias", "target": entity_id, "what": entity_id,
                               "why": "The device is no longer in Home Assistant."})
             continue
-        live = er._serialize_aliases(entry.aliases) or [None]  # No aliases: Assist knows it by its own name.
+        live = _aliases(entry) or [None]  # No aliases: Assist knows it by its own name.
         removed = set(setup.get("alias_removals", {}).get(entity_id, []))
         after = [a for a in live if a not in removed] + [a for a in added if a not in live]
-        add("alias", entity_id, er._serialize_aliases(entry.aliases), after, _ANY, _name(hass, entity_id))
+        add("alias", entity_id, _aliases(entry), after, _ANY, _name(hass, entity_id))
     for entity_id, exposed in sorted(setup.get("exposure", {}).items()):
         base = tested["exposure"].get(entity_id, False)
         add("exposure", entity_id, async_should_expose(hass, "conversation", entity_id), exposed, base,
@@ -192,19 +221,14 @@ async def plan_steps(hass, proposal):
             if prompt != live_prompt:
                 try:
                     Template(prompt, hass).ensure_valid()
-                except Exception as err:  # A template HA can't parse never reaches the assistant.
+                except TemplateError as err:  # A template HA can't parse never reaches the assistant.
                     problems.append(f"Home Assistant can't read the edited instructions: {err}")
             if llm_assist() not in household.as_assist(apis):
                 problems.append("The assistant doesn't use Assist, so it can't read the household knowledge.")
-            if household.switched_off(hass):  # Nothing would read the lines (nor those it takes out of instructions).
-                problems.append("It's off in the settings, so no assistant would read it.")
             if problems:
                 conflicts += [{"kind": "household", "target": "household", "what": "Household knowledge", "why": p}
                               for p in problems]
             else:
-                # A household line its own instructions hold too (an uninstall wrote it there, say) comes out of them:
-                # it reads the line once, from the household knowledge.
-                prompt = household.without_lines(prompt, knowledge)
                 add("household", "household", live, knowledge, _ANY, "Household knowledge")
                 if prompt != live_prompt:
                     prompts[target] = [live_prompt, prompt, _ANY, title]
@@ -234,7 +258,7 @@ async def plan_steps(hass, proposal):
         if target in edits:
             try:
                 Template(after, hass).ensure_valid()
-            except Exception as err:  # A template HA can't parse never reaches the assistant.
+            except TemplateError as err:  # A template HA can't parse never reaches the assistant.
                 conflicts.append({"kind": "prompt", "target": target, "what": f"{title}'s instructions",
                                   "why": f"Home Assistant can't read the edited instructions: {err}"})
                 continue
@@ -279,25 +303,23 @@ def keep_unchanged_steps(config, live):
 
 
 class Changesets:
-    """Applies and undoes planned steps with a journal, and recovers an interrupted one at startup."""
+    """Applies and undoes planned steps with a journal, and finishes one left open (HA stopped, or the panel went away
+    mid-change) from where it stands. One change at a time."""
 
     def __init__(self, hass, *, writer=write, reader=read):
         self.hass, self.write, self.read = hass, writer, reader
         self.store = Store(hass, STORAGE_VERSION, f"{DOMAIN}.changeset_journal", private=True, atomic_writes=True)
         self.journal = None
+        self._lock = asyncio.Lock()  # A change applying, or one left open being finished.
 
-    async def start(self):
-        """An unfinished journal means HA stopped mid-change: undo what it did. Returns the outcome, if any."""
-        saved = await self.store.async_load()
-        self.journal = (saved or {}).get("journal")
-        if not self.journal:
-            return None
-        journal = self.journal
-        undone, stuck = await self._roll_back(journal["steps"][:journal["done"] + 1])
-        outcome = {"improvement_id": journal["improvement_id"], "action": journal["action"],
-                   "status": "needs_attention" if stuck else "rolled_back", "undone": undone, "stuck": stuck}
-        await self._finish()
-        return outcome
+    async def load(self):
+        """The journal HA last saved: a change left open, if any, refuses others until it's finished (resume)."""
+        self.journal = ((await self.store.async_load()) or {}).get("journal")
+
+    @property
+    def busy(self):
+        """A change applying, or one left open: no other starts until it's finished."""
+        return bool(self.journal) or self._lock.locked()
 
     async def _save(self):
         await self.store.async_save({"journal": self.journal})
@@ -306,61 +328,112 @@ class Changesets:
         self.journal = None
         await self._save()
 
-    async def run(self, improvement_id, action, steps):
-        """Write each step in order. All of them, verified: {status: done}. Otherwise every done step is undone:
-        {status: rolled_back} with the failure, or {status: needs_attention} if an undo failed too."""
-        if self.journal:
-            raise Conflict("Another change is still being applied.")
-        self.journal = {"improvement_id": improvement_id, "action": action, "steps": deepcopy(steps), "done": -1}
-        await self._save()  # Before any write.
-        failure = None
-        for index, step in enumerate(steps):
-            self.journal["done"] = index  # In flight: recovery checks this step too.
-            await self._save()
-            writing = False
-            try:
-                live = await self.read(self.hass, step["kind"], step["target"])
-                if not _same(live, step["before"]):
-                    raise Conflict(f"{step['what']} changed while the improvement was being applied.")
-                writing = True
-                await self.write(self.hass, step["kind"], step["target"], step["after"])
-                if not _same(await self.read(self.hass, step["kind"], step["target"]), step["after"]):
-                    raise Conflict(f"{step['what']} didn't take the new value.")
-            except Exception as err:  # Any failure undoes the changeset; a crash (BaseException) leaves the journal.
-                failure = {"step": index, "what": step["what"], "error": str(err) or type(err).__name__,
-                           "written": writing}  # Changed before the write: that step isn't ours to undo.
-                break
-        if failure is None:
-            await self._finish()
-            return {"status": "done", "steps": deepcopy(steps)}
-        written = failure.pop("written")
-        undone, stuck = await self._roll_back(steps[:failure["step"] + written], in_flight=written)
-        await self._finish()
-        return {"status": "needs_attention" if stuck else "rolled_back", "failure": failure, "undone": undone,
-                "stuck": stuck}
+    async def _write(self, step, value, scripts):
+        """One step's value written: a script by the panel (scripts), through HA's script editor, once HA has loaded
+        it; anything else here."""
+        if step["kind"] != "script":
+            await self.write(self.hass, step["kind"], step["target"], value)
+            return
+        if scripts is None:
+            raise NoPanel
+        await scripts(step["target"], value)
+        await loaded(self.hass, step["target"], value)
 
-    async def _roll_back(self, steps, in_flight=True):
-        """Undo steps in reverse: a value still as written goes back; one already back is left; anything else is
-        stuck (someone changed it meanwhile, or the undo failed) and reported. in_flight: the last step may not have
-        been written (a write that failed, or HA stopping), so it goes back only if it holds the new value."""
-        undone, stuck = [], []
-        for index, step in reversed(list(enumerate(steps))):
+    async def run(self, improvement_id, action, steps, scripts=None):
+        """Write each step in order. All of them, verified: {status: done}. Otherwise every done step is undone:
+        {status: rolled_back} with the failure, or {status: needs_attention} if an undo failed too. scripts: the panel
+        saving a script (panel.ScriptChannel.save); without it, steps with a script are refused before anything is
+        written. NoPanel: the panel went away mid-change, which is left open for the next one (resume)."""
+        if self.busy:
+            raise Conflict(BUSY)
+        if scripts is None and any(s["kind"] == "script" for s in steps):
+            # Only a panel saves scripts, so this reaches only a panel: one whose saver is gone, or an older one.
+            raise Conflict("Reload the page and try again.")
+        async with self._lock:
+            self.journal = {"improvement_id": improvement_id, "action": action, "steps": deepcopy(steps), "done": -1}
+            await self._save()  # Before any write.
+            failure = None
+            for index, step in enumerate(steps):
+                self.journal["done"] = index  # In flight: recovery checks this step too.
+                await self._save()
+                writing = False
+                try:
+                    live = await self.read(self.hass, step["kind"], step["target"])
+                    if not _same(live, step["before"]):
+                        raise Conflict(f"{step['what']} changed while the improvement was being applied.")
+                    writing = True
+                    await self._write(step, step["after"], scripts)
+                    if not _same(await self.read(self.hass, step["kind"], step["target"]), step["after"]):
+                        raise Conflict(f"{step['what']} didn't take the new value.")
+                except NoPanel:
+                    raise
+                except Exception as err:  # Any failure undoes the changeset; a crash (BaseException) leaves the journal.
+                    failure = {"step": index, "what": step["what"], "error": str(err) or type(err).__name__,
+                               "written": writing}  # Changed before the write: that step isn't ours to undo.
+                    break
+            if failure is None:
+                await self._finish()
+                return {"status": "done", "steps": deepcopy(steps)}
+            written = failure.pop("written")
+            self.journal["back"] = {"count": failure["step"] + written, "in_flight": written, "failure": failure,
+                                    "undone": [], "stuck": []}
+            await self._save()
+            outcome = await self._back(scripts)
+            return {k: outcome[k] for k in ("status", "failure", "undone", "stuck")}
+
+    async def resume(self, scripts=None, late=None):
+        """A change left open, its done steps undone in reverse from where it stands: without the panel (scripts) as
+        far as the improver writes itself, stopping at a script step, which waits for the panel. The outcome once all
+        are back ({improvement_id, action, status: rolled_back or needs_attention, undone, stuck}); {status: waiting}
+        while a script step waits, or while late() (a save a panel didn't answer in time may still land: nothing is
+        read before it has); None when no change is open."""
+        async with self._lock:  # After a change applying now: it may leave itself open.
+            if not self.journal:
+                return None
+            journal = self.journal
+            if late and late():
+                return {"improvement_id": journal["improvement_id"], "action": journal["action"], "status": "waiting"}
+            if "back" not in journal:  # Cut off going forward: the step in flight may not have been written.
+                journal["back"] = {"count": journal["done"] + 1, "in_flight": True, "failure": None, "undone": [],
+                                   "stuck": []}
+                await self._save()
+            try:
+                return await self._back(scripts)
+            except NoPanel:
+                return {"improvement_id": journal["improvement_id"], "action": journal["action"], "status": "waiting"}
+
+    async def _back(self, scripts):
+        """The open journal's done steps (back: count) undone in reverse: a value still as written goes back; one
+        already back is left; anything else is stuck (someone changed it meanwhile, or the undo failed) and reported.
+        in_flight: the last may not have been written (a write that failed, or HA stopping), so it goes back only if it
+        holds the new value. Progress is saved step by step, so NoPanel (a script step and no panel) leaves the rest
+        for the next one. The outcome, once all are back."""
+        journal = self.journal
+        back = journal["back"]
+        while back["count"]:
+            step = journal["steps"][back["count"] - 1]
             try:
                 live = await self.read(self.hass, step["kind"], step["target"])
-                if _same(live, step["before"]):
-                    continue
-                if not _same(live, step["after"]):
-                    if in_flight and index == len(steps) - 1:
-                        continue  # Not written by this change: whatever is there isn't ours to undo.
-                    stuck.append({"what": step["what"], "why": "It was changed by someone else meanwhile."})
-                    continue
-                await self.write(self.hass, step["kind"], step["target"], step["before"])
-                if not _same(await self.read(self.hass, step["kind"], step["target"]), step["before"]):
-                    raise Conflict("It didn't take its earlier value.")
-                undone.append(step["what"])
+                if _same(live, step["after"]) and not _same(live, step["before"]):
+                    await self._write(step, step["before"], scripts)
+                    if not _same(await self.read(self.hass, step["kind"], step["target"]), step["before"]):
+                        raise Conflict("It didn't take its earlier value.")
+                    back["undone"].append(step["what"])
+                elif not _same(live, step["before"]) and not back["in_flight"]:  # In flight: not written by this change,
+                    back["stuck"].append({"what": step["what"],  # so whatever is there isn't ours to undo.
+                                          "why": "It was changed by someone else meanwhile."})
+            except NoPanel:
+                raise
             except Exception as err:
-                stuck.append({"what": step["what"], "why": str(err) or type(err).__name__})
-        return undone, stuck
+                back["stuck"].append({"what": step["what"], "why": str(err) or type(err).__name__})
+            back["count"] -= 1
+            back["in_flight"] = False
+            await self._save()
+        outcome = {"improvement_id": journal["improvement_id"], "action": journal["action"],
+                   "status": "needs_attention" if back["stuck"] else "rolled_back", "undone": back["undone"],
+                   "stuck": back["stuck"], **({"failure": back["failure"]} if back["failure"] else {})}
+        await self._finish()
+        return outcome
 
 
 def undo_steps(applied, live, kept=None):
@@ -406,7 +479,7 @@ def readable(hass, steps, left):
         if step["kind"] == "prompt" and step["after"]:
             try:
                 Template(step["after"], hass).ensure_valid()
-            except Exception as err:  # A template HA can't parse never reaches the assistant.
+            except TemplateError as err:  # A template HA can't parse never reaches the assistant.
                 left = [l for l in left if (l.get("kind"), l.get("target")) != (step["kind"], step["target"])] + [
                     {"what": step["what"], "why": f"Home Assistant can't read the edited instructions: {err}"}]
                 continue

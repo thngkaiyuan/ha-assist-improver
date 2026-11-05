@@ -19,16 +19,20 @@ class AiTaskRepairFlow(_AiTaskSteps, RepairsFlow):
         return await self.async_step_choose()
 
     async def async_step_choose(self, user_input=None):
-        return await self._choose(user_input, self._entry.options.get(CONF_AI_TASK), "choose")
+        if (entry := self._entry) is None:  # The improver was removed while this was open.
+            return self.async_abort(reason="not_set_up")
+        return await self._choose(user_input, entry.options.get(CONF_AI_TASK), "choose")
 
     async def _back(self):
         return await self.async_step_choose()
 
     def _finish(self, choice):
+        if (entry := self._entry) is None:
+            return self.async_abort(reason="not_set_up")
         if not choice:
             return self.async_abort(reason="no_choice")  # The notice stays.
         # Saving reloads the entry, which re-checks the notice.
-        self.hass.config_entries.async_update_entry(self._entry, options=self._options(self._entry.options, choice))
+        self.hass.config_entries.async_update_entry(entry, options=self._options(entry.options, choice))
         return self.async_create_entry(data={})
 
 

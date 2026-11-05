@@ -26,10 +26,9 @@ def payload(view):
     and aliases of the devices involved. Assist's instructions name the speaker and list the household's devices,
     the same in every turn but for a line or two (the time), so they come in full with the first turn and after that
     only as the lines that changed: the same facts, without a copy per turn (most of a long conversation's input)."""
-    from .cases import recording_turns
     from .serialization import plain
     turns, involved, previous = [], set(), None
-    for turn, line in zip(recording_turns(view.recording, replay=False), view.conversation()):
+    for turn, line in zip(view.turns, view.conversation()):
         steps = []
         for message in turn["messages"][1:]:
             if message["role"] == "assistant":
@@ -71,9 +70,8 @@ def instructions_seen(view):
     """The instructions Assist ran with in this conversation, as the quick check reads them (who's speaking, the
     household knowledge, the devices): in full as of the first turn, then each later turn's changed lines. For the
     analyzer, which needs to know the household as the other roles do."""
-    from .cases import recording_turns
     out, previous, changed = {}, None, []
-    for turn in recording_turns(view.recording, replay=False):
+    for turn in view.turns:
         system = next((m["content"] for m in turn.get("history") or [] if m["role"] == "system"), None)
         seen = _instructions(previous, system)
         if "assist_instructions" in seen:

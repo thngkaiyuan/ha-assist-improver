@@ -3,31 +3,42 @@
 Every assistant that controls Home Assistant through Assist reads them: Home
 Assistant's Assist gathers a prompt from each integration's llm platform, and this
 integration's (llm.py) adds the household's lines, for everyone and for the person
-speaking. One switch in the settings turns them off (on by default): off, or with
-no lines yet, Assist is exactly Home Assistant's own. Home Assistant doesn't say
-which assistant is asking, so it's every assistant or none.
+speaking. With no lines yet, or while the improver is disabled, Assist is exactly
+Home Assistant's own. Home Assistant doesn't say which assistant is asking, so it's
+every assistant or none.
 
 Up to 0.37 the lines came through a second LLM API, "Assist with household
 knowledge", chosen instead of Assist; an assistant could tick both and read every
 tool twice. Only replays of conversations recorded through it still use it
-(LegacyAPI, in a sandbox). On
-uninstall, the lines are written into each assistant's own instructions, so
-nothing learned is lost (see async_remove).
+(LegacyAPI, in a sandbox).
+
+Uninstalling writes nothing into any assistant's instructions: the settings'
+Uninstall shows the lines to save first, and removing the improver from Home
+Assistant's own page leaves them in a notification (async_remove).
 """
 
-import re
 from copy import deepcopy
 
+from homeassistant.components import persistent_notification
+from homeassistant.components.assist_pipeline import PipelineNotFound, async_get_pipeline, async_get_pipelines
 from homeassistant.helpers import llm
 from homeassistant.helpers.storage import Store
+from homeassistant.util.hass_dict import HassKey
 
-from .const import CONF_HOUSEHOLD, DOMAIN, STORAGE_VERSION
+from .const import DOMAIN, STORAGE_VERSION
 
-API_ID = DOMAIN  # The household API up to 0.37: what assistants and recordings of then still name.
+API_ID = DOMAIN  # The household API up to 0.37: what recordings of then still name.
 API_NAME = "Assist with household knowledge"
-KEY = f"{DOMAIN}_household"  # hass.data: the Household (knowledge and its store).
+# hass.data, not runtime_data: Assist reads the household (llm.py) while the entry reloads, and removing reads it.
+KEY: HassKey["Household | Fixed"] = HassKey(f"{DOMAIN}_household")
 EMPTY = {"everyone": [], "people": {}}
 HEADING = "Household knowledge (facts and preferences the household has confirmed; follow them):"
+NOTICE = f"{DOMAIN}_household"  # The notification removing the improver leaves, with the lines to keep.
+# hass.data, as removing the entry reads it: set while the settings' Uninstall removes the improver, whose step showed
+# the lines already.
+SHOWN: HassKey[bool] = HassKey(f"{DOMAIN}_shown")
+GOODBYE = ("Sorry to go. Here's what your assistants learned: save it, and add it to their instructions if they slip "
+           "without it.")
 
 
 def normalized(knowledge):
@@ -98,7 +109,8 @@ def edit(knowledge, changes, user_id, prompt=None):
 
 def prompt(hass, llm_context):
     """What Assist reads of the household knowledge for one request: the lines for everyone and the person speaking,
-    or None while the switch is off or nothing is learned. Ends with a blank line, before Home Assistant's own part."""
+    or None while the improver is off or nothing is learned. Ends with a blank line, before Home Assistant's own
+    part."""
     household = hass.data.get(KEY)
     if household is None or not household.on:
         return None
@@ -116,9 +128,9 @@ class Household:
 
     @property
     def on(self):
-        """The settings' Household knowledge switch, on by default; off while the improver is disabled or gone."""
+        """On while the improver is set up; off while it's disabled or gone."""
         entries = self.hass.config_entries.async_entries(DOMAIN)
-        return bool(entries) and not entries[0].disabled_by and bool(entries[0].options.get(CONF_HOUSEHOLD, True))
+        return bool(entries) and not entries[0].disabled_by
 
     async def load(self):
         self.knowledge = normalized(await self.store.async_load())
@@ -126,12 +138,6 @@ class Household:
     async def save(self, knowledge):
         self.knowledge = normalized(knowledge)
         await self.store.async_save(self.knowledge)
-
-
-def switched_off(hass):
-    """Whether the household turned the Household knowledge switch off (an improver set up, its setting off)."""
-    entries = hass.config_entries.async_entries(DOMAIN)
-    return bool(entries) and not entries[0].options.get(CONF_HOUSEHOLD, True)
 
 
 class Fixed:
@@ -189,28 +195,23 @@ def as_assist(apis):
     return list(dict.fromkeys(llm.LLM_API_ASSIST if a == API_ID else a for a in api_ids(apis)))
 
 
-def assistants(hass):
-    """[(config entry, subentry)] of conversation assistants that control Home Assistant through Assist (or still
-    through the household API, up to 0.37)."""
-    out = []
-    for entry in hass.config_entries.async_entries():
-        for sub in entry.subentries.values():
-            apis = api_ids(sub.data.get("llm_hass_api"))
-            if sub.subentry_type == "conversation" and (API_ID in apis or llm.LLM_API_ASSIST in apis):
-                out.append((entry, sub))
-    return out
+def _assistants(hass):
+    """Home Assistant's assistants (Assist pipelines) and the preferred one's ID; none before they're loaded."""
+    try:
+        found = async_get_pipelines(hass)
+    except KeyError:  # Not loaded yet.
+        return [], None
+    try:
+        preferred = async_get_pipeline(hass).id
+    except PipelineNotFound:
+        preferred = None
+    return found, preferred
 
 
 def pipelines(hass):
     """Home Assistant's assistants (Assist pipelines), the preferred one first: [{id, name, preferred}]."""
-    try:
-        from homeassistant.components.assist_pipeline.pipeline import KEY_ASSIST_PIPELINE
-        store = hass.data[KEY_ASSIST_PIPELINE].pipeline_store
-    except (ImportError, KeyError, AttributeError):
-        return []
-    preferred = store.async_get_preferred_item()
-    out = [{"id": pipeline.id, "name": pipeline.name, "preferred": pipeline.id == preferred}
-           for pipeline in store.data.values()]
+    found, preferred = _assistants(hass)
+    out = [{"id": pipeline.id, "name": pipeline.name, "preferred": pipeline.id == preferred} for pipeline in found]
     return sorted(out, key=lambda p: not p["preferred"])
 
 
@@ -218,12 +219,7 @@ def voice_assistant(hass, pipeline_id, agent_id):
     """The name of the voice assistant (Assist pipeline) a conversation ran through, whose settings let Home Assistant
     answer a request first: the one the recording kept; else the one using its AI (any AI, when the recording names
     none) that answers first, if just one; else the AI's own name; else Assist."""
-    try:
-        from homeassistant.components.assist_pipeline.pipeline import KEY_ASSIST_PIPELINE
-        store = hass.data[KEY_ASSIST_PIPELINE].pipeline_store
-        kept = store.data
-    except (ImportError, KeyError, AttributeError):
-        kept = {}
+    kept = {pipeline.id: pipeline for pipeline in _assistants(hass)[0]}
     if pipeline_id in kept:
         return kept[pipeline_id].name
     first = [p for p in kept.values() if p.prefer_local_intents and (
@@ -235,56 +231,37 @@ def voice_assistant(hass, pipeline_id, agent_id):
     return "Assist"
 
 
-def literal(line):
-    """A line as plain text in a template: one that looks like template code ({{, {%, {#) is kept from running,
-    even one that itself says {% endraw %} (written out as a string, outside the raw block)."""
-    if not any(m in line for m in ("{{", "{%", "{#")):
-        return line
-    body = ENDRAW.sub(lambda m: "{% endraw %}{{ '" + m.group(0) + "' }}{% raw %}", line)
-    return f"{{% raw %}}{body}{{% endraw %}}"
-
-
-ENDRAW = re.compile(r"\{%-?\s*endraw\s*-?%\}")
-
-
-def person_block(user_id, lines):
-    """One person's lines in an assistant's own instructions, read only when that person is speaking."""
-    return (f"{{% if llm_context.context and llm_context.context.user_id == '{user_id}' %}}\n"
-            + "\n".join(literal(line) for line in lines) + "\n{% endif %}")
-
-
-def without_lines(prompt, knowledge):
-    """An assistant's instructions without the household's lines (everyone's, and each person's block, as uninstalling
-    writes them there): an assistant on Assist reads them from the household knowledge, so not twice."""
-    if not prompt:
-        return prompt
+def plain(knowledge, names=None):
+    """The household's lines as one plain text to paste into an assistant's instructions: everyone's, then each
+    person's under their name (a person Home Assistant no longer knows: as removed)."""
     knowledge = normalized(knowledge)
-    text = prompt
-    for user_id, mine in knowledge["people"].items():
-        text = text.replace(person_block(user_id, mine), "")
-    everyone = set(knowledge["everyone"]) | {literal(line) for line in knowledge["everyone"]}
-    kept = [line for line in text.split("\n") if line.strip() not in everyone]
-    cleaned = "\n".join(kept)
-    return prompt if cleaned == prompt else cleaned.rstrip("\n")
+    bullets = lambda lines: "\n".join(f"- {line}" for line in lines)
+    parts = [bullets(knowledge["everyone"])] if knowledge["everyone"] else []
+    parts += [f"For {(names or {}).get(user_id) or 'a removed user'}:\n{bullets(lines)}"
+              for user_id, lines in sorted(knowledge["people"].items())]
+    return "\n\n".join(parts)
 
 
-async def async_remove(hass, on=True):
-    """Uninstalling: while the switch is on, each assistant on Assist gets the household's lines written into its own
-    instructions (everyone's lines, then each person's in their block), so nothing learned is lost; one still on the
-    household API (up to 0.37) goes back to Assist. Instructions left empty were Home Assistant's default ones: the
-    lines go after those."""
+async def user_names(hass, user_ids):
+    """{user ID: name} as Home Assistant names its users; one it no longer knows is left out."""
+    found = {}
+    for user_id in user_ids:
+        user = await hass.auth.async_get_user(user_id) if getattr(hass, "auth", None) else None
+        if getattr(user, "name", None):
+            found[user_id] = user.name
+    return found
+
+
+async def async_remove(hass):
+    """Removing the improver writes nothing into any assistant's instructions: removed from Home Assistant's own page,
+    it leaves the household's lines in one notification to save; the settings' Uninstall showed them in its step
+    (SHOWN)."""
     household = hass.data.get(KEY)
     knowledge = normalized(household.knowledge if household else await Household(hass).store.async_load())
-    lines = "\n".join(literal(line) for line in knowledge["everyone"])
-    for user_id, mine in knowledge["people"].items():
-        lines += "\n" + person_block(user_id, mine)
-    for entry, sub in assistants(hass):
-        data = {**sub.data}
-        if API_ID in api_ids(sub.data.get("llm_hass_api")):
-            data["llm_hass_api"] = as_assist(sub.data["llm_hass_api"])
-        if on and lines.strip():
-            prompt = sub.data.get("prompt") or llm.DEFAULT_INSTRUCTIONS_PROMPT
-            data["prompt"] = prompt.rstrip("\n") + "\n" + lines.strip("\n") + "\n"
-        hass.config_entries.async_update_subentry(entry, sub, data=data)
-    if household is not None:  # Read from the instructions now: never twice, even before Home Assistant restarts.
+    if household is not None:  # Its store goes: a reinstall before Home Assistant restarts starts with no lines.
         household.knowledge = normalized(EMPTY)
+    if hass.data.get(SHOWN) or knowledge == EMPTY:
+        return
+    text = plain(knowledge, await user_names(hass, knowledge["people"]))
+    persistent_notification.async_create(hass, f"{GOODBYE}\n\n```\n{text}\n```", title="Assist Improver",
+                                         notification_id=NOTICE)

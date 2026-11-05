@@ -3,16 +3,19 @@
 The assistant loads there from its own config entry, by its provider's integration (assistant_of,
 sandbox.load_assistant), with the recorded settings; HA builds its prompt and tools there, its model is asked from
 there, and each tool call runs there: HA's own intents, scripts and automations act on the sandbox's copy of the
-home, and only device commands are emulated. The sandbox runs in the replay worker's process (worker.py); the real
+home, and only device commands are emulated. The sandbox runs in a replay worker of its own (worker.py); the real
 instance only drives which recorded turn is said (simulate.Trial).
 """
 
+from collections.abc import Callable
 from uuid import uuid4
 
 from homeassistant.core import Context
-from homeassistant.helpers import llm
+from homeassistant.helpers import entity_registry as er, llm
+from homeassistant.util.hass_dict import HassKey
 
 from .cases import CaseError, recording_turns
+from .const import DOMAIN
 from .sandbox import seed_options
 from .simulation import UnsupportedSimulation, reports_movement
 from .trace import span
@@ -46,7 +49,7 @@ class SandboxHome:
         if (user_id := prepared["context"].get("context", {}).get("user_id")) and getattr(self.hass, "auth", None):
             user = await self.hass.auth.async_get_user(user_id)
             user_name = getattr(user, "name", None)
-        self.sandbox = await RemoteSandbox.start(source.get("time_zone") or self.hass.config.time_zone,
+        self.sandbox = await RemoteSandbox.start(self.hass, source.get("time_zone") or self.hass.config.time_zone,
                                                  custom_providers(self.hass))
         try:
             async with span("sandbox.seed"):
@@ -139,30 +142,33 @@ class SandboxHome:
 
 
 def reads_household(turn):
-    """Whether Assist read the household knowledge in this recorded turn: the switch was on (recorded since the lines
-    came with Assist), or the assistant used the household API (up to 0.37)."""
+    """Whether Assist read the household knowledge in this recorded turn: it was on (recorded since the lines came
+    with Assist), or the assistant used the household API (up to 0.37)."""
     from .household import API_ID, api_ids
     return bool(turn["source"].get("household_on")) or API_ID in api_ids(turn["prepared"].get("api_id"))
 
 
+# In a sandbox: what unregisters the household API it serves (register).
+LEGACY_API: HassKey[Callable[[], None]] = HassKey(f"{DOMAIN}_legacy_api")
+
+
 async def register(hass, api):
-    """In the sandbox: serve this API there (the household API up to 0.37, with a replay's knowledge)."""
-    from homeassistant.helpers import llm
-    apis = llm._async_get_apis(hass)
-    apis.pop(api.id, None)  # A sandbox serves one replay's knowledge at a time.
-    llm.async_register_api(hass, api)
+    """In the sandbox: serve this API there (the household API up to 0.37, with a replay's knowledge), in place of the
+    one it served: a sandbox serves one replay's knowledge at a time."""
+    if (unregister := hass.data.pop(LEGACY_API, None)) is not None:
+        unregister()
+    hass.data[LEGACY_API] = llm.async_register_api(hass, api)
 
 
 def custom_providers(hass):
     """The household's conversation agents' providers that are custom integrations, as loaded at home: {domain: its
     folder}. A sandbox loads such a provider as the household's assistant's own integration (DETAILS P6.2.3), and no
-    other custom integration (worker.link_providers)."""
-    from homeassistant.helpers import entity_registry as er
+    other custom integration (worker._folder)."""
     from homeassistant.loader import IntegrationNotLoaded, async_get_loaded_integration
-    found, registry = {}, hass.data.get(er.DATA_REGISTRY)
-    if getattr(registry, "entities", None) is None or getattr(hass, "config_entries", None) is None:
+    found = {}
+    if getattr(hass, "config_entries", None) is None:
         return found  # Nothing set up yet: no assistant.
-    for entity in registry.entities.values():
+    for entity in er.async_get(hass).entities.values():
         if entity.domain != "conversation" or (entry := hass.config_entries.async_get_entry(
                 entity.config_entry_id or "")) is None or entry.domain not in hass.config.components:
             continue  # Not an assistant, or its provider isn't set up at home.
@@ -180,7 +186,6 @@ def assistant_of(hass, agent_id, provider=None):
     storage form, with only the agent's subentry, and the agent's registry identity. provider: a turn's recorded
     provider configuration, which must be the agent's subentry: its settings are the subentry's, today's kept only for
     what the recorder doesn't keep (PROVIDER_OPTIONS). None when it isn't set up."""
-    from homeassistant.helpers import entity_registry as er
     from .const import PROVIDER_OPTIONS
     if (agent := er.async_get(hass).async_get(agent_id or "")) is None or (
             entry := hass.config_entries.async_get_entry(agent.config_entry_id or "")) is None:
@@ -191,8 +196,8 @@ def assistant_of(hass, agent_id, provider=None):
             agent.config_entry_id, agent.config_subentry_id):
         raise CaseError("Selected HA agent does not match the recorded provider entry")
     recorded = (provider or {}).get("options")
-    # HA's storage form as it is, the provider's key in it (never plain(), which redacts it): it goes to the sandbox's
-    # memory only (sandbox.load_assistant). How HA found the entry is no part of the assistant.
+    # HA's storage form as it is, the provider's key in it (never plain(), which redacts it): it goes only to the
+    # sandbox's worker (sandbox.load_assistant). How HA found the entry is no part of the assistant.
     stored = {**entry.as_dict(), "discovery_keys": {}}
     stored["subentries"] = [{**s, "data": s["data"] if recorded is None else {
         **{k: v for k, v in s["data"].items() if k not in PROVIDER_OPTIONS}, **recorded}}

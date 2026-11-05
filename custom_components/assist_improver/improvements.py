@@ -7,7 +7,6 @@ notification together.
 """
 
 import asyncio
-from contextlib import asynccontextmanager
 from copy import deepcopy
 import re
 
@@ -17,21 +16,16 @@ from homeassistant.util.dt import utcnow
 
 from .cases import CaseError, digest
 from .changeset import ORDER, Changesets, Conflict, plan_steps, read, readable, undo_steps, without
-from .household import switched_off
-from .instructions import household_line
 from .const import DOMAIN, STORAGE_VERSION
 from .failures import contained
-from . import contracts, records
+from . import contracts, editor, records
 from .records import Improvement
 from .trace import journal, span, timed
 
 PENDING = ("awaiting_review", "needs_attention")  # Waiting on the user: in the notification.
-# Never changed without the household's review: devices whose misuse is a safety or security problem.
-SENSITIVE_DOMAINS = {"lock", "alarm_control_panel", "valve", "siren"}
-SENSITIVE_COVERS = {"garage", "door", "gate"}
 # A door or valve: a cover or valve, or anything named after a door, gate, garage or valve (as a switch that runs a
 # garage door): by its entity ID here, or by its name in Home Assistant (physical). The review notes that their motion
-# isn't simulated (panel.py), and a new name for one waits for the household's review (sensitive).
+# isn't simulated (panel.py).
 PHYSICAL = re.compile(r"\b(?:cover|valve)\.\w+"  # Covers and valves, and what drives a door or valve:
                       r"|\b(?:switch|script|button)\.(?:\w+_)?(?:doors?|gates?|garage|valves?)\d*(?:_\w+)?\b")
 DRIVERS = ("switch", "script", "button")  # What can drive a door or valve, named after it.
@@ -48,36 +42,6 @@ def physical(hass, entity_id):
         return False
     state = hass.states.get(entity_id)
     return bool(state and DOOR_NAME.search(str(state.attributes.get("friendly_name") or "")))
-
-
-def sensitive(hass, entity_id):
-    """Whether a device is security-sensitive: a lock, an alarm, a siren, or a door or valve (physical), save a cover
-    Home Assistant says is something else (a blind, say). Unknown ones, and covers of no known kind, count as
-    sensitive."""
-    domain = (entity_id or "").split(".", 1)[0]
-    if domain in SENSITIVE_DOMAINS:
-        return True
-    if domain == "cover":
-        state = hass.states.get(entity_id)
-        return state is None or state.attributes.get("device_class") in (None, *SENSITIVE_COVERS)
-    return physical(hass, entity_id)
-
-
-def low_risk(hass, item, steps=None):
-    """Whether an improvement may be applied without review: only household lines, and new names for devices that
-    aren't security-sensitive (never one that takes a name away). Never anything that lets Assist control more
-    (exposing a device, a new or changed script), nor an edit to an assistant's own instructions (template code, run
-    for every request: someone decides), nor one whose test made Assist noticeably wordier (people want it brief:
-    someone decides). steps: what accepting writes now (changeset.plan_steps), when known: only the household
-    knowledge and names added; a household line can take a line out of an assistant's own instructions."""
-    from .instructions import household_line
-    changes = item.get("changes") or []
-    return bool(changes) and not wordier(row(item["test"])) and all(
-        household_line(c)
-        or (c.get("kind") == "alias" and not c.get("replaces") and not sensitive(hass, c.get("entity_id")))
-        for c in changes) and all(
-        s["kind"] == "household" or (s["kind"] == "alias" and all(a in s["after"] for a in s["before"] or []))
-        for s in steps or [])
 
 
 # Noticeably wordier: Assist's replies with the change at least this many times as long, and this many more words,
@@ -104,12 +68,6 @@ def wordier(shown):
 
 NOTIFICATION = f"{DOMAIN}_improvements"
 OUTCOME_NOTIFICATION = f"{DOMAIN}_changes"
-
-
-def auto_notification(improvement_id):
-    """The notification saying an improvement was applied automatically, until it's undone."""
-    return f"{DOMAIN}_auto_{improvement_id}"
-
 
 DECISIONS = {  # Decision: its label. Undone: back up for review, to accept again, revise or decline.
     "accept": "Accept changes", "revise": "Ask for a revision", "decline": "Decline", "undo": "Undo changes"}
@@ -142,43 +100,55 @@ class Improvements:
         self.store = Store(hass, STORAGE_VERSION, f"{DOMAIN}.improvements", private=True, atomic_writes=True)
         self.changesets = Changesets(hass)
         self.items: dict[str, Improvement] = {}
-        self._locks = {}  # One decision at a time per improvement: two tabs, or auto-accept, never cross.
-        self._notified = None  # The improvements the notification listed last (journaled when it changes).
-        self._unannounced = set()  # Written up for auto-accept to take: not announced as waiting yet (unannounced).
+        self._locks = {}  # One decision at a time per improvement: two tabs never cross.
+        self._notified = None  # What the notification listed last (journaled when it changes).
         # Whether its revision's round runs (flow.Flow.revising, once the flow is loaded): then it waits on the improver.
         self.revising = lambda improvement_id: False
+        # The questions waiting for the household (flow.Flow.questions, once the flow is loaded): {conversation: it}.
+        self.asking = lambda: {}
 
     async def start(self):
         # An improvement belongs to the one conversation it came from (SPEC.md P0.10); one that names none is an
         # earlier version's, and starts fresh: what it applied stays in Home Assistant's configuration, without undo.
         saved = ((await self.store.async_load()) or {}).get("improvements", {})
         self.items = {iid: item for iid, item in saved.items() if item.get("conversation")}
+        await self.changesets.load()  # A change left open refuses others until it's finished (recover).
         self._sync()
 
-    async def recover(self):
-        """Once HA has started: a change HA stopped in the middle of is undone (or flagged as needing attention)."""
-        if outcome := await self.changesets.start():
-            item = self.items.get(outcome["improvement_id"])
-            if item is not None:
-                if outcome["status"] == "needs_attention":
-                    item["status"] = "needs_attention"
-                item.setdefault("history", []).append({"at": utcnow().isoformat(), "event": "interrupted", **outcome})
-            applying = outcome["action"] == "apply"
-            what = "applying" if applying else "undoing"
-            journal("warning", f"Home Assistant stopped while {what} an improvement: {outcome['status']}",
-                    improvement_id=outcome["improvement_id"], stuck=len(outcome.get("stuck") or []))
-            # Rolled back: an apply's changes are taken out again; an undo's are put back, so all of it is in place.
-            rolled_back = ("Its changes were undone, so nothing of it is in place." if applying
-                           else "Nothing was undone, so all of it is still in place.")
-            persistent_notification.async_create(
-                self.hass, f"Home Assistant stopped while {what} the improvement "
-                f"“{display_title(item) if item else ''}”. "
-                + (rolled_back if outcome["status"] == "rolled_back"
-                   else "Some changes couldn't be undone: " + "; ".join(f"{s['what']} ({s['why']})"
-                                                                         for s in outcome["stuck"])),
-                title="Assist Improver", notification_id=OUTCOME_NOTIFICATION)
-            await self._save()
-            self._sync()
+    async def recover(self, scripts=None, late=None):
+        """A change left open (HA stopped in the middle of it, or the panel went away) is undone from where it stands:
+        once HA has started, as far as the improver writes itself; its scripts by the panel (scripts: its saver) when
+        it's next opened, once no save a panel didn't answer in time may still land (late). Once final, the outcome is
+        in the improvement's history and a notification (message), and what the improvement's own review says (brief).
+        Returns it: None if none was open; status waiting while a script waits for the panel."""
+        outcome = await self.changesets.resume(scripts, late)
+        if outcome is None or outcome["status"] == "waiting":
+            if outcome:
+                journal("info", "An interrupted change waits for the panel to finish its scripts",
+                        improvement_id=outcome["improvement_id"])
+            return outcome
+        item = self.items.get(outcome["improvement_id"])
+        if item is not None:
+            if outcome["status"] == "needs_attention":
+                item["status"] = "needs_attention"
+            item.setdefault("history", []).append({"at": utcnow().isoformat(), "event": "interrupted", **outcome})
+        applying = outcome["action"] == "apply"
+        what = "Applying" if applying else "Undoing"
+        journal("warning", f"{what} an improvement was interrupted: {outcome['status']}",
+                improvement_id=outcome["improvement_id"], stuck=len(outcome.get("stuck") or []))
+        # Rolled back: an apply's changes are taken out again; an undo's are put back, so all of it is in place.
+        rolled_back = ("Its changes were undone, so nothing of it is in place." if applying
+                       else "Nothing was undone, so all of it is still in place.")
+        subject = f"{what} the improvement “{display_title(item) if item else ''}”"
+        said = (rolled_back if outcome["status"] == "rolled_back"
+                else "Some changes couldn't be undone: " + "; ".join(f"{s['what']} ({s['why']})"
+                                                                     for s in outcome["stuck"]))
+        message = f"{subject} was interrupted. {said}"
+        persistent_notification.async_create(self.hass, message, title="Assist Improver",
+                                             notification_id=OUTCOME_NOTIFICATION)
+        await self._save()
+        self._sync()
+        return {**outcome, "message": message, "brief": f"It was interrupted. {said}"}  # Under its title: not again.
 
     async def _save(self):
         async with timed("store.improvements"):
@@ -200,14 +170,13 @@ class Improvements:
         """The editor writes the headline and what-you-get for these improvements, which then go up for review. Returns
         the ids whose write-up failed: they keep no copy, and the flow retries them and holds their conversation
         (SPEC.md P0.8). One that fails unexpectedly is a problem of the run's, and the others go on."""
-        from .editor import write
         failed = []
         for improvement_id in improvement_ids:
             item = self.items[improvement_id]
             async with contained("write", improvement_id) as one:
                 async with span("write", improvement_id=improvement_id) as section:
                     copy = contracts.check(  # What the review shows: its contract.
-                        await write(self.hass, item, entity_id), records.Copy, "The write-up")
+                        await editor.write(self.hass, item, entity_id), records.Copy, "The write-up")
                     section.tag(status=copy["status"])
             if one.failed or copy["status"] == "failed":
                 failed.append(improvement_id)
@@ -265,28 +234,26 @@ class Improvements:
         return [deepcopy(i) for i in self.items.values() if i["status"] in PENDING and i.get("copy")]
 
     def waiting(self):
-        """What waits on the household, for the notification and the sidebar's count: up for review, but not one
-        being revised, which waits on the improver (DETAILS P12.8.6)."""
+        """The improvements waiting on the household, beside its questions in the notification and the sidebar's
+        count: up for review, but not one being revised, which waits on the improver (DETAILS P12.8.6)."""
         return [i for i in self.pending() if not self.revising(i["id"])]
 
-    def refresh(self):
-        """What waits on the household changed outside the improvements (a revision's round started or ended): the
-        notification and the sidebar's count follow."""
-        self._sync()
+    def count(self):
+        """The sidebar's count: the questions and the improvements waiting on the household."""
+        return len(self.asking()) + len(self.waiting())
 
-    def held(self, improvement_id):
-        """Whether its round's write-up still holds it (unannounced): written up, but not up for review yet."""
-        return improvement_id in self._unannounced and (self.items.get(improvement_id) or {}).get("status") in PENDING
+    def refresh(self):
+        """What waits on the household changed outside the improvements (a question asked or gone, a revision's round
+        started or ended): the notification and the sidebar's count follow."""
+        self._sync()
 
     def unwritten(self):
         """Improvements waiting for the editor (the write-up stage's backlog), not yet up for review."""
         return [deepcopy(i) for i in self.items.values() if i["status"] in PENDING and not i.get("copy")]
 
     def listed(self):
-        """Every improvement up for review or decided, those waiting on the user first, then the most recent. One its
-        round's write-up still holds (unannounced) isn't up for review yet."""
-        shown = sorted((deepcopy(i) for i in self.items.values()
-                        if (i["status"] not in PENDING or i.get("copy")) and not self.held(i["id"])),
+        """Every improvement up for review or decided, those waiting on the user first, then the most recent."""
+        shown = sorted((deepcopy(i) for i in self.items.values() if i["status"] not in PENDING or i.get("copy")),
                        key=lambda i: i["created"], reverse=True)
         return sorted(shown, key=lambda i: (i["status"] not in PENDING, i["status"] != "applied"))
 
@@ -339,54 +306,44 @@ class Improvements:
         self.items[improvement_id]["unrevised"] = {"note": note, "why": why}
         await self._save()
 
-    @asynccontextmanager
-    async def unannounced(self, improvement_ids):
-        """While auto-accept has yet to take what it can of these (DETAILS P12.9), the notification and the sidebar's
-        count leave them out: what it applies never waited on the household. One already announced (written up in an
-        earlier try) stays listed. Whatever happens meanwhile (a write-up that fails, a run cut off), those still
-        waiting are announced after."""
-        ids = set(improvement_ids) - self._unannounced - (self._notified or set())
-        if not ids:
-            yield
-            return
-        self._unannounced |= ids
-        try:
-            yield
-        finally:
-            self._unannounced -= ids
-            self._sync()
-
     def _sync(self):
-        """The notification lists the improvements waiting on the user, each linking to its review in the panel."""
-        wanted = {i["id"]: i for i in self.waiting() if i["id"] not in self._unannounced}
+        """The notification lists what waits on the user: the questions first, each linking to the panel's home page,
+        where it's answered; then the improvements, each linking to its review in the panel."""
+        asked, wanted = self.asking(), {i["id"]: i for i in self.waiting()}
         from .panel import set_count
-        set_count(self.hass, len(wanted))  # The count beside the panel in the sidebar.
-        if self._notified != set(wanted):
-            if wanted or self._notified:
-                journal("info", f"Notification lists {len(wanted)} improvement(s)" if wanted
-                        else "Notification dismissed: nothing waits for review", improvements=sorted(wanted))
-            self._notified = set(wanted)
-        if not wanted:
+        set_count(self.hass, len(asked) + len(wanted))  # The count beside the panel in the sidebar.
+        if self._notified != {*asked, *wanted}:
+            if asked or wanted or self._notified:
+                journal("info", f"Notification lists {len(asked)} question(s), {len(wanted)} improvement(s)"
+                        if asked or wanted else "Notification dismissed: nothing waits for the user",
+                        questions=sorted(asked), improvements=sorted(wanted))
+            self._notified = {*asked, *wanted}
+        if not asked and not wanted:
             persistent_notification.async_dismiss(self.hass, NOTIFICATION)
             return
-        # Each links straight to its review in the panel.
         from .panel import URL_PATH, review_url
-        count = len(wanted)
-        titles = "\n".join(f"- [{display_title(i)}]({review_url(i['id'])})" for i in wanted.values())
-        these = "these improvements" if count > 1 else "this improvement"
-        persistent_notification.async_create(
-            self.hass, f"{titles}\n\nReview {these} in [Assist Improver](/{URL_PATH}).",
-            title=f"{count} Improvement{'s' if count > 1 else ''} identified", notification_id=NOTIFICATION)
+        home, count, s = f"/{URL_PATH}", len(wanted), lambda n: "s" if n > 1 else ""  # noqa: E731
+        message = "\n".join(f"- [{display_title(i)}]({review_url(i['id'])})" for i in wanted.values())
+        if wanted:  # Each links straight to its review in the panel; then where to review them.
+            these = "these improvements" if count > 1 else "this improvement"
+            message += f"\n\nReview {these} in [Assist Improver]({home})."
+        title = ", ".join([f"{len(asked)} question{s(len(asked))} for you"] * bool(asked)
+                          + [f"{count} improvement{s(count)} to review"] * bool(wanted))  # The home page's words.
+        if asked:  # Above the improvements; another bullet makes a list of their own.
+            questions = "\n".join(f"* [{' '.join(q.split())}]({home})" for q in asked.values())
+            message = "\n\n".join(filter(None, [questions, message]))
+        persistent_notification.async_create(self.hass, message, title=title, notification_id=NOTIFICATION)
 
-    async def decide(self, improvement_id, decision, *, note="", user_id=None, reason=None, auto=False,
-                     revising=False):
+    async def decide(self, improvement_id, decision, *, note="", user_id=None, reason=None, revising=False,
+                     scripts=None):
         """Record a decision (with its reason, if one is given: REASONS) and act on it, one at a time per improvement
         (the second waits, then sees the first's result). Returns the improvement, with `outcome` saying what
-        happened. auto: accepted automatically, only while what it writes now is low-risk (CaseError otherwise, with
-        nothing recorded). revising: its revision's round runs (choices)."""
+        happened. revising: its revision's round runs (choices). scripts: the panel's saver
+        (panel.ScriptChannel.save), which writes its scripts; without it, a change with a script is refused. NoPanel:
+        the panel went away mid-change, which is left open (recover), with nothing recorded."""
         async with self._locks.setdefault(improvement_id, asyncio.Lock()):
-            return await self._decide(improvement_id, decision, note=note, user_id=user_id, reason=reason, auto=auto,
-                                      revising=revising)
+            return await self._decide(improvement_id, decision, note=note, user_id=user_id, reason=reason,
+                                      revising=revising, scripts=scripts)
 
     async def settled(self, improvement_id):
         """Returns once no decision on it is under way: decisions take their turn (decide), so one under way has
@@ -394,11 +351,10 @@ class Improvements:
         async with self._locks.setdefault(improvement_id, asyncio.Lock()):
             pass
 
-    async def _decide(self, improvement_id, decision, *, note="", user_id=None, reason=None, auto=False,
-                      revising=False):
+    async def _decide(self, improvement_id, decision, *, note="", user_id=None, reason=None, revising=False,
+                      scripts=None):
         item = self.get(improvement_id)
-        # Not while its round's write-up holds it (unannounced): it isn't up for review yet.
-        if decision not in choices(item, revising) or (not auto and self.held(improvement_id)):
+        if decision not in choices(item, revising):
             raise CaseError("That decision isn't open for this improvement now")
         if reason is not None and reason not in reasons(decision):
             raise CaseError("That reason doesn't go with this decision")
@@ -406,21 +362,11 @@ class Improvements:
             raise CaseError("Say what to change in the note")
         item.pop("unrevised", None)  # Decided again: what an earlier revision brought no longer stands.
         record = {"decision": decision, "note": note.strip(), **({"reason": reason} if reason else {}), "by": user_id,
-                  "at": utcnow().isoformat(), **({"auto": True} if auto else {}),
-                  # Taken before it was announced as waiting (unannounced): it never went up for review.
-                  **({"unannounced": True} if auto and improvement_id in self._unannounced else {})}
+                  "at": utcnow().isoformat()}
         if decision == "accept":
-            outcome = await self._apply(item, user_id, auto)
-            if auto and outcome["status"] in ("conflict", "rolled_back", "busy"):  # Nothing changed, nothing decided:
-                # up for review, for the household (P12.9.11).
-                journal("warning", f"Auto-accept: {outcome['status']}", improvement_id=improvement_id,
-                        conflicts=len(outcome.get("conflicts") or []) or None)
-                self.items[improvement_id] = item
-                await self._save()
-                self._sync()
-                return {**deepcopy(item), "outcome": outcome}
+            outcome = await self._apply(item, user_id, scripts)
         elif decision == "undo":
-            outcome = await self._undo(item)
+            outcome = await self._undo(item, scripts)
         else:  # Declined; or a revision, which leaves it up for review until a revised version replaces it (P0.6).
             if decision == "decline":
                 item["status"] = "declined"
@@ -439,47 +385,13 @@ class Improvements:
         self._sync()
         return {**deepcopy(item), "outcome": outcome}
 
-    async def auto_accept(self, improvement_ids):
-        """Accept low-risk improvements as soon as they're written up (the "auto-accept low-risk changes" setting):
-        each applied all or nothing, recorded as accepted automatically, with a notification to review or undo it.
-        Anything else, or one that can't be applied, stays up for review (one that fails unexpectedly too: a problem of
-        the run's, and the others go on). Returns how many applied."""
-        from .panel import review_url
-        applied = 0
-        for improvement_id in improvement_ids:
-            item = self.items.get(improvement_id)
-            if (not item or item["status"] not in PENDING or "accept" not in choices(item)
-                    or not low_risk(self.hass, item)
-                    or item.get("decisions")):  # The household decided on it already (a revision asked; undone).
-                continue
-            if switched_off(self.hass) and any(household_line(c) for c in item["changes"]):
-                continue  # Household knowledge is off: it waits for review (it can't apply now, and says why).
-            # CaseError: the household decided it meanwhile (their decision held the lock first), or what it would
-            # write now isn't low-risk (a household line taking a line out of an assistant's own instructions).
-            async with contained("write", improvement_id, step="accepting", expected=(CaseError,)) as one:
-                result = await self.decide(improvement_id, "accept", note="Accepted automatically", auto=True)
-            if one.failed:
-                continue
-            if result["status"] == "applied":
-                applied += 1
-                headline = (item.get("copy") or {}).get("headline") or item["title"]
-                persistent_notification.async_create(
-                    self.hass, f"Applied automatically: **{headline}**. [Review or undo it]({review_url(improvement_id)})",
-                    title="Assist Improver", notification_id=auto_notification(improvement_id))
-                journal("info", "Applied automatically; notified", improvement_id=improvement_id)
-        await self._save()
-        return applied
-
-    async def _apply(self, item, user_id, auto=False):
+    async def _apply(self, item, user_id, scripts=None):
         steps, already, conflicts = await plan_steps(self.hass, item)
         if conflicts:  # Home Assistant changed since it was tested: the household may send it back (P0.7).
-            if not auto:  # Auto-accept's leaves it up for review, the conflict shown there (DETAILS P12.9.12).
-                item["status"], item["conflicts"] = "conflict", deepcopy(conflicts)
+            item["status"], item["conflicts"] = "conflict", deepcopy(conflicts)
             return {"status": "conflict", "conflicts": conflicts}
-        if auto and not low_risk(self.hass, item, steps):  # Up for review instead: someone decides.
-            raise CaseError("Not low-risk as it would apply now")
         try:
-            result = await self.changesets.run(item["id"], "apply", steps)
+            result = await self.changesets.run(item["id"], "apply", steps, scripts)
         except Conflict as err:
             return {"status": "busy", "error": str(err)}
         if result["status"] == "done":
@@ -492,12 +404,12 @@ class Improvements:
         item["history"].append({"at": utcnow().isoformat(), "event": "apply", **result})
         return {**result, "already": already}
 
-    async def _undo(self, item):
+    async def _undo(self, item, scripts=None):
         applied = item["application"]["steps"]
         live = {(s["kind"], s["target"]): await read(self.hass, s["kind"], s["target"]) for s in applied}
         steps, left = readable(self.hass, *undo_steps(applied, live, self._added_by_others(item)))
         try:
-            result = await self.changesets.run(item["id"], "undo", steps)
+            result = await self.changesets.run(item["id"], "undo", steps, scripts)
         except Conflict as err:
             return {"status": "busy", "error": str(err)}
         if result["status"] == "done":  # Back up for review: the household decides again (accept, revise, decline).
@@ -505,8 +417,6 @@ class Improvements:
             await self._hand_over(left)
         elif result["status"] == "needs_attention":
             item["status"] = "needs_attention"
-        if item["status"] != "applied":  # No notice still says it was applied automatically.
-            persistent_notification.async_dismiss(self.hass, auto_notification(item["id"]))
         item["history"].append({"at": utcnow().isoformat(), "event": "undo", **result, "left": left})
         return {**result, "left": left}
 

@@ -99,6 +99,9 @@ def recording_turns(recording, replay=True):
 
     replay=False is for analysis: it also accepts turns Home Assistant handled itself, without the AI model
     (no prepared context; marked handled_locally), which a replay could not reproduce.
+
+    Each turn's source is the recording's own home snapshot, not a copy (megabytes, and this runs on the event loop):
+    readers only read it, from a recording that is already their own copy (Recorder.export).
     """
     if recording.get("format") != 1:
         raise CaseError("Unsupported recording format")
@@ -142,13 +145,10 @@ def recording_turns(recording, replay=True):
         result_ids = [r["tool_call_id"] for r in results]
         if len(ids) != len(set(ids)) or len(result_ids) != len(set(result_ids)) or set(ids) != set(result_ids):
             raise CaseError(f"Turn {number} has missing or duplicate tool results")
-        exchange.update(number=number, source=deepcopy(snapshot["source"]), handled_locally=bool(local),
+        exchange.update(number=number, source=snapshot["source"], handled_locally=bool(local),
                         prepared=deepcopy(snapshot.get("prepared")), history=deepcopy(history),
                         calls=deepcopy(calls), results=deepcopy(results),
                         final_reply=finals[-1]["content"], ended=finals[-1]["created"])
-    if replay and recording.get("practice"):
-        for exchange in exchanges:
-            exchange["source"]["states"] = as_seen(recording, exchange["source"])
     return exchanges
 
 
@@ -159,16 +159,6 @@ def calls_in(messages):
     return [{"tool": m.get("tool_name"), "args": (asked.get(m.get("tool_call_id")) or {}).get("tool_args") or {},
              "result": m["result"] if "result" in m else {"data": m.get("tool_result")}}  # tool_result: before 2026.10.
             for m in messages if m.get("role") == "tool_result"]
-
-
-def as_seen(recording, source):
-    """A turn's snapshot states as the assistant saw them: a practice turn's snapshot holds the real states, which it
-    saw with practice's earlier simulated changes on top."""
-    states = deepcopy(source.get("states") or {})
-    for change in (recording.get("practice") or {}).get("simulated_changes") or []:
-        if change["at"] < source["at"] and change["entity_id"] in states and change.get("new"):
-            states[change["entity_id"]] = deepcopy(change["new"])
-    return states
 
 
 def replayable_turns(recording):

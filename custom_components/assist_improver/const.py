@@ -2,7 +2,9 @@
 
 DOMAIN = "assist_improver"
 NAME = "Assist Improver"
-VERSION = "0.40.8"
+# The manifest's version (build_package.py keeps them equal), read where nothing can be awaited: a recording's stamp,
+# the panel script's ?v=. Home Assistant's loader gives it only by an await.
+VERSION = "0.40.16"
 # Conversation providers whose replays are tested end to end; others replay with a "not yet tested" label.
 TESTED_PROVIDERS = {"anthropic", "open_router"}
 STORAGE_VERSION = 1
@@ -20,26 +22,19 @@ CONF_TRIAGE_AI_TASK = "triage_ai_task_entity_id"
 CONF_SCHEDULE = "schedule"
 # Stages the household paused (gates): a run skips them and their backlog waits; later stages still work on theirs.
 CONF_PAUSED = "paused_stages"
-# Improvements are accepted (applied) as soon as they're written up, without waiting for the household. Off by default.
-CONF_AUTO_ACCEPT = "auto_accept"
-# On-demand improvements, the fast lane: Assist gets a tool to file a conversation when the user asks ("file an
-# improvement"), and a filed conversation (or one sent in from the panel) gets a run of its own as soon as it ends. Full
-# runs still take in every conversation. On for a new entry (config_flow); an older one without it reads as off.
-CONF_ON_DEMAND = "on_demand"
-# Privacy controls: recording on or off for the household (on by default), and the people whose switch is off (an
-# admin sets each; settings.updated keeps the two in step).
-CONF_RECORDING = "recording"
-CONF_OPT_OUT = "recording_opt_out"
-# Household knowledge: whether Assist reads the household's lines (household.py), for every assistant; on by default.
-CONF_HOUSEHOLD = "household_knowledge"
 CONF_DEVELOPER = "developer_services"  # Hidden: registers the developer services (__init__.py).
 SAVE_DELAY = 1
-# The state attributes the replay engine and the analyzer read, which a recording keeps along with those Home
-# Assistant's live context shows Assist (snapshot.live_context_attributes, read from HA's own code): names
-# (friendly_name), what HA's intent matching checks (supported_features, device_class), the modes, ranges and options
-# the emulated devices and the analyzer's allowed states use, and what a date/time helper holds. The improver's roles
-# see them all on a device's card (digest.py).
-ATTRIBUTES = {
+# The state attributes Home Assistant 2026.10's live context (GetLiveContext) shows Assist: interesting_attributes in
+# homeassistant/components/homeassistant/llm.py.
+LIVE_CONTEXT_ATTRIBUTES = frozenset({
+    "temperature", "current_temperature", "temperature_unit", "brightness", "humidity", "unit_of_measurement",
+    "device_class", "current_position", "percentage", "volume_level", "media_title", "media_artist",
+    "media_album_name",
+})
+# The state attributes a recording keeps: those the replay engine and the analyzer read (names, what HA's intent
+# matching checks, the modes, ranges and options the emulated devices and the analyzer's allowed states use, what a
+# date/time helper holds), and the live context's. The improver's roles see them all on a device's card (digest.py).
+ATTRIBUTES = LIVE_CONTEXT_ATTRIBUTES | {
     "friendly_name", "supported_features", "device_class", "unit_of_measurement",
     "temperature", "current_temperature", "target_temp_high", "target_temp_low",
     "min_temp", "max_temp", "hvac_modes", "hvac_action", "preset_modes", "preset_mode",

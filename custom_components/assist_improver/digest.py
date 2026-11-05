@@ -97,9 +97,20 @@ def _ops(entity_id, state):
     return ops
 
 
-def _shown(source, entity_id, state):
+def time_zone(name):
+    """The time zone a recording names (Home Assistant's then), or UTC for none it knows. Home Assistant may read a
+    zone from disk the first time, so code on the event loop resolves it with async_time_zone and passes it in."""
+    return dt_util.get_time_zone(name or "UTC") or dt_util.UTC
+
+
+async def async_time_zone(name):
+    """time_zone, resolved off the event loop."""
+    return await dt_util.async_get_time_zone(name or "UTC") or dt_util.UTC
+
+
+def _shown(source, entity_id, state, zone):
     """A recorded state as Home Assistant's live context showed it to Assist (async_get_exposed_entities): a sensor's
-    rounded to its display precision (sensor.async_rounded_state), a timestamp in the home's time zone."""
+    rounded to its display precision (sensor.async_rounded_state), a timestamp in the home's time zone (zone)."""
     value = state.get("state")
     options = (source.get("entities", {}).get(entity_id) or {}).get("sensor_options") or {}
     precision = options.get("display_precision", options.get("suggested_display_precision"))
@@ -109,12 +120,11 @@ def _shown(source, entity_id, state):
     if (state.get("attributes") or {}).get("device_class") == "timestamp" and state.get("state"):
         with suppress(ValueError):  # A date that can't be (month 13) stays as it was: the card is still shown.
             if (parsed := dt_util.parse_datetime(state["state"])) is not None:
-                zone = dt_util.get_time_zone(source.get("time_zone") or "UTC") or dt_util.UTC
                 value = parsed.replace(tzinfo=parsed.tzinfo or zone).astimezone(zone).isoformat()
     return value
 
 
-def _entity_card(source, entity_id, detailed=False):
+def _entity_card(source, entity_id, zone, detailed=False):
     name, area, aliases = _naming(source, entity_id)
     state = source.get("states", {}).get(entity_id)
     card = {"entity_id": entity_id, "name": name}
@@ -126,7 +136,7 @@ def _entity_card(source, entity_id, detailed=False):
     if state is None:
         card["state"] = "no live state (disabled or missing)"
         return card
-    card["state"] = _shown(source, entity_id, state)
+    card["state"] = _shown(source, entity_id, state, zone)
     ops = _ops(entity_id, state)
     if ops:
         card["operations"] = ops
@@ -136,10 +146,12 @@ def _entity_card(source, entity_id, detailed=False):
     return card
 
 
-def build_digest(recording):
-    """Return the digest for a closed recording. Raises CaseError when unusable."""
+def build_digest(recording, zone=None):
+    """Return the digest for a closed recording. Raises CaseError when unusable. zone: its time zone (time_zone); code
+    on the event loop passes it."""
     turns = recording_turns(recording, replay=False)
     first = turns[0]["source"]
+    zone = zone or time_zone(first.get("time_zone"))
     starts = [t["messages"][0]["created"] for t in turns]
 
     def turn_of(at):
@@ -171,11 +183,9 @@ def build_digest(recording):
                           **({"handled_by": "Home Assistant itself, without the AI model"}
                              if turn["handled_locally"] else {})})
 
-    # Practice changes a simulated home; its real state changes belong to someone else.
-    practice = recording.get("practice")
     # The recorder counts the flaps it didn't keep (worth_keeping).
-    changes, flaps = {}, 0 if practice else recording.get("flaps_not_kept", 0)
-    for change in practice["simulated_changes"] if practice else recording.get("state_changes", []):
+    changes, flaps = {}, recording.get("flaps_not_kept", 0)
+    for change in recording.get("state_changes", []):
         old, new = _states(change)
         if background(change) or old == new:
             if flap(change):
@@ -188,16 +198,16 @@ def build_digest(recording):
     relevant = sorted((mentioned & known) | set(changes))
     relevant_cards = []
     for entity_id in relevant:
-        card = _entity_card(first, entity_id, detailed=True)
+        card = _entity_card(first, entity_id, zone, detailed=True)
         card["changes_during_session"] = changes.get(entity_id, [])
         relevant_cards.append(card)
 
     exposed = sorted(e for e, v in first.get("exposure", {}).items() if v is True)
     by_area = {}
     for entity_id in exposed:
-        card = _entity_card(first, entity_id)
+        card = _entity_card(first, entity_id, zone)
         by_area.setdefault(card.pop("area", None) or "No area", []).append(card)
-    actions = [_entity_card(first, e) for e in sorted(first.get("entities", {}))
+    actions = [_entity_card(first, e, zone) for e in sorted(first.get("entities", {}))
                if e.split(".", 1)[0] in ACTION_DOMAINS]
 
     return {
@@ -219,9 +229,7 @@ def build_digest(recording):
             "background_domains": sorted(NOISE_DOMAINS),
             "note": "Full state and registry snapshots stay in the recording; this digest is a selection.",
         },
-        "limitations": deepcopy(recording.get("limitations", [])) + (
-            [f"practice session: devices were simulated; {len(practice['unsimulated_actions'])} action(s) "
-             "were reported to the assistant as done without being simulated"] if practice else []),
+        "limitations": deepcopy(recording.get("limitations", [])),
     }
 
 

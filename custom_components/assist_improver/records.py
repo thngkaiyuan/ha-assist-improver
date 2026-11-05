@@ -42,13 +42,13 @@ class Recording(TypedDict, total=False):
     core_version: str
     integration_version: str
     status: str  # As in its summary.
+    pipeline_id: str  # The voice assistant it ran through, where its voice device or HA's pipeline runs showed it.
     events: list[dict]  # The chat log's events: at, type, data.
     turns: list[Turn]
     state_changes: list[dict]  # at, entity_id, old, new.
     flaps_not_kept: int  # Availability flaps left out of state_changes (digest.flap), counted for the digest.
     limitations: list[str]  # What the recording may be missing, and why.
     chat_log: dict  # The chat log at the end.
-    practice: dict  # Sandbox mode: simulated_changes, unsimulated_actions.
     compact: bool  # Kept as a digest (retention.compact): read by every role, never replayed.
 
 
@@ -216,10 +216,12 @@ class ReviewResult(TypedDict, total=False):
 
 
 class ProposalAnswer(TypedDict, total=False):
-    """The proposal's answer: its ideas, goals outside the assistant's control, goals already addressed."""
+    """The proposal's answer: its ideas, goals outside the assistant's control, goals already addressed, or a question
+    for the household instead."""
     hypotheses: list[Hypothesis]
     not_fixed: list[dict]
     already_addressed: list[dict]
+    question_for_user: str
 
 
 class FailedStep(TypedDict, total=False):
@@ -378,8 +380,6 @@ class Decision(TypedDict, total=False):
     by: str | None
     at: str
     outcome: str  # done, recorded, conflict, ...
-    auto: bool  # Accepted automatically (auto-accept).
-    unannounced: bool  # Accepted automatically before it was ever announced as waiting: never up for review.
 
 
 class Improvement(TypedDict, total=False):
@@ -450,25 +450,34 @@ class CantImprove(TypedDict, total=False):  # The question when Home Assistant a
     pipeline_id: str | None  # The voice assistant it ran through, where the recording kept it.
 
 
-class Analysed(TypedDict):  # Analyze → Propose: the goals it carries, and its question for the household, if any.
+class Analysed(TypedDict):  # Analyze → Propose: the goals it carries.
     conversation: str
     round: int
     goals: list[str]
-    question: str | CantImprove | None
 
 
-class Proposed(TypedDict):  # Propose → Write up: the improvements it sent on (or the one still waiting), or the question.
+class Proposed(TypedDict):  # Propose → Write up: the improvements it sent on (or the one still waiting).
     conversation: str
     round: int
     improvements: list[str]
-    question: str | CantImprove | None
 
 
 class Written(TypedDict):  # Write up → Your review: what waits there for the household.
     conversation: str
     round: int
     improvements: list[str]
-    question: str | CantImprove | None
+
+
+class Asked(TypedDict):  # Analyze or Propose → Your review: a question for the household; the round pauses there.
+    conversation: str
+    round: int
+    question: str | CantImprove
+
+
+class Answered(TypedDict):  # Your review → the stage that asked: the household's answer; the round goes on.
+    conversation: str
+    round: int
+    answer: str
 
 
 class SentBack(TypedDict):  # Your review → Propose: a new round, for a revision or a conflict the household agreed to.
@@ -490,4 +499,5 @@ class Ended(TypedDict):  # Any stage → Your household: how its round ended.
     outcome: OUTCOMES
 
 
-HANDOFFS = {kind.__name__: kind for kind in (Admitted, Checked, Analysed, Proposed, Written, SentBack, Undone, Ended)}
+HANDOFFS = {kind.__name__: kind for kind in (Admitted, Checked, Analysed, Proposed, Written, Asked, Answered, SentBack,
+                                             Undone, Ended)}

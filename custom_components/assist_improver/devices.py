@@ -1,9 +1,9 @@
-"""Emulated device drivers for practice: what a device does when HA sends it a command.
+"""Emulated device drivers for replays: what a device does when HA sends it a command.
 
 HA's own logic decides which devices a request targets and which command each
-gets; practice catches the command (for example light.turn_on with brightness
-128) and applies its effect to the simulated state, the way the device would
-report back. Commands without a model here are reported as done and flagged.
+gets; a replay's sandbox catches the command (for example light.turn_on with
+brightness 128) and applies its effect to the simulated state, the way the device
+would report back. Commands without a model here are reported as done and flagged.
 """
 
 from homeassistant.components.media_player import PROP_TO_ATTR, MediaPlayerEntityStateAttribute

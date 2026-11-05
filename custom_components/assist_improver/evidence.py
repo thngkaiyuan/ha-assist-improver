@@ -14,8 +14,8 @@ All of it runs in sandboxes seeded from recorded sessions; no model is called an
   conversation as its chat log renders them (ha_name, user_name, llm_context): what Assist would read, or HA's error;
   and for a request without a signed-in person or an asking device, which HA renders them for too.
 
-The sandboxes run in the replay worker (worker.py): the jobs below that start one (JOBS) run there whole, and what
-the roles' tools call here asks the worker for them.
+The sandboxes run in replay workers (worker.py): each job below that starts one (JOBS) runs whole in a fresh worker
+of its own.
 """
 
 import asyncio
@@ -31,13 +31,13 @@ from .changes import setup_from_changes
 from .failures import contained
 from .sandbox import SANDBOX_KEY, Sandbox, observe, sandbox_context, seed, seed_options
 from .simulation import moved_by_others
-from .worker import worker
+from .worker import job
 
-CONCURRENT = 4  # Sandboxes started at once.
+CONCURRENT = 4  # Workers running the jobs below at once, per instance (worker.job).
 SIGNALS_SHOWN = 15  # Resolution signals listed in full; the count covers the rest.
 JOBS = {"replay": "_replay", "run_scripts": "run_scripts", "match_aliases": "match_aliases",
         "capabilities": "probe_capabilities",
-        "render_instructions": "render_instructions"}  # What the worker runs here, by name: each starts its own sandbox.
+        "render_instructions": "render_instructions"}  # What a worker runs here, by name: each starts its own sandbox.
 UNCHECKED = "Home Assistant couldn't check this: "  # A fact the sandbox couldn't give (failures.contained).
 NOT_REPLAYABLE = "can't be replayed"
 RENDERED_SHOWN = 2000  # Characters of rendered instructions shown with a draft.
@@ -129,31 +129,21 @@ async def _call(hass, api, name, args):
 
 async def replay_calls(recording, definitions, setup=None):
     """Each recorded HA tool call of a session, replayed in order without the model: [(turn, tool, args, result)]."""
-    found = await worker().call("evidence", job="replay", recording=recording, definitions=definitions, setup=setup)
-    return found and found[0]
-
-
-async def recorded_call_effects(recording, definitions):
-    """Each turn's effects on the home when today's engine runs that turn's recorded tool calls: {turn: changes}.
-    For a practice recording, this is what a replay without a change is compared with: its notes come from the
-    practice engine of the day it was recorded, which may have emulated less (a sleeping car's climate, say)."""
-    found = await worker().call("evidence", job="replay", recording=recording, definitions=definitions)
-    return found and {int(turn): changes for turn, changes in found[1].items()}  # JSON keys are text.
+    return await job("replay", recording=recording, definitions=definitions, setup=setup)
 
 
 async def capabilities(recording, entity_ids, definitions):
     """What Assist can do with each device: each Assist tool tried on it by name in a sandbox, and what HA did."""
-    return await worker().call("evidence", job="capabilities", recording=recording, entity_ids=sorted(entity_ids),
-                               definitions=definitions)
+    return await job("capabilities", recording=recording, entity_ids=sorted(entity_ids), definitions=definitions)
 
 
 async def _replay(recording, definitions, setup=None):
-    """In the worker: replay_calls and recorded_call_effects, from one replay."""
+    """In the worker: replay_calls."""
     turns = replayable_turns(recording)
     if not turns or (context := _context(turns[0])) is None:
         return None
     sandbox = await _start(recording, turns[0], definitions, setup)
-    out, effects = [], {}
+    out = []
     try:
         for index, turn in enumerate(turns):
             if index:
@@ -161,8 +151,6 @@ async def _replay(recording, definitions, setup=None):
                 await sandbox.run(lambda hass: observe(hass, turn["source"], moves))
             context = _context(turn) or context
             calls = [c for c in turn["calls"] if not c.get("external")]
-            before = len(sandbox.transitions)
-            effects[turn["number"]] = []
             if not calls:
                 continue
 
@@ -172,10 +160,9 @@ async def _replay(recording, definitions, setup=None):
                                                                                   c["tool_args"])) for c in calls]
             out += await sandbox.run(run)
             await sandbox.run(lambda hass: hass.async_block_till_done())
-            effects[turn["number"]] = list(sandbox.transitions[before:])
     finally:
         await sandbox.stop()
-    return out, effects
+    return out
 
 
 class Evidence:
@@ -199,9 +186,8 @@ class Evidence:
         """Each template rendered as an assistant's instructions for this session's first request, and for one
         without a signed-in person or an asking device, in a sandbox of its home: [{"rendered"} or {"error"}], or
         None when it can't seed one (render_instructions; quiet_only: the latter only)."""
-        return await worker().call("evidence", job="render_instructions", recording=view.recording,
-                                   definitions=self.definitions, templates=list(templates), user_name=user_name,
-                                   quiet_only=quiet_only)
+        return await job("render_instructions", recording=view.recording, definitions=self.definitions,
+                         templates=list(templates), user_name=user_name, quiet_only=quiet_only)
 
     async def instructions(self, hypothesis, hass=None):
         """Each assistant's instructions as the hypothesis's prompt changes edit them: rendered by HA (what Assist
@@ -294,8 +280,8 @@ class Evidence:
         return facts
 
     async def _run_scripts(self, recording, turn, setup, scripts, targets):
-        return await worker().call("evidence", job="run_scripts", recording=recording, turn=turn,
-                                   definitions=self.definitions, setup=setup, scripts=scripts, targets=targets)
+        return await job("run_scripts", recording=recording, turn=turn, definitions=self.definitions, setup=setup,
+                         scripts=scripts, targets=targets)
 
     async def _try_scripts(self, recording, turn, setup, scripts, targets, goal):
         """Each script alone from the goal's starting state; if none reaches the goal alone, all of them together
@@ -326,15 +312,15 @@ class Evidence:
         return out
 
     async def _match_aliases(self, setup, entity_id, aliases):
-        matched = await worker().call("evidence", job="match_aliases", recording=self.sessions.household.recording,
-                                      definitions=self.definitions, setup=setup, aliases=aliases)
+        matched = await job("match_aliases", recording=self.sessions.household.recording, definitions=self.definitions,
+                            setup=setup, aliases=aliases)
         return {"alias_for": entity_id, "matches": matched,
                 "ambiguous": [a for a, found in matched.items() if len(found) > 1]}
 
     async def resolution_signals(self, setup, sessions=None):
         """The recorded calls HA now resolves differently with the change applied, across the given sessions (all
         by default): signals for the roles to weigh, not regressions in themselves."""
-        gate = asyncio.Semaphore(CONCURRENT)
+        gate = asyncio.Semaphore(CONCURRENT)  # Recordings loaded at once; the workers' own limit is worker.job's.
         chosen = sorted(self.sessions.briefs if sessions is None else sessions)
 
         async def one(session):

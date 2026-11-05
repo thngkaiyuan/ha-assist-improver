@@ -15,13 +15,10 @@ export const TEXT = {
     you: {title: "Your review", tip: "Accept, decline, or ask for a revision."},
     household: {title: "Your household", tip: "Your house, made easier."},
   },
-  onDemand: {label: "On-demand improvements",
-             tip: "When on, ask Assist to file an improvement when something didn't go well: the improver studies it as soon as the conversation ends."},
   // Your conversations, on the home page: find them, read them, send them in.
   conversations: {title: "Your conversations", search: "Search what was said, or when", all: "All", today: "Today", week: "7 days",
                   month: "30 days", newest: "Newest", effort: "Most back-and-forth", oldest: "Oldest", sort: "Sort",
-                  lead: "Pick the ones that didn't go the way you wanted, and run: the improver finds what went wrong and tests fixes.",
-                  leadOnDemand: "Pick the ones that didn't go well, and run. Any you send in, or file with Assist, go straight to the improver.",
+                  lead: "Pick the ones that didn't go well, and run. Any you send in, or file with Assist, go straight to the improver.",
                   pick: "Select", pickOne: "Select “{said}”", selectAll: "Select all {n}",
                   // The selection's actions, at the bottom (Run is runOn): each with how many.
                   archiveMany: "Archive ({n})", unarchiveMany: "Unarchive ({n})", deleteMany: "Delete ({n})",
@@ -30,10 +27,10 @@ export const TEXT = {
                   runOn: "Run on {n} conversation{s}", failedStep: "failed step", failedStepLabel: "Failed step:",
                   you: "You", assist: "Assist", send: "Send this one in",
                   note: "What should have happened? (optional)", yourNote: "Your note:",
-                  sentNow: "Sent in. The improver is looking at it now.", sentLater: "Sent in. It goes in with your next run.",
+                  sentNow: "Sent in. The improver is looking at it now.",
                   // Where each stands: the stage its flow record names, or its outcome (conversations.standing).
                   status: {waiting: "New", active: "Still going", sent: "Sent in", smooth: "Looked smooth", queued: "To analyze",
-                           fine: "No trouble found", unclear: "Needs your note", cannot: "Can't improve",
+                           fine: "No trouble found", unclear: "Question for you", cannot: "Can't improve",
                            working: "Looking for a fix",
                            writing: "Writing it up", review: "Up for review",
                            declined: "Declined", nofix: "No fix found", duplicate: "Already covered", improved: "Improved",
@@ -42,7 +39,6 @@ export const TEXT = {
                   // A chip's tooltip, where it says what comes next; held, why (flow.py's words).
                   nofixTip: "No fix worked. Send it in again with a note for one more look.",
                   fineTip: "Nothing went wrong, as far as it could tell. Send it in again with a note if something did.",
-                  unclearTip: "It couldn't tell what you wanted. Send it in again with a note.",
                   // A conversation Home Assistant answered itself, not the AI (DETAILS P9.9.9): the chip's bubble.
                   cannotTip: "Home Assistant's built-in commands answered “{quote}”, not your AI assistant, and " +
                              "Assist Improver can only improve your AI assistant. To let it help with requests like " +
@@ -78,19 +74,13 @@ export const TEXT = {
            // A reason a decision can be given with: a box to tick under it, and the note's placeholder once ticked.
            reasons: {not_an_issue: {label: "Not an issue", hint: "It went fine, or you were only trying Assist out.",
                                     note: "Anything to add? (optional)"}}},
-  // Privacy controls: proposed words, waiting for approval.
-  privacy: {recording: "Record conversations", recordingTip: "When off, new Assist conversations aren't kept, so the improver can't learn from them.",
-            people: "People",  // Above each person's switch, named as in Home Assistant.
-            // An opened conversation on the home page: archive it (out of the list, kept for the improver), or delete it.
-            archive: "Archive this conversation", unarchive: "Unarchive", showArchived: "Show archived ({n})",
+  // A question waiting for the household, at the top of the home page: what it asks, what was said first in its
+  // conversation, and the answer's button.
+  questions: {title: "{n} question{s} for you", said: "“{said}”", answer: "Answer"},
+  // An opened conversation on the home page: archive it (out of the list, kept for the improver), or delete it.
+  privacy: {archive: "Archive this conversation", unarchive: "Unarchive", showArchived: "Show archived ({n})",
             delete: "Delete from Assist Improver", cancel: "Cancel",
             more: "More actions", confirmDelete: "Delete this conversation from Assist Improver? The improver can no longer check changes against it."},
-  sandbox: {label: "Sandbox mode", tip: "When turned on, your Assist conversations use a simulated copy of your home, so nothing real changes; the improver learns from them as practice. This applies only to your user.", others: "Also on for {names}."},
-  autoAccept: {label: "Auto-accept low-risk changes",
-               tip: "Automatically accepts Assist Improver's low-risk changes: household knowledge, and new names for devices other than locks, alarms and doors.",
-               confirm: "Auto-accept low-risk changes?",
-               confirmText: "Improvements that only add household knowledge lines or new device names will be applied without your review. Anything that lets Assist control more still waits for you. You'll be notified each time, and can undo.",
-               on: "Turn on"},
   revise: {label: "Revisions", short: "Revisions"},
   block: {tip: "Stop this stage.", blocked: "Resume this stage."},
   badges: {new: "{n} new: the next run takes them in", waiting: "{n} held", held: "{n} held while blocked", review: "{n} to review", applied: "{n} applied"},
@@ -140,22 +130,27 @@ export const TEXT = {
               title: "Household knowledge", everyone: "Everyone", empty: "Nothing learned yet: accepted improvements add lines here.",
               search: "Search", none: "Nothing matches.", more: "Read more", less: "Show less", add: "Add a line",
               addFor: "Add a line just for {name}", placeholder: "One fact or preference, in a sentence", save: "Save", cancel: "Cancel",
-              edit: "Edit", remove: "Delete", confirmRemove: "Delete this line?",
-              // The one switch: whether every assistant on Assist reads the lines (settings.js, the Your household step).
-              label: "Household knowledge", on: "Household knowledge on: your assistants read the {lines} learned so far.",
-              off: "Household knowledge off: your assistants don't read what's learned."},
+              edit: "Edit", remove: "Delete", confirmRemove: "Delete this line?"},
+  // Uninstall, at the end of the settings: what it removes; with lines learned, they're there to keep if the household
+  // likes, and it goes once the box is ticked (settings.js).
+  uninstall: {button: "Uninstall", title: "Uninstall Assist Improver?",
+              what: "Removes what it stored and the AI Tasks it set up.", stay: "Accepted improvements stay.",
+              keep: "To keep what your assistants learned, add this to their instructions:",
+              copy: "Copy", copied: "Copied", saved: "I've saved it, or I'll do without it", busy: "Uninstalling…"},
   // A run in progress, by which it is (common.runTitle), and where it is: the conversation it's on, and its stage.
   progress: {working: "Improving your assistant", all: "Running on {n} new conversations", one: "Running on 1 new conversation",
              picked: "Running on the conversations you picked", sent: "Running on what you sent in", step: "Running {step} only",
-             revision: "Revising an improvement", conflict: "Resolving a conflict", at: "Conversation {k} of {total}, at {stage}."},
-  history: {title: "History", triggers: {scheduled: "scheduled", filed: "on demand", picked: "picked", revision: "revision", conflict: "conflict"},
+             revision: "Revising an improvement", conflict: "Resolving a conflict", answer: "Running on your answer",
+             at: "Conversation {k} of {total}, at {stage}."},
+  history: {title: "History", triggers: {scheduled: "scheduled", filed: "on demand", picked: "picked", revision: "revision", conflict: "conflict",
+                                         answer: "answer"},
             more: "Show more", empty: "Nothing yet: runs and your decisions show up here.",
             run: {done: "Run finished", failed: "Run stopped early", cancelled: "Run cancelled", interrupted: "Run interrupted"},
             stopped: "Nothing was lost: what it didn't finish is held for your next run.", unfinished: "{steps} couldn't finish",
             setAside: "{n} couldn't be read",
             failed: "{n} held: {why}", addressed: "{n} already addressed by an improvement", posted: "Up for review", decisions: {accept: "Accepted", decline: "Declined", revise: "Asked for a revision",
             // A decision given with a reason reads by its reason.
-            not_an_issue: "Declined: not an issue", undo: "Undid"}, auto: "Accepted automatically"},
+            not_an_issue: "Declined: not an issue", undo: "Undid"}},
 };
 
 // The settings view draws the pipeline as a track: requests merge onto the improvement loop (triage, analyze,
