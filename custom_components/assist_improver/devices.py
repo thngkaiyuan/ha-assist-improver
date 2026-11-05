@@ -6,7 +6,12 @@ brightness 128) and applies its effect to the simulated state, the way the devic
 would report back. Commands without a model here are reported as done and flagged.
 """
 
-from homeassistant.components.media_player import PROP_TO_ATTR, MediaPlayerEntityStateAttribute
+from homeassistant.components.media_player import MediaPlayerEntityStateAttribute
+
+try:  # Home Assistant 2026.11 moved it into media_player.entity.
+    from homeassistant.components.media_player.entity import PROP_TO_ATTR
+except ImportError:
+    from homeassistant.components.media_player import PROP_TO_ATTR
 
 ON_OFF = {"light", "switch", "fan", "input_boolean", "siren", "remote", "humidifier", "media_player",
           "water_heater", "automation"}
