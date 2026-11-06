@@ -4,7 +4,7 @@ from copy import deepcopy
 import json
 
 from .. import evidence
-from ..cases import CaseError
+from ..cases import CaseError, digest
 from ..digest import _clip, _text
 from ..exploration import related_improvements
 from ..failures import contained
@@ -36,6 +36,32 @@ class Sessions(Assistants, SessionSet):
         self.existing = []  # Improvements waiting for review or applied (Improvements.catalog), for list_improvements.
         self._upfront = None  # The open friction the generator gets in full (prepare).
         self._renames = {}  # {session: {an entity ID it names: that entity's ID today}}, for each renamed since.
+        self.hass = None  # The household's Home Assistant: its validators check changes, and its readers read them.
+        self.checked = {}  # {a change's digest: what changes.check found}, as check_changes left it.
+
+    def home(self):
+        """Today's home (snapshot.py's), which changes are checked and read against."""
+        return self.today["home"] if self.today else self.household.source
+
+    async def check_changes(self, hass, hypotheses):
+        """Each change of these hypotheses checked by Home Assistant's own validators and the safety rules
+        (changes.check), once per change, for the checks to read (checked_of)."""
+        from .. import changes
+        todo = {digest(c): c for h in hypotheses or [] if isinstance(h, dict)
+                for c in self.with_targets(h.get("changes")) if isinstance(c, dict)}
+        todo = {k: c for k, c in todo.items() if k not in self.checked}
+        if todo and hass is not None:
+            found = await changes.check(hass, list(todo.values()), self.home())
+            self.checked.update(zip(todo, found))
+
+    def checked_of(self, change):
+        """What check_changes found in a change (None: it never checked it)."""
+        return self.checked.get(digest(self.with_targets([change])[0]))
+
+    def devices_of(self, changes):
+        """The entities changes touch, as Home Assistant reads them (changes.referenced)."""
+        from .. import changes as reading
+        return reading.referenced(self.hass, self.with_targets(changes), self.home())["entities"]
 
     async def load_evidence(self):
         """Facts from HA's own engine, on today's setup: what Assist can do with each device in open friction, and an
@@ -175,7 +201,8 @@ class Sessions(Assistants, SessionSet):
     def where_it_applies_to(self, hypothesis):
         """The sessions a draft's changes would apply to, besides its own goals' (sessions.where_it_applies)."""
         mine = {g["session"][:8] for g in hypothesis.get("goals") or []}
-        rows, total = self.where_it_applies(footprint(self.with_targets(hypothesis.get("changes")), self.household),
+        changes = self.with_targets(hypothesis.get("changes"))
+        rows, total = self.where_it_applies(footprint(changes, self.household, self.devices_of(changes)),
                                             exclude=mine)
         out = {"sessions": rows, "count": total}
         if total > len(rows):

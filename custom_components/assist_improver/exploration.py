@@ -517,7 +517,8 @@ class SessionView:
         if found is None:
             return {"error": f"Home Assistant gave no definition for {entity_id}: it isn't there, or an integration "
                              "other than Home Assistant's own editors made it."}
-        return {"entity_id": entity_id, "definition": found}
+        # Its id in its editor, which a change to it names.
+        return {"entity_id": entity_id, "id": object_id if domain == "script" else found.get("id"), "definition": found}
 
 
 def _strings(record):
@@ -641,8 +642,9 @@ class ReadReadings(RoleTool):
 
 class ReadDefinition(RoleTool):
     name = "read_definition"
-    description = ("Read a script's, automation's or scene's definition: its steps, its triggers and conditions, or "
-                   "its entities' states. Give its entity_id.")
+    description = ("Read a script's, automation's or scene's definition, in Home Assistant's own format: its steps, "
+                   "its triggers and conditions, or its entities' states, and the id a change to it names. "
+                   "Give its entity_id.")
     parameters = probatio.Schema({probatio.Required("entity_id"): str})
 
     def run(self, entity_id):
@@ -675,12 +677,6 @@ TOOLS = (ReadTurn, ListAreas, DevicesInArea, FindDevices, DeviceDetails, ReadRea
 
 # Existing improvements (Improvements.catalog: waiting for the household's review, or applied), which every AI role
 # that could propose a fix checks first, so nothing is fixed twice.
-
-def change_devices(changes):
-    """The devices a set of changes names."""
-    return {e for c in changes for e in [c.get("entity_id"), *(s.get("entity_id") for s in c.get("steps") or [])]
-            if isinstance(e, str)}
-
 
 def applied_too_early(item, started):
     """Why an improvement can't answer for friction in a session that started at `started`, or None: one applied

@@ -56,7 +56,7 @@ Models answer through tools that validate their answer against the household and
 
 ## Proposing changes
 
-- **Least specific change that works.** In order of preference: instructions and preferences for the assistant, aliases, exposure (what the assistant can see and control), then scripts for what the assistant's own tools can't do.
+- **Least specific change that works.** In order of preference: instructions and preferences for the assistant; a device's names, area and exposure (what the assistant can see and control); then scripts, scenes and automations for what the assistant's own tools can't do. Each is in Home Assistant's own format, checked by its own validators. A better setting for an assistant (its model, web search) is named for you to change yourself, never applied or tested.
 - **The simplest rule consistent with every session.** A rule is tested against every session where it would apply, not only the one that prompted it. Special cases and rules built on a single session need a reason.
 - **Evidence, both ways.** Each proposal lists the sessions that support it and any that contradict it.
 - **Fix the real cause.** Speech recognition mishearing the user is in scope, but only when the sessions show it happened.
@@ -81,9 +81,9 @@ Models answer through tools that validate their answer against the household and
 
 ## Asking you, and applying what you accept
 
-- **Reviewed like a pull request.** Each tested improvement has its own page in the Assist Improver panel: what it gets you, its before and after on the conversations it was tested on, and why it's safe; folded below, what went wrong and the changeset as files with line-numbered diffs. The notification links straight to each one.
+- **Reviewed like a pull request.** Each tested improvement has its own page in the Assist Improver panel: what it gets you, its before and after on the conversations it was tested on, and why it's safe; folded below, what went wrong and the changeset as files with line-numbered diffs. An automation's page also says when it runs, in words from its own triggers and conditions, and what it did over a simulated week: how many runs and when, each run on demand; for a change to one you have, the runs it adds and drops. A better setting for an assistant (its model, web search) is named for you to change yourself, never applied. The notification links straight to each one.
 - **Your choices:** accept, ask for a revision (with a note on what should change), or decline, with an optional note; tick "Not an issue" when it went fine or you were only trying Assist out. An applied improvement can be undone.
-- **All of it or none of it.** Every change is checked before anything is written: a value you changed since the improvement was tested is a conflict, reported instead of overwritten, and Home Assistant validates scripts and instructions first. Changes then go in a safe order (scripts, saved but not exposed; aliases; exposure; instruction lines last), with a journal saved before each write. The improver never writes a configuration file itself: the panel saves scripts through Home Assistant's script editor. A failure undoes the steps already done; if Home Assistant stops midway, the next start undoes them (a script, once the panel is next opened) and tells you. Every value is read back before the improvement counts as applied.
+- **All of it or none of it.** Every change is checked before anything is written: a value you changed since the improvement was tested is a conflict, reported instead of overwritten, and Home Assistant validates scripts and instructions first. Changes then go in a safe order (names and registry entries; scripts and scenes, inert until run; exposure; household lines and instructions; automations last), with a journal saved before each write; undo is the reverse. The improver never writes a configuration file itself: the panel saves scripts, automations and scenes through Home Assistant's own editors, and registry entries and assistants change through Home Assistant's own updates. A failure undoes the steps already done; if Home Assistant stops midway, the next start undoes them (a script, automation or scene once the panel is next opened, an automation turned off meanwhile) and tells you. Every value is read back before the improvement counts as applied.
 - **Household knowledge, shared by every assistant.** Household lines go into one place, the household knowledge: lines for everyone, and lines for one person that only their requests see. Every assistant that controls the home reads it: the lines come with Home Assistant's own Assist, so there's no second option to choose, nothing to turn on for each assistant, and no tool offered twice. A line already there isn't added twice.
 
 ## Shared knowledge
@@ -94,7 +94,7 @@ Models answer through tools that validate their answer against the household and
 ## Safety
 
 - **Nothing in your home moves during testing.** Replays run in a sandboxed Home Assistant with no device integrations; stand-ins take your devices' commands, and other actions beyond your home (a notification, another model) are logged, never made. Only the assistant's own model and its hosted tools, such as web search, are called for real.
-- **Changes are ordinary Home Assistant configuration.** They are shown to you before they apply, nothing runs when they do, and they stay if you uninstall Assist Improver: scripts, aliases and exposure are Home Assistant's own.
+- **Changes are ordinary Home Assistant configuration.** They are shown to you before they apply, nothing runs when they do (an automation runs when it's triggered, its save included), and they stay if you uninstall Assist Improver: scripts, automations, scenes, names and exposure are Home Assistant's own.
 
 ## Cost and data
 

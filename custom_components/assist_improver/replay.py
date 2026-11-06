@@ -18,6 +18,7 @@ from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import entity_registry as er, llm
 
 from .cases import CaseError
+from .changes import changed
 from .const import DOMAIN
 from .digest import machinery
 from .sandbox import seed_options, setup_of
@@ -34,8 +35,8 @@ GONE = "The assistant this conversation used is no longer set up, so it can't be
 
 class SandboxHome:
     """One replay's sandbox, started on first use: today's setup (today: replay.today's) at the recording's first turn
-    (snapshot.at_moment), with a change on top (change: changes.setup_from_changes's scripts, exposure, aliases,
-    household knowledge and instructions); for a test that branches from its baseline, set to the baseline's home after
+    (snapshot.at_moment), with a change on top (change: changes.setup_from_changes's, the home it makes seeded as
+    changes.changed makes it, its household knowledge, instructions and LLM APIs); for a test that branches from its baseline, set to the baseline's home after
     the turn before the branch (start: how it differed from that moment then, sandbox.moved), at the branch turn's
     time (at: the first turn it says). watch: the entities whose attributes a turn is judged on (a light's
     brightness)."""
@@ -43,7 +44,7 @@ class SandboxHome:
     def __init__(self, hass, recording, turn, run_id, today, *, change=None, watch=(), start=None, at=None):
         self.hass, self.id, self.recording, self.first_turn, self.today = hass, run_id, recording, turn, today
         self.change = change or {}
-        self.source = as_moved(at_moment(today["home"], turn["source"]), start)  # What the sandbox is seeded as.
+        self.source = changed(as_moved(at_moment(today["home"], turn["source"]), start), self.change)  # Seeded as.
         if at is not None:  # Its clock starts there (sandbox.Sandbox.start).
             self.source["at"] = at
         self.sandbox = None
@@ -68,10 +69,8 @@ class SandboxHome:
             async with span("sandbox.seed"):
                 await self.sandbox.call(
                     "seed", person=person, options=seed_options(self.today, self.first_turn),
-                    scripts={**(source.get("scripts") or {}), **(self.change.get("scripts") or {})},
-                    automations=source.get("automations") or [], exposure_changes=self.change.get("exposure"),
-                    alias_changes=self.change.get("aliases"), alias_removals=self.change.get("alias_removals"),
-                    moving=reports_movement(self.recording),
+                    scripts=source.get("scripts") or {}, automations=source.get("automations") or [],
+                    exposure_changes=self.change.get("exposure"), moving=reports_movement(self.recording),
                     machinery=sorted(machinery(self.recording, _pipeline_now(self.hass, self.recording))),
                     cut=sorted(own_models(self.hass)), recorded=recorded(self.recording, self.today["tools"]))
         except Exception as err:
@@ -109,13 +108,15 @@ class SandboxHome:
 
     async def load_assistant(self):
         """The household's assistant in the sandbox, from its own config entry as it's set up now, a change's
-        instructions in place of its own: its entity id there."""
+        instructions in place of its own and only the LLM APIs it keeps: its entity id there."""
         from homeassistant.loader import IntegrationNotFound, async_get_integration
         await self.start()
         found = deepcopy(self.today["assistant"])
+        subentry = found["entry"]["subentries"][0]
         if self.change.get("prompt") is not None:
-            subentry = found["entry"]["subentries"][0]
             subentry["data"] = {**subentry["data"], "prompt": self.change["prompt"]}
+        if self.change.get("llm_hass_api") is not None:
+            subentry["data"] = {**subentry["data"], "llm_hass_api": self.change["llm_hass_api"]}
         domain = found["entry"]["domain"]
         try:
             built_in = (await async_get_integration(self.hass, domain)).is_built_in

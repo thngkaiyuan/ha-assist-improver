@@ -7,7 +7,7 @@ missing name comes back only with an update, which restarts Home Assistant). In 
 replay as the machinery's fault, never as a verdict; the real instance reports it (worker.Worker.call).
 fixture-test/test_touchpoints.py checks every touchpoint on the installed Home Assistant."""
 
-from annotationlib import Format
+from annotationlib import Format, get_annotations
 from contextlib import contextmanager
 from dataclasses import fields, is_dataclass
 from enum import Enum
@@ -105,9 +105,21 @@ TOUCHPOINTS = {
     # provider gives them (checked on each AI Task the improver sets up).
     "ai_task_flow": Touchpoint("homeassistant.config_entries:ConfigSubentryFlowManager", "ai_models", "ai_setup.py",
                                ("async_init", "async_configure", "async_abort")),
-    # Changes: exposing a device to Assist, and the file Home Assistant's script editor keeps scripts in.
+    # Changes: exposing a device to Assist, and the files Home Assistant's script, automation and scene editors keep
+    # their items in.
     "exposure": Touchpoint(_EXPOSE[0], "changes", "changeset.py", _EXPOSE[1]),
-    "script_config_path": Touchpoint("homeassistant.config:SCRIPT_CONFIG_PATH", "changes", "changeset.py"),
+    "script_config_path": Touchpoint("homeassistant.config:SCRIPT_CONFIG_PATH", "changes", "changes.py"),
+    "automation_config_path": Touchpoint("homeassistant.config:AUTOMATION_CONFIG_PATH", "changes", "changes.py"),
+    "scene_config_path": Touchpoint("homeassistant.config:SCENE_CONFIG_PATH", "changes", "changes.py"),
+    # The lock a config entry's reload holds: an assistant's change waits on it for the reload its update starts.
+    "entry_setup_lock": Touchpoint("homeassistant.config_entries:ConfigEntry", "changes", "changeset.py",
+                                   ("setup_lock",)),
+    # The schemas Home Assistant's script and scene integrations check an item with (its automation's is made from
+    # public pieces, changes.automation_schema).
+    "script_schema": Touchpoint("homeassistant.components.script.config:SCRIPT_ENTITY_SCHEMA", "changes",
+                                "changes.py"),
+    "scene_schema": Touchpoint("homeassistant.components.homeassistant.scene:PLATFORM_SCHEMA", "changes",
+                               "changes.py"),
     # Usage: what a provider reports for the improver's own calls, and for a replay's turns on each turn's chat log
     # (chat_log_trace): a provider whose replays reported it before and reports none now stopped reporting it there.
     "conversation_trace": Touchpoint("homeassistant.components.conversation.trace:async_conversation_trace", "usage",
@@ -154,8 +166,8 @@ def resolve(name):
 
 
 def _has(found, part):
-    """Whether found still has part: a key, an enum value, an attribute (a dataclass field, or one a class's __init__
-    sets), or a parameter."""
+    """Whether found still has part: a key, an enum value, an attribute (a dataclass field, one a class's __init__
+    sets, or one it declares), or a parameter."""
     if isinstance(found, dict):
         return part in found
     if isinstance(found, type) and issubclass(found, Enum):
@@ -164,6 +176,8 @@ def _has(found, part):
         return True
     if isinstance(found, type) and any(part in code.co_names for code in (
             getattr(vars(k).get("__init__"), "__code__", None) for k in found.__mro__) if code is not None):
+        return True
+    if isinstance(found, type) and any(part in get_annotations(k, format=Format.STRING) for k in found.__mro__):
         return True
     try:  # Annotations as written: evaluating them could fail on names imported only for type checking.
         return part in inspect.signature(found, annotation_format=Format.STRING).parameters

@@ -119,14 +119,13 @@ def effective(template):
 
 
 def is_edit(change):
-    """Whether a change edits one assistant's own instructions (a prompt change naming the assistant)."""
-    return change.get("kind") == "prompt" and bool(change.get("assistant") or change.get("target"))
+    """Whether a change edits one assistant's own instructions (an assistant change with text or lines it replaces)."""
+    return change.get("kind") == "assistant" and ("text" in change or "replaces" in change)
 
 
 def household_line(change):
-    """Whether a change is a line for the household knowledge: a preference, or a prompt line from before prompt
-    changes named an assistant."""
-    return change.get("kind") == "preference" or (change.get("kind") == "prompt" and not is_edit(change))
+    """Whether a change is a line for the household knowledge: a preference."""
+    return change.get("kind") == "preference"
 
 
 def edit(template, changes):

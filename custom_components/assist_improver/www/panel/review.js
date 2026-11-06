@@ -33,7 +33,8 @@ function bar(added, removed) {
 }
 
 function diff(rows, change) {
-  if (!rows.length) return `<div class="empty">${change.proposed ? "As proposed; not applied." : "Already in place; nothing changes."}</div>`;
+  if (!rows.length) return `<div class="empty">${esc(change.recommended ? TEXT.review.recommended
+    : change.proposed ? "As proposed; not applied." : "Already in place; nothing changes.")}</div>`;
   const cls = {"+": "add", "-": "del", " ": "", gap: "gap"};
   return `<table class="diff">${rows.map((r) => r.sign === "gap"
     ? `<tr class="gap"><td colspan="4">&#8943;</td></tr>`
@@ -73,6 +74,23 @@ function test(p, t, n, open) {
   return `<li class="${t.improved ? "ok" : "no"}">${t.before?.length || t.after?.length
     ? `<details data-key="${key}" ${p.open.has(key) ? "open" : ""}><summary class="row">${row}</summary>${replay(t, open)}</details>`
     : `<div class="row">${row}</div>${stillOpen(open)}`}</li>`;
+}
+
+function automation(p, a, n) {
+  // An automation it changes: its name, when it runs and on what condition (stated by code from Home Assistant's own
+  // configuration), and its simulated week in a few words; opened, each run (for a change to one you have, each run
+  // the change adds or drops) and what it changed.
+  const W = TEXT.review.week, w = a.week, key = `auto${n}`;
+  const result = a.failed ? `<span class="result failed">${esc(W.failed)}</span>`
+    : w ? `<span class="result" title="${esc(W.tip)}">${esc(w.result)}${w.days < 7 ? esc(fill(W.days, w)) : ""}</span>` : "";
+  const row = `<span class="what"><span class="name">${esc(a.name)}</span> <span class="kind automation">${
+    esc(W.change[a.change])}</span><span class="when">${esc([a.when, a.if].filter(Boolean).join(" · "))}</span></span>${result}`;
+  const runs = w?.runs.length ? `<div class="week-runs">${w.runs.map((r) =>
+    `<div class="week-run ${{"+": "add", "-": "del"}[r.sign] || ""}"><span class="sign">${r.sign === "-" ? "&#8722;" : r.sign === "+" ? "+" : ""}</span>
+     <span class="at">${esc(r.at)}</span><span>${esc(r.changed)}</span></div>`).join("")}${
+     w.more ? `<div class="week-run more">${esc(fill(W.more, w))}</div>` : ""}</div>` : "";
+  return `<li>${runs ? `<details data-key="${key}" ${p.open.has(key) ? "open" : ""}><summary class="row">${row}</summary>${runs}</details>`
+    : `<div class="row">${row}</div>`}</li>`;
 }
 
 function reasonsFor(r, decision) {
@@ -153,11 +171,12 @@ export function render(p) {
     ${r.benefit ? `<div class="label">${esc(R.get)}</div><p class="benefit">${esc(r.benefit)}</p>` : ""}
     <div class="label">${esc(R.tested)}</div><ul class="tests">${tests}</ul>
     ${r.wordier ? `<p class="lead more-words-line">${esc(fill(R.moreWordsLine, {n: r.wordier}))}</p>` : ""}
+    ${r.automations.length ? `<div class="label">${esc(R.week.title)}</div><ul class="autos">${
+      r.automations.map((a, n) => automation(p, a, n)).join("")}</ul>` : ""}
     <div class="label">${esc(R.safe)}</div><ul class="safe">${r.safety.map((f) =>
       `<li><span class="mark">&#10003;</span><span>${esc(f)}</span></li>`).join("")}</ul></div>`;
   const how = `<div class="details-body"><p>${esc(r.cause)}</p>
-    ${r.physical ? `<div class="note"><span>&#9432;</span><span>Physical positions aren't simulated in the sandbox: a door's motion, for
-    example, is taken as done when its command succeeds.</span></div>` : ""}</div>`;
+    ${r.physical ? `<div class="note"><span>&#9432;</span><span>${esc(R.physical)}</span></div>` : ""}</div>`;
   const sections = section(p, "details", esc(R.wrong), how)
     + section(p, "changes", esc(fill(R.changes, {n: r.changes.length})), `<div class="files">${files}</div>`);
   const conflicts = r.conflicts.length ? `<div class="conflict"><b>Can't apply it now:</b><br>${r.conflicts.map((c) =>
@@ -193,7 +212,7 @@ async function decide(p, decision = p.decision || p.review.choices[0].value) {
   p.busy = true;
   p.render();
   try {
-    // A change left open is finished first, and a script saver lost to a reconnect renewed: neither refuses this one.
+    // A change left open is finished first, and a saver lost to a reconnect renewed: neither refuses this one.
     if (decision !== "resolve") await p.finish();
     const reason = reasonsFor(r, decision).includes(p.reason) ? p.reason : null;  // Ticked for this decision.
     const res = decision === "resolve"  // Sent back to resolve its conflict: not a decision on it.

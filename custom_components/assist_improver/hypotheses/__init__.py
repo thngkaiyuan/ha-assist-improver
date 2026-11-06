@@ -12,7 +12,7 @@ sessions, and answers through submit_review. Both are agentic, with read-only
 tools over the recordings.
 """
 
-from ..exploration import ListImprovements, ReadImprovement, change_devices  # noqa: F401 - used through this module.
+from ..exploration import ListImprovements, ReadImprovement  # noqa: F401 - used through this module.
 from .checks import (household_knowledge, instructions, known_lines, open_goals,  # noqa: F401
                      problems)
 from .goals import (FRICTION_KINDS, TRIAGED_NOTE, UNANALYSED_NOTE, capabilities, friction,  # noqa: F401

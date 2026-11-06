@@ -714,11 +714,12 @@ class Flow:
         return why + "." if why and why[-1] not in ".!?" else why
 
     async def _write(self, rid, conv):
-        """The editor's write-up; a failed one is a failure of this stage like any other (P0.8): the improvement
-        isn't up for review until it's written up."""
+        """The editor's write-up, after an automation's simulated week (Improvements.add_week); a failed write-up is a
+        failure of this stage like any other (P0.8): the improvement isn't up for review until it's written up."""
         from .pipeline import editor_model
         improvements = self.runtime.improvements
         unwritten = [item["id"] for item in improvements.unwritten() if item["id"] in self._improvements(rid)]
+        await improvements.add_weeks(unwritten, self.runtime.recorder)  # An automation's week, which its review shows.
         if unwritten and await improvements.write_copy(editor_model(self.entry), unwritten):
             raise Failed("The write-up didn't finish.")
         self._enter(conv, "Your review")

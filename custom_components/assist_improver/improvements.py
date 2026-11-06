@@ -8,9 +8,9 @@ notification together.
 
 import asyncio
 from copy import deepcopy
-import re
 
 from homeassistant.components import persistent_notification
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.storage import Store
 from homeassistant.util.dt import utcnow
 
@@ -23,25 +23,25 @@ from .records import Improvement
 from .trace import journal, span, timed
 
 PENDING = ("awaiting_review", "needs_attention")  # Waiting on the user: in the notification.
-# A door, valve, lock or alarm: a cover, valve, lock or alarm panel, or anything named after a door, gate, garage or
-# valve (as a switch that runs a garage door): by its entity ID here, or by its name in Home Assistant (physical). The
-# review notes that their motion isn't simulated (panel.py, DETAILS P11.5).
-PHYSICAL = re.compile(r"\b(?:cover|valve|lock|alarm_control_panel)\.\w+"  # Those, and what drives a door or valve:
-                      r"|\b(?:switch|script|button)\.(?:\w+_)?(?:doors?|gates?|garage|valves?)\d*(?:_\w+)?\b")
-DRIVERS = ("switch", "script", "button")  # What can drive a door or valve, named after it.
-DOOR_NAME = re.compile(r"\b(?:doors?|gates?|garage|valves?)\d*\b", re.IGNORECASE)
+# What moves something physical whose motion a replay takes as done once its command succeeds (DETAILS P11.5): by
+# domain, and a cover by its device class. The review notes it (panel.py).
+MOVERS = ("valve", "lock", "alarm_control_panel")
+DOORS = ("garage", "door", "gate")  # A cover's device classes that move a door.
 
 
 def physical(hass, entity_id):
-    """Whether a device is a door or valve, or drives one: by its entity ID (PHYSICAL), or a switch, script or button
-    whose name as Home Assistant shows it (its state's friendly name, from its registry entry) names a door, gate,
-    garage or valve."""
-    if PHYSICAL.fullmatch(entity_id or ""):
+    """Whether a device moves something physical: a valve, lock or alarm panel, or a garage, door or gate cover (its
+    device class as Home Assistant has it: its state's, else its registry entry's)."""
+    domain = (entity_id or "").split(".", 1)[0]
+    if domain in MOVERS:
         return True
-    if hass is None or (entity_id or "").split(".", 1)[0] not in DRIVERS:
+    if domain != "cover" or hass is None:
         return False
     state = hass.states.get(entity_id)
-    return bool(state and DOOR_NAME.search(str(state.attributes.get("friendly_name") or "")))
+    device_class = state.attributes.get("device_class") if state is not None else None
+    if device_class is None and (entry := er.async_get(hass).async_get(entity_id)) is not None:
+        device_class = entry.device_class or entry.original_device_class
+    return device_class in DOORS
 
 
 # Noticeably wordier: Assist's replies with the change at least this many times as long, and this many more words,
@@ -113,18 +113,20 @@ class Improvements:
         saved = ((await self.store.async_load()) or {}).get("improvements", {})
         self.items = {iid: item for iid, item in saved.items() if item.get("conversation")}
         await self.changesets.load()  # A change left open refuses others until it's finished (recover).
+        await self.changesets.hold()  # Any automation it saved, off before HA arms triggers.
         self._sync()
 
-    async def recover(self, scripts=None, late=None):
+    async def recover(self, editors=None, late=None):
         """A change left open (HA stopped in the middle of it, or the panel went away) is undone from where it stands:
-        once HA has started, as far as the improver writes itself; its scripts by the panel (scripts: its saver) when
-        it's next opened, once no save a panel didn't answer in time may still land (late). Once final, the outcome is
-        in the improvement's history and a notification (message), and what the improvement's own review says (brief).
-        Returns it: None if none was open; status waiting while a script waits for the panel."""
-        outcome = await self.changesets.resume(scripts, late)
+        once HA has started, as far as the improver writes itself; its scripts, automations and scenes by the panel
+        (editors: its saver) when it's next opened, once no save a panel didn't answer in time may still land (late).
+        Once final, the outcome is in the improvement's history and a notification (message), and what the
+        improvement's own review says (brief). Returns it: None if none was open; status waiting while an editor item
+        waits for the panel."""
+        outcome = await self.changesets.resume(editors, late)
         if outcome is None or outcome["status"] == "waiting":
             if outcome:
-                journal("info", "An interrupted change waits for the panel to finish its scripts",
+                journal("info", "An interrupted change waits for the panel to finish its editor items",
                         improvement_id=outcome["improvement_id"])
             return outcome
         item = self.items.get(outcome["improvement_id"])
@@ -186,6 +188,29 @@ class Improvements:
         self._sync()  # The notification names improvements by their headlines.
         return failed
 
+    async def add_weeks(self, improvement_ids, recorder):
+        """Each improvement's simulated week (add_week), side by side: a run waits about one week's budget, not one for
+        each."""
+        await asyncio.gather(*(self.add_week(improvement_id, recorder) for improvement_id in improvement_ids))
+
+    async def add_week(self, improvement_id, recorder):
+        """An improvement that changes an automation gets its simulated week (evidence.improvement_week), once, for its
+        review (weeks.py): before it's written up. One that couldn't run is said so, and the improvement goes on."""
+        from .evidence import improvement_week
+        item = self.items[improvement_id]
+        setup = item.get("setup") or {}
+        if "week" in item or not (setup.get("automations") or setup.get("automation_on")):
+            return
+        async with span("week", improvement_id=improvement_id) as section:
+            try:
+                item["week"] = await improvement_week(self.hass, recorder, item)
+            except Exception as err:  # noqa: BLE001 - the week informs the review; it never holds the improvement.
+                item["week"] = {"failed": str(err) or type(err).__name__, "automations": []}
+            if failed := item["week"].get("failed"):
+                journal("warning", "An automation's week couldn't run", improvement_id=improvement_id, error=failed)
+            section.tag(failed=bool(failed))
+        await self._save()
+
     def catalog(self, asking=None, detailed=False):
         """What the roles check before calling a goal fixed already or proposing a fix (their list_improvements tool):
         improvements waiting for the household's review (written up or not) and those applied (with when), each with
@@ -222,12 +247,9 @@ class Improvements:
 
     @staticmethod
     def _devices(item):
-        """The devices an improvement touches: those its changes name, and those the goals it fixes want."""
-        found = set(item.get("devices") or [])
-        for change in item.get("changes", []):
-            found.update(e for e in [change.get("entity_id"), *(s.get("entity_id") for s in change.get("steps") or [])]
-                         if isinstance(e, str))
-        return sorted(found)
+        """The devices an improvement touches: those its changes touch (build_for), and those the goals it fixes
+        want."""
+        return sorted(item.get("devices") or [])
 
     def pending(self):
         """Improvements up for review: written up, so each reads in plain words."""
@@ -263,15 +285,17 @@ class Improvements:
         the round's test that validated its changes, the root goals that test helped (measures.helped) and the devices
         they want. revises: the improvement the household sent back for this round (a revision, or a conflict), which
         this new version beside it replaces: marked revised while still pending or in conflict. Its id."""
+        from .changes import referenced
         from .measures import helped
         improvement_id = digest({"changes": test["changes"], "conversation": recording_id, "round": round_number})[:16]
         roots = helped(test["before"], test["after"], test["judged"])
+        touched = referenced(self.hass, hypothesis["changes"], {})["entities"]  # As Home Assistant reads them.
         built = {"id": improvement_id, "title": hypothesis.get("title") or "Improvement",
                  "cause": hypothesis.get("cause") or "", "hypothesis": deepcopy(hypothesis),
                  "changes": deepcopy(hypothesis["changes"]), "test": deepcopy(test), "round": round_number,
                  "conversation": recording_id,
                  "fixes": [f"{recording_id[:8]}:{test['judged'][root]['turn']}" for root in roots],
-                 "devices": sorted({e for root in roots for e in test["judged"][root]["devices"]}),
+                 "devices": sorted(touched | {e for root in roots for e in test["judged"][root]["devices"]}),
                  "setup": deepcopy(test["setup"]), "tested": deepcopy(test["tested"]),
                  "provider": deepcopy(test["provider"]), "user_ids": [test["user_id"]],
                  "reach": [reach(change) for change in hypothesis["changes"]], "checked_on": list(checked_on)}
@@ -335,15 +359,15 @@ class Improvements:
         persistent_notification.async_create(self.hass, message, title=title, notification_id=NOTIFICATION)
 
     async def decide(self, improvement_id, decision, *, note="", user_id=None, reason=None, revising=False,
-                     scripts=None):
+                     editors=None):
         """Record a decision (with its reason, if one is given: REASONS) and act on it, one at a time per improvement
         (the second waits, then sees the first's result). Returns the improvement, with `outcome` saying what
-        happened. revising: its revision's round runs (choices). scripts: the panel's saver
-        (panel.ScriptChannel.save), which writes its scripts; without it, a change with a script is refused. NoPanel:
-        the panel went away mid-change, which is left open (recover), with nothing recorded."""
+        happened. revising: its revision's round runs (choices). editors: the panel's saver
+        (panel.EditorChannel.save), which writes its scripts, automations and scenes; without it, a change with one is
+        refused. NoPanel: the panel went away mid-change, which is left open (recover), with nothing recorded."""
         async with self._locks.setdefault(improvement_id, asyncio.Lock()):
             return await self._decide(improvement_id, decision, note=note, user_id=user_id, reason=reason,
-                                      revising=revising, scripts=scripts)
+                                      revising=revising, editors=editors)
 
     async def settled(self, improvement_id):
         """Returns once no decision on it is under way: decisions take their turn (decide), so one under way has
@@ -352,7 +376,7 @@ class Improvements:
             pass
 
     async def _decide(self, improvement_id, decision, *, note="", user_id=None, reason=None, revising=False,
-                      scripts=None):
+                      editors=None):
         item = self.get(improvement_id)
         if decision not in choices(item, revising):
             raise CaseError("That decision isn't open for this improvement now")
@@ -364,9 +388,9 @@ class Improvements:
         record = {"decision": decision, "note": note.strip(), **({"reason": reason} if reason else {}), "by": user_id,
                   "at": utcnow().isoformat()}
         if decision == "accept":
-            outcome = await self._apply(item, user_id, scripts)
+            outcome = await self._apply(item, user_id, editors)
         elif decision == "undo":
-            outcome = await self._undo(item, scripts)
+            outcome = await self._undo(item, editors)
         else:  # Declined; or a revision, which leaves it up for review until a revised version replaces it (P0.6).
             if decision == "decline":
                 item["status"] = "declined"
@@ -385,13 +409,13 @@ class Improvements:
         self._sync()
         return {**deepcopy(item), "outcome": outcome}
 
-    async def _apply(self, item, user_id, scripts=None):
+    async def _apply(self, item, user_id, editors=None):
         steps, already, conflicts = await plan_steps(self.hass, item)
         if conflicts:  # Home Assistant changed since it was tested: the household may send it back (P0.7).
             item["status"], item["conflicts"] = "conflict", deepcopy(conflicts)
             return {"status": "conflict", "conflicts": conflicts}
         try:
-            result = await self.changesets.run(item["id"], "apply", steps, scripts)
+            result = await self.changesets.run(item["id"], "apply", steps, editors)
         except Conflict as err:
             return {"status": "busy", "error": str(err)}
         if result["status"] == "done":
@@ -404,12 +428,12 @@ class Improvements:
         item["history"].append({"at": utcnow().isoformat(), "event": "apply", **result})
         return {**result, "already": already}
 
-    async def _undo(self, item, scripts=None):
+    async def _undo(self, item, editors=None):
         applied = item["application"]["steps"]
         live = {(s["kind"], s["target"]): await read(self.hass, s["kind"], s["target"]) for s in applied}
         steps, left = readable(self.hass, *undo_steps(applied, live, self._added_by_others(item)))
         try:
-            result = await self.changesets.run(item["id"], "undo", steps, scripts)
+            result = await self.changesets.run(item["id"], "undo", steps, editors)
         except Conflict as err:
             return {"status": "busy", "error": str(err)}
         if result["status"] == "done":  # Back up for review: the household decides again (accept, revise, decline).
@@ -439,8 +463,9 @@ class Improvements:
                 for line in mine:
                     out.setdefault(("household", "household"), {})[(user_id, line)] = owner
             for change in other["changes"]:
-                if change.get("kind") == "alias" and (change.get("alias") or "").strip():
-                    out.setdefault(("alias", change.get("entity_id")), {})[change["alias"].strip()] = owner
+                if change.get("kind") == "registry" and change.get("entity_id"):  # The names it gives a device.
+                    for name in change.get("aliases") or []:
+                        out.setdefault(("alias", change["entity_id"]), {})[name] = owner
                 elif is_edit(change) and (change.get("text") or "").strip():  # Its whole text, as instructions.edit
                     out.setdefault(("prompt", change.get("target")), {})[change["text"].strip("\n")] = owner  # adds it.
         return out
@@ -466,19 +491,21 @@ class Improvements:
 
 
 def reach(change):
-    """What one change applies to, beyond the conversation it came from (SPEC.md P0.10): a script, an alias or what's
-    exposed to Assist, the whole household; an assistant's instructions, every conversation with that assistant; a
-    line of household knowledge, everyone, or the one person it's for."""
+    """What one change applies to, beyond the conversation it came from (SPEC.md P0.10): an editor item or a
+    registry entry, the whole household; an assistant change, every conversation with that assistant; a line of
+    household knowledge, everyone, or the one person it's for."""
     kind = change.get("kind")
-    if kind == "prompt":
+    if kind == "assistant":
         return {"kind": kind, "applies_to": "assistant", "assistant": change.get("assistant")}
-    if kind == "household" and change.get("for") not in (None, "everyone"):
+    if kind == "preference" and change.get("for") not in (None, "everyone"):
         return {"kind": kind, "applies_to": "person", "person": change.get("for")}
     return {"kind": kind, "applies_to": "household"}
 
 
-KINDS = {"script": "script", "alias": "aliases", "exposure": "exposure", "prompt": "instructions",
-         "household": "household", "assistant_api": "assistant"}
+# Each step's kind (changeset.ORDER) as the review labels it.
+KINDS = {"script": "script", "automation": "automation", "automation_on": "automation", "scene": "scene",
+         "alias": "aliases", "exposure": "exposure", "entity": "device", "device": "device", "area": "area",
+         "prompt": "instructions", "household": "household", "assistant_api": "assistant"}
 
 
 def display_title(item):

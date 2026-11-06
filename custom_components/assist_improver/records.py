@@ -108,8 +108,10 @@ class AnalysisResult(TypedDict, total=False):
 
 GoalRef = TypedDict("GoalRef", {"session": str, "goal_turn": int}, total=False)
 Change = TypedDict("Change", {  # One change a hypothesis makes (hypotheses.schema._CHANGE).
-    "kind": str, "text": str, "for": str, "replaces": list[str], "assistant": str, "target": str, "entity_id": str,
-    "alias": str, "expose": bool, "script_name": str, "steps": list[dict], "fields": list[dict]}, total=False)
+    "kind": str, "text": str, "for": str, "replaces": list[str], "assistant": str, "target": str,
+    "llm_hass_api": list[str], "recommend": dict, "entity_id": str, "device_id": str, "area_id": str | None,
+    "name": str | None, "name_by_user": str | None, "aliases": list[str], "hidden_by": str | None,
+    "disabled_by": None, "expose": bool, "id": str, "config": dict, "on": bool}, total=False)
 
 
 class TriageVerdict(TypedDict, total=False):
@@ -415,6 +417,9 @@ class Improvement(TypedDict, total=False):
     conversation: str  # The one conversation it came from and was tested on (SPEC.md P0.10).
     reach: list[dict]  # What each change applies to: the household, one assistant, or one person (SPEC.md P0.10).
     checked_on: list[str]  # The conversations the proposer had in view when it made it (short ids).
+    # The automations it changes, each with its simulated week (evidence.improvement_week); or why the week couldn't
+    # run (failed).
+    week: dict
 
 
 class Transcript(TypedDict, total=False):

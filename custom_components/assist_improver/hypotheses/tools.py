@@ -8,12 +8,12 @@ import probatio
 from .. import contracts, records
 from ..cases import digest
 from ..exploration import (LISTING, TOOLS, DeviceDetails, DevicesInArea, FindActions, ListImprovements, ReadAssistant,
-                           ReadImprovement, ReadReadings, ReadTurn, RoleTool, change_devices)
+                           ReadImprovement, ReadReadings, ReadTurn, RoleTool)
 from ..sessions import STATES
 from ..trace import span
 from .checks import household_knowledge, instructions, problems
 from .goals import scenario
-from .schema import _HYPOTHESIS, HYPOTHESES, REVIEW, verdict
+from .schema import _HYPOTHESIS, CHANGE_KINDS, HYPOTHESES, REVIEW, verdict
 
 # How often the generator may ask the reviewer, per round and per idea.
 REVIEWS_PER_ROUND, REVIEWS_PER_IDEA = 15, 5
@@ -59,23 +59,10 @@ class SubmitHypotheses(_Submit):
     name = "submit_hypotheses"
     description = ("Submit your answer: one hypothesis for this conversation, its changes combining the fixes of "
                    "every theme (they can be broad), with the goals it fixes (session and goal turn, from "
-                   "goals_with_friction), its cause, its changes and the expected effect. A preference's "
-                   "text is a line for the household knowledge, which every assistant reads (say who it's for: "
-                   "everyone, or this_user). A prompt change edits one assistant's own instructions: assistant (its "
-                   "name, as read_assistant_instructions shows it), text to add, and replaces: lines of those "
-                   "instructions the text replaces, or removes when there's no text; it may use Home Assistant's "
-                   "template values ({{ user_name }}, {{ ha_name }}, llm_context) and functions, and Home Assistant "
-                   "must render it. A script's text is its description (which Assist reads to decide when to run "
-                   "it). A script change makes a new script (script_name, steps; exposed to Assist unless expose is "
-                   "false), or edits an existing one when it gives that script's entity_id (a new description in "
-                   "text, and/or new steps; editing doesn't expose it, so add an exposure change if Assist should run "
-                   "an unexposed one); its steps may end with a stop step carrying the message Assist tells the "
-                   "user, and its fields (key, name, description) are text inputs Assist gives it, which its steps' "
-                   "data use as {{ key }}. An exposure change exposes a device unless expose is false, which hides "
-                   "it. Goals an existing "
-                   "improvement already addresses go in already_addressed (from list_improvements), not in the "
-                   "hypothesis. It is checked against "
-                   "the sessions and the household; if problems are reported, fix them and submit again.")
+                   "goals_with_friction), its cause, its changes and the expected effect. " + CHANGE_KINDS
+                   + " Goals an existing improvement already addresses go in already_addressed (from "
+                   "list_improvements), not in the hypothesis. It is checked against the sessions, the household and "
+                   "Home Assistant's own validators; if problems are reported, fix them and submit again.")
     parameters = HYPOTHESES
 
     def __init__(self, sessions, ask=None, tester=None):
@@ -83,7 +70,8 @@ class SubmitHypotheses(_Submit):
         self.ask, self.tester = ask, tester  # Its ask_reviewer and test_idea (stamps.TestIdea): the stamps' tools.
 
     async def answer(self, hass, args):
-        await self.sessions.render_edits(hass, args.get("hypotheses"))  # The checks read whether each renders.
+        await self.sessions.render_edits(hass, args.get("hypotheses"))  # The checks read whether each renders,
+        await self.sessions.check_changes(hass, args.get("hypotheses"))  # and what Home Assistant found.
         return self.run(**args)
 
     def run(self, **answer):
@@ -136,6 +124,10 @@ class SubmitReview(_Submit):
                    "evidence) and, when you know a better version, the revised hypothesis. The outcome follows from "
                    "the comments: any blocking comment requests changes.")
     parameters = REVIEW
+
+    async def answer(self, hass, args):
+        await self.sessions.check_changes(hass, [args.get("revised")])  # The checks read what Home Assistant found.
+        return self.run(**args)
 
     def check(self, answer):
         found = problems(self.sessions, answer, REVIEW)
@@ -335,6 +327,8 @@ class ChannelSubmitReview(_Submit):
         super().__init__(sessions)
         self.channel = channel
 
+    answer = SubmitReview.answer
+
     def check(self, answer):
         if self.channel.current is None:
             return ["There's no draft to review; call wait_for_draft first."]
@@ -418,7 +412,7 @@ class AskReviewer(StampTool):
             async with span("evidence.check"):
                 checks = await self.sessions.evidence.check(hypothesis, hass)
         related = self.sessions.related([(g["session"], g["goal_turn"]) for g in hypothesis.get("goals", [])],
-                                        change_devices(hypothesis.get("changes", [])))
+                                        self.sessions.devices_of(hypothesis.get("changes", [])))
         applies = self.sessions.where_it_applies_to(hypothesis)
         draft = contracts.check({**args, **({"checks": checks} if checks else {}),  # What the reviewer reads.
                                  **({"related_improvements": related} if related else {}),
@@ -464,16 +458,17 @@ class CheckHypothesis(RoleTool):
     """Facts from Home Assistant itself about a draft hypothesis, run in sandboxes: no model, no device."""
     name = "check_hypothesis"
     description = ("Check a draft hypothesis (same fields as submit_hypotheses) with Home Assistant itself, in a "
-                   "sandbox of the household's home as it is now. implementation: for each named goal, each new, edited or newly "
-                   "exposed script runs alone from the state the goal started in (and all of them together if none "
-                   "reaches it alone), showing whether the goal's devices end up as the goal wants, including what "
-                   "the user chose for settings left open; new aliases are matched by Home Assistant's own name "
-                   "matching. resolution_signals: the recorded tool calls of every session the change could affect (its calls "
-                   "touch the change's devices, their names or areas) are replayed with it, listing those that now "
-                   "resolve differently: signals to weigh, not proof of a regression. "
-                   "Instruction lines (preference, prompt) don't change how Home Assistant resolves devices; their "
+                   "sandbox of the household's home as it is now with the change on top. problems: what Home "
+                   "Assistant's own validators or the safety rules refuse. implementation: for each named goal, each "
+                   "new, edited or newly exposed script runs alone from the state the goal started in (and all of them "
+                   "together if none reaches it alone), showing whether the goal's devices end up as the goal wants, "
+                   "including what the user chose for settings left open; new aliases and names are matched by Home "
+                   "Assistant's own name matching. resolution_signals: the recorded tool calls of every session the "
+                   "change could affect (its calls touch the change's devices, their names or areas) are replayed with "
+                   "it, listing those that now resolve differently: signals to weigh, not proof of a regression. "
+                   "Instruction lines (preference, assistant) don't change how Home Assistant resolves devices; their "
                    "effect shows only when the conversation is replayed with the model, later. instructions: each "
-                   "assistant's instructions as a prompt change edits them, rendered by Home Assistant for its "
+                   "assistant's instructions as an assistant change edits them, rendered by Home Assistant for its "
                    "newest conversation (what Assist would read), or why they don't render.")
     parameters = probatio.Schema(_HYPOTHESIS)
 
@@ -493,7 +488,7 @@ class ReadAssistantInstructions(RoleTool):
                    "ran with and that assistant's current ones; give an assistant to read its current ones; give "
                    "neither for every assistant. Each lists the recommended facts its instructions lack, its other "
                    "settings now, and the tools Assist had (with their parameters) and its provider's hosted tools, "
-                   "as a session recorded them. Preference changes add lines to the household knowledge; a prompt "
+                   "as a session recorded them. Preference changes add lines to the household knowledge; an assistant "
                    "change edits one assistant's instructions.")
     parameters = probatio.Schema({probatio.Optional("session"): str, probatio.Optional("assistant"): str})
 

@@ -22,14 +22,14 @@ const REVEALS = ".done-msg, .done-row > :last-child, .menu, .cs-read, .cs-confir
 
 const STILL = matchMedia("(prefers-reduced-motion: reduce)");  // The household asked for less motion: no fades.
 
-// The script saver (panel.py's ScriptChannel). The improver never writes a configuration file itself: it asks the panel
-// to save a script, or delete one (config null), through Home Assistant's own script editor, with the signed-in admin's
-// session, and the panel answers how it went. One per connection, kept while Home Assistant makes the panel again (a
-// change may be under way). A reconnect (Home Assistant restarted, say) drops it, and it isn't renewed by itself (the
+// The saver (panel.py's EditorChannel). The improver never writes a configuration file itself: it asks the panel to
+// save a script, automation or scene, or delete one (config null), through Home Assistant's own editor for it, with the
+// signed-in admin's session, and the panel answers how it went. One per connection, kept while Home Assistant makes the
+// panel again (a change may be under way). A reconnect (Home Assistant restarted, say) drops it, and it isn't renewed by itself (the
 // improver may not be set up again yet): it's subscribed again at the next finish, and after a refusal at the one after.
 const saver = {hass: null, connection: null, ready: null, stale: true, drop: null, saving: new Set()};
 
-function saveScripts(hass, again = false) {
+function saveItems(hass, again = false) {
   saver.hass = hass;
   const {connection} = hass;
   if (!connection || (connection === saver.connection && !(again && saver.stale))) return saver.ready;
@@ -40,27 +40,29 @@ function saveScripts(hass, again = false) {
   saver.stale = false;
   saver.ready = new Promise((resolve) => {
     const drop = saver.drop = () => { saver.stale = true; resolve(); };  // Never left waiting on a lost socket.
-    connection.subscribeMessage(saveScript, {type: "assist_improver/scripts"}, {resubscribe: false}).then(resolve, drop);
+    connection.subscribeMessage(saveItem, {type: "assist_improver/editors"}, {resubscribe: false}).then(resolve, drop);
   });
   return saver.ready;
 }
 
-function saveScript(asked) {
+function saveItem(asked) {
   // Each save is kept until it's answered: finish waits for them, so a change is never finished before one lands.
   const saving = save(asked).finally(() => saver.saving.delete(saving));
   saver.saving.add(saving);
 }
 
-async function save({key, object_id, config}) {
+async function save({key, kind, id, config}) {
   const {hass} = saver;
   let error;
   try {
-    await hass.callApi(config ? "POST" : "DELETE", `config/script/config/${object_id}`, config || undefined);
+    // Each part encoded: nothing in an id takes the call past its editor's own address.
+    const path = `config/${encodeURIComponent(kind)}/config/${encodeURIComponent(id)}`;
+    await hass.callApi(config ? "POST" : "DELETE", path, config || undefined);
   } catch (err) {
     error = String(err?.body?.message || err?.error || err?.message || err);  // Home Assistant's reason, as it says it.
   }
   try {
-    await hass.callWS({type: "assist_improver/scripts/saved", key, ...(error ? {error} : {})});
+    await hass.callWS({type: "assist_improver/editors/saved", key, ...(error ? {error} : {})});
   } catch (err) { /* Not waited for any more: the change is finished from where it stands (finish). */ }
 }
 
@@ -143,7 +145,7 @@ export class PanelApp {
   setHass(hass) {
     const first = !this.hass;
     this.hass = hass;
-    saveScripts(hass);
+    saveItems(hass);
     this.menuButton();
     if (first) {
       this.render();  // At once: the toolbar, and a spinner while the first replies are on their way.
@@ -164,9 +166,10 @@ export class PanelApp {
 
   async finish() {
     // A change left open (Home Assistant stopped in the middle of it, or a panel went away) is finished first, its
-    // scripts saved from here once this panel's own saves are answered: what it did ({result}), or nothing.
+    // scripts, automations and scenes saved from here once this panel's own saves are answered: what it did
+    // ({result}), or nothing.
     try {
-      await saveScripts(this.hass, true);
+      await saveItems(this.hass, true);
       await Promise.all(saver.saving);
       return await this.ws("changeset/finish");
     } catch (err) {

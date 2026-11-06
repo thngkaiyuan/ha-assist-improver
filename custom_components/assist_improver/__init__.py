@@ -52,9 +52,10 @@ async def async_remove_entry(hass, entry):
     """Uninstalling leaves only the applied improvements behind, and writes into no other integration's settings: the
     AI Tasks the improver set up and everything it stored (recordings, run log, traces, improvements' records) are
     removed, and the household's lines are left in a notification to save (household.async_remove). A change still
-    waiting for the panel to finish its scripts (HA stopped midway, and no panel was opened since) stays as it stands:
-    only a panel saves scripts, and the settings' Uninstall finishes it first. The improver's own user goes first, so
-    nothing after it can leave it behind (it can't be deleted in Home Assistant's settings)."""
+    waiting for the panel to finish its editor items (HA stopped midway, and no panel was opened since) stays as it
+    stands: only a panel saves scripts, automations and scenes, and the settings' Uninstall finishes it first. The
+    improver's own user goes first, so nothing after it can leave it behind (it can't be deleted in Home Assistant's
+    settings)."""
     await service_user.async_remove(hass, entry)
     await household.async_remove(hass)
     await ai_setup.remove_created(hass)
@@ -291,6 +292,8 @@ async def _undo(hass, recorder, runtime):
     recorder had started). Its Repairs notices go too: setup makes them again."""
     if runtime is not None and runtime.pipeline is not None:
         await runtime.pipeline.stop()  # A run in progress stops first, then the stores close.
+    if runtime is not None:
+        runtime.improvements.changesets.stop()
     if runtime is not None and runtime.panel:
         panel.remove_panel(hass)
     await recorder.stop()

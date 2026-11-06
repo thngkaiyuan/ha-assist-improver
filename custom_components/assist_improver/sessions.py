@@ -301,17 +301,19 @@ def _names_of(entity_ids, names):
     return {n for e in entity_ids for n in (names or {}).get(e, ()) if len(n) >= 3}
 
 
-def footprint(changes, household):
-    """What a set of changes touches, for matching sessions: devices, their names and aliases (and new ones), their
-    areas and domains, whether it changes what Assist can see, and the assistants whose own instructions it edits."""
-    from .exploration import change_devices
+def footprint(changes, household, entities=()):
+    """What a set of changes touches, for matching sessions: devices (entities: those Home Assistant reads in them,
+    changes.referenced), their names and aliases (and the names they give), their areas and domains, whether it changes
+    what Assist can see, and the assistants whose own instructions it edits."""
     from .instructions import is_edit
-    entities = set(change_devices(changes))
+    entities = set(entities)
     names, areas = set(), set()
     for change in changes:
-        for key in ("alias", "script_name"):
-            if isinstance(change.get(key), str) and change[key].strip():
-                names.add(change[key].casefold().strip().replace("_", " "))
+        config = change.get("config") if isinstance(change.get("config"), dict) else {}
+        for name in (change.get("name"), change.get("name_by_user"), *(change.get("aliases") or []),
+                     config.get("alias"), config.get("name")):
+            if isinstance(name, str) and name.strip():
+                names.add(name.casefold().strip().replace("_", " "))
     for entity_id in entities:
         names |= set(device_names(household, entity_id))
         try:
@@ -322,8 +324,8 @@ def footprint(changes, household):
             areas.add(str(card["area"]).casefold())
     return {"entities": entities, "names": {n for n in names if len(n) >= 3}, "areas": areas,
             "domains": {e.split(".", 1)[0] for e in entities},
-            "exposure": any(c.get("kind") == "exposure" or (c.get("kind") == "script" and c.get("expose") is not False)
-                            for c in changes),
+            "exposure": any(c.get("kind") == "registry" and "expose" in c
+                            or c.get("kind") in ("script", "scene") and c.get("expose") is not False for c in changes),
             "assistants": {c["target"] for c in changes if is_edit(c) and c.get("target")}}
 
 

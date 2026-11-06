@@ -5,8 +5,8 @@ www/panel.js (the modules it loads are in www/panel/, under the same ?v=VERSION)
 that talks to Home Assistant over websocket commands (improvements and
 decisions, runs, household knowledge, settings, Uninstall). Each review has its own
 address, so the notification links straight to it; settings are at
-/assist-improver?view=settings. The panel also saves the scripts a change writes,
-through Home Assistant's own script editor (ScriptChannel).
+/assist-improver?view=settings. The panel also saves the scripts, automations and scenes
+a change writes, through Home Assistant's own editors (EditorChannel).
 """
 
 import asyncio
@@ -27,31 +27,33 @@ from .cases import CaseError
 from .changeset import BUSY, NoPanel, plan_steps
 from .const import DOMAIN, VERSION
 from .devview import COMMANDS as DEVELOPER_COMMANDS
-from .improvements import (DECISIONS, KINDS, PENDING, PHYSICAL, choices, display_title, gains, physical, reasons,
-                           reply_words, row)
+from .improvements import (DECISIONS, KINDS, PENDING, choices, display_title, gains, physical, reasons, reply_words,
+                           row)
 from .runtime import loaded
+from .weeks import reviewed
 
 URL_PATH = "assist-improver"  # The panel's address: /assist-improver?id=<improvement>.
 STATIC = f"/{DOMAIN}_static"
 CONTEXT = 2  # Unchanged lines shown around each change.
 # hass.data, not runtime_data, for what outlives an entry's reload: the frontend's panel, the static path (set once per
-# run) and the panels' open connections with their script saves.
+# run) and the panels' open connections with their saves.
 PANEL_KEY: HassKey[bool] = HassKey(f"{DOMAIN}_panel")  # Set while the panel is registered.
 STATIC_KEY: HassKey[bool] = HassKey(f"{DOMAIN}_static")  # Set once the static path is registered.
 # What an accept that met a conflict asks the household before its conversation goes back in at Propose (P0.7).
 RESOLVE = {"value": "resolve", "label": "Send it back to resolve"}
 REVISING = "Thanks. The improver is revising it now."  # After a revision, or a conflict sent back to resolve.
-# {id of a websocket connection: its panel's ScriptChannel}
-CHANNELS: HassKey[dict[int, "ScriptChannel"]] = HassKey(f"{DOMAIN}_script_channels")
+# {id of a websocket connection: its panel's EditorChannel}
+CHANNELS: HassKey[dict[int, "EditorChannel"]] = HassKey(f"{DOMAIN}_editor_channels")
 # {key of a save asked for: (id of its connection, the panel's answer to come)}
-ANSWERS: HassKey[dict[str, tuple[int, asyncio.Future]]] = HassKey(f"{DOMAIN}_script_answers")
+ANSWERS: HassKey[dict[str, tuple[int, asyncio.Future]]] = HassKey(f"{DOMAIN}_editor_answers")
 
 
-class ScriptChannel:
-    """The panel's script saver on one websocket connection (assist_improver/scripts). The improver never writes a
-    configuration file itself: asked here, the panel saves a script, or deletes one (None), through Home Assistant's
-    own script editor (POST or DELETE /api/config/script/config/<id>, with the signed-in admin's session), where HA
-    validates, writes and reloads it, then answers how it went (assist_improver/scripts/saved)."""
+class EditorChannel:
+    """The panel's saver on one websocket connection (assist_improver/editors). The improver never writes a
+    configuration file itself: asked here, the panel saves a script, automation or scene, or deletes one (None),
+    through Home Assistant's own editor for it (POST or DELETE /api/config/<kind>/config/<id>, with the signed-in
+    admin's session), where HA validates, writes and reloads it, then answers how it went
+    (assist_improver/editors/saved)."""
 
     TIMEOUT = 60  # Seconds the panel may take to answer: past it, the panel counts as gone.
 
@@ -60,15 +62,15 @@ class ScriptChannel:
         self.asked = set()  # The keys of saves waiting for its answer.
         self.late = set()  # Those it didn't answer in time: one may still land, so no change is finished meanwhile.
 
-    async def save(self, object_id, config):
-        """Has the panel save the script (or delete it: None). HomeAssistantError with HA's reason if it wasn't; NoPanel
-        if the panel went away or didn't answer."""
+    async def save(self, kind, item_id, config):
+        """Has the panel save the item (or delete it: None) through HA's editor for its kind (script, automation or
+        scene). HomeAssistantError with HA's reason if it wasn't; NoPanel if the panel went away or didn't answer."""
         key, answer = uuid.uuid4().hex, asyncio.get_running_loop().create_future()
         self.hass.data.setdefault(ANSWERS, {})[key] = (id(self.connection), answer)
         self.asked.add(key)
         try:
             self.connection.send_message(websocket_api.event_message(
-                self.msg_id, {"key": key, "object_id": object_id, "config": config}))
+                self.msg_id, {"key": key, "kind": kind, "id": item_id, "config": config}))
             async with asyncio.timeout(self.TIMEOUT):
                 error = await answer
         except TimeoutError:
@@ -93,7 +95,7 @@ class ScriptChannel:
 
 
 def saver(hass, connection):
-    """The panel's script saver on this connection (ScriptChannel.save), or None if it has none."""
+    """The panel's saver on this connection (EditorChannel.save), or None if it has none."""
     channel = hass.data.get(CHANNELS, {}).get(id(connection))
     return channel.save if channel else None
 
@@ -147,7 +149,9 @@ def change_rows(step, names=None):
         name = lambda a: a if a is not None else "(its own name)"
         return ([{"sign": "-", "old": None, "new": None, "text": name(a)} for a in before or [] if a not in after]
                 + [{"sign": "+", "old": None, "new": None, "text": name(a)} for a in after if a not in (before or [])])
-    if kind == "script":
+    if kind == "automation_on":
+        return [{"sign": "+" if after else "-", "old": None, "new": None, "text": "on"}]
+    if isinstance(after, dict):  # An editor item or a registry entry, as Home Assistant's YAML.
         return numbered_diff(_yaml(before) if before else [], _yaml(after))
     return numbered_diff((before or "").splitlines(), (after or "").splitlines())
 
@@ -226,53 +230,80 @@ def said(test):
 
 
 def safety(steps):
-    """Why it's safe, stated by code from its test and the changeset (never written by a model)."""
+    """Why it's safe, stated by code from its test and the changeset (never written by a model). An automation the
+    change saves or turns on runs when it's triggered, its save included (what that sets off is in its week), so
+    nothing running as it's accepted isn't claimed then; enabling a device reloads its integration: said too."""
     facts = ["Tested on your own conversations, replayed in a sandboxed copy of your home: nothing in your home "
              "moved."]
     counts = {}
     for step in steps:
         kind = step["kind"]
-        if kind == "script":
-            key = "new script" if step["before"] is None else "script updated"
-        elif kind == "exposure":
-            key = "device or script made visible to Assist" if step["after"] else "device hidden from Assist"
+        if kind in ("script", "automation", "scene"):
+            key = f"new {kind}" if step["before"] is None else f"{kind} updated"
+        elif kind == "automation_on":
+            key = "automation turned on" if step["after"] else "automation turned off"
+        elif kind in ("entity", "device", "area"):
+            key = f"{kind if kind != 'entity' else 'device'} setting changed"
+        elif kind == "exposure":  # By what it is: a script, a scene, or a device.
+            what = domain if (domain := step["target"].split(".", 1)[0]) in ("script", "scene") else "device"
+            key = f"{what} made visible to Assist" if step["after"] else f"{what} hidden from Assist"
         elif kind == "alias":
             key = "name added"
         elif kind == "household":
             key = "household line"
-        elif kind == "assistant_api":  # An improvement applied up to 0.37, which also switched the assistant.
-            key = "assistant switched to household knowledge"
+        elif kind == "assistant_api":  # Only ever fewer now; one applied up to 0.37 switched to household knowledge.
+            key = ("assistant's LLM APIs narrowed" if set(step["after"] or []) < set(step["before"] or [])
+                   else "assistant's LLM APIs changed")
         else:
             key = "instruction change"
         counts[key] = counts.get(key, 0) + 1
     if counts:
-        plural = lambda n, w: f"{n} {w}" if n == 1 else f"{n} " + {"new script": "new scripts", "script updated":
-            "scripts updated", "device or script made visible to Assist": "devices or scripts made visible to Assist",
-            "device hidden from Assist": "devices hidden from Assist", "name added": "names added",
-            "household line": "household lines", "assistant switched to household knowledge":
-            "assistants switched to household knowledge", "instruction change": "instruction changes"}[w]
-        facts.append("Only settings change: " + ", ".join(plural(n, w) for w, n in counts.items())
-                     + ". Nothing runs when you accept.")
+        plural = lambda n, w: f"{n} {w}" if n == 1 else f"{n} " + {
+            **{f"{k} {seen} Assist": f"{k}s {seen} Assist" for k in ("device", "script", "scene")
+               for seen in ("made visible to", "hidden from")}, "name added": "names added",
+            "household line": "household lines", "assistant's LLM APIs narrowed": "assistants' LLM APIs narrowed",
+            "assistant's LLM APIs changed": "assistants' LLM APIs changed",
+            "instruction change": "instruction changes", "automation turned on": "automations turned on",
+            "automation turned off": "automations turned off", "device setting changed": "device settings changed",
+            "area setting changed": "area settings changed",
+            **{f"new {k}": f"new {k}s" for k in ("script", "automation", "scene")},
+            **{f"{k} updated": f"{k}s updated" for k in ("script", "automation", "scene")}}[w]
+        said = ", ".join(plural(n, w) for w, n in counts.items())
+        live = sum(1 for s in steps if s["kind"] == "automation" and s["after"] is not None
+                   or s["kind"] == "automation_on" and s["after"])
+        enabled = [s["what"] for s in steps if s["kind"] == "entity" and (s["before"] or {}).get("disabled_by")
+                   and not s["after"].get("disabled_by")]
+        line = (f"Changes: {said}. " + ("The automation runs when it's triggered" if live == 1
+                                        else "The automations run when they're triggered") if live
+                else f"Only settings change: {said}. Nothing runs when you accept")
+        if enabled:
+            line += f"; enabling {' and '.join(enabled)} reloads " + (
+                "its integration" if len(enabled) == 1 else "their integrations")
+        facts.append(line + ".")
     facts.append("Checked against your Home Assistant first, applied all or nothing, and one click to undo.")
     return facts
 
 
 def review(item, planned=None, names=None, hass=None, revising=False, resolvable=False):
     """Everything the panel shows for one improvement, built by code. names: {user id: name} for household lines.
-    hass: to tell a device that drives a door by its name in Home Assistant too (improvements.physical). revising: its
-    revision's round runs (improvements.choices). resolvable: its accept met a conflict, and the household is asked
-    to send it back (flow.Flow.resolvable). One whose accept met a conflict shows what that accept met."""
+    hass: Home Assistant now, for a cover's device class (improvements.physical) and the names an automation's review
+    says (weeks.reviewed). revising: its revision's round runs (improvements.choices). resolvable: its accept met a
+    conflict, and the household is asked to send it back (flow.Flow.resolvable). One whose accept met a conflict shows
+    what that accept met."""
     shown = row(item["test"])
     still = still_open(shown)
     steps, already, conflicts = planned or ((item.get("application") or {}).get("steps") or [], [],
                                             item.get("conflicts") or [] if item["status"] == "conflict" else [])
+    assistant = item["provider"].get("title") or "Assist"
     changes = [change_file(step, names) for step in steps]
     changes += [{"name": a["what"], "kind": KINDS[a["kind"]], "rows": [], "added": 0, "removed": 0,
                  "already": True} for a in already]
-    if not changes:  # Decided already and nothing applied: the changes as proposed.
-        assistant = item["provider"].get("title") or "Assist"
-        changes = [{"name": _change_text(c, assistant), "kind": KINDS.get(c["kind"], c["kind"]), "rows": [],
-                    "added": 0, "removed": 0, "proposed": True} for c in item["changes"]]
+    if not changes:  # Decided already and nothing applied: the changes as proposed (a recommendation's own below).
+        changes = [{"name": _change_text(c, assistant, hass), "kind": _change_kind(c), "rows": [],
+                    "added": 0, "removed": 0, "proposed": True} for c in item["changes"] if not _only_recommends(c)]
+    # A better setting for an assistant: named for the household to change by hand, never applied or tested.
+    changes += [{"name": _recommended_text(c, assistant), "kind": "assistant", "rows": [], "added": 0, "removed": 0,
+                 "recommended": True} for c in item["changes"] if c.get("kind") == "assistant" and c.get("recommend")]
     recent, recent_ok = None, False
     if last := item.get("last_outcome"):
         # A decision changes the sidebar count, and Home Assistant then rebuilds the panel: the outcome comes back
@@ -293,12 +324,11 @@ def review(item, planned=None, names=None, hass=None, revising=False, resolvable
             # What it gets the household, counted (the line under its headline, as the list has it), and what the
             # household pointed out that it doesn't show fixed.
             **gains(item), "still_open": still,
-            # A door's or valve's motion isn't simulated: said where the improvement involves one (its changes, cause
-            # and test as the review shows it: not every script and exposed device its replays ran with).
-            "physical": bool(PHYSICAL.search(json.dumps([item.get("changes"), item.get("cause"), shown], default=str)))
-            or any(physical(hass, e) for c in item.get("changes") or []
-                   for e in [c.get("entity_id"), *(s.get("entity_id") for s in c.get("steps") or [])]
-                   if isinstance(e, str)),
+            # A door's, valve's, lock's or alarm's motion isn't simulated: said where the improvement involves one
+            # (the devices its changes touch and its goals want, by domain and device class).
+            "physical": any(physical(hass, e) for e in item.get("devices") or []),
+            # Each automation it changes: when it runs, and its simulated week (weeks.py).
+            "automations": reviewed(hass, item),
             "tests": [{"summary": tested_on(shown, hass), "improved": shown["improved"], "result": test_result(shown),
                        # What the household pointed out that it doesn't show fixed, and how many a reply still did.
                        **({"open": len(still), "happened": sum(not o.get("set_aside") for o in still)}
@@ -324,8 +354,11 @@ def outcome_text(item):
             return "Thanks. Declined, and its conversation is archived."
         return "Thanks, your decision is recorded."
     if status == "done":
-        script = any(c.get("kind") == "script" for c in item.get("changes") or [])
-        applied = ("Applied. Assist uses it from your next request; no script was run." if script
+        changes = item.get("changes") or []
+        live = any(c.get("kind") == "automation" and ("config" in c or c.get("on")) for c in changes)
+        script = any(c.get("kind") == "script" for c in changes)
+        applied = ("Applied. The automation runs when it's triggered." if live
+                   else "Applied. Assist uses it from your next request; no script was run." if script
                    else "Applied. Assist uses it from your next request.")
         changed = [l for l in outcome.get("left") or [] if not l.get("used_by")]
         kept = [l for l in outcome.get("left") or [] if l.get("used_by")]  # Another applied improvement adds it too.
@@ -344,9 +377,11 @@ def outcome_text(item):
     return outcome.get("error") or status
 
 
-def _change_text(change, assistant):
+def _change_text(change, assistant, hass=None):
+    """A change as proposed, in a line: what the review lists once nothing of it is planned or applied. hass: Home
+    Assistant now, for an automation's name."""
     from .instructions import is_edit
-    kind = change["kind"]
+    kind = change.get("kind")
     if is_edit(change):  # One assistant's own instructions: lines added, replaced or removed there.
         name = change.get("assistant") or assistant
         replaced = ", ".join(f"“{r}”" for r in change.get("replaces") or [])
@@ -354,25 +389,64 @@ def _change_text(change, assistant):
             return f"Remove from {name}'s instructions: {replaced}"
         text = f"Add to {name}'s instructions: “{change['text'].strip()}”"
         return text + (f", replacing {replaced}" if replaced else "")
-    if kind in ("preference", "prompt"):  # The instructions of the assistant the conversations used.
+    if kind == "preference":  # The household knowledge, which the assistant reads.
         who = "for you" if change.get("for") == "this_user" else "for everyone"
         text = f"Add to {assistant}'s instructions ({who}): “{change.get('text', '').strip()}”"
         if change.get("replaces"):
             text += ", replacing " + ", ".join(f"“{r}”" for r in change["replaces"])
         return text
-    if kind == "alias":
-        text = f"Give {change['entity_id']} the alias “{change.get('alias')}”"
-        return text + (", replacing " + ", ".join(change["replaces"]) if change.get("replaces") else "")
-    if kind == "exposure":
-        return f"{'Expose' if change.get('expose', True) else 'Hide'} {change['entity_id']} " \
-               f"{'to' if change.get('expose', True) else 'from'} Assist"
-    if kind == "script":
-        steps = ", ".join(s.get("stop") and f"stop: {s['stop']}" or f"{s['service']} {s['entity_id']}"
-                          for s in change.get("steps") or [])
-        if change.get("entity_id"):
-            return f"Change script {change['entity_id']}" + (f": {steps}" if steps else "") + \
-                   (f" (description: {change['text']})" if change.get("text") else "")
-        return f"New script “{change.get('script_name')}”: {steps}"
+    if kind == "assistant" and "llm_hass_api" in change:
+        return f"{change.get('assistant') or assistant} keeps only: {', '.join(change['llm_hass_api']) or 'no LLM API'}"
+    if kind == "assistant":
+        return _recommended_text(change, assistant)
+    if kind == "automation" and "on" in change:
+        state = next((s for s in hass.states.async_all("automation")
+                      if str(s.attributes.get("id")) == str(change.get("id"))), None) if hass else None
+        name = (state.attributes.get("friendly_name") if state else None) or change.get("id")
+        return f"Turn {'on' if change['on'] else 'off'} automation “{name}”"
+    if kind in ("script", "automation", "scene"):
+        config = change.get("config") or {}
+        return f"{kind.capitalize()} “{config.get('alias') or config.get('name') or change.get('id')}”"
+    if kind == "registry":
+        target = change.get("entity_id") or change.get("device_id") or change.get("area_id")
+        said = [f"{'Expose' if change['expose'] else 'Hide'} {target} {'to' if change['expose'] else 'from'} Assist"
+                ] if "expose" in change else []
+        said += [f"Rename {target} “{change[k]}”" for k in ("name", "name_by_user") if change.get(k)]
+        if "aliases" in change:
+            said.append(f"Give {target} the alias{'es' if len(change['aliases']) > 1 else ''} "
+                        + ", ".join(f"“{a}”" for a in change["aliases"]))
+        if (change.get("entity_id") or change.get("device_id")) and "area_id" in change:
+            said.append(f"Move {target} to {change['area_id'] or 'no area'}")
+        if "hidden_by" in change:
+            said.append(f"{'Hide' if change['hidden_by'] else 'Unhide'} {target}")
+        if "disabled_by" in change:
+            said.append(f"Enable {target}")
+        return "; ".join(said) or str(target)
+    return kind or "change"
+
+
+def _only_recommends(change):
+    """Whether a change is only a recommendation: an assistant change that sets neither its instructions nor its LLM
+    APIs."""
+    from .instructions import is_edit
+    return change.get("kind") == "assistant" and not is_edit(change) and "llm_hass_api" not in change
+
+
+def _recommended_text(change, assistant):
+    """An assistant change's recommendation, in a line: the options it names for the household to change by hand."""
+    return f"For {change.get('assistant') or assistant}, consider: " + ", ".join(
+        f"{k}: {v if isinstance(v, str) else json.dumps(v)}" for k, v in (change.get("recommend") or {}).items())
+
+
+def _change_kind(change):
+    """A change as proposed, labelled as the review labels its steps (improvements.KINDS)."""
+    from .instructions import is_edit
+    kind = change.get("kind")
+    if kind == "preference" or is_edit(change):
+        return "instructions"
+    if kind == "registry":
+        return ("exposure" if "expose" in change else "aliases" if "aliases" in change
+                else "device" if change.get("entity_id") or change.get("device_id") else "area")
     return kind
 
 
@@ -443,7 +517,7 @@ async def ws_decide(hass, connection, msg):
         item = await runtime.improvements.decide(msg["improvement_id"], msg["decision"], note=msg["note"],
                                                   user_id=connection.user.id, reason=msg.get("reason"),
                                                   revising=runtime.flow.revising(msg["improvement_id"]),
-                                                  scripts=saver(hass, connection))
+                                                  editors=saver(hass, connection))
     except CaseError as err:
         connection.send_error(msg["id"], "decision", str(err))
         return
@@ -460,22 +534,23 @@ async def ws_decide(hass, connection, msg):
                                           if conflict else {})})
 
 
-@websocket_api.websocket_command({probatio.Required("type"): f"{DOMAIN}/scripts"})
+@websocket_api.websocket_command({probatio.Required("type"): f"{DOMAIN}/editors"})
 @websocket_api.require_admin
 @callback
-def ws_scripts(hass, connection, msg):
-    """The panel saves scripts for the improver on this connection (ScriptChannel), while it's subscribed."""
-    channel = hass.data.setdefault(CHANNELS, {})[id(connection)] = ScriptChannel(hass, connection, msg["id"])
+def ws_editors(hass, connection, msg):
+    """The panel saves scripts, automations and scenes for the improver on this connection (EditorChannel), while
+    it's subscribed."""
+    channel = hass.data.setdefault(CHANNELS, {})[id(connection)] = EditorChannel(hass, connection, msg["id"])
     connection.subscriptions[msg["id"]] = channel.close
     connection.send_result(msg["id"])
 
 
-@websocket_api.websocket_command({probatio.Required("type"): f"{DOMAIN}/scripts/saved", probatio.Required("key"): str,
+@websocket_api.websocket_command({probatio.Required("type"): f"{DOMAIN}/editors/saved", probatio.Required("key"): str,
                                   probatio.Optional("error"): str})
 @websocket_api.require_admin
 @callback
-def ws_scripts_saved(hass, connection, msg):
-    """The panel's answer to a save it was asked for (ScriptChannel.save): done, or HA's reason it wasn't."""
+def ws_editors_saved(hass, connection, msg):
+    """The panel's answer to a save it was asked for (EditorChannel.save): done, or HA's reason it wasn't."""
     asked, answer = hass.data.get(ANSWERS, {}).get(msg["key"], (None, None))
     if asked == id(connection) and not answer.done():
         answer.set_result(msg.get("error") or None)
@@ -489,14 +564,14 @@ def ws_scripts_saved(hass, connection, msg):
 @websocket_api.async_response
 async def ws_changeset_finish(hass, connection, msg):
     """Before anything else, the panel finishes a change left open (HA stopped in the middle of it, or a panel went
-    away) from where it stands, saving its scripts: {result: what it did, for the improvement's own review} once it's
-    final, {} if there's none to finish now (none open; HA hasn't started yet, when its start undoes what the improver
-    writes itself first; or a save a panel didn't answer in time may still land)."""
+    away) from where it stands, saving its editor items: {result: what it did, for the improvement's own review} once
+    it's final, {} if there's none to finish now (none open; HA hasn't started yet, when its start undoes what the
+    improver writes itself first; or a save a panel didn't answer in time may still land)."""
     if (runtime := _runtime(hass, connection, msg)) is None:
         return
-    scripts = saver(hass, connection)
-    outcome = (await runtime.improvements.recover(scripts, lambda: late(hass))
-               if scripts and hass.state is CoreState.running else None)
+    editors = saver(hass, connection)
+    outcome = (await runtime.improvements.recover(editors, lambda: late(hass))
+               if editors and hass.state is CoreState.running else None)
     connection.send_result(msg["id"], {"result": outcome["brief"]} if outcome and "brief" in outcome else {})
 
 
@@ -963,7 +1038,7 @@ async def ws_uninstall(hass, connection, msg):
 
 
 def register_commands(hass):
-    for handler in (ws_list, ws_get, ws_decide, ws_scripts, ws_scripts_saved, ws_changeset_finish, ws_household,
+    for handler in (ws_list, ws_get, ws_decide, ws_editors, ws_editors_saved, ws_changeset_finish, ws_household,
                     ws_run_status, ws_run_start, ws_run_cancel, ws_settings, ws_settings_set, ws_settings_models,
                     ws_settings_create, ws_settings_recommended, ws_log,
                     ws_household_edit, ws_conversations, ws_conversation, ws_conversation_send, ws_conversation_hide,

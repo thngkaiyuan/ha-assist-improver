@@ -12,7 +12,7 @@ touched.
   resolves exactly as before, so it isn't replayed; how many weren't, and why, is said. They are signals to weigh, not regressions: a change that folds several
   flows into one more general script makes the old calls resolve differently while the new script covers them.
 - capabilities: each of HA's Assist tools is tried on each device, and what HA carries out is what Assist can do.
-- instructions: an assistant's instructions as a prompt change edits them, rendered by HA for that assistant's newest
+- instructions: an assistant's instructions as an assistant change edits them, rendered by HA for that assistant's newest
   conversation as its chat log renders them (ha_name, user_name, llm_context): what Assist would read, or HA's error;
   and for a request without a signed-in person or an asking device, which HA renders them for too.
 - an automation's week: the home as the conversation ended, an automation change on top, run through a simulated week
@@ -32,7 +32,7 @@ from homeassistant.helpers import llm
 
 from .analyzer import top_level
 from .cases import CaseError, recording_turns, replayable_turns
-from .changes import setup_from_changes
+from .changes import RESOLVING, changed, setup_from_changes
 from .failures import contained
 from .sandbox import SANDBOX_KEY, Sandbox, observe, seed, seed_options, setup_of
 from .simulation import ended, moved_by_others, recorded
@@ -82,18 +82,16 @@ def _context(turn):
 
 async def _start(recording, turn, today, setup=None):
     """A sandbox seeded as today's home at this turn's moment (snapshot.at_moment), the person speaking with their
-    rights today (today's person, worker.job), with a hypothesis's setup (exposure, aliases, scripts) on top."""
-    source = at_moment(today["home"], turn["source"])
+    rights today (today's person, worker.job), with a hypothesis's setup (setup_from_changes's) on top."""
     setup = setup or {}
-    scripts = {**deepcopy(source.get("scripts") or {}), **(setup.get("scripts") or {})}
+    source = changed(at_moment(today["home"], turn["source"]), setup)
     sandbox = await Sandbox.start(source.get("time_zone") or "UTC", source, setup_of(today))
     try:
         await sandbox.run(lambda hass: seed(hass, person=today.get("person"), **seed_options(today, turn),
-                                            scripts=scripts, recorded=recorded(recording, today["tools"]),
+                                            scripts=deepcopy(source.get("scripts") or {}),
+                                            recorded=recorded(recording, today["tools"]),
                                             automations=source.get("automations") or [],
-                                            exposure_changes=setup.get("exposure"),
-                                            alias_changes=setup.get("aliases"),
-                                            alias_removals=setup.get("alias_removals")))
+                                            exposure_changes=setup.get("exposure")))
     except BaseException:
         await sandbox.stop()
         raise
@@ -198,7 +196,7 @@ class Evidence:
                          templates=list(templates), user_name=user_name, quiet_only=quiet_only)
 
     async def instructions(self, hypothesis, hass=None):
-        """Each assistant's instructions as the hypothesis's prompt changes edit them: rendered by HA (what Assist
+        """Each assistant's instructions as the hypothesis's assistant changes edit them: rendered by HA (what Assist
         would read), or why not."""
         from .instructions import is_edit
         changes, facts = self.sessions.with_targets(hypothesis.get("changes")), []
@@ -229,17 +227,24 @@ class Evidence:
         return deepcopy(self.today["home"].get("scripts") or {})
 
     async def check(self, hypothesis, hass=None):
-        """The facts for a draft; problems with the change itself (HA can't load it) come first."""
+        """The facts for a draft; problems with the change itself (Home Assistant doesn't accept it, or can't load
+        it) come first."""
+        await self.sessions.check_changes(hass, [hypothesis])
+        found = [f"Change {n} ({c.get('kind')}): {p}" for n, c in enumerate(hypothesis.get("changes") or [], 1)
+                 for p in self.sessions.checked_of(c) or []]
         try:
             setup = self.setup(hypothesis)
         except CaseError as err:
-            return {"problems": [str(err)]}
+            found.append(str(err))
+        if found:
+            return {"problems": found}
         implementation = await self.implementation(hypothesis, setup)
         edited = await self.instructions(hypothesis, hass)
-        if setup["exposure"] or setup["aliases"] or setup["scripts"]:
+        if any(setup.get(k) for k in RESOLVING):
             from .sessions import applies, footprint
             # An edit of an assistant's instructions doesn't change how HA resolves a recorded call.
-            fp = {**footprint(hypothesis.get("changes") or [], self.sessions.household), "assistants": set()}
+            changes = hypothesis.get("changes") or []
+            fp = {**footprint(changes, self.sessions.household, self.sessions.devices_of(changes)), "assistants": set()}
             replayable = {s for s, b in self.sessions.briefs.items() if b["replayable"]}
             affected = {s for s in replayable if applies(self.sessions.briefs[s], fp)}
             signals = await self.resolution_signals(setup, affected)
@@ -257,7 +262,8 @@ class Evidence:
                 **({"instructions": edited} if edited else {})}
 
     async def implementation(self, hypothesis, setup):
-        """Each new or edited script, run from the state each named goal started in; new aliases, matched by HA."""
+        """Each new or edited script, run from the state each named goal started in; new aliases and names, matched
+        by HA."""
         facts = []
         for ref in hypothesis.get("goals") or []:
             session, turn_no = ref["session"][:8], ref["goal_turn"]
@@ -282,7 +288,11 @@ class Evidence:
                                                      f"{session}:{turn_no}"))
             if one.failed:
                 facts.append({"goal": f"{session}:{turn_no}", "reaches_goal": None, "note": UNCHECKED + one.error})
-        for entity_id, aliases in setup["aliases"].items():
+        names = {e: list(a) for e, a in setup["aliases"].items()}  # New aliases and names: what Assist matches.
+        for entity_id, fields in ((setup.get("registry") or {}).get("entities") or {}).items():
+            if fields.get("name"):
+                names.setdefault(entity_id, []).append(fields["name"])
+        for entity_id, aliases in names.items():
             async with contained("propose", entity_id, step="alias match", expected=(CaseError,)) as one:
                 facts.append(await self._match_aliases(setup, entity_id, aliases))
             if one.failed:
@@ -546,15 +556,37 @@ async def probe_capabilities(recording, entity_ids, today):
 
 
 async def automation_week(recording, today, change, seconds=WEEK_SECONDS):
-    """An automation change's week (DETAILS P6.13): change: {"automations": [an automation's whole config, by its
-    id: new, or in place of the home's], "on": {automation entity: on or off}}. {"with": the week with the change,
-    "without": the week without it, for a change to an automation the home has (None for a new one)}, each run_week's,
-    in a fresh worker of its own, within seconds."""
-    ids = {a.get("id") for a in (today["home"].get("automations") or [])}
-    edits = change.get("on") or any(a.get("id") in ids for a in change.get("automations") or [])
-    week = await job("week", recording=recording, today=today, change=change, seconds=seconds)
-    return {"with": week,
-            "without": await job("week", recording=recording, today=today, seconds=seconds) if edits else None}
+    """An automation change's week (DETAILS P6.13): change: setup_from_changes's, its automations ({id: its whole
+    config}: new, or in place of the home's) and automation_on ({automation entity: on or off}) on top of today's
+    setup. {"with": the week with the change, "without": the week without it, for a change to an automation the home
+    has (None for a new one)}, each run_week's, in a fresh worker of its own, side by side, within seconds."""
+    ids = {str(a.get("id")) for a in (today["home"].get("automations") or [])}
+    edits = change.get("automation_on") or any(i in ids for i in change.get("automations") or {})
+    week = lambda **more: job("week", recording=recording, today=today, seconds=seconds, **more)  # noqa: E731
+    weeks = await asyncio.gather(week(change=change), *([week()] if edits else []))
+    return {"with": weeks[0], "without": weeks[1] if edits else None}
+
+
+async def improvement_week(hass, recorder, item):
+    """An improvement's automations as its review shows them (weeks.reviewed), with their week: each it changes, by
+    id: its configuration (as proposed, or for one turned on or off as the home has it), whether it's new, and its
+    week (weeks.week) of the improvement's whole setup on top of today's (what it saves with the automation, a scene it
+    turns on, say), on the conversation it came from. One whose week couldn't run says why (failed)."""
+    from .replay import today as setup_today
+    from .simulate import agent_of
+    from .weeks import week
+    recording = await recorder.export(item["conversation"])
+    agent, _ = await hass.async_add_executor_job(agent_of, recording)
+    today = await setup_today(hass, agent)
+    home = {str(a.get("id")): a for a in today["home"].get("automations") or [] if a.get("id") is not None}
+    automations = [{"id": c["id"], "on": c["on"], "config": deepcopy(home.get(str(c["id"])) or {})} if "on" in c else
+                   {"id": c["id"], "config": deepcopy(c["config"]), "new": str(c["id"]) not in home}
+                   for c in item["changes"] if c.get("kind") == "automation"]
+    try:
+        found = await automation_week(recording, today, item["setup"])
+    except Exception as err:  # noqa: BLE001 - the week informs the review; it never holds the improvement.
+        return {"failed": str(err) or type(err).__name__, "automations": automations}
+    return {"automations": [{**a, "week": week(found, a)} for a in automations]}
 
 
 async def run_week(recording, today, change=None, seconds=WEEK_SECONDS):
@@ -562,29 +594,25 @@ async def run_week(recording, today, change=None, seconds=WEEK_SECONDS):
     through WEEK_DAYS simulated days within seconds (real), waits passing at once (clock.Window): {"days": whole days
     run, "runs": each automation run, {automation, id, at, changed: [{entity_id, old, new, attributes changed}]}}.
     Devices don't act on their own: only what Home Assistant's own time (time, sun, timers) and the automations
-    themselves set off happens."""
+    themselves set off happens. The change's automations are saved as applying saves them, last and as the week
+    starts (_save), so what their save sets off runs too."""
     from homeassistant.components.automation import EVENT_AUTOMATION_TRIGGERED
     from homeassistant.const import EVENT_STATE_CHANGED
     from homeassistant.core import callback
     from . import clock
     from .serialization import plain
     change = change or {}
-    source = at_moment(today["home"], ended(recording))
-    replaced = {a["id"] for a in change.get("automations") or [] if a.get("id") is not None}
-    automations = [a for a in source.get("automations") or [] if a.get("id") is None or a["id"] not in replaced]
-    automations += change.get("automations") or []
+    saving = {k: change[k] for k in ("automations", "automation_on") if change.get(k)}
+    source = changed(at_moment(today["home"], ended(recording)), {k: v for k, v in change.items() if k not in saving})
     turn = recording_turns(recording)[-1]
     sandbox = await Sandbox.start(source.get("time_zone") or "UTC", source, setup_of(today))
     try:
         await sandbox.run(lambda hass: seed(hass, person=today.get("person"), **seed_options(today, turn),
                                             scripts=deepcopy(source.get("scripts") or {}),
-                                            automations=automations,
+                                            automations=source.get("automations") or [],
                                             recorded=recorded(recording, today["tools"])))
 
         async def week(hass):
-            for entity_id, on in (change.get("on") or {}).items():
-                await hass.services.async_call("automation", "turn_on" if on else "turn_off",
-                                               {"entity_id": entity_id}, blocking=True)
             runs, by_context = [], {}
 
             @callback
@@ -608,6 +636,7 @@ async def run_week(recording, today, change=None, seconds=WEEK_SECONDS):
                          hass.bus.async_listen(EVENT_STATE_CHANGED, changed)]
             start = hass.loop.clock.now()
             try:
+                await _save(hass, source.get("automations") or [], saving)
                 await hass.loop.settle(start + WEEK_DAYS * 86400, clock.REAL_MONOTONIC() + seconds)
             finally:
                 for unlisten in listening:
@@ -616,3 +645,29 @@ async def run_week(recording, today, change=None, seconds=WEEK_SECONDS):
         return await sandbox.run(week)
     finally:
         await sandbox.stop()
+
+
+async def _save(hass, automations, saving):
+    """A change's automations (saving: setup_from_changes's automations and automation_on) saved in the sandbox as
+    applying saves them: each through what Home Assistant's automation editor does once it has written its file (its
+    automations, the home's with the change's in place or added), its reload of that automation; then each turned on or
+    off through its service."""
+    from homeassistant.setup import async_setup_component
+    from homeassistant.util.yaml import dump
+    if new := saving.get("automations"):
+        kept = [a for a in automations if a.get("id") is None or str(a["id"]) not in new]
+        files = {"configuration.yaml": "automation: !include automations.yaml\n",
+                 "automations.yaml": dump(deepcopy(kept + list(new.values())))}
+
+        def write():
+            for name, text in files.items():
+                with open(hass.config.path(name), "w", encoding="utf-8") as file:
+                    file.write(text)
+        await hass.async_add_executor_job(write)
+        if "automation" not in hass.config.components and not await async_setup_component(hass, "automation", {}):
+            raise RuntimeError("The sandbox could not load the automations")
+        for automation_id in new:
+            await hass.services.async_call("automation", "reload", {"id": automation_id}, blocking=True)
+    for entity_id, on in (saving.get("automation_on") or {}).items():
+        await hass.services.async_call("automation", "turn_on" if on else "turn_off", {"entity_id": entity_id},
+                                       blocking=True)

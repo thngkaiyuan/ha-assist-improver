@@ -71,6 +71,14 @@ export const TEXT = {
            // under the tests when any did.
            moreWords: "Says more", moreWordsTip: "Assist's replies: about {after} words each, {before} before.",
            moreWordsLine: "With this change, Assist's replies got longer in {n} of these.",
+           // A better setting for an assistant, in What changes: named for you to change, never applied or tested.
+           recommended: "Not applied or tested: change it yourself if you want it.",
+           // Under What went wrong, where a door, valve, lock or alarm is involved (DETAILS P11.5).
+           physical: "Motion isn't simulated: a door, valve, lock or alarm counts as done once its command succeeds.",
+           // Each automation it changes: when it runs, and its simulated week in a few words; opened, each run.
+           week: {title: "When it runs", tip: "Over a simulated week after your conversation",
+                  days: " · {days} of 7 days simulated", more: "and {more} more", failed: "week not simulated",
+                  change: {new: "new", edited: "edited", on: "turned on", off: "turned off"}},
            // A reason a decision can be given with: a box to tick under it, and the note's placeholder once ticked.
            reasons: {not_an_issue: {label: "Not an issue", hint: "It went fine, or you were only trying Assist out.",
                                     note: "Anything to add? (optional)"}}},

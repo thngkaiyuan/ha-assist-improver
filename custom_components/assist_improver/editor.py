@@ -71,9 +71,9 @@ def entity_names(hass, item):
     return names
 
 
-def payload(item, names=None, assistant=None):
+def payload(item, names=None, assistant=None, hass=None):
     """The improvement as the editor reads it: its idea, cause and changes in plain words (named as the household
-    names things), and its test (improvements.row)."""
+    names things, an automation by its name in Home Assistant: hass), and its test (improvements.row)."""
     from .improvements import row, wordier
     from .panel import _change_text
     names = names or {}
@@ -86,7 +86,8 @@ def payload(item, names=None, assistant=None):
     if wordier(test):  # Counted by code: the write-up mustn't call it briefer.
         entry["assist_says_more"] = True
     return {"idea": item.get("title"), "what_was_going_wrong": item.get("cause"),
-            "changes": [named(_change_text(c, assistant), names) for c in item.get("changes", [])], "tested": [entry]}
+            "changes": [named(_change_text(c, assistant, hass), names) for c in item.get("changes", [])],
+            "tested": [entry]}
 
 
 def outcome(test, names):
@@ -141,7 +142,7 @@ async def write(hass, item, entity_id):
     from .reflective import run_role
     submit = SubmitCopy()
     record = await run_role(hass, role=ROLE, entity_id=entity_id, instructions=INSTRUCTIONS,
-                            payload=payload(item, entity_names(hass, item)),
+                            payload=payload(item, entity_names(hass, item), hass=hass),
                             structure=None, llm_api=SessionAPI(hass, tools=[submit]), allow_paid_inference=True)
     answer = submit.best()
     if answer is None:

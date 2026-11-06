@@ -83,6 +83,11 @@ export const STYLE = `
   :host(.dark) .kind.script { color: #9a6dd7; } :host(.dark) .kind.exposure { color: #3d8bd9; }
   :host(.dark) .kind.aliases { color: #c9861a; } :host(.dark) .kind.instructions, :host(.dark) .kind.household { color: #1f9e9a; }
   :host(.dark) .kind.assistant { color: #8a8f98; }
+  .kind.automation { color: #3443b0; background: rgba(91, 108, 230, 0.12); border-color: rgba(91, 108, 230, 0.40); }
+  .kind.scene { color: #a3306f; background: rgba(217, 100, 159, 0.12); border-color: rgba(217, 100, 159, 0.40); }
+  .kind.device, .kind.area { color: #5f6418; background: rgba(165, 171, 58, 0.14); border-color: rgba(165, 171, 58, 0.45); }
+  :host(.dark) .kind.automation { color: #7b88f0; } :host(.dark) .kind.scene { color: #d9649f; }
+  :host(.dark) .kind.device, :host(.dark) .kind.area { color: #a5ab3a; }
   .count-add { color: var(--add-fg); font-weight: 600; } .count-del { color: var(--del-fg); font-weight: 600; }
   .bar { display: inline-flex; gap: 2px; } .bar i { width: 8px; height: 8px; border-radius: 2px; background: var(--divider-color); }
   .bar i.a { background: var(--add-fg); } .bar i.d { background: var(--del-fg); }
@@ -140,6 +145,24 @@ export const STYLE = `
   .tests .no .result { color: var(--secondary-text-color); background: var(--secondary-background-color); }
   .tests .result.more-words, .tests .result.still-open { color: var(--warn-fg);
     background: color-mix(in srgb, var(--warn-fg) 12%, transparent); }
+  /* Each automation it changes: its name and when it runs, its week in a few words beside them; opened, each run. */
+  .autos { list-style: none; margin: 0 0 14px; padding: 0; container-type: inline-size; }
+  .autos .row { display: flex; align-items: baseline; gap: 8px; padding: 3px 0; }
+  .autos div.row::before { content: ""; width: 12px; flex: none; }
+  .autos details { border-top: none; }
+  .autos .what { flex: 1; min-width: 0; } .autos .what .name { font-weight: 500; }
+  .autos .when { display: block; font-size: 13px; color: var(--secondary-text-color); overflow-wrap: anywhere; }
+  .autos .result { font-size: 12px; padding: 0 8px; border-radius: 10px; white-space: nowrap;
+    color: var(--secondary-text-color); background: var(--secondary-background-color); }
+  .autos .result.failed { color: var(--warn-fg); background: color-mix(in srgb, var(--warn-fg) 12%, transparent); }
+  @container (max-width: 479px) { .autos .row { flex-wrap: wrap; row-gap: 2px; }
+    .autos .what { flex: 1 1 calc(100% - 24px); } .autos .result { margin-left: 20px; white-space: normal; } }
+  .week-runs { margin: 4px 0 8px 20px; border: 1px solid var(--divider-color); border-radius: 8px; overflow: hidden;
+    font-size: 13px; max-height: 320px; overflow-y: auto; }
+  .week-run { display: flex; gap: 8px; padding: 3px 12px; } .week-run.add { background: var(--add-bg); }
+  .week-run.del { background: var(--del-bg); } .week-run.more { color: var(--secondary-text-color); }
+  .week-run .sign { width: 12px; flex: none; } .week-run .at { width: 72px; flex: none;
+    color: var(--secondary-text-color); font-variant-numeric: tabular-nums; }
   .note { display: flex; gap: 8px; font-size: 13px; color: var(--secondary-text-color); border-top: 1px solid var(--divider-color);
     padding-top: 10px; margin-top: 4px; }
   div.conflict { background: var(--del-bg); border: 1px solid var(--del-fg); border-radius: 8px; padding: 10px 14px; margin-bottom: 12px;

@@ -432,14 +432,13 @@ def seed_options(today, turn):
 
 
 async def seed(hass, *, person=None, integrations=(), timer_device=None, filing=False, scripts=None,
-               automations=None, exposure_changes=None, alias_changes=None, alias_removals=None, moving=(),
-               machinery=(), cut=(), recorded=None):
+               automations=None, exposure_changes=None, moving=(), machinery=(), cut=(), recorded=None):
     """Make the sandbox the home it was started as (Sandbox.start: snapshot.at_moment's, today's setup at a recorded
     moment): Home Assistant's own integrations set up for real (CORE, the home's storage and YAML helpers, the entity
     domains Assist's tools come from), a stand-in entry per config entry with devices (standin.py), every other state as
     it was; calls beyond the home stood in (outside); then its scripts, automations and scenes, which create their own
-    entities. exposure_changes ({entity_id: exposed}) and alias_changes ({entity_id: [aliases added]}, alias_removals
-    {entity_id: [aliases removed]}) apply on top. moving: the devices that report their movement
+    entities. A change comes as the home it makes (changes.changed); exposure_changes ({entity_id: exposed}), what it
+    shows or hides, must name what Home Assistant loads. moving: the devices that report their movement
     (simulation.reports_movement); machinery: the voice assistant's own entities (digest.machinery), and cut: the
     improver's own AI Tasks, neither ever the home's changes nor its home (digest.kept); recorded: what the recording
     answered and failed (replay.recorded). Runs in the sandbox's loop. filing: Assist had the improver's filing tool,
@@ -447,7 +446,6 @@ async def seed(hass, *, person=None, integrations=(), timer_device=None, filing=
     from homeassistant.components.intent import async_register_timer_handler
     from homeassistant.config_entries import SOURCE_IMPORT, ConfigEntryState
     from homeassistant.core import CoreState
-    from homeassistant.helpers import entity_registry as er
     from homeassistant.setup import async_setup_component
     expose = resolve("sandbox_exposure")  # No public API exposes an entity, nor runs HA without starting it.
     resolve("running_state")
@@ -512,13 +510,6 @@ async def seed(hass, *, person=None, integrations=(), timer_device=None, filing=
         if conf and not await async_setup_component(hass, domain, {domain: conf}):
             raise RuntimeError(f"The sandbox could not load the {domain}s")
     await hass.async_block_till_done()
-    registry = er.async_get(hass)
-    for entity_id in {*(alias_changes or {}), *(alias_removals or {})}:
-        if (entry := registry.async_get(entity_id)) is None:
-            raise RuntimeError(f"{entity_id} isn't in the sandbox")
-        removed = set((alias_removals or {}).get(entity_id, []))
-        registry.async_update_entity(entity_id, aliases=[*(a for a in entry.aliases if a not in removed),
-                                                         *(alias_changes or {}).get(entity_id, [])])
     for entity_id in exposure_changes or {}:  # A change to something HA couldn't load can't be tested.
         if (state := hass.states.get(entity_id)) is None or state.state == "unavailable":
             raise RuntimeError(f"{entity_id} could not be loaded")

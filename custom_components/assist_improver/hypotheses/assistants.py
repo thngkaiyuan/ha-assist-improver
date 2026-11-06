@@ -122,7 +122,7 @@ class Assistants:
         out = []
         for change in changes or []:
             change = deepcopy(change)
-            if change.get("kind") == "prompt":
+            if change.get("kind") == "assistant":
                 given = change.pop("target", None)
                 record = self.assistant_named(change["assistant"]) if change.get("assistant") else None
                 if record is not None:

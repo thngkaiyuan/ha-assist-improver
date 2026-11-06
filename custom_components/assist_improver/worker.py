@@ -385,12 +385,11 @@ class Server:
         self.sandbox = await Sandbox.start(time_zone, home, setup)
 
     async def op_home_seed(self, options, person=None, scripts=None, automations=None, exposure_changes=None,
-                           alias_changes=None, alias_removals=None, moving=(), machinery=(), cut=(), recorded=None):
+                           moving=(), machinery=(), cut=(), recorded=None):
         from .sandbox import seed
         await self.sandbox.run(lambda hass: seed(
             hass, person=person, **options, scripts=scripts, automations=automations,
-            exposure_changes=exposure_changes, alias_changes=alias_changes, alias_removals=alias_removals,
-            moving=moving, machinery=machinery, cut=cut, recorded=recorded))
+            exposure_changes=exposure_changes, moving=moving, machinery=machinery, cut=cut, recorded=recorded))
         return self._reported()
 
     async def op_home_assistant(self, entry, agent):

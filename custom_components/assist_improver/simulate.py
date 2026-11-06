@@ -192,8 +192,8 @@ def after_plan(before, setup, goals, aside=(), judge=None, branch=1):
 def setup_for(hypothesis, recording, today, hass):
     """(setup, tested, provider) of an idea on a conversation: its changes as the sandbox runs them, on today's setup
     (today: replay.today's) and its assistant's instructions now, for the person speaking; what it was tested against
-    (the configuration of the scripts it touches and of the exposure it changes, and the instructions it edits, as
-    Home Assistant has them now: applying it later finds a conflict if one changed since); the assistant it ran on."""
+    (each item, registry field, exposure, instructions and LLM APIs it changes, as Home Assistant has them now:
+    applying it later finds a conflict if one changed since); the assistant it ran on."""
     if not isinstance(hypothesis, dict) or not hypothesis.get("changes"):
         raise CaseError("The idea has no changes to test.")
     turn = recording_turns(recording)[0]
@@ -202,24 +202,45 @@ def setup_for(hypothesis, recording, today, hass):
     setup = setup_from_changes(hypothesis["changes"], source=source, prompt=config["options"].get("prompt"),
                                scripts=scripts, user_id=(turn["prepared"].get("context") or {}).get("context", {})
                                .get("user_id"), assistant=target(config))
-    touched = {c["entity_id"].split(".", 1)[1] for c in hypothesis["changes"]
-               if c.get("kind") in ("script", "exposure") and (c.get("entity_id") or "").startswith("script.")}
-    tested = {"scripts": {oid: deepcopy(scripts[oid]) for oid in sorted(touched) if oid in scripts},
-              "exposure": {e: bool((source.get("exposure") or {}).get(e)) for e in sorted(setup["exposure"])}}
+    return setup, tested_against(hass, hypothesis, setup, source), \
+        {k: config.get(k) for k in ("config_entry_id", "subentry_id", "title")}
+
+
+def tested_against(hass, hypothesis, setup, source):
+    """What a change was tested against, as the home has it (source): each item it saves (None: a new one), each
+    automation it turns on or off, each registry field it sets, the exposure it changes; and, as Home Assistant has
+    them, the instructions and LLM APIs it edits."""
+    from .changes import apis_now
+    states, registry = source.get("states") or {}, setup.get("registry") or {}
+    items = {"scripts": source.get("scripts") or {},
+             **{key: {str(i.get("id")): i for i in source.get(key) or [] if i.get("id") is not None}
+                for key in ("automations", "scenes")}}
+    tested = {key: found for key in ("scripts", "automations", "scenes") if (found := {
+        i: deepcopy(items[key][i]) for i in sorted(setup.get(key) or {}) if i in items[key]})}
+    tested["exposure"] = {e: bool((source.get("exposure") or {}).get(e)) for e in sorted(setup["exposure"])}
+    if setup.get("automation_on"):
+        tested["automation_on"] = {e: (states.get(e) or {}).get("state") == "on" for e in setup["automation_on"]}
+    if registry:
+        tested["registry"] = {key: {i: {f: ((source.get(key) or {}).get(i) or {}).get(f) for f in fields}
+                                    for i, fields in found.items()} for key, found in registry.items()}
     if prompts := instructions_now(hass, hypothesis):
         tested["prompts"] = prompts
-    return setup, tested, {k: config.get(k) for k in ("config_entry_id", "subentry_id", "title")}
+    if apis := {c["target"]: apis_now(hass, c["target"]) for c in hypothesis.get("changes") or []
+                if c.get("kind") == "assistant" and "llm_hass_api" in c and c.get("target")}:
+        tested["apis"] = apis
+    return tested
 
 
 def reaches(hypothesis, recording):
-    """Whether an idea changes anything for this conversation (DETAILS P6.8.5): anything but edits of assistants'
-    instructions does; those do only when the conversation used one of those assistants."""
-    from .instructions import is_edit, ran_with
+    """Whether an idea changes anything for this conversation (DETAILS P6.8.5): an assistant change reaches only a
+    conversation with that assistant, and a recommendation none (it's never replayed); everything else does."""
+    from .instructions import ran_with
     changes = hypothesis.get("changes") or []
-    if not changes or not all(is_edit(c) for c in changes):
+    if not changes or any(c.get("kind") != "assistant" for c in changes):
         return True
     used = (ran_with(recording) or {}).get("target")
-    return bool(used) and any(c.get("target") == used for c in changes)
+    return bool(used) and any(c.get("target") == used and ({"text", "replaces", "llm_hass_api"} & set(c))
+                              for c in changes)
 
 
 def instructions_now(hass, hypothesis):

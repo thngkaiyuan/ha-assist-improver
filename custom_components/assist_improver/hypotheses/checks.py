@@ -4,7 +4,7 @@ import re
 
 import probatio
 
-from ..changes import field_problems
+from .. import changes
 from ..exploration import applied_too_early
 from ..instructions import FACTS, carried, edit, effective, is_edit
 from .goals import friction_by_goal, goal_summary
@@ -17,7 +17,7 @@ def problems(sessions, answer, schema=HYPOTHESES):
         schema(answer)
     except probatio.Invalid as err:
         return [f"The answer does not match the format: {err}"]
-    known, found = set(sessions.household._entities()), []
+    found = []
     template = known_lines(sessions)
     items = answer["hypotheses"] if schema is HYPOTHESES else [answer["revised"]] if answer.get("revised") else []
     facts_added = {}  # {(assistant target, fact): hypothesis}: a recommended fact is added in one place only.
@@ -42,7 +42,7 @@ def problems(sessions, answer, schema=HYPOTHESES):
                 elif ref.get("turn") is not None and not 1 <= ref["turn"] <= known_session["turns"]:
                     found.append(f"{where}: {field}: session {ref['session']} has no turn {ref['turn']}.")
         for change in hypothesis["changes"]:
-            found += _change_problems(where, change, known, sessions.household, template)
+            found += _change_problems(where, change, sessions, template)
         found += _edit_problems(sessions, where, hypothesis, facts_added)
     if schema is HYPOTHESES:  # A question for the household leaves the goals open until it's answered.
         found += _addressed_problems(sessions, answer) + (
@@ -116,25 +116,27 @@ def instructions(sessions):
 
 
 def _edit_problems(sessions, where, hypothesis, facts_added):
-    """A hypothesis's prompt changes (edits of one assistant's own instructions), checked: an assistant the sessions
+    """A hypothesis's assistant changes (edits of one assistant's own instructions), checked: an assistant the sessions
     used, text to add or lines to replace, replaced lines that are in its current instructions, instructions Home
     Assistant renders once edited (when rendered: SubmitHypotheses renders them first), no recommended fact its
     instructions, another hypothesis or an existing improvement give already, and no goal on an assistant whose
     instructions are all it changes."""
     found, edits = [], {}
-    for change in sessions.with_targets([c for c in hypothesis["changes"] if c["kind"] == "prompt"]):
+    for change in sessions.with_targets([c for c in hypothesis["changes"] if c["kind"] == "assistant"]):
         name = change.get("assistant")
         if not (name or "").strip():
-            found.append(f"{where}: a prompt change edits one assistant's own instructions: name it in assistant "
+            found.append(f"{where}: an assistant change is for one assistant: name it in assistant "
                          f"({sessions.assistant_names()}); a line for every assistant is a preference.")
             continue
         if not change.get("target"):
             found.append(f"{where}: there's no assistant {name!r}; the assistants are {sessions.assistant_names()}.")
             continue
+        if not is_edit(change):
+            continue
         record = sessions.assistants()[change["target"]]
         if not (change.get("text") or "").strip() and not change.get("replaces"):
-            found.append(f"{where}: a prompt change on {record['name']} needs text to add, or lines in replaces to "
-                         "remove.")
+            found.append(f"{where}: an edit of {record['name']}'s instructions needs text to add, or lines in replaces "
+                         "to remove.")
         if change.get("for") == "this_user":
             found.append(f"{where}: {record['name']}'s instructions are read for everyone who uses it; for one person, "
                          "write the condition into the line, or make it a preference for this_user.")
@@ -166,7 +168,7 @@ def _edit_problems(sessions, where, hypothesis, facts_added):
                 found.append(f"{where}: the improvement {title!r} already adds {what} to {record['name']}'s "
                              "instructions.")
             facts_added.setdefault((target, fact), where)
-    if edits and all(c["kind"] == "prompt" for c in hypothesis["changes"]):
+    if edits and all(is_edit(c) for c in hypothesis["changes"]):
         for ref in hypothesis["goals"]:
             used = sessions.assistant_of(ref["session"])
             if used is not None and used["target"] not in edits:
@@ -185,7 +187,10 @@ def _improvement_adding(existing, target, fact):
     return None
 
 
-def _change_problems(where, change, known, household, template=None):
+def _change_problems(where, change, sessions, template=None):
+    """One change's problems: a preference's line, and what changes.py checks for the other kinds (Home Assistant's
+    own validators and the safety rules, run by the sessions' check_changes, for an editor item or an assistant's LLM
+    APIs; today's registries for a registry change)."""
     kind, found = change["kind"], []
     if kind == "preference" and not (change.get("text") or "").strip():
         found.append(f"{where}: a {kind} change needs text: the line for Assist's instructions.")
@@ -196,46 +201,17 @@ def _change_problems(where, change, known, household, template=None):
         if kind == "preference" and (template is None or line.strip() not in template):
             found.append(f"{where}: replaces {line!r}, which isn't in Assist's current instructions or the household "
                          "knowledge; quote lines exactly as read_assistant_instructions shows them.")
-    if kind in ("alias", "exposure"):
-        entity = change.get("entity_id")
-        if entity not in known:
-            found.append(f"{where}: an {kind} change needs the entity_id of a device in this household; {entity!r} isn't one.")
-        elif kind == "alias":
-            if not (change.get("alias") or "").strip():
-                found.append(f"{where}: an alias change needs alias: the new name.")
-            missing = [a for a in change.get("replaces") or [] if a not in household.aliases(entity)]
-            if missing:
-                found.append(f"{where}: {entity} has no alias {', '.join(map(repr, missing))} to replace; its aliases are "
-                             f"{household.aliases(entity) or 'none'}.")
-        elif kind == "exposure":
-            expose, exposed = change.get("expose", True), household._card(entity).get("exposed")
-            if expose and exposed:
-                found.append(f"{where}: {entity} is already exposed to Assist.")
-            if not expose and not exposed:
-                found.append(f"{where}: {entity} isn't exposed to Assist, so there's nothing to hide.")
-    if kind == "script":
-        existing = change.get("entity_id")
-        if existing:  # Editing a script that exists: its description (text) and/or its steps.
-            if not existing.startswith("script.") or existing not in known:
-                found.append(f"{where}: {existing!r} isn't a script in this household; omit entity_id for a new script.")
-            elif not (change.get("text") or "").strip() and not change.get("steps"):
-                found.append(f"{where}: editing {existing} needs a new description (text) or new steps.")
-        elif not (change.get("script_name") or "").strip() or not change.get("steps"):
-            found.append(f"{where}: a new script needs script_name and steps (or give entity_id to edit an existing one).")
-        steps = change.get("steps") or []
-        for n, step in enumerate(steps, 1):
-            if "stop" in step:
-                if n != len(steps) or not step["stop"].strip():
-                    found.append(f"{where}: a stop step comes last and carries the message for the user.")
-                continue
-            domain, _, service = step["service"].partition(".")
-            if not service or step["entity_id"] not in known:
-                found.append(f"{where}: script step {step['service']!r} on {step['entity_id']!r}: use domain.service "
-                             "and a device in this household.")
-            elif domain not in (step["entity_id"].split(".")[0], "homeassistant"):
-                found.append(f"{where}: script step {step['service']!r} doesn't match {step['entity_id']}'s domain.")
-        found += [f"{where}: {problem}" for problem in field_problems(change)]
+    if kind in changes.CONFIG_KINDS or kind == "assistant" and "llm_hass_api" in change:
+        checked = sessions.checked_of(change)
+        found += [f"{where}: {p}" for p in (checked if checked is not None else [UNCHECKED])]
+    elif kind == "registry":
+        found += [f"{where}: {p}" for p in changes.registry_problems(change, sessions.home())]
+    elif kind == "assistant":
+        found += [f"{where}: {p}" for p in changes.assistant_problems(change, {})]
     return found
+
+
+UNCHECKED = "Home Assistant hasn't checked this change; submit it again."  # check_changes never ran on it.
 
 
 # A sentence that tells Assist what to say: simple phrases, enough for the reviewer to see the talk a change adds.
@@ -260,24 +236,25 @@ def _sentences(text):
 
 
 def speech(hypothesis, scripts=None):
-    """What a draft would have Assist say, listed by code for the reviewer: each stop message with its words, each
-    sentence in a line or script description that tells Assist what to say, and the talk it removes (in lines it
-    replaces, and in the description or stop messages of a script it edits: scripts, the current definitions by object
-    id). Empty when it touches none."""
+    """What a draft would have Assist say, listed by code for the reviewer: each stop message of a script with its
+    words (nested ones too), each sentence in a line or a script's description that tells Assist what to say, and the
+    talk it removes (in lines it replaces, and in the description or stop messages of a script it edits: scripts, the
+    current definitions by object id; what such an edit keeps isn't listed). Empty when it touches none."""
     out = []
     for change in hypothesis.get("changes") or []:
-        where = change.get("script_name") or change.get("entity_id") or change.get("kind")
-        stops = [str(step["stop"]) for step in change.get("steps") or [] if isinstance(step, dict) and step.get("stop")]
-        out += [{"change": where, "kind": "stop message", "text": stop, "words": len(stop.split())} for stop in stops]
-        said = [s for s in _sentences(change.get("text")) if tells_what_to_say(s)]
-        out += [{"change": where, "kind": "tells Assist what to say", "text": s, "words": len(s.split())} for s in said]
+        kind, config = change.get("kind"), change.get("config") if isinstance(change.get("config"), dict) else {}
+        where = change.get("id") or change.get("entity_id") or change.get("assistant") or kind
+        old = (scripts or {}).get(change.get("id")) if kind == "script" else None  # An edit: only what changes.
+        stops = changes.stops(config) if kind == "script" else []
+        out += [{"change": where, "kind": "stop message", "text": stop, "words": len(stop.split())} for stop in stops
+                if not old or stop not in changes.stops(old)]
+        text = config.get("description") if kind == "script" else change.get("text")
+        said = [s for s in _sentences(text) if tells_what_to_say(s)]
+        out += [{"change": where, "kind": "tells Assist what to say", "text": s, "words": len(s.split())} for s in said
+                if not old or s not in _sentences(old.get("description"))]
         removed = [s for line in change.get("replaces") or [] for s in _sentences(line) if tells_what_to_say(s)]
-        if change.get("kind") == "script" and change.get("entity_id") and scripts:  # An edit: what it drops.
-            old = scripts.get(change["entity_id"].split(".", 1)[-1]) or {}
-            if change.get("steps") is not None:
-                removed += [str(step["stop"]) for step in old.get("sequence") or []
-                            if isinstance(step, dict) and step.get("stop") and str(step["stop"]) not in stops]
-            if change.get("text") is not None:
-                removed += [s for s in _sentences(old.get("description")) if tells_what_to_say(s) and s not in said]
+        if old:
+            removed += [s for s in changes.stops(old) if s not in stops]
+            removed += [s for s in _sentences(old.get("description")) if tells_what_to_say(s) and s not in said]
         out += [{"change": where, "kind": "removes", "text": s, "words": len(s.split())} for s in removed]
     return out

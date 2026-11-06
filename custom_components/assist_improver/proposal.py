@@ -50,7 +50,7 @@ async def window(runtime, analyses, *, feedback=None, sent_back=None, so_far=Non
     today = today if today is not None else await setup_now(recorder.hass)
     household = await session_view(recorder.hass, as_today(household.recording, today["home"]))
     sessions = hypotheses.Sessions(analyses, briefs=briefs, loader=load, household=household, assistant=assistant)
-    sessions.today = today
+    sessions.today, sessions.hass = today, recorder.hass  # Its validators check changes; its readers read them.
     sessions.feedback, sessions.sent_back, sessions.so_far = list(feedback or []), sent_back, dict(so_far or {})
     sessions.answered = list(answered or [])
     sessions.existing = list(existing or [])  # For list_improvements.
