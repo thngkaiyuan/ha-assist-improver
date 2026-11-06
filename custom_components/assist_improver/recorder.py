@@ -106,6 +106,17 @@ def _pipeline_ran(hass, conversation_id):
     return None
 
 
+def _events(kind, data):
+    """A chat log event as the recorder takes it in. A new chat log may come with the user's first words already in
+    it, and no content_added for them (Home Assistant 2026.12): taken as the created event before them and the
+    content_added of them that earlier versions send, so the recording is the same on both."""
+    log = data.get("chat_log") if kind == "created" else None
+    content = log.get("content") if isinstance(log, dict) else None
+    if not content or not isinstance(content[-1], dict) or content[-1].get("role") != "user":
+        return [(kind, data)]
+    return [(kind, {**data, "chat_log": {**log, "content": content[:-1]}}), ("content_added", {"content": content[-1]})]
+
+
 def _agent(content, chat_log):
     """The conversation agent answering, where an event shows it: its content's agent_id (a reply's or a tool
     result's), else the last reply's in the chat log it carries."""
@@ -335,7 +346,8 @@ class Recorder:
         if conversation_id in self.ignored:
             return
         try:
-            self.capture(conversation_id, str(kind), data)
+            for kind, data in _events(str(kind), data):
+                self.capture(conversation_id, kind, data)
         except Exception as err:  # A recorder error must never break an ordinary assistant request.
             self._failed(self.keys.get(conversation_id), err)
 
