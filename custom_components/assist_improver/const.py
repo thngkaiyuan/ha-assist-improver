@@ -4,7 +4,7 @@ DOMAIN = "assist_improver"
 NAME = "Assist Improver"
 # The manifest's version (build_package.py keeps them equal), read where nothing can be awaited: a recording's stamp,
 # the panel script's ?v=. Home Assistant's loader gives it only by an await.
-VERSION = "0.40.23"
+VERSION = "0.40.30"
 # Conversation providers whose replays are tested end to end; others replay with a "not yet tested" label.
 TESTED_PROVIDERS = {"anthropic", "open_router"}
 STORAGE_VERSION = 1
@@ -24,31 +24,3 @@ CONF_SCHEDULE = "schedule"
 CONF_PAUSED = "paused_stages"
 CONF_DEVELOPER = "developer_services"  # Hidden: registers the developer services (__init__.py).
 SAVE_DELAY = 1
-# The state attributes Home Assistant 2026.10's live context (GetLiveContext) shows Assist: interesting_attributes in
-# homeassistant/components/homeassistant/llm.py.
-LIVE_CONTEXT_ATTRIBUTES = frozenset({
-    "temperature", "current_temperature", "temperature_unit", "brightness", "humidity", "unit_of_measurement",
-    "device_class", "current_position", "percentage", "volume_level", "media_title", "media_artist",
-    "media_album_name",
-})
-# The state attributes a recording keeps: those the replay engine and the analyzer read (names, what HA's intent
-# matching checks, the modes, ranges and options the emulated devices and the analyzer's allowed states use, what a
-# date/time helper holds), and the live context's. The improver's roles see them all on a device's card (digest.py).
-ATTRIBUTES = LIVE_CONTEXT_ATTRIBUTES | {
-    "friendly_name", "supported_features", "device_class", "unit_of_measurement",
-    "temperature", "current_temperature", "target_temp_high", "target_temp_low",
-    "min_temp", "max_temp", "hvac_modes", "hvac_action", "preset_modes", "preset_mode",
-    "fan_modes", "fan_mode", "percentage", "percentage_step", "options",
-    "brightness", "color_temp_kelvin", "min_color_temp_kelvin", "max_color_temp_kelvin",
-    "color_mode", "supported_color_modes", "rgb_color", "hs_color", "effect", "effect_list",
-    "current_position", "current_tilt_position", "assumed_state", "attribution",
-    # input_datetime: what time triggers and Assist read from a date/time helper.
-    "has_date", "has_time", "timestamp", "year", "month", "day", "hour", "minute", "second",
-}
-PROVIDER_OPTIONS = {
-    "prompt", "llm_hass_api", "model", "chat_model", "max_tokens", "temperature",
-    "top_p", "thinking_budget", "thinking_type", "effort", "prompt_caching", "code_execution",
-    "tool_search", "web_search", "web_fetch", "recommended",
-    "web_search_max_uses", "web_fetch_max_uses", "user_location",
-    "city", "region", "country", "timezone",
-}

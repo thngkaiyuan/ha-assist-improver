@@ -20,6 +20,7 @@ import asyncio
 from collections import deque
 from contextlib import suppress
 import contextvars
+from datetime import datetime
 from functools import partial
 import itertools
 import json
@@ -29,6 +30,7 @@ from pathlib import Path
 import shutil
 import sys
 import tempfile
+import time
 import traceback
 
 import probatio
@@ -36,7 +38,7 @@ from homeassistant.core import async_get_hass
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.util.hass_dict import HassKey
 
-from . import touchpoints
+from . import guard, touchpoints
 from .cases import CaseError
 from .const import DOMAIN
 from .sandbox import STATS as SANDBOX_STATS
@@ -51,28 +53,40 @@ LARGE = 1 << 16  # An answer line longer than this is decoded in Home Assistant'
 INLINE = False  # Tests: serve in this process, through the same JSON.
 STATS = dict.fromkeys(SANDBOX_STATS, 0)  # Sandbox statistics of the workers this process has run, summed.
 IMPROVER = Path(__file__).resolve().parent  # The improver's code, which each worker runs.
-# The worker loads only the modules sandboxes use: the integration's own setup (its __init__) never runs there. Its
-# sandbox runs Home Assistant's own code and the improver's alone: custom_components is a folder of the worker's own
-# holding only the improver, so Home Assistant finds none of the household's custom integrations there (one a recorded
-# tool names is never set up, nor its tools run), and finds the improver as an integration, as household knowledge
-# needs (household.serve). The one exception: a household assistant's own provider, when it's a custom integration
-# (_folder). The sandbox's config folder is made in the worker's own folder too: the real instance makes that folder
-# and removes it once the worker has ended, killed or not; the worker removes it itself, should the real instance end
-# first.
+# The worker's sandbox runs Home Assistant's own code and the improver's alone (whose setup does nothing there):
+# custom_components is a folder of the worker's own holding only the improver and the sandbox's own integrations (the
+# stand-in devices and the no-op web server, standin.write), so Home Assistant finds none of the household's custom
+# integrations there (one a recorded tool names is never set up: its actions and tools are stood in), and sets the
+# improver up as an integration, as household knowledge needs (household.serve). The one exception: a household
+# assistant's own provider, when it's a custom integration (_folder). The sandbox's config folder is made in the
+# worker's own folder too: the real instance makes that folder and removes it once the worker has ended, killed or
+# not; the worker removes it itself, should the real instance end first. Before Home Assistant is imported, the worker
+# installs its clock (clock.py), from the moment it's started at (seconds since the epoch; none: now), and its
+# containment guard (guard.py): it writes only in its folder (no bytecode either). Both are loaded while the improver
+# is a bare package (its __init__ imports Home Assistant); then the whole package loads, and its modules find them
+# installed, in sys.modules.
 BOOT = """import sys, tempfile, types
-improver, folder = sys.argv[1:3]
+sys.dont_write_bytecode = True
+folder, start = sys.argv[1], sys.argv[2]
 tempfile.tempdir = folder
-for name, path in (("custom_components", folder + "/custom_components"),
-                   ("custom_components.assist_improver", improver)):
-    package = types.ModuleType(name)
-    package.__path__ = [path]
-    sys.modules[name] = package
+for name in ("custom_components", "custom_components.assist_improver"):
+    package = sys.modules[name] = types.ModuleType(name)
+    package.__path__ = [folder + "/" + name.replace(".", "/")]
+from custom_components.assist_improver.clock import install as clock
+clock(float(start) if start else None)
+from custom_components.assist_improver.guard import install
+install(folder)
+del sys.modules["custom_components.assist_improver"]
 from custom_components.assist_improver.worker import main
 main(folder)"""
 
 
 class WorkerError(Exception):
     """The worker couldn't answer: it stopped, got stuck, or failed in a way that isn't the replay's."""
+
+
+class Refused(WorkerError):
+    """The worker's guard refused something its sandbox tried (guard.py): its job stops, as the machinery's fault."""
 
 
 # The real instance's side.
@@ -96,9 +110,10 @@ class Worker:
         self._server = None  # INLINE: the server, in this process.
 
     @classmethod
-    async def start(cls, hass, providers=None):
+    async def start(cls, hass, providers=None, start=None):
         """A fresh worker. providers: the household's assistants' providers that are custom integrations
-        (replay.custom_providers), for its sandbox to load."""
+        (replay.custom_providers), for its sandbox to load; start: the recorded moment (ISO) its clock starts at, never
+        later than its sandboxes' (clock.py; none: now)."""
         worker = cls(hass)
         hass.data.setdefault(KEY, set()).add(worker)
         if INLINE:
@@ -106,9 +121,16 @@ class Worker:
             return worker
         try:
             worker.folder = await hass.async_add_executor_job(_folder, providers or {})
+            # As Home Assistant starts itself (python -P), so no folder's modules shadow its imports (the guard's
+            # among them), and in its own folder, not Home Assistant's. In a session of its own, so its process group
+            # isn't Home Assistant's: a signal to that group, from code the guard doesn't see, reaches no further. It
+            # still ends with Home Assistant, however that stops: its input closes (main).
+            moment = str(datetime.fromisoformat(start).timestamp()) if start else ""
             worker.process = await asyncio.create_subprocess_exec(
-                sys.executable, "-c", BOOT, str(IMPROVER), worker.folder, stdin=asyncio.subprocess.PIPE,
-                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, limit=LIMIT, env=environment())
+                sys.executable, "-P", "-c", BOOT, worker.folder, moment, cwd=worker.folder,
+                env=environment(worker.folder),
+                stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+                limit=LIMIT, start_new_session=True)
         except BaseException:
             await worker.stop()
             raise
@@ -199,25 +221,45 @@ class Worker:
             await self.hass.async_add_executor_job(partial(shutil.rmtree, folder, ignore_errors=True))
 
 
+PREFIX = "assist_improver_worker_"  # A worker's folder's name (_folder), in the temporary folder.
+LEFTOVER_SECONDS = 60  # A worker's empty folder this old is a leftover (remove_leftovers), not one just made.
+
+
+def remove_leftovers():
+    """Worker folders an earlier run left behind, removed as the improver is set up. A worker whose Home Assistant ends
+    first empties and removes its own folder as it exits (main); where Landlock holds it (guard.landlock), it can
+    empty its folder but not remove it, so the folder stays, empty. Only empty ones go, and none just made: another
+    Home Assistant's live workers may share the temporary folder."""
+    for path in Path(tempfile.gettempdir()).glob(PREFIX + "*"):
+        with suppress(OSError):
+            if time.time() - path.stat().st_mtime > LEFTOVER_SECONDS:
+                path.rmdir()  # Only an empty folder.
+
+
 def _folder(providers):
-    """A worker's own folder (BOOT): its custom_components holds the improver and the household's assistants'
-    providers that are custom integrations ({domain: its folder}), so its sandbox loads the household's assistant by its
-    own integration (DETAILS P6.2.3). No other custom integration ever is. A provider gone from home isn't there: it
-    can't load (can't replay)."""
-    folder = tempfile.mkdtemp(prefix="assist_improver_worker_")
+    """A worker's own folder (BOOT): its custom_components holds the improver, the sandbox's own integrations
+    (standin.write) and the household's assistants' providers that are custom integrations ({domain: its folder}), so
+    its sandbox loads the household's assistant by its own integration (DETAILS P6.2.3). No other custom integration
+    ever is. A provider gone from home isn't there: it can't load (can't replay)."""
+    from .standin import write
+    folder = tempfile.mkdtemp(prefix=PREFIX)
     own = Path(folder, "custom_components")
     own.mkdir()
     (own / DOMAIN).symlink_to(IMPROVER)
+    write(own)
     for domain, path in providers.items():
-        if domain != DOMAIN and Path(path).is_dir():
+        if not (own / domain).exists() and Path(path).is_dir():
             (own / domain).symlink_to(path)
     return folder
 
 
-def environment():
+def environment(folder):
     """A worker's environment: the real instance's, without its Supervisor access (DETAILS P11.8.3), so nothing in a
-    sandbox can reach the host through the Supervisor."""
-    return {k: v for k, v in os.environ.items() if not k.startswith(("SUPERVISOR", "HASSIO"))}
+    sandbox can reach the host through the Supervisor; and its temporary files in its folder, as Python's (BOOT), so
+    libraries and child processes that read TMPDIR or SQLITE_TMPDIR put theirs there too (C's tmpfile() reads
+    neither)."""
+    return {**{k: v for k, v in os.environ.items() if not k.startswith(("SUPERVISOR", "HASSIO"))},
+            **dict.fromkeys(("TMPDIR", "TEMP", "TMP", "SQLITE_TMPDIR"), folder)}
 
 
 def _line(message):
@@ -229,9 +271,14 @@ async def job(name, **args):
     most evidence.CONCURRENT of their workers run per instance; the rest wait their turn. A job never waits on another
     while it holds its turn, so none waits forever. Replays' workers (RemoteSandbox) aren't counted."""
     from .evidence import CONCURRENT
+    from .replay import speaker
     hass = async_get_hass()  # The probes hold no hass: HA's own accessor finds it.
+    if args.get("recording") is not None and args.get("today") is not None:  # Its rights, as a replay has them.
+        args["today"] = {**args["today"], "person": await speaker(hass, args["recording"])}
+    # Its clock starts at the recording's first moment: its sandboxes start there or later.
+    start = (((args.get("recording") or {}).get("turns") or [{}])[0].get("source") or {}).get("at")
     async with hass.data.setdefault(SLOTS, asyncio.Semaphore(CONCURRENT)):
-        worker = await Worker.start(hass)
+        worker = await Worker.start(hass, start=start)
         try:
             return await worker.call("evidence", job=name, **args)
         finally:
@@ -254,6 +301,8 @@ def raised(error):
         return UnsupportedSimulation(message)
     if kind == "touchpoint":  # The machinery's: never a verdict.
         return touchpoints.Broken(name, message)
+    if kind == "refused":
+        return Refused(message)
     base = {"ha": HomeAssistantError, "invalid": probatio.Invalid}.get(kind)
     if base is None:
         return WorkerError(f"{name}: {message}")
@@ -275,16 +324,18 @@ class RemoteSandbox:
 
     def __init__(self, worker):
         self.worker = worker
-        self.unsimulated = []  # Device commands the sandbox has no emulation for, as of its last answer.
+        # What the sandbox didn't simulate (a device's command, an outside call), as of its last answer.
+        self.unsimulated = []
         self.log = []  # What HA logged inside it, as of its last answer.
 
     @classmethod
     @span("sandbox.start")
-    async def start(cls, hass, time_zone, providers=None):
-        """providers: the household's assistants' providers that are custom integrations (replay.custom_providers)."""
-        worker = await Worker.start(hass, providers)
+    async def start(cls, hass, time_zone, home=None, setup=None, providers=None):
+        """A sandbox set up as today's home (sandbox.Sandbox.start), its clock from the home's moment. providers: the
+        household's assistants' providers that are custom integrations (replay.custom_providers)."""
+        worker = await Worker.start(hass, providers, (home or {}).get("at"))
         try:
-            await worker.call("home.start", time_zone=time_zone)
+            await worker.call("home.start", time_zone=time_zone, home=home, setup=setup)
         except BaseException:
             await worker.stop()
             raise
@@ -316,6 +367,8 @@ class Server:
             result = {"result": await handler(**message["args"])}
         except Exception as err:  # noqa: BLE001 - every failure goes back to the caller.
             result = {"error": _error(err)}
+        if guard.REFUSED:  # Whatever caught it: once something was refused, the job stops.
+            result = {"error": {"kind": "refused", "name": "Refused", "message": guard.REFUSED[0]}}
         return {"id": message["id"], **result, "stats": dict(sandbox.STATS)}
 
     async def stop(self):
@@ -327,31 +380,31 @@ class Server:
     def _reported(self, extra=None):
         return {**(extra or {}), "unsimulated": list(self.sandbox.unsimulated), "log": list(self.sandbox.log)}
 
-    async def op_home_start(self, time_zone):
+    async def op_home_start(self, time_zone, home=None, setup=None):
         from .sandbox import Sandbox
-        self.sandbox = await Sandbox.start(time_zone)
+        self.sandbox = await Sandbox.start(time_zone, home, setup)
 
-    async def op_home_seed(self, source, options, user_name=None, scripts=None, automations=None,
-                           exposure_changes=None, alias_changes=None, alias_removals=None, moving=()):
+    async def op_home_seed(self, options, person=None, scripts=None, automations=None, exposure_changes=None,
+                           alias_changes=None, alias_removals=None, moving=(), machinery=(), cut=(), recorded=None):
         from .sandbox import seed
         await self.sandbox.run(lambda hass: seed(
-            hass, source, user_name=user_name, **options, scripts=scripts, automations=automations,
+            hass, person=person, **options, scripts=scripts, automations=automations,
             exposure_changes=exposure_changes, alias_changes=alias_changes, alias_removals=alias_removals,
-            moving=moving))
+            moving=moving, machinery=machinery, cut=cut, recorded=recorded))
         return self._reported()
 
     async def op_home_assistant(self, entry, agent):
-        """The household's assistant, loaded by its provider's own integration (sandbox.load_assistant)."""
+        """The household's assistant, loaded by its provider's own integration (sandbox.load_assistant), which the
+        guard lets reach its provider's own endpoints."""
         from .sandbox import load_assistant
+        guard.allow(entry)
         return self._reported({"agent": await self.sandbox.run(lambda hass: load_assistant(hass, entry, agent))})
 
     async def op_home_household(self, knowledge):
         """The household knowledge the sandbox's Assist reads."""
         from .household import serve
 
-        async def read(hass):
-            serve(hass, knowledge)
-        await self.sandbox.run(read)
+        await self.sandbox.run(lambda hass: serve(hass, knowledge))
         return self._reported()
 
     async def op_home_prompt(self, context, api_id, template):
@@ -367,11 +420,12 @@ class Server:
                                                     openapi_version="3.1.0")} for t in api.tools]
         return self._reported({"prompt": prompt, "api_prompt": api.api_prompt, "tools": tools})
 
-    async def op_home_turn(self, text, conversation_id, context, language, agent_id, device_id=None, watch=()):
-        """One Assist turn, the household's assistant answering here (sandbox.run_turn)."""
+    async def op_home_turn(self, text, conversation_id, context, language, agent_id, device_id=None, watch=(),
+                           until=None):
+        """One Assist turn, the household's assistant answering here (sandbox.run_turn), never past until."""
         from .sandbox import run_turn
         return self._reported(await self.sandbox.run(lambda hass: run_turn(
-            hass, text, conversation_id, context, language, agent_id, device_id, watch)))
+            hass, text, conversation_id, context, language, agent_id, device_id, watch, until)))
 
     async def op_home_carry(self, conversation_id, context, steps):
         """A test's turns before its branch, its baseline's, in the replay's chat log (sandbox.carry)."""
@@ -394,9 +448,9 @@ class Server:
         await self.sandbox.run(lambda hass: observe(hass, source, moves))
         return self._reported()
 
-    async def op_home_snapshot(self, attributes=()):
+    async def op_home_snapshot(self, attributes=(), until=None):
         from .sandbox import snapshot
-        return self._reported(await self.sandbox.run(lambda hass: snapshot(hass, attributes)))
+        return self._reported(await self.sandbox.run(lambda hass: snapshot(hass, attributes, until)))
 
     async def op_evidence(self, job, **args):
         """One of evidence.py's sandbox jobs, run here whole."""

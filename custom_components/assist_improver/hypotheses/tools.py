@@ -6,11 +6,10 @@ import asyncio
 import probatio
 
 from .. import contracts, records
-from ..cases import CaseError, digest
-from ..exploration import (TOOLS, DeviceDetails, DevicesInArea, ListImprovements, ReadImprovement, ReadTurn,
-                           RoleTool, change_devices)
+from ..cases import digest
+from ..exploration import (LISTING, TOOLS, DeviceDetails, DevicesInArea, FindActions, ListImprovements, ReadAssistant,
+                           ReadImprovement, ReadReadings, ReadTurn, RoleTool, change_devices)
 from ..sessions import STATES
-from ..snapshot import live_script_definitions
 from ..trace import span
 from .checks import household_knowledge, instructions, problems
 from .goals import scenario
@@ -183,14 +182,38 @@ class ReadSessionTurn(RoleTool):
         return view.read_turns(turns) if turns else view.read_turn(turn or 1)
 
 
+class ReadSessionReadings(RoleTool):
+    """read_readings over one session (the analyzer's tool reads its own)."""
+    name = "read_readings"
+    description = ReadReadings.description.replace("the session's readings", "one session's readings")
+    parameters = probatio.Schema({probatio.Required("session"): str, **ReadReadings.parameters.schema})
+
+    def __init__(self, sessions):
+        super().__init__(sessions.household)
+        self.sessions = sessions
+
+    async def answer(self, hass, args):
+        await self.sessions.load(args["session"])
+        return self.run(**args)
+
+    def run(self, session, **args):
+        view = self.sessions.views.get(session)
+        if view is None:
+            return {"error": f"There is no session {session!r}; list_sessions shows them."}
+        return view.read_readings(**args)
+
+
 class DeviceDetailsAt(RoleTool):
     """device_details, optionally as of one session: by default as the household has it now, its state as of the
     newest session."""
     name = "device_details"
-    description = ("Everything about one device: its states and attributes, aliases, whether Assist can see it, its "
-                   "changes, and other entities on the same physical device. By default as the household has it now, "
-                   "its state as of the newest session; give session to see it as it was in that session.")
-    parameters = probatio.Schema({probatio.Required("entity_id"): str, probatio.Optional("session"): str})
+    description = ("One entity in detail: its state, whole; its entity and device registry entries; what it can do "
+                   "(the actions that target its domain or integration, with their fields; find_actions has those any "
+                   "entity takes); whether Assist may use it; its changes; and the other entities of the same "
+                   "physical device, 25 to a page. By default as the household has it now, its state as of the newest "
+                   "session; give session to see it as it was in that session.")
+    parameters = probatio.Schema({probatio.Required("entity_id"): str, probatio.Optional("session"): str,
+                                  probatio.Optional("page", default=1): int})
 
     def __init__(self, sessions):
         super().__init__(sessions.household)
@@ -201,20 +224,19 @@ class DeviceDetailsAt(RoleTool):
             await self.sessions.load(args["session"])
         return self.run(**args)
 
-    def run(self, entity_id, session=None):
+    def run(self, entity_id, session=None, page=1):
         view = self.sessions.views.get(session) if session else self.sessions.household
         if view is None:
             return {"error": f"There is no session {session!r}; list_sessions shows them."}
-        return {"as_of_session": session or "now (its state as of the newest session)", **view.device_details(entity_id)}
+        return {"as_of_session": session or "now (its state as of the newest session)",
+                **view.device_details(entity_id, page)}
 
 
 class DevicesInAreaNow(DevicesInArea):
     """devices_in_area over the household as it is now, states as of the newest session (the analyzer's tool reads one
     session)."""
-    description = ("List the devices in an area as the household has them now, with their state as of the newest "
-                   "session, what they can do, and "
-                   "whether Assist may use them (exposed). Use device_details with a session for an earlier state. "
-                   "Sensors only on request.")
+    description = ("List the entities in an area as the household has them now, its newest session's states; "
+                   "device_details with a session shows an earlier one. " + LISTING)
 
 
 class ListSessions(RoleTool):
@@ -469,9 +491,10 @@ class ReadAssistantInstructions(RoleTool):
                    "for every request) and the household knowledge (the lines every assistant reads: for everyone, "
                    "and for each person). Give a session to see which assistant it used, the exact instructions it "
                    "ran with and that assistant's current ones; give an assistant to read its current ones; give "
-                   "neither for every assistant. Each lists the recommended facts its instructions lack. Preference "
-                   "changes add lines to the household knowledge; a prompt change edits one assistant's "
-                   "instructions.")
+                   "neither for every assistant. Each lists the recommended facts its instructions lack, its other "
+                   "settings now, and the tools Assist had (with their parameters) and its provider's hosted tools, "
+                   "as a session recorded them. Preference changes add lines to the household knowledge; a prompt "
+                   "change edits one assistant's instructions.")
     parameters = probatio.Schema({probatio.Optional("session"): str, probatio.Optional("assistant"): str})
 
     def __init__(self, sessions):
@@ -496,7 +519,8 @@ class ReadAssistantInstructions(RoleTool):
             if record is None:
                 return {"error": f"Session {session} doesn't show which assistant it used."}
             ran = (ran_with(view.recording) or {}).get("template")
-            return {**self.sessions.instructions_of(record, (session[:8], ran)), "household_knowledge": household}
+            return {**self.sessions.instructions_of(record, (session[:8], ran, view.assistant_setup())),
+                    "household_knowledge": household}
         if assistant:
             record = self.sessions.assistant_named(assistant)
             if record is None:
@@ -513,46 +537,17 @@ class ReadAssistantInstructions(RoleTool):
         return {"assistants": [self.sessions.instructions_of(r) for r in records], "household_knowledge": household}
 
 
-class ReadScript(RoleTool):
-    """A script's current definition, read live (read-only): recordings only hold script names.
-
-    Offline (in tests), definitions come from a copy of the household's scripts instead.
-    """
-    name = "read_script"
-    description = "Read a script's current definition: its name and steps. Give the script's entity_id."
-    parameters = probatio.Schema({probatio.Required("entity_id"): str})
-
-    def __init__(self, definitions=None):
-        self.definitions = definitions  # {entity_id: definition}, offline only.
-
-    def run(self, entity_id):
-        definition = (self.definitions or {}).get(entity_id)
-        if definition is None:
-            return {"error": f"Script {entity_id} has no readable configuration"}
-        return {"entity_id": entity_id, "definition": definition}
-
-    async def answer(self, hass, args):
-        entity_id = args["entity_id"]
-        if self.definitions is not None:
-            return self.run(entity_id)
-        try:
-            definitions = live_script_definitions(hass, [entity_id])
-        except CaseError as err:
-            return {"error": str(err)}
-        return {"entity_id": entity_id, "definition": definitions[entity_id]}
-
-
-def reviewer_tools(sessions, submit, scripts=None):
-    """The household tools over the newest snapshot, reading sessions, instructions and scripts, and the submit tool.
-    scripts: offline script definitions for read_script; live from Home Assistant when None."""
-    return ([cls(sessions.household) for cls in TOOLS if cls not in (ReadTurn, DeviceDetails, DevicesInArea)]
-            + [DevicesInAreaNow(sessions.household), DeviceDetailsAt(sessions), ListSessions(sessions), ReadSession(sessions), ReadSessionTurn(sessions),
-               ReadAssistantInstructions(sessions), ReadScript(scripts),
-               ListImprovements(sessions.household, sessions.existing),
+def reviewer_tools(sessions, submit):
+    """The household tools over today's setup, reading sessions and instructions, and the submit tool."""
+    return ([cls(sessions.household) for cls in TOOLS
+             if cls not in (ReadTurn, DeviceDetails, DevicesInArea, ReadReadings, ReadAssistant)]
+            + [DevicesInAreaNow(sessions.household), DeviceDetailsAt(sessions), FindActions(sessions.household),
+               ListSessions(sessions), ReadSession(sessions), ReadSessionTurn(sessions), ReadSessionReadings(sessions),
+               ReadAssistantInstructions(sessions), ListImprovements(sessions.household, sessions.existing),
                ReadImprovement(sessions.household, sessions.existing)]
             + ([CheckHypothesis(sessions)] if sessions.evidence else []) + [submit])
 
 
-def tools(sessions, submit, reviewer=None, scripts=None):
+def tools(sessions, submit, reviewer=None):
     """The generator's tools: the reviewer's, plus ask_reviewer when given."""
-    return reviewer_tools(sessions, submit, scripts) + ([reviewer] if reviewer else [])
+    return reviewer_tools(sessions, submit) + ([reviewer] if reviewer else [])

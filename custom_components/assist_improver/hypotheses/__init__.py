@@ -23,5 +23,5 @@ from .run import GENERATOR_ROLE, REVIEWER_ROLE, run_generator  # noqa: F401
 from .schema import HYPOTHESES, KINDS, LABELS, REVIEW, blocking, verdict  # noqa: F401
 from .tools import (REVIEWS_PER_IDEA, REVIEWS_PER_ROUND, AskReviewer, ChannelSubmitReview,  # noqa: F401
                     CheckHypothesis, DeviceDetailsAt, DevicesInAreaNow, ListSessions, ReadAssistantInstructions,
-                    ReadScript, ReadSession, ReadSessionTurn, ReviewChannel, SubmitHypotheses, SubmitReview,
+                    ReadSession, ReadSessionTurn, ReviewChannel, SubmitHypotheses, SubmitReview,
                     WaitForDraft, review_result, reviewer_tools, tools)

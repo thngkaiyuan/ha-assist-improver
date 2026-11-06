@@ -143,7 +143,7 @@ def recording_turns(recording, replay=True):
             raise CaseError(f"Turn {number} has missing or duplicate tool results")
         exchange.update(number=number, source=snapshot["source"], handled_locally=bool(local),
                         prepared=deepcopy(snapshot.get("prepared")), history=deepcopy(history),
-                        calls=deepcopy(calls), results=deepcopy(results),
+                        calls=deepcopy(calls), results=deepcopy(results), actions=snapshot.get("actions") or [],
                         final_reply=finals[-1]["content"], ended=finals[-1]["created"])
     return exchanges
 
@@ -173,11 +173,8 @@ def replay_readiness(recording):
     gaps, notes = [], ["replay_from_start_carries_its_own_native_history; no_historical_native_backfill"]
     if any(not t["prepared"]["context"].get("context", {}).get("id") for t in turns):
         gaps.append("structured_request_identity_missing")
-    if any(c.get("external") and c["tool_name"] != "tool_search_tool_bm25"
-           for t in turns for c in t["calls"]):
-        gaps.append("recorded_provider_tool_outside_catalogue_search_coverage")
     if any(c.get("external") for t in turns for c in t["calls"]):
-        notes.append("tool_search_runs_in_provider; receipts_are_not_replayed_as_functions")
+        notes.append("hosted_tools_run_at_the_provider; their_receipts_are_outside_receipts")
     return {"model_baseline_ready": not gaps, "gaps": gaps, "notes": notes, "paid_inference_performed": False}
 
 

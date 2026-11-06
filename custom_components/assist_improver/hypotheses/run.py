@@ -10,10 +10,11 @@ GENERATOR_ROLE = "hypothesis_generator"
 REVIEWER_ROLE = "hypothesis_reviewer"
 
 
-async def run_generator(hass, sessions, entity_id, *, tester, reviewer_entity_id=None):
+async def run_generator(hass, sessions, entity_id, *, tester, reviewer_entity_id=None, user_id=None):
     """The generator and one long-running reviewer, side by side: (generator run, its submit tool, ask tool,
     reviewer run). The reviewer runs on its own model if given, else the generator's. tester: makes Simulate's stamp,
-    the test_idea tool, from the ask tool (stamps.TestIdea)."""
+    the test_idea tool, from the ask tool (stamps.TestIdea). user_id: the improver's user, as whom both use Home
+    Assistant's own read-only tools (ha_tools.py)."""
     async with span("evidence.load"):
         await sessions.prepare()
         await sessions.load_evidence()
@@ -23,7 +24,8 @@ async def run_generator(hass, sessions, entity_id, *, tester, reviewer_entity_id
         hass, role=REVIEWER_ROLE, entity_id=reviewer_entity_id or entity_id,
         instructions=REVIEWER_INSTRUCTIONS + REVIEWER_LOOP,
         payload={"household": sessions.summary()}, structure=None, allow_paid_inference=True,
-        llm_api=SessionAPI(hass, tools=reviewer_tools(sessions, review_submit) + [WaitForDraft(channel)])))
+        llm_api=SessionAPI(hass, tools=reviewer_tools(sessions, review_submit) + [WaitForDraft(channel)],
+                           user_id=user_id)))
     channel.reviewer = reviewer
     ask = AskReviewer(sessions, channel)
     test = tester(ask)
@@ -32,7 +34,8 @@ async def run_generator(hass, sessions, entity_id, *, tester, reviewer_entity_id
         generator = await run_role(hass, role=GENERATOR_ROLE, entity_id=entity_id,
                                    instructions=GENERATOR_INSTRUCTIONS, payload=sessions.overview(), structure=None,
                                    allow_paid_inference=True,
-                                   llm_api=SessionAPI(hass, tools=tools(sessions, submit, ask) + [test]))
+                                   llm_api=SessionAPI(hass, tools=tools(sessions, submit, ask) + [test],
+                                                      user_id=user_id))
     except BaseException:  # Failed or cancelled: the reviewer never waits for a draft that won't come.
         channel.close()
         reviewer.cancel()

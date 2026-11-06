@@ -7,6 +7,7 @@ import os
 from collections import Counter, defaultdict
 
 from homeassistant.const import __version__ as CORE_VERSION
+from homeassistant.helpers.storage import STORAGE_DIR
 
 from .const import CONF_DEVELOPER, DOMAIN, VERSION
 from .household import KEY as HOUSEHOLD
@@ -56,7 +57,7 @@ async def async_get_config_entry_diagnostics(hass, entry):
         "versions": {"integration": VERSION, "home_assistant": CORE_VERSION},
         "settings": {key: value for key, value in entry.options.items() if key in LIVE | {CONF_DEVELOPER}},
         "models": {role: role_model(entry, role) for role in ROLES},
-        "storage": await hass.async_add_executor_job(_storage, hass.config.path(".storage")),
+        "storage": await hass.async_add_executor_job(_storage, hass.config.path(STORAGE_DIR)),
         "recordings": {"by_status": dict(Counter(s.get("status") for s in index)),
                        "by_storage": dict(Counter(s.get("stored", "full") for s in index)),
                        "with_no_turns": sum(1 for s in index if s.get("user_turns") == 0)},

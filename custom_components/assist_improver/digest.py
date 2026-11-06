@@ -6,53 +6,24 @@ what actually changed, and what Assist could and could not do. Nothing here
 infers intent; it only selects and shortens recorded observations.
 """
 
-from contextlib import suppress
 from copy import deepcopy
 from datetime import datetime
 import json
 import re
 
+from homeassistant.components.sensor import NON_NUMERIC_DEVICE_CLASSES
 from homeassistant.util import dt as dt_util
 
 from .cases import CaseError, recording_turns
 
 FORMAT = 1
-RESULT_CHARS = 6000
-# Domains whose changes are background telemetry, not journey outcomes.
-NOISE_DOMAINS = {"sensor", "binary_sensor", "device_tracker", "event", "update", "tts", "conversation",
-                 "sun", "weather", "number", "image", "camera", "button", "stt", "wake_word", "assist_satellite"}
-ACTION_DOMAINS = {"script", "scene", "automation"}
+RESULT_CHARS = 6000  # A tool result's characters a view shows, for size; what's cut is counted where it's cut (_clip).
+READINGS_SHOWN = 25  # Entities whose readings a view lists upfront, those with the most first; the rest are named.
+# Every change of these is a reading, as Home Assistant's logbook tells one (its ALWAYS_CONTINUOUS_DOMAINS).
+READING_DOMAINS = {"counter", "image", "proximity"}
 ENTITY_ID = re.compile(r"\b([a-z_]+\.[a-z0-9_]+)\b")
-OP_ATTRIBUTES = ("hvac_modes", "fan_modes", "preset_modes", "swing_modes", "effect_list", "options",
-                 "supported_color_modes", "source_list")
-# What a device reports of the world on its own, which no command sets: its readings, what it's playing and what it
-# can do now; and its name, which a rename changes.
-OWN_REPORTS = {"current_temperature", "hvac_action", "media_title", "media_artist", "media_album_name",
-               "supported_features", "friendly_name"}
-
-
-def _states(change):
-    return (change.get("old") or {}).get("state"), (change.get("new") or {}).get("state")
-
-
-def background(change):
-    """Whether a recorded state change is background, which the readers listing what changed skip: a noise domain's,
-    an availability flap (to or from unavailable), or a write that changed neither the state nor an attribute someone
-    sets (a TV's next song, a thermostat's reading). A correction of an attribute alone (a volume, a brightness)
-    counts."""
-    old, new = change.get("old") or {}, change.get("new") or {}
-    if change["entity_id"].split(".", 1)[0] in NOISE_DOMAINS or "unavailable" in (old.get("state"), new.get("state")):
-        return True
-    if old.get("state") != new.get("state"):
-        return False
-    before, after = old.get("attributes") or {}, new.get("attributes") or {}
-    return all(before.get(k) == after.get(k) for k in (before.keys() | after.keys()) - OWN_REPORTS)
-
-
-def flap(change):
-    """An availability flap the digest counts: a device (not background telemetry) going to or from unavailable."""
-    old, new = _states(change)
-    return old != new and "unavailable" in (old, new) and change["entity_id"].split(".", 1)[0] not in NOISE_DOMAINS
+LABELS = ("entity_category", "disabled_by", "hidden_by")  # What a card labels an entity with, where it's set.
+NO_STATE = "no live state (disabled or missing)"
 
 
 def caused(change, requests=()):
@@ -62,9 +33,73 @@ def caused(change, requests=()):
     return bool(context.get("user_id") or context.get("parent_id") or (context.get("id") and context["id"] in requests))
 
 
-def worth_keeping(change, requests=()):
-    """Whether the recorder keeps a state change: one some reader uses, so background only when someone caused it."""
-    return caused(change, requests) or not background(change)
+def kept(change, requests=(), machinery=(), cut=()):
+    """The keep rule (DETAILS P8.2.9), one for the recorder, the sandbox and every reader: how a state change is kept.
+    None: cut, only for the entities in cut (the improver's own AI Tasks, P8.1.4). "machinery": one of the answering
+    voice assistant's own entities (machinery), which change with every turn and are never what a request did.
+    "reading": one nobody caused (caused) that leaves the state as it was, or belongs to a counter, proximity or image
+    entity, or to a sensor with a unit, a state class or a numeric device class, as Home Assistant's logbook tells a
+    reading. "change": any other. Readings are kept with the rest; the views list them last."""
+    entity_id = change["entity_id"]
+    if entity_id in cut:
+        return None
+    if entity_id in machinery:
+        return "machinery"
+    if caused(change, requests):
+        return "change"
+    old, new = change.get("old") or {}, change.get("new") or {}
+    attributes, domain = new.get("attributes") or old.get("attributes") or {}, entity_id.split(".", 1)[0]
+    if (old and new and old.get("state") == new.get("state")) or domain in READING_DOMAINS or domain == "sensor" and (
+            "unit_of_measurement" in attributes or "state_class" in attributes
+            or attributes.get("device_class") not in (None, *NON_NUMERIC_DEVICE_CLASSES)):
+        return "reading"
+    return "change"
+
+
+def requests(recording):
+    """The context IDs of a conversation's requests, which the changes Assist makes for them carry."""
+    found = {(((t.get("prepared") or {}).get("context") or {}).get("context") or {}).get("id")
+             for t in recording.get("turns", [])}
+    found.discard(None)
+    return found
+
+
+def machinery(recording, pipeline=None):
+    """The answering voice assistant's own entities in a recording (DETAILS P8.2.9): the conversation agent that
+    answered, as its replies and each turn's request name it; the agent, speech-to-text, text-to-speech and wake word
+    entities each turn's voice assistant (pipeline) names, or pipeline's, a replay's (today's, replay._pipeline_now);
+    and the assist_satellite entity of the device each request came through. A voice device's other entities (its
+    speaker) are the home's."""
+    found, turns = set(), recording.get("turns", [])
+    found.update(c["agent_id"] for c in (recording.get("chat_log") or {}).get("content") or []
+                 if isinstance(c, dict) and isinstance(c.get("agent_id"), str))
+    entities = (turns[0].get("source") or {}).get("entities") or {} if turns else {}
+    for turn in turns:
+        context, ran = (turn.get("prepared") or {}).get("context") or {}, pipeline or turn.get("pipeline") or {}
+        found.update(v for v in (context.get("agent_id"), *(ran.get(k) for k in (
+            "conversation_engine", "stt_engine", "tts_engine", "wake_word_entity"))) if isinstance(v, str))
+        if device := context.get("device_id"):
+            found.update(e for e, entry in entities.items()
+                         if e.startswith("assist_satellite.") and (entry or {}).get("device_id") == device)
+    return found
+
+
+def labelled(recording):
+    """A recording's changes, each with its label (kept), but the machinery's: what its readers read."""
+    asked, gears = requests(recording), machinery(recording)
+    return [(c, label) for c in recording.get("state_changes", []) if (label := kept(c, asked, gears)) != "machinery"]
+
+
+def readings(found, shown=READINGS_SHOWN):
+    """Readings as a view lists them, after everything else: found, (entity_id, reading) in time order, as one line
+    per entity, {entity_id, readings: how many, first, last}, those with the most first, up to shown; and the other
+    entities with readings, by ID, those with the most first (each one's line is in its device details)."""
+    by_entity = {}
+    for entity_id, reading in found:
+        by_entity.setdefault(entity_id, []).append(reading)
+    ranked = sorted(by_entity.items(), key=lambda item: -len(item[1]))
+    return ([{"entity_id": e, "readings": len(rs), "first": rs[0], "last": rs[-1]} for e, rs in ranked[:shown]],
+            [e for e, _ in ranked[shown:]])
 
 
 def _text(value):
@@ -85,18 +120,6 @@ def _naming(source, entity_id):
     return name, area, [a for a in entity.get("aliases") or [] if a and a != name]
 
 
-def _ops(entity_id, state):
-    attributes = state.get("attributes", {})
-    ops = {key: attributes[key] for key in OP_ATTRIBUTES if attributes.get(key)}
-    if entity_id.startswith("light.") and set(attributes.get("supported_color_modes") or []) - {"onoff"}:
-        ops["brightness"] = True
-    if "temperature" in attributes:
-        ops["target_temperature"] = True
-    if "percentage" in attributes:
-        ops["percentage"] = True
-    return ops
-
-
 def time_zone(name):
     """The time zone a recording names (Home Assistant's then), or UTC for none it knows. Home Assistant may read a
     zone from disk the first time, so code on the event loop resolves it with async_time_zone and passes it in."""
@@ -108,50 +131,57 @@ async def async_time_zone(name):
     return await dt_util.async_get_time_zone(name or "UTC") or dt_util.UTC
 
 
-def _shown(source, entity_id, state, zone):
-    """A recorded state as Home Assistant's live context showed it to Assist (async_get_exposed_entities): a sensor's
-    rounded to its display precision (sensor.async_rounded_state), a timestamp in the home's time zone (zone)."""
-    value = state.get("state")
-    options = (source.get("entities", {}).get(entity_id) or {}).get("sensor_options") or {}
-    precision = options.get("display_precision", options.get("suggested_display_precision"))
-    if entity_id.startswith("sensor.") and precision is not None:
-        with suppress(TypeError, ValueError):
-            value = f"{float(value):z.{precision}f}"
-    if (state.get("attributes") or {}).get("device_class") == "timestamp" and state.get("state"):
-        with suppress(ValueError):  # A date that can't be (month 13) stays as it was: the card is still shown.
-            if (parsed := dt_util.parse_datetime(state["state"])) is not None:
-                value = parsed.replace(tzinfo=parsed.tzinfo or zone).astimezone(zone).isoformat()
-    return value
+def filled(record):
+    """A record with its empty fields left out (None, "", [] and {})."""
+    return {k: v for k, v in (record or {}).items() if v not in (None, "", [], {})}
 
 
-def _entity_card(source, entity_id, zone, detailed=False):
+def device_of(source, device_id):
+    """A device's registry entry as recorded, its empty fields left out; a child device takes its manufacturer, model
+    and area from its parent where it has none of its own (Home Assistant keeps them on the parent)."""
+    devices = source.get("devices") or {}
+    device = devices.get(device_id or "") or {}
+    parent = devices.get(device.get("parent_device_id") or "") or {}
+    return filled({**{k: parent.get(k) for k in ("manufacturer", "model", "model_id", "area_id")}, **filled(device)})
+
+
+def entity_card(source, entity_id, detailed=False, operations=None):
+    """One entity as the views show it: its name, area, aliases, whether Assist may use it (exposed) and its labels
+    (entity category, disabled, hidden) where set, then its state. detailed: the state whole, as Home Assistant writes
+    it, and the entity's and its device's registry entries, each with its empty fields left out; and operations, what
+    it can do (actions.operations), where given."""
     name, area, aliases = _naming(source, entity_id)
+    entry = source.get("entities", {}).get(entity_id) or {}
     state = source.get("states", {}).get(entity_id)
-    card = {"entity_id": entity_id, "name": name}
-    if area:
-        card["area"] = area
-    if aliases:
-        card["aliases"] = aliases
-    card["exposed"] = source.get("exposure", {}).get(entity_id)
-    if state is None:
-        card["state"] = "no live state (disabled or missing)"
+    card = {"entity_id": entity_id, "name": name, **({"area": area} if area else {}),
+            **({"aliases": aliases} if aliases else {}), "exposed": source.get("exposure", {}).get(entity_id),
+            **{k: entry[k] for k in LABELS if entry.get(k)}}
+    if not detailed:
+        card["state"] = state.get("state") if state else NO_STATE
         return card
-    card["state"] = _shown(source, entity_id, state, zone)
-    ops = _ops(entity_id, state)
-    if ops:
-        card["operations"] = ops
-    if detailed:
-        card["attributes"] = {k: v for k, v in state.get("attributes", {}).items()
-                              if k not in OP_ATTRIBUTES and k != "friendly_name"}
+    card["state"] = filled(state) if state else NO_STATE
+    if entry:
+        card["entity"] = filled({k: v for k, v in entry.items() if k != "entity_id"})
+    if device := device_of(source, entry.get("device_id")):
+        card["device"] = device
+    if operations is not None:
+        card["operations"] = operations
     return card
 
 
-def build_digest(recording, zone=None):
-    """Return the digest for a closed recording. Raises CaseError when unusable. zone: its time zone (time_zone); code
-    on the event loop passes it."""
+def _named(actions):
+    """The entities a turn's recorded action calls name (P8.2.10): their entity_id, given alone or as a list."""
+    found = set()
+    for action in actions:
+        ids = (action.get("data") or {}).get("entity_id")
+        found.update(i for i in (ids if isinstance(ids, list) else [ids]) if isinstance(i, str))
+    return found
+
+
+def build_digest(recording):
+    """Return the digest for a closed recording. Raises CaseError when unusable."""
     turns = recording_turns(recording, replay=False)
     first = turns[0]["source"]
-    zone = zone or time_zone(first.get("time_zone"))
     starts = [t["messages"][0]["created"] for t in turns]
 
     def turn_of(at):
@@ -161,9 +191,9 @@ def build_digest(recording, zone=None):
                 number = index
         return number
 
-    out_turns, mentioned = [], set()
+    out_turns, mentioned = [], {}  # mentioned: {entity: the first turn that names it}
     for turn in turns:
-        steps = []
+        steps, named = [], _named(turn["actions"])
         for message in turn["messages"][1:]:
             if message["role"] == "assistant":
                 if message.get("content"):
@@ -173,42 +203,49 @@ def build_digest(recording, zone=None):
                     if call.get("external"):
                         step["provider_hosted"] = True
                     steps.append(step)
-                    mentioned.update(ENTITY_ID.findall(_text(call["tool_args"])))
+                    named.update(ENTITY_ID.findall(_text(call["tool_args"])))
             elif message["role"] == "tool_result":
                 result = _text(message.get("result"))
-                mentioned.update(ENTITY_ID.findall(result))
+                named.update(ENTITY_ID.findall(result))  # The devices Home Assistant's response names, too.
                 steps.append({"result_of": message.get("tool_name"), "result": _clip(result)})
+        for entity_id in named:
+            mentioned.setdefault(entity_id, turn["number"])
         out_turns.append({"turn": turn["number"], "at": turn["messages"][0]["created"],
                           "user_says": turn["messages"][0]["content"], "assistant": steps,
                           **({"handled_by": "Home Assistant itself, without the AI model"}
                              if turn["handled_locally"] else {})})
 
-    # The recorder counts the flaps it didn't keep (worth_keeping).
-    changes, flaps = {}, recording.get("flaps_not_kept", 0)
-    for change in recording.get("state_changes", []):
-        old, new = _states(change)
-        if background(change) or old == new:
-            if flap(change):
-                flaps += 1
+    changes, found = {}, []  # found: the readings, (entity_id, reading), listed last.
+    for change, label in labelled(recording):
+        before, after = change.get("old") or {}, change.get("new") or {}
+        old, new = before.get("state"), after.get("state")
+        line = {"at": change["at"], "during_turn": turn_of(change["at"]), "old": old, "new": new}
+        if label == "reading":
+            found.append((change["entity_id"], line))
             continue
-        changes.setdefault(change["entity_id"], []).append({"at": change["at"], "during_turn": turn_of(change["at"]),
-                                                            "old": old, "new": new})
+        if old == new:  # Only its attributes moved (a light's brightness): which.
+            was, now = before.get("attributes") or {}, after.get("attributes") or {}
+            line["attributes_changed"] = sorted(k for k in {*was, *now} if was.get(k) != now.get(k))
+        changes.setdefault(change["entity_id"], []).append(line)
+    shown, more = readings(found)
 
     known = set(first.get("states", {})) | set(first.get("entities", {}))
-    relevant = sorted((mentioned & known) | set(changes))
+    for entity_id, lines in changes.items():
+        mentioned[entity_id] = min(mentioned.get(entity_id, len(turns)), max(1, lines[0]["during_turn"]))
     relevant_cards = []
-    for entity_id in relevant:
-        card = _entity_card(first, entity_id, zone, detailed=True)
+    for entity_id in sorted(e for e in mentioned if e in known or e in changes):
+        # As the turn it first comes up in started: that turn's states, the first turn's registries.
+        at = {**first, "states": turns[min(mentioned[entity_id], len(turns)) - 1]["source"].get("states") or {}}
+        card = entity_card(at, entity_id, detailed=True)
         card["changes_during_session"] = changes.get(entity_id, [])
         relevant_cards.append(card)
 
+    # Only what Assist could see, by area: every other entity is within the views' search (exploration.py).
     exposed = sorted(e for e, v in first.get("exposure", {}).items() if v is True)
     by_area = {}
     for entity_id in exposed:
-        card = _entity_card(first, entity_id, zone)
+        card = entity_card(first, entity_id)
         by_area.setdefault(card.pop("area", None) or "No area", []).append(card)
-    actions = [_entity_card(first, e, zone) for e in sorted(first.get("entities", {}))
-               if e.split(".", 1)[0] in ACTION_DOMAINS]
 
     return {
         "format": FORMAT,
@@ -222,14 +259,13 @@ def build_digest(recording, zone=None):
             "assist_tools": [{"name": t["name"], "description": t.get("description")}
                              for t in next((t["prepared"]["tools"] for t in turns if t["prepared"]), [])],
             "exposed_entities_by_area": by_area,
-            "scripts_scenes_automations": actions,
         },
         "omitted": {
-            "availability_flaps": flaps,
-            "background_domains": sorted(NOISE_DOMAINS),
             "note": "Full state and registry snapshots stay in the recording; this digest is a selection.",
         },
         "limitations": deepcopy(recording.get("limitations", [])),
+        "readings": shown,  # Last: what devices reported on their own (kept).
+        **({"more_entities_with_readings": more} if more else {}),
     }
 
 

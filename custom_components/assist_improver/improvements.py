@@ -23,10 +23,10 @@ from .records import Improvement
 from .trace import journal, span, timed
 
 PENDING = ("awaiting_review", "needs_attention")  # Waiting on the user: in the notification.
-# A door or valve: a cover or valve, or anything named after a door, gate, garage or valve (as a switch that runs a
-# garage door): by its entity ID here, or by its name in Home Assistant (physical). The review notes that their motion
-# isn't simulated (panel.py).
-PHYSICAL = re.compile(r"\b(?:cover|valve)\.\w+"  # Covers and valves, and what drives a door or valve:
+# A door, valve, lock or alarm: a cover, valve, lock or alarm panel, or anything named after a door, gate, garage or
+# valve (as a switch that runs a garage door): by its entity ID here, or by its name in Home Assistant (physical). The
+# review notes that their motion isn't simulated (panel.py, DETAILS P11.5).
+PHYSICAL = re.compile(r"\b(?:cover|valve|lock|alarm_control_panel)\.\w+"  # Those, and what drives a door or valve:
                       r"|\b(?:switch|script|button)\.(?:\w+_)?(?:doors?|gates?|garage|valves?)\d*(?:_\w+)?\b")
 DRIVERS = ("switch", "script", "button")  # What can drive a door or valve, named after it.
 DOOR_NAME = re.compile(r"\b(?:doors?|gates?|garage|valves?)\d*\b", re.IGNORECASE)

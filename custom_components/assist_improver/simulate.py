@@ -25,7 +25,7 @@ from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.storage import Store
 from homeassistant.util.dt import utcnow
 
-from . import measures
+from . import measures, touchpoints
 from .analyzer import speaking
 from .cases import (CaseError, calls_in, digest, recording_turns, replay_readiness, replayed, started_from,
                     transcript)
@@ -34,11 +34,11 @@ from .const import DOMAIN, STORAGE_VERSION, TESTED_PROVIDERS
 from .digest import _clip, _naming
 from .failures import closing
 from .instructions import target
-from .reflective import own_trace
 from .replay import SandboxHome, today as setup_today
+from .sandbox import seeded
 from .serialization import plain
-from .simulation import (UnsupportedSimulation, _request_changes, assist_transitions, moved_by_others, per_entity,
-                         recorded_attributes, same_brightness, same_effects, setting_off)
+from .simulation import (_request_changes, assist_transitions, moved_by_others, per_entity, recorded_attributes,
+                         same_brightness, same_effects, setting_off)
 from .snapshot import assist_config, at_moment, on_today, renamed, renaming
 from .trace import span
 
@@ -113,28 +113,27 @@ def agent_of(recording):
 
 
 # What of an entity Assist can't see a replay doesn't depend on: how it's named, and whether it has a state now.
-UNSEEN = ("name", "original_name", "aliases", "alias_entries", "has_state")
+UNSEEN = ("name", "original_name", "aliases")
 
 
 def setup_digest(today):
     """What a plan carries of the setup its replay runs on (DETAILS P6.7.1): a digest of what a replay depends on in it
-    (replay.today's): not the devices' states, when it was read or how the recorder keeps attributes, nor how what
-    Assist can't see is named. The assistant is its whole configuration as the sandbox loads it, secrets redacted."""
-    home = today["home"]
+    (replay.today's): what the sandbox is seeded with besides the devices' states (sandbox.seeded, and setup_of's
+    entries, helpers and actions), not how what Assist can't see is named; and the assistant's provider and settings
+    (its subentry's data), never its provider entry's data or options, which hold its credentials."""
+    home, states = seeded(today["home"]), today["home"].get("states") or {}
     exposed = {e for e, on in (home.get("exposure") or {}).items() if on}
-    entities = {e: {k: v for k, v in x.items() if e in exposed or k not in UNSEEN}
-                for e, x in (home.get("entities") or {}).items()}
+    entities = {e: {k: v for k, v in x.items() if e in exposed or k not in UNSEEN} for e, x in home["entities"].items()}
     seen = {(entities.get(e) or {}).get("device_id") for e in exposed}
-    devices = {d: x if d in seen else {"area_id": x.get("area_id")} for d, x in (home.get("devices") or {}).items()}
-    named = {e: (((home.get("states") or {}).get(e) or {}).get("attributes") or {}).get("friendly_name")
-             for e in exposed}
+    devices = {d: x if d in seen else {"area_id": x.get("area_id")} for d, x in home["devices"].items()}
+    named = {e: ((states.get(e) or {}).get("attributes") or {}).get("friendly_name") for e in exposed}
     entry = today["assistant"]["entry"]
-    return digest({"home": {**{k: v for k, v in home.items() if k not in (
-        "states", "at", "attribute_policy", "exposure", "entities", "devices")}, "entities": entities,
-        "devices": devices, "exposed": named, "all": sorted({*entities, *(home.get("states") or {})})},
-        "assistant": plain({"domain": entry["domain"], "data": entry.get("data"), "options": entry.get("options"),
-                            "settings": entry["subentries"][0].get("data")}),
-        **{k: today[k] for k in ("tools", "timers")}})
+    return digest({"home": {**{k: v for k, v in home.items() if k not in ("exposure", "entities", "devices")},
+                            "entities": entities, "devices": devices, "exposed": named,
+                            "all": sorted({*entities, *states})},
+                   "assistant": plain({"domain": entry["domain"], "settings": entry["subentries"][0].get("data")}),
+                   **{k: today[k] for k in ("tools", "timers")},
+                   **{k: today.get(k) for k in ("entries", "helpers", "services")}})
 
 
 def before_plan(recording, today, attempt=1):
@@ -321,9 +320,13 @@ def question_of(goal, view, turn, user_said, world=None):
         if world is not None:
             before = [c for c in changes.get(e, []) if c["during_turn"] < turn]
             state = before[-1]["new"] if before else ((view.sources[0].get("states") or {}).get(e) or {}).get("state")
-        changed = [{k: c[k] for k in ("old", "new", "by")} for c in changes.get(e, []) if c["during_turn"] == turn
-                   and (world is not None and c["by"] == "assistant" or "between turns" not in c["by"] and (
-                       replied is None or datetime.fromisoformat(c["at"]) <= datetime.fromisoformat(replied)))]
+        during = [c for c in changes.get(e, []) if c["during_turn"] == turn
+                  and (world is not None and c["by"] == "assistant" or "between turns" not in c["by"] and (
+                      replied is None or datetime.fromisoformat(c["at"]) <= datetime.fromisoformat(replied)))]
+        changed = [{k: c[k] for k in ("old", "new", "by")} for c in during if not c.get("reading")]
+        if readings := [c for c in during if c.get("reading")]:  # One line, last: from the first to the last.
+            changed.append({"old": readings[0]["old"], "new": readings[-1]["new"], "by": readings[-1]["by"],
+                            "readings": len(readings)})
         home.append({"device": _naming(view.source, e)[0], "entity_id": e, "state": state,
                      **({"attributes": start[e].get("attributes")} if start[e].get("state") == state else {}),
                      **({"during_the_turn": changed} if changed else {})})
@@ -589,17 +592,12 @@ class Trial:
         self.mine = {t["entity_id"] for turn in self.turns for t in assist_transitions(recording, turn)}
         self.home, self.agent, self.session = None, None, session
         self.conversation_id, self.usage = f"improver-replay-{uuid4()}", []  # In its sandbox only.
+        self.unheard = False  # A turn the model finished reported no usage.
         self.entry = {"plan": deepcopy(plan), "recording_id": recording["id"], "at": utcnow().isoformat(),
                       "status": "running", "error": None, "notes": list(plan.get("notes") or []), "usage": None,
                       "said": [], "steps": [], "verdicts": {}}
 
     async def run(self):
-        # In a conversation trace of its own: what the replay's model and tools report is the replay's, never the
-        # caller's (the proposer's, when a test runs as its tool).
-        with own_trace(self.hass):
-            return await self._run()
-
-    async def _run(self):
         """The household's assistant runs each turn in the replay's sandbox, loaded from its own config entry as it's
         set up now (a change's instructions in place of its own): a turn runs there whole, the model seeing what Home
         Assistant builds there."""
@@ -611,13 +609,13 @@ class Trial:
                     raise CaseError("Cannot backfill missing historical identity")
             if self.after and self.session is None:  # What the replay with the change is judged on.
                 from .exploration import session_view
-                self.session = await session_view(self.hass, self.recording)
+                self.session = await session_view(self.hass, self.recording, setup=False)
             said = self.branch - 1  # The turns before the branch: the baseline's (DETAILS P6.2).
             carried = [s for s in self.baseline["steps"] if s["turn"] <= said] if said else []
             self.home = home = SandboxHome(
                 self.hass, self.recording, turns[0], self.conversation_id, self.today, change=self.setup,
                 watch=[e for e in self.today["home"]["states"] if e.startswith("light.")],
-                start=carried[-1]["home"] if carried else None)
+                start=carried[-1]["home"] if carried else None, at=turns[said]["source"].get("at"))
             self.agent = await home.load_assistant()
             if carried:
                 await home.carry(carried)
@@ -688,23 +686,22 @@ class Trial:
             found = await home.turn(turn, self.agent, self.conversation_id)
         self.usage += found["usage"]
         new = found["content"]
+        # Hosted tools run at the provider, and calls beyond the home are stood in (sandbox.outside): outside
+        # receipts (DETAILS P11.7), as is what wasn't simulated (unemulated), the turn's own.
         external = [{"name": c["tool_name"], "args": deepcopy(c["tool_args"]), "provenance": "provider_execution"}
                     for m in new if m.get("role") == "assistant" for c in m.get("tool_calls") or [] if c.get("external")]
-        if any(c["name"] != "tool_search_tool_bm25" for c in external):
-            # A server tool may already have executed remotely: the replay can't tell what it did.
-            raise UnsupportedSimulation("Provider tool is outside catalogue-search evaluation coverage")
-        if found["unemulated"]:  # The turn's own commands, never what others' moves set off before it.
-            raise UnsupportedSimulation("No emulation for " + ", ".join(found["unemulated"]))
         if found["reply"].get("response_type") == "error":  # The provider or HA failed it: the machinery's, not the run's.
             raise HomeAssistantError(((found["reply"].get("speech") or {}).get("plain") or {}).get("speech") or "error")
         if not new or new[-1].get("role") != "assistant" or not new[-1].get("content") or new[-1].get("tool_calls"):
             raise CaseError("The assistant didn't finish this turn")
+        self.unheard = self.unheard or not found["usage"]
         transitions, attributes = found["transitions"], found["attributes"]
         brightness = {e: [(found["before"].get(e) or {}).get("brightness"), (attributes.get(e) or {}).get("brightness")]
                       for e in home.watch}
         step = {"turn": number, "input": turn["messages"][0]["content"], "reply": new[-1]["content"], "output": new,
                 "transitions": transitions, "brightness": {e: v for e, v in brightness.items() if v[0] != v[1]},
-                "external_calls": external, "spoken": found["spoken"], "commands": found["commands"]}
+                "external_calls": external, "spoken": found["spoken"], "commands": found["commands"],
+                "outside": found["outside"], "not_simulated": found["unemulated"]}
         self.entry["said"].append(number)
         self.entry["steps"].append(step)
         if self.after:
@@ -761,9 +758,22 @@ async def _settled(hass, replays, plan, recording, today, **kwargs):
         async with span("replay", kind=plan["kind"], plan_id=plan["id"]) as section:
             found = await keep(await trial.run())
             section.tag(status=found["status"])
+    _heard(hass, replays, found, today["assistant"]["entry"]["domain"], trial.unheard)
     if found["status"] in TRANSIENT:
         raise Transient(f"The replay couldn't finish: {(found.get('error') or {}).get('message') or found['status']}")
     return found
+
+
+def _heard(hass, replays, replay, platform, unheard):
+    """A replay's usage, as its provider (platform: its assistant's integration) reports it on each turn's chat log: a
+    turn the model finished with none (unheard), from a provider that reported it on this replay's other turns or on
+    its replays before, means the provider stopped reporting it there. Some providers never report it: no break."""
+    if not unheard:
+        if replay["usage"]["events"]:
+            touchpoints.ok(hass, "provider_usage")
+    elif replay["usage"]["events"] or any(r["plan"].get("platform") == platform and (r.get("usage") or {}).get("events")
+                                          for r in replays.items.values()):
+        touchpoints.report(hass, "provider_usage", f"{platform} reported no usage for a replay's turn")
 
 
 def _why(replay):
@@ -826,7 +836,7 @@ async def test(hass, entry, runtime, rid, goals, hypothesis):
     before, today = await planned(hass, recording)
     renames = renamed(recording, today["home"])
     recording, goals = renaming(recording, renames), renaming(goals, renames)
-    turns, session = recording_turns(recording), await session_view(hass, recording)
+    turns, session = recording_turns(recording), await session_view(hass, recording, setup=False)
     went = measures.judge(goals, session, range(1, len(turns) + 1), measures.CONVERSATION)
     model = judge_model(entry)
     # The baseline: up to TRIES whole replays without the change, each under a plan of its own and kept, until one goes

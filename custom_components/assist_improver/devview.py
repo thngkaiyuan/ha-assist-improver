@@ -15,6 +15,7 @@ import time
 
 import probatio
 from homeassistant.components import websocket_api
+from homeassistant.helpers.storage import STORAGE_DIR
 
 from . import trace
 from .const import CONF_DEVELOPER, DOMAIN, VERSION
@@ -44,7 +45,7 @@ def _short(recording_id):
 
 def _recording_sizes(hass):
     """{recording ID: bytes on disk}."""
-    path, prefix = hass.config.path(".storage"), f"{DOMAIN}.session_"
+    path, prefix = hass.config.path(STORAGE_DIR), f"{DOMAIN}.session_"
     out = {}
     for name in os.listdir(path) if os.path.isdir(path) else []:
         if name.startswith(prefix) and name != f"{prefix}briefs":
@@ -399,7 +400,7 @@ def _max_rss():
 async def health(hass, runtime):
     from .diagnostics import _storage
     from .worker import KEY, STATS
-    disk = await hass.async_add_executor_job(_storage, hass.config.path(".storage"))
+    disk = await hass.async_add_executor_job(_storage, hass.config.path(STORAGE_DIR))
     pipeline = runtime.pipeline
     current = pipeline.current or {}
     return {

@@ -39,7 +39,7 @@
     },
     "export_recording": {
       "name": "Export recording",
-      "description": "Return one recording as JSON. Includes household conversations; administrators only.",
+      "description": "Return one recording as JSON: household conversations and the home as recorded, with passwords, API keys, tokens and locations redacted. Administrators only.",
       "fields": {
         "recording_id": {
           "name": "Recording ID",
@@ -132,6 +132,10 @@
     },
     "update_usage": {
       "title": "Assist Improver can't count tokens used",
+      "description": "Assist Improver needs an update for this version of Home Assistant."
+    },
+    "update_ha_tools": {
+      "title": "Assist Improver can't look things up in Home Assistant",
       "description": "Assist Improver needs an update for this version of Home Assistant."
     }
   },

@@ -14,6 +14,8 @@ import re
 
 from homeassistant.helpers import llm
 
+from .serialization import plain
+
 
 @dataclass(frozen=True)
 class Fact:
@@ -99,14 +101,16 @@ def ran_with(recording):
 
 
 def live(hass, target):
-    """An assistant as Home Assistant has it now: {title, template}, or None when it's no longer set up."""
+    """An assistant as Home Assistant has it now: {title, template, options: every other setting of its subentry},
+    or None when it's no longer set up."""
     entry_id, _, subentry_id = (target or "").partition("/")
     entries = getattr(hass, "config_entries", None)
     entry = entries.async_get_entry(entry_id) if entries is not None and entry_id else None
     sub = entry.subentries.get(subentry_id) if entry is not None else None
     if sub is None:
         return None
-    return {"title": sub.title, "template": sub.data.get("prompt")}
+    return {"title": sub.title, "template": sub.data.get("prompt"),
+            "options": {k: v for k, v in plain(dict(sub.data)).items() if k != "prompt"}}
 
 
 def effective(template):

@@ -6,8 +6,9 @@ conversation's assistant as it's set up now (today); only the moment comes from 
 devices' states as it started (snapshot.at_moment) and others' changes between turns, and its time. The assistant loads
 in the sandbox from its own config entry, by its provider's integration (sandbox.load_assistant); HA builds its prompt
 and tools there, its model is asked from there, and each tool call runs there: HA's own intents, scripts and
-automations act on the sandbox's copy of the home, and only device commands are emulated. The sandbox runs in a replay
-worker of its own (worker.py); the real instance only drives which recorded turn is said (simulate.Trial).
+automations act on the sandbox's copy of the home, and only the devices and calls beyond the home are stood in. The
+sandbox runs in a replay worker of its own (worker.py); the real instance only drives which recorded turn is said
+(simulate.Trial).
 """
 
 from copy import deepcopy
@@ -17,14 +18,16 @@ from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import entity_registry as er, llm
 
 from .cases import CaseError
-from .const import DOMAIN, PROVIDER_OPTIONS
-from .sandbox import seed_options
+from .const import DOMAIN
+from .digest import machinery
+from .sandbox import seed_options, setup_of
 from .serialization import plain
-from .simulation import UnsupportedSimulation, reports_movement
+from .settings import own_models
+from .simulation import UnsupportedSimulation, recorded, reports_movement
 from .snapshot import at_moment
-from .touchpoints import Broken
+from .touchpoints import Broken, get, guarded, relied_on, report
 from .trace import span
-from .worker import RemoteSandbox, WorkerError, context_data
+from .worker import Refused, RemoteSandbox, WorkerError, context_data
 
 GONE = "The assistant this conversation used is no longer set up, so it can't be replayed."
 
@@ -33,13 +36,16 @@ class SandboxHome:
     """One replay's sandbox, started on first use: today's setup (today: replay.today's) at the recording's first turn
     (snapshot.at_moment), with a change on top (change: changes.setup_from_changes's scripts, exposure, aliases,
     household knowledge and instructions); for a test that branches from its baseline, set to the baseline's home after
-    the turn before the branch (start: how it differed from that moment then, sandbox.moved). watch: the entities whose
-    attributes a turn is judged on (a light's brightness)."""
+    the turn before the branch (start: how it differed from that moment then, sandbox.moved), at the branch turn's
+    time (at: the first turn it says). watch: the entities whose attributes a turn is judged on (a light's
+    brightness)."""
 
-    def __init__(self, hass, recording, turn, run_id, today, *, change=None, watch=(), start=None):
+    def __init__(self, hass, recording, turn, run_id, today, *, change=None, watch=(), start=None, at=None):
         self.hass, self.id, self.recording, self.first_turn, self.today = hass, run_id, recording, turn, today
         self.change = change or {}
         self.source = as_moved(at_moment(today["home"], turn["source"]), start)  # What the sandbox is seeded as.
+        if at is not None:  # Its clock starts there (sandbox.Sandbox.start).
+            self.source["at"] = at
         self.sandbox = None
         self.watch = sorted(watch)
 
@@ -53,24 +59,25 @@ class SandboxHome:
     async def start(self):
         if self.sandbox is not None:
             return
-        user_name = None
-        if (user_id := _user_id(self.first_turn)) and getattr(self.hass, "auth", None):
-            user = await self.hass.auth.async_get_user(user_id)
-            user_name = getattr(user, "name", None)
+        user_id = _user_id(self.first_turn)
         source = self.source
+        person = await _person(self.hass, user_id, source.get("states") or {})
         self.sandbox = await RemoteSandbox.start(self.hass, source.get("time_zone") or self.hass.config.time_zone,
-                                                 custom_providers(self.hass))
+                                                 source, setup_of(self.today), custom_providers(self.hass))
         try:
             async with span("sandbox.seed"):
                 await self.sandbox.call(
-                    "seed", source=source, user_name=user_name, options=seed_options(self.today, self.first_turn),
+                    "seed", person=person, options=seed_options(self.today, self.first_turn),
                     scripts={**(source.get("scripts") or {}), **(self.change.get("scripts") or {})},
                     automations=source.get("automations") or [], exposure_changes=self.change.get("exposure"),
                     alias_changes=self.change.get("aliases"), alias_removals=self.change.get("alias_removals"),
-                    moving=reports_movement(self.recording))
+                    moving=reports_movement(self.recording),
+                    machinery=sorted(machinery(self.recording, _pipeline_now(self.hass, self.recording))),
+                    cut=sorted(own_models(self.hass)), recorded=recorded(self.recording, self.today["tools"]))
         except Exception as err:
             await self.stop()
-            if isinstance(err, Broken):  # Home Assistant changed: the machinery's fault, never the recording's.
+            # Home Assistant changed, or the guard refused something: the machinery's fault, never the recording's.
+            if isinstance(err, (Broken, Refused)):
                 raise
             raise UnsupportedSimulation(f"The sandbox could not be set up as the household's home: {err}") from err
         if (knowledge := self.knowledge()) is not None:
@@ -120,13 +127,15 @@ class SandboxHome:
 
     async def turn(self, turn, agent_id, conversation_id):
         """One recorded turn said to the household's assistant in the sandbox (sandbox.run_turn), in the context it
-        was recorded in: its words, identity, language and device."""
+        was recorded in: its words, identity, language and device; its clock never past the next recorded moment
+        (horizon)."""
         ctx = turn["prepared"]["context"]
         identity = ctx.get("context") or {}
         return await self.sandbox.call(
             "turn", text=turn["messages"][0]["content"], conversation_id=conversation_id,
             context={k: identity.get(k) for k in ("id", "user_id", "parent_id")}, language=ctx.get("language") or "en",
-            agent_id=agent_id, device_id=ctx.get("device_id"), watch=self.watch)
+            agent_id=agent_id, device_id=ctx.get("device_id"), watch=self.watch,
+            until=horizon(self.recording, turn["number"]))
 
     async def carry(self, steps):
         """A test's turns before its branch, its baseline's steps, in the replay's chat log as its own history
@@ -140,6 +149,13 @@ class SandboxHome:
         if self.sandbox is not None:
             sandbox, self.sandbox = self.sandbox, None
             await sandbox.stop()
+
+
+def horizon(recording, number):
+    """The recorded moment after a turn (ISO), which a replay's clock never passes in it (sandbox.run_turn): the next
+    turn's start, else the conversation's end (its last recorded activity: Home Assistant ending it); None: unknown."""
+    later = [at for t in (recording.get("turns") or [])[number:] if (at := (t.get("source") or {}).get("at"))]
+    return later[0] if later else recording.get("last_activity")
 
 
 def as_moved(source, moved):
@@ -162,10 +178,55 @@ def _user_id(turn):
     return ((turn["prepared"].get("context") or {}).get("context") or {}).get("user_id")
 
 
+async def speaker(hass, recording):
+    """The person who spoke in a recording, as their user record has them today (_person); None for none."""
+    turns = recording.get("turns") or []
+    if not turns or "prepared" not in turns[0]:
+        return None
+    return await _person(hass, _user_id(turns[0]), (turns[0].get("source") or {}).get("states") or {})
+
+
+async def _person(hass, user_id, entities):
+    """The person speaking, as their user record has them today: their name, whether they're an administrator, their
+    groups, and which of these entities they may not control (sandbox._user). None: no one is signed in, or no such
+    person is left."""
+    if not user_id or not getattr(hass, "auth", None) or (user := await hass.auth.async_get_user(user_id)) is None:
+        return None
+    try:
+        with relied_on("auth_user"):
+            from homeassistant.auth.permissions.const import POLICY_CONTROL
+            return {"name": user.name, "is_admin": user.is_admin, "group_ids": [group.id for group in user.groups],
+                    "refused": [] if user.is_admin else sorted(
+                        e for e in entities if not user.permissions.check_entity(e, POLICY_CONTROL))}
+    except Broken as err:  # On the real instance: reported here.
+        report(hass, err.name, err.reason)
+        raise
+
+
+def _pipeline_now(hass, recording):
+    """The voice assistant (Assist pipeline) a conversation ran through, as it's set up today (a replay's setup is
+    today's): the one it was recorded running through, else its device's, else Home Assistant's preferred one; None
+    when there's none."""
+    from homeassistant.components.assist_pipeline import PipelineNotFound, async_get_pipeline
+    from .recorder import _pipeline, _pipeline_record
+    if "assist_pipeline" not in hass.config.components:
+        return None
+    turns = recording.get("turns") or []
+    device = ((turns[0].get("prepared") or {}).get("context") or {}).get("device_id") if turns else None
+    found = recording.get("pipeline_id") or _pipeline(hass, device)
+    try:
+        return _pipeline_record(hass, found or async_get_pipeline(hass).id)
+    except (KeyError, PipelineNotFound):
+        return None
+
+
 async def setup_now(hass):
     """Today's setup, as a replay and code's checks seed a sandbox with it (DETAILS P6.2.4): the household's Home
     Assistant as the recorder reads a home (snapshot.py); the tools Home Assistant's Assist has there, as the household's
-    own conversations get them (an improver role's never file); and the devices that run timers."""
+    own conversations get them (an improver role's never file); the devices that run timers; and what a sandbox sets up
+    beyond the home (sandbox.setup_of): each config entry (its integration, title and whether it's disabled), each
+    storage or YAML helper the home has (an integration of Home Assistant's helper type with no config flow: a toggle,
+    a timer), with its storage and its configuration.yaml part, and every action, by whether it answers."""
     from homeassistant.components.intent import async_device_supports_timers
     from homeassistant.helpers import device_registry as dr
     from .reflective import role_marker
@@ -179,7 +240,39 @@ async def setup_now(hass):
     except HomeAssistantError:  # No Assist at home: no tools.
         tools = []
     timers = sorted(d.id for d in dr.async_get(hass).devices if async_device_supports_timers(hass, d.id))
-    return {"home": await hass.async_add_executor_job(home, read), "tools": tools, "timers": timers}
+    entries = {e.entry_id: {"domain": e.domain, "title": e.title, "disabled_by": e.disabled_by}
+               for e in hass.config_entries.async_entries()} if getattr(hass, "config_entries", None) else {}
+    services = {domain: {service: hass.services.supports_response(domain, service).value for service in found}
+                for domain, found in hass.services.async_services().items()}
+    return {"home": await hass.async_add_executor_job(home, read), "tools": tools, "timers": timers,
+            "entries": plain(entries), "helpers": await _helpers(hass, read), "services": services}
+
+
+async def _helpers(hass, read):
+    """The home's storage and YAML helpers (setup_now): {domain: {storage: its store as Home Assistant keeps it, yaml:
+    its part of configuration.yaml}}."""
+    import json
+    from pathlib import Path
+    from homeassistant import config as conf_util
+    from homeassistant.loader import async_get_loaded_integration
+    used = {s.entity_id.split(".", 1)[0] for s in read["states"]} | {e.domain for e in read.get("entries") or ()}
+    found, folder = {}, None
+    with guarded(hass, "storage_folder"):  # Without it, helpers are set up with no store: none of their items.
+        folder = get(hass, "storage_folder")
+    for domain in sorted(used & hass.config.components):
+        integration = async_get_loaded_integration(hass, domain)
+        if integration.integration_type == "helper" and not integration.config_flow:
+            path = Path(hass.config.path(folder, domain)) if folder else None
+            found[domain] = {"storage": await hass.async_add_executor_job(
+                lambda p=path: json.loads(p.read_text()) if p and p.is_file() else None)}
+    if found:
+        try:
+            yaml = await conf_util.async_hass_config_yaml(hass)
+        except (HomeAssistantError, OSError):  # No configuration.yaml to read: none.
+            yaml = {}
+        for domain, helper in found.items():
+            helper["yaml"] = plain({domain: yaml[domain]}) if yaml.get(domain) is not None else None
+    return found
 
 
 async def today(hass, agent_id):
@@ -189,7 +282,7 @@ async def today(hass, agent_id):
     subentry = assistant["entry"]["subentries"][0]
     provider = {"config_entry_id": assistant["entry"]["entry_id"], "subentry_id": subentry["subentry_id"],
                 "title": subentry.get("title"),
-                "options": plain({k: v for k, v in subentry["data"].items() if k in PROVIDER_OPTIONS})}
+                "options": plain(subentry["data"])}  # Every setting (DETAILS P8.2.3); the credentials are entry.data's.
     return {**await setup_now(hass), "assistant": assistant, "provider": provider}
 
 
@@ -223,8 +316,8 @@ def assistant_of(hass, agent_id):
         raise CaseError(GONE)
     if agent.config_subentry_id is None:
         raise CaseError("This assistant keeps no settings of its own to replay it with.")
-    # HA's storage form as it is, the provider's key in it (never plain(), which redacts it): it goes only to the
-    # sandbox's worker (sandbox.load_assistant). How HA found the entry is no part of the assistant.
+    # HA's storage form as it is, the provider's key in it, unread here: it goes only to the sandbox's worker
+    # (sandbox.load_assistant). How HA found the entry is no part of the assistant.
     stored = {**entry.as_dict(), "discovery_keys": {}}
     stored["subentries"] = [s for s in stored["subentries"] if s["subentry_id"] == agent.config_subentry_id]
     return {"entry": stored, "agent": {"entity_id": agent.entity_id, "unique_id": agent.unique_id,

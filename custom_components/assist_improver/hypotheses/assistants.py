@@ -53,7 +53,7 @@ class Assistants:
         source = view.source or {}
         device = (source.get("devices") or {}).get(ran.get("device_id") or "") or {}
         record.update(ran_with=ran.get("template"), rendered=ran.get("rendered"), user_id=ran.get("user_id"),
-                      values={"speaker": (self.user_names or {}).get(ran.get("user_id")),
+                      recorded=view.assistant_setup(), values={"speaker": (self.user_names or {}).get(ran.get("user_id")),
                               "device": device.get("name_by_user") or device.get("name"),
                               "time_zone": source.get("time_zone")})
 
@@ -76,6 +76,7 @@ class Assistants:
             record["set_up"] = live is not None
             if live is not None:
                 record["current"], record["title"] = live["template"], live["title"] or record["title"]
+                record["options"] = live["options"]
 
     def current_template(self, record):
         """An assistant's instructions now: Home Assistant's, else as its newest conversation ran with them."""
@@ -190,10 +191,16 @@ class Assistants:
 
     def instructions_of(self, record, session=None):
         """One assistant's instructions as read_assistant_instructions shows them: now, and as a session ran with
-        them; the recommended facts they lack."""
+        them; the recommended facts they lack; its other settings now, and the tools Assist had, as its newest
+        session recorded them (SessionView.assistant_setup), or as the given session did (session's third)."""
         current = self.current_template(record)
         out = {"assistant": record["name"], "conversations": record["sessions"],
-               "current_instructions": instructions.effective(current)}
+               "current_instructions": instructions.effective(current),
+               **({"settings_now": record["options"]} if record.get("options") else {})}
+        recorded = session[2] if session is not None and len(session) > 2 else record.get("recorded")
+        if recorded:
+            out["as_recorded"] = {"session": session[0] if session is not None else record.get("newest"),
+                                  **{k: v for k, v in recorded.items() if k != "assistant"}}
         if not (current or "").strip():
             out["note"] = "It has no instructions of its own: Home Assistant's default ones (shown) apply."
         if record.get("set_up") is False:

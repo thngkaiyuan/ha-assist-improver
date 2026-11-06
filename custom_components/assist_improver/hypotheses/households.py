@@ -5,9 +5,11 @@ import json
 
 from .. import evidence
 from ..cases import CaseError
+from ..digest import _clip, _text
 from ..exploration import related_improvements
 from ..failures import contained
 from ..sessions import SessionSet, footprint
+from ..snapshot import renamed
 from .assistants import Assistants
 from .goals import (FRICTION_KINDS, HOME_COULDNT, capabilities, friction, friction_by_goal, goal_devices, goal_summary,
                     scenario, short)
@@ -15,6 +17,7 @@ from .goals import (FRICTION_KINDS, HOME_COULDNT, capabilities, friction, fricti
 # The open friction the generator gets as full scripts upfront (newest first), in characters and sessions; the
 # rest of the open goals come one line each, and read_session reads any session.
 SCENARIO_BUDGET, SCENARIOS_SHOWN = 24000, 12
+DECIDED_CHARS = 1500  # A decided change's longer values (a script's steps, say), cut to this upfront.
 CHOICES_SHOWN = 40  # Known choices (what the user picked when a setting was left open) the reviewer gets, newest.
 
 
@@ -32,12 +35,18 @@ class Sessions(Assistants, SessionSet):
         self.so_far = {}  # The round's tests and reviews, for a proposer picking it up (stamps.so_far).
         self.existing = []  # Improvements waiting for review or applied (Improvements.catalog), for list_improvements.
         self._upfront = None  # The open friction the generator gets in full (prepare).
+        self._renames = {}  # {session: {an entity ID it names: that entity's ID today}}, for each renamed since.
 
     async def load_evidence(self):
         """Facts from HA's own engine, on today's setup: what Assist can do with each device in open friction, and an
         Evidence for checking drafts. Facts the household's conversation can't give are left out (each device's are
-        unknown; a problem of the run's unless the sandbox said it can't); the rest goes on."""
+        unknown; a problem of the run's unless the sandbox said it can't); the rest goes on. An analysis names devices
+        by their IDs then: a session naming one today's home doesn't have is read for those renamed since."""
         self.evidence, self.capability_facts = evidence.Evidence(self, self.today), {}
+        known = set(self.household._entities())
+        for session, _ in self.open_friction():
+            if self._named_in(session) - known and (view := await self.load(session)) is not None:
+                self._renames[session] = renamed(view.recording, self.today["home"])
         session = short(self.household.recording["id"])
         async with contained("propose", session, step=PROBE, expected=(CaseError,)):  # CaseError: it can't.
             self.capability_facts = await evidence.capabilities(self.household.recording, self._entities_in_friction(),
@@ -131,14 +140,20 @@ class Sessions(Assistants, SessionSet):
                 return b["assist_tools"]
         return []
 
+    def _named_in(self, session):
+        """The devices a session in open friction names: those its goals name, and those its calls touched."""
+        named = set((self.briefs.get(session) or {}).get("entities", []))
+        for goal in self.analyses[session].get("goals", []):
+            named.update([goal["entity_id"]] if goal.get("entity_id") else goal.get("entity_ids") or [])
+        return named
+
     def _entities_in_friction(self):
-        """The devices in open friction: those its goals name, and those its sessions' calls touched."""
-        entities, known = set(), set(self.household._entities())
+        """The devices in open friction (_named_in), each under its entity ID today (load_evidence)."""
+        entities = set()
         for session, _ in self.open_friction():
-            for goal in self.analyses[session].get("goals", []):
-                entities.update([goal["entity_id"]] if goal.get("entity_id") else goal.get("entity_ids") or [])
-            entities.update((self.briefs.get(session) or {}).get("entities", []))
-        return sorted(entities & known)
+            renames = self._renames.get(session) or {}
+            entities.update(renames.get(e, e) for e in self._named_in(session))
+        return sorted(entities & set(self.household._entities()))
 
     def devices_in_friction(self):
         """What Assist can and can't do with each device in open friction, so causes are checkable."""
@@ -196,18 +211,14 @@ def scenario_of(analysis, view):
 
 
 def decisions(feedback):
-    """The household's decisions, as the roles need them to respect them: what was decided on which change (the
-    lines in full, the target of anything else), with the note and reason; the improvement sent back for this round
-    comes in full (sent_back)."""
+    """The household's decisions, as the roles need them to respect them: what was decided on which change (each
+    change whole, any value longer than DECIDED_CHARS clipped, saying so), with the note and reason; the improvement
+    sent back for this round comes in full (sent_back)."""
     out = []
     for item in feedback:
-        changes = []
-        for change in item.get("changes") or []:
-            what = {"kind": change.get("kind")}
-            for key in ("text", "for", "assistant", "entity_id", "alias", "script_name", "expose"):
-                if change.get(key) not in (None, "", []):
-                    what[key] = change[key]
-            changes.append(what)
+        changes = [{key: value if len(text := _text(value)) <= DECIDED_CHARS else _clip(text, DECIDED_CHARS)
+                    for key, value in change.items() if value not in (None, "", [], {})}
+                   for change in item.get("changes") or []]
         out.append({"title": item.get("title"), "decision": item.get("decision"), "status": item.get("status"),
                     **{key: item[key] for key in ("note", "reason") if item.get(key)}, "changes": changes})
     return out

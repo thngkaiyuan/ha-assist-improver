@@ -75,7 +75,7 @@ import traceback
 
 from homeassistant.const import EVENT_HOMEASSISTANT_STOP
 from homeassistant.core import callback
-from homeassistant.helpers.storage import Store
+from homeassistant.helpers.storage import STORAGE_DIR, Store
 from homeassistant.util import dt as dt_util
 
 from .const import CONF_DEVELOPER, DOMAIN
@@ -583,7 +583,7 @@ def stored(path):
 async def traces(hass):
     """The retained traces, active ones first, then the most recently written: [{"id", "kind", "bytes", "updated",
     "active"}]. bytes and updated are the store's (None for an active trace not saved yet)."""
-    files = await hass.async_add_executor_job(stored, hass.config.path(".storage"))
+    files = await hass.async_add_executor_job(stored, hass.config.path(STORAGE_DIR))
     active = active_ids()
     out = {f["id"]: {"id": f["id"], "kind": _kind(f["id"]), "bytes": f["bytes"],
                      "updated": datetime.fromtimestamp(f["mtime"], UTC).isoformat(), "active": f["id"] in active}

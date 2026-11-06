@@ -59,7 +59,7 @@ class _AiTaskSteps:
         creates = [] if recommended else ai_setup.create_options(self.hass)
         options = [SelectOptionDict(value=f"{CREATE}:{entry_id}:{kind}", label=label) for entry_id, kind, label in creates]
         options += [SelectOptionDict(value=e, label=label) for e, _, label in existing]
-        current = current or ai_setup.suggested_entity(self.hass)
+        current = current or next(iter(recommended or [e for e, a, _ in existing if a["ok"]]), None)
         if current and ai_setup.assess(self.hass, current)["ok"]:  # Never preselect creating over a working choice.
             return options, current, ""
         if recommended or (creates and creates[0][1] == "recommended"):
@@ -68,7 +68,7 @@ class _AiTaskSteps:
             return options, options[0]["value"], ("Claude Opus 5.5 gives the best results, through Anthropic or "
                                                   "OpenRouter.")
         if options:
-            return options, current, "Claude Opus 5.5 is recommended."
+            return options, current or options[0]["value"], "Claude Opus 5.5 is recommended."
         return options, None, "First add an AI provider, such as Anthropic, in Settings → Devices & services."
 
     def _choose_schema(self, options, default):

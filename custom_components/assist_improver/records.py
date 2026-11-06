@@ -26,8 +26,11 @@ class RecordingSummary(TypedDict, total=False):
 class Turn(TypedDict, total=False):
     """One user turn: what was said, the home as Assist saw it then, and what Assist was given."""
     user: dict  # The user's message: content, created, role.
-    source: dict  # states, entities, areas, devices, exposure, home_name, time_zone, at, attribute_policy.
-    prepared: dict  # api_id, api_prompt, tools, provider_config, provider_model_capabilities, context.
+    # The home (snapshot.py): at and states; the first turn's, the whole moment too (registries, config, exposure,
+    # scripts, automations, scenes, to-do items, household knowledge).
+    source: dict
+    prepared: dict  # api_id, api_prompt, tools, provider_config (its subentry's data whole), context.
+    pipeline: dict  # The voice assistant it ran through, as Home Assistant keeps it (Pipeline.to_json), where known.
     preparations: list[dict]  # The chat log as each answer was prepared.
     context_limitations: list[str]  # What the turn's record lacks when the assistant had no LLM API.
 
@@ -45,8 +48,7 @@ class Recording(TypedDict, total=False):
     pipeline_id: str  # The voice assistant it ran through, where its voice device or HA's pipeline runs showed it.
     events: list[dict]  # The chat log's events: at, type, data.
     turns: list[Turn]
-    state_changes: list[dict]  # at, entity_id, old, new.
-    flaps_not_kept: int  # Availability flaps left out of state_changes (digest.flap), counted for the digest.
+    state_changes: list[dict]  # at, entity_id, old, new: every one while active, labelled by readers (digest.kept).
     limitations: list[str]  # What the recording may be missing, and why.
     chat_log: dict  # The chat log at the end.
     compact: bool  # Kept as a digest (retention.compact): read by every role, never replayed.

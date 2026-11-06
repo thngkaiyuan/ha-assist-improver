@@ -984,24 +984,31 @@ async def async_setup_panel(hass, count=0):
             STATIC, str(Path(__file__).parent / "www"), cache_headers=False)])
         hass.data[STATIC_KEY] = True
     hass.data[PANEL_KEY] = True
-    set_count(hass, count, update=False)
+    await _register(hass, count)
     return True
 
 
-def set_count(hass, count, *, update=True):
+def set_count(hass, count):
     """The panel's sidebar title, with how many questions and improvements wait on the household: HA's sidebar has
-    no badges for integrations' panels, but a panel's title can change. Registered as panel_custom registers panels,
-    so the title can be updated in place."""
-    if not hass.data.get(PANEL_KEY):
+    no badges for integrations' panels, but a panel's title can change."""
+    if hass.data.get(PANEL_KEY):
+        hass.async_create_task(_register(hass, count))
+
+
+async def _register(hass, count):
+    """The panel, as panel_custom registers one; one already there is replaced in the same step, so the sidebar never
+    misses it."""
+    from homeassistant.components import frontend, panel_custom
+    if not hass.data.get(PANEL_KEY):  # Removed since.
         return
-    from homeassistant.components import frontend
-    frontend.async_register_built_in_panel(
-        hass, component_name="custom", sidebar_title=f"Assist Improver ({count})" if count else "Assist Improver",
-        sidebar_icon="mdi:auto-fix", frontend_url_path=URL_PATH, require_admin=True, update=update,
+    frontend.async_remove_panel(hass, URL_PATH, warn_if_unknown=False)
+    await panel_custom.async_register_panel(
+        hass, URL_PATH, "assist-improver-panel", sidebar_icon="mdi:auto-fix", require_admin=True,
+        sidebar_title=f"Assist Improver ({count})" if count else "Assist Improver",
+        module_url=f"{STATIC}/panel.js?v={VERSION}",
         # The panel keeps clear of a phone's status bar and home indicator itself (style.js), so its footer stays put to
         # the end of a scroll.
-        config={"_panel_custom": {"name": "assist-improver-panel", "embed_iframe": False, "trust_external": False,
-                                  "handle_safe_area": True, "module_url": f"{STATIC}/panel.js?v={VERSION}"}})
+        handle_safe_area=True)
 
 
 def remove_panel(hass):

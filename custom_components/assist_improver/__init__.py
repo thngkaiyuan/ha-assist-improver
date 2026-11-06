@@ -10,9 +10,9 @@ from homeassistant.helpers import config_validation as cv, issue_registry as ir
 from homeassistant.helpers.event import async_track_time_change
 from homeassistant.helpers.service import async_register_admin_service
 from homeassistant.helpers.start import async_at_started
-from homeassistant.helpers.storage import Store
+from homeassistant.helpers.storage import STORAGE_DIR, Store
 
-from . import ai_setup, household, panel, retention, settings, touchpoints, trace
+from . import ai_setup, household, panel, retention, service_user, settings, touchpoints, trace
 from .const import CONF_ACCEPTED_WEAK, CONF_AI_TASK, CONF_DEVELOPER, CONF_SCHEDULE, DOMAIN, STORAGE_VERSION
 from .cases import CaseError
 from .conversations import Transcripts
@@ -22,9 +22,11 @@ from .pipeline import Pipeline, schedule
 from .recorder import Recorder
 from .reflective import RoleRuns
 from .runtime import RuntimeData
+from .sandbox import SANDBOX_KEY
+from .serialization import exported
 from .settings import role_model
 from .simulate import Replays
-from .worker import shutdown
+from .worker import remove_leftovers, shutdown
 
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 SERVICES = ("status", "export_recording")  # For bug reports: what the improver holds, and one recording.
@@ -36,9 +38,13 @@ ISSUES = ("ai_task_setup", "step_models", *touchpoints.ISSUES)  # Its Repairs no
 
 async def async_setup(hass, config):
     """Once per run: household knowledge, which Assist reads (llm.py) even while the entry reloads, and the panel's
-    commands (Home Assistant can't unregister them; while the entry isn't loaded, they answer that it isn't)."""
+    commands (Home Assistant can't unregister them; while the entry isn't loaded, they answer that it isn't). In a
+    replay's sandbox, nothing: it's set up there only so the sandbox's Assist finds its llm platform."""
+    if SANDBOX_KEY in hass.data:
+        return True
     await household.async_setup(hass)
     panel.register_commands(hass)
+    await hass.async_add_executor_job(remove_leftovers)  # Replay workers' folders an earlier run left behind.
     return True
 
 
@@ -47,12 +53,14 @@ async def async_remove_entry(hass, entry):
     AI Tasks the improver set up and everything it stored (recordings, run log, traces, improvements' records) are
     removed, and the household's lines are left in a notification to save (household.async_remove). A change still
     waiting for the panel to finish its scripts (HA stopped midway, and no panel was opened since) stays as it stands:
-    only a panel saves scripts, and the settings' Uninstall finishes it first."""
+    only a panel saves scripts, and the settings' Uninstall finishes it first. The improver's own user goes first, so
+    nothing after it can leave it behind (it can't be deleted in Home Assistant's settings)."""
+    await service_user.async_remove(hass, entry)
     await household.async_remove(hass)
     await ai_setup.remove_created(hass)
     _delete_issues(hass)
     # Each recording and trace has a store of its own, and no one index lists them all: they're found by name.
-    for key in await hass.async_add_executor_job(_stored, hass.config.path(".storage")):
+    for key in await hass.async_add_executor_job(_stored, hass.config.path(STORAGE_DIR)):
         await Store(hass, STORAGE_VERSION, key).async_remove()
 
 
@@ -86,6 +94,7 @@ def _stored(path):
 async def async_setup_entry(hass, entry):
     await household.async_setup(hass)
     await trace.async_setup(hass, entry)  # First, so the recorder's start is in today's trace.
+    await service_user.async_ensure(hass, entry)  # The user the proposer and reviewer read Home Assistant as.
     recorder, runtime, finished = Recorder(hass), None, False
 
     def undo_if_failed():
@@ -205,8 +214,9 @@ async def async_setup_entry(hass, entry):
                                   translation_placeholders={"error": str(err)})
 
     async def export(call):
+        """One recording, as it leaves Home Assistant: its credentials and locations cut (serialization.exported)."""
         try:
-            return await recorder.export(known(call))
+            return await hass.async_add_executor_job(exported, await recorder.export(known(call)))
         except ValueError as err:
             raise HomeAssistantError(translation_domain=DOMAIN, translation_key="recording_unavailable") from err
 
@@ -238,7 +248,7 @@ async def async_setup_entry(hass, entry):
             async_register_admin_service(hass, DOMAIN, name, handler, schema,
                                          supports_response=SupportsResponse.ONLY)
     finished = True
-    return True
+    # None, as Home Assistant asks of setup and unload, here and below: it reports a boolean.
 
 
 @callback
@@ -274,7 +284,6 @@ def _update_setup_issue(hass, entry):
 async def async_unload_entry(hass, entry):
     runtime = entry.runtime_data
     await _undo(hass, runtime.recorder, runtime)
-    return True
 
 
 async def _undo(hass, recorder, runtime):

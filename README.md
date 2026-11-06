@@ -76,6 +76,7 @@ Developer mode (hidden, for debugging) adds List recordings, List improvements a
 - **Kept in your Home Assistant:** your Assist conversations (what was said, what Assist did, and how your home was at each turn), stored next to the history Home Assistant already keeps.
 - **Sent during a run:** the AI models you chose get what they need to do their work. Nothing comes to us.
 - **For how long:** conversations are kept in full for at least 30 days, then condensed, keeping enough for the improver to see your household's needs as a whole. Its own logs are kept only as long as they're useful, a year at most.
+- **Its own user:** an "Assist Improver" system user with no login, through which it reads your home with Home Assistant's own read-only tools. Uninstalling removes it.
 - **Uninstalling** removes everything the improver stored and the AI Tasks it set up. Your accepted improvements stay.
 - **You decide what's kept:** archive a conversation, or delete it for good.
 

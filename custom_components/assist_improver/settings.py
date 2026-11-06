@@ -16,7 +16,7 @@ from homeassistant.data_entry_flow import UnknownFlow
 
 from . import ai_setup
 from .const import (CONF_ACCEPTED_WEAK, CONF_AI_TASK, CONF_CHECK_AI_TASK, CONF_DEVELOPER, CONF_PAUSED, CONF_SCHEDULE,
-                    CONF_TESTS_PER_GOAL, CONF_TRIAGE_AI_TASK, DEFAULT_TESTS_PER_GOAL)
+                    CONF_TESTS_PER_GOAL, CONF_TRIAGE_AI_TASK, DEFAULT_TESTS_PER_GOAL, DOMAIN)
 
 # Large roles need judgement (a strong model); small ones a quick, cheap one.
 ROLES = {
@@ -54,6 +54,14 @@ def role_model(entry, role):
     """The AI Task entity a role calls, or None when the role is off."""
     spec = ROLES[role]
     return next((entry.options[key] for key in (spec["key"], *spec["fallback"]) if entry.options.get(key)), None)
+
+
+def own_models(hass):
+    """The AI Task entities the improver's roles call: their changes are never recorded, nor a replay's (DETAILS
+    P8.1.4). None while nothing is set up."""
+    if (entries := getattr(hass, "config_entries", None)) is None:
+        return set()
+    return {model for entry in entries.async_entries(DOMAIN) for role in ROLES if (model := role_model(entry, role))}
 
 
 def paused(entry):

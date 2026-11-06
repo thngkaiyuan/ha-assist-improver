@@ -148,10 +148,12 @@ class Fixed:
         self.knowledge = normalized(knowledge)
 
 
-def serve(hass, knowledge):
+async def serve(hass, knowledge):
     """In a sandbox: its Assist reads these lines, through this integration's llm platform as on the real instance."""
+    from homeassistant.setup import async_setup_component
     hass.data[KEY] = Fixed(knowledge)
-    hass.config.components.add(DOMAIN)  # Home Assistant's Assist asks the platforms of loaded integrations.
+    if not await async_setup_component(hass, DOMAIN, {}):  # Assist asks the platforms of set-up integrations.
+        raise RuntimeError("The sandbox could not set up the improver")
 
 
 async def async_setup(hass):

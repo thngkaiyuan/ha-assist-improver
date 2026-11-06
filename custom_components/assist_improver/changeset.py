@@ -32,7 +32,6 @@ import json
 import os
 
 from homeassistant.components.homeassistant import async_should_expose
-from homeassistant.config import SCRIPT_CONFIG_PATH
 from homeassistant.core import callback
 from homeassistant.exceptions import HomeAssistantError, TemplateError
 from homeassistant.helpers import config_validation as cv, entity_registry as er
@@ -69,10 +68,10 @@ def _same(a, b):
 # Reading and writing each kind of value, through HA's own APIs.
 
 async def _read_scripts(hass):
-    """The scripts HA's script editor keeps, read as its own GET does (load_yaml of SCRIPT_CONFIG_PATH). Read here, not
-    through the panel: a review is planned as the page opens, and a change cut off is finished at startup, both before
-    any panel's saver is there."""
-    path = hass.config.path(SCRIPT_CONFIG_PATH)
+    """The scripts HA's script editor keeps, read as its own GET does (load_yaml of its file). Read here, not through
+    the panel: a review is planned as the page opens, and a change cut off is finished at startup, both before any
+    panel's saver is there."""
+    path = hass.config.path(touchpoints.get(hass, "script_config_path"))
     return (await hass.async_add_executor_job(lambda: load_yaml(path) if os.path.isfile(path) else None)) or {}
 
 

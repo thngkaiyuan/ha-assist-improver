@@ -32,17 +32,17 @@ class Touchpoint(NamedTuple):
     needs: tuple[str, ...] = ()  # Its parameters, attributes, keys or enum values the improver relies on.
 
 
-FEATURES = ("recording", "replays", "ai_models", "changes", "usage")
+FEATURES = ("recording", "replays", "ai_models", "changes", "usage", "ha_tools")
 ISSUES = tuple(f"update_{feature}" for feature in FEATURES)  # Each feature's Repairs notice (strings.json).
 _CHAT_LOG = "homeassistant.components.conversation.chat_log"
 _EXPOSE = ("homeassistant.components.homeassistant.exposed_entities:async_expose_entity",
            ("hass", "assistant", "entity_id", "should_expose"))
 TOUCHPOINTS = {
     # Recording: how the recorder hears Assist (and what its events carry: recorder.CARRIES), and what a recording
-    # keeps of the home.
-    "chat_log_subscribe": Touchpoint(f"{_CHAT_LOG}:async_subscribe_chat_logs", "recording", "recorder.py",
-                                     ("hass", "callback_func")),
-    "chat_log_events": Touchpoint(f"{_CHAT_LOG}:ChatLogEventType", "recording", "recorder.py",
+    # keeps of the home. A replay's sandbox hears its turn's tool calls so (sandbox._tool_windows).
+    "chat_log_subscribe": Touchpoint(f"{_CHAT_LOG}:async_subscribe_chat_logs", "recording",
+                                     "recorder.py, sandbox.py", ("hass", "callback_func")),
+    "chat_log_events": Touchpoint(f"{_CHAT_LOG}:ChatLogEventType", "recording", "recorder.py, sandbox.py",
                                   ("created", "updated", "content_added", "deleted")),
     "current_chat_log": Touchpoint(f"{_CHAT_LOG}:current_chat_log", "recording", "recorder.py, llm.py", ("get",)),
     "chat_log": Touchpoint("homeassistant.components.conversation:ChatLog", "recording", "recorder.py, sandbox.py",
@@ -51,17 +51,19 @@ TOUCHPOINTS = {
                                  "recording", "recorder.py"),
     "pipeline_runs": Touchpoint("homeassistant.components.assist_pipeline.runtime:PipelineData", "recording",
                                 "recorder.py", ("pipeline_debug",)),
+    # Another integration's entities (scripts, automations, template entities), through its own entity platforms:
+    # each core caller asks only for its own.
+    "entity_platforms": Touchpoint("homeassistant.helpers.entity_platform:async_get_platforms", "recording",
+                                   "snapshot.py", ("hass", "integration_name")),
     "automation_configs": Touchpoint("homeassistant.components.automation.entity:AutomationEntity", "recording",
                                      "snapshot.py", ("raw_config",)),
     "script_configs": Touchpoint("homeassistant.components.script.entity:ScriptEntity", "recording",
-                                 "snapshot.py, hypotheses/tools.py", ("raw_config",)),
-    "template_actions": Touchpoint("homeassistant.components.template.entity:AbstractTemplateEntity", "recording",
-                                   "snapshot.py", ("_action_scripts",)),
+                                 "snapshot.py", ("raw_config",)),
+    # The scenes' definitions, by the load Home Assistant's own scene reload runs: the helper, for another
+    # integration's domain.
+    "scene_configs": Touchpoint("homeassistant.helpers.reload:async_integration_yaml_config", "recording",
+                                "snapshot.py", ("hass", "integration_name")),
     # Replays: Home Assistant's engine started in a worker, and today's home seeded in it.
-    "event_loop": Touchpoint("homeassistant.runner:create_event_loop", "replays", "sandbox.py"),
-    "cancel_tasks": Touchpoint("homeassistant.runner:_cancel_all_tasks_with_timeout", "replays", "sandbox.py",
-                               ("loop", "timeout")),
-    "cancel_timeout": Touchpoint("homeassistant.runner:TASK_CANCELATION_TIMEOUT", "replays", "sandbox.py"),
     "loader": Touchpoint("homeassistant.loader:async_setup", "replays", "sandbox.py", ("hass",)),
     "base_functionality": Touchpoint("homeassistant.bootstrap:async_load_base_functionality", "replays",
                                      "sandbox.py", ("hass",)),
@@ -74,35 +76,57 @@ TOUCHPOINTS = {
                                 "version")),
     "running_state": Touchpoint("homeassistant.core:HomeAssistant", "replays", "sandbox.py", ("set_state",)),
     "skip_pip": Touchpoint("homeassistant.core_config:Config", "replays", "sandbox.py", ("skip_pip",)),
+    # Today's registries, written in Home Assistant's own storage form for it to load whole, and the states its own
+    # integrations restore, in its storage folder; each storage helper's store there too, named for its domain, read
+    # at home (replay._helpers) and written as it is.
+    "entity_storage": Touchpoint("homeassistant.helpers.entity_registry:RegistryEntry", "replays", "sandbox.py",
+                                 ("as_storage_fragment",)),
+    "device_storage": Touchpoint("homeassistant.helpers.device_registry:DeviceEntry", "replays", "sandbox.py",
+                                 ("as_storage_fragment",)),
+    "restore_storage": Touchpoint("homeassistant.helpers.restore_state:StoredState", "replays", "sandbox.py",
+                                  ("as_dict",)),
+    "storage_folder": Touchpoint("homeassistant.helpers.storage:STORAGE_DIR", "replays", "replay.py, sandbox.py"),
     "sandbox_exposure": Touchpoint(_EXPOSE[0], "replays", "sandbox.py", _EXPOSE[1]),
+    # Replaced on the instance: HA's timer manager's start_timer, and each turn's chat log's async_trace.
     "timers": Touchpoint("homeassistant.components.intent.const:TIMER_DATA", "replays", "sandbox.py"),
     "timer_start": Touchpoint("homeassistant.components.intent.timers:TimerManager.start_timer", "replays",
                               "sandbox.py", ("device_id", "conversation_command", "conversation_agent_id")),
     "timer_device": Touchpoint("homeassistant.components.intent.timers:TimerManager.is_timer_device", "replays",
                                "sandbox.py", ("device_id",)),
-    "media_players": Touchpoint("homeassistant.components.media_player.const:DATA_COMPONENT", "replays",
-                                "sandbox.py"),
-    "media_player_entities": Touchpoint("homeassistant.helpers.entity_component:EntityComponent", "replays",
-                                        "sandbox.py", ("_entities",)),
+    # The person speaking, as the sandbox's stand-in for Home Assistant's accounts reports them.
+    "auth_user": Touchpoint("homeassistant.auth.models:User", "replays", "replay.py, sandbox.py",
+                            ("name", "is_admin", "groups", "permissions")),
+    # How long after a request Home Assistant puts what a device reports down to it (a recording's turn ends then).
+    "recent_context": Touchpoint("homeassistant.helpers.entity:CONTEXT_RECENT_TIME_SECONDS", "replays",
+                                 "simulation.py"),
     "chat_log_trace": Touchpoint("homeassistant.components.conversation:ChatLog.async_trace", "replays",
                                  "sandbox.py", ("agent_details",)),
-    # AI models: Home Assistant's default AI Task, and the settings of the AI Tasks the improver judges or sets up.
-    "default_ai_task": Touchpoint("homeassistant.components.ai_task.const:DATA_PREFERENCES", "ai_models",
-                                  "ai_setup.py"),
-    "default_ai_task_entity": Touchpoint("homeassistant.components.ai_task:AITaskPreferences", "ai_models",
-                                         "ai_setup.py", ("gen_data_entity_id",)),
-    "ai_task_settings": Touchpoint("homeassistant.components.anthropic.const:DEFAULT", "ai_models", "ai_setup.py",
-                                   ("chat_model", "effort", "max_tokens")),
-    # Changes: exposing a device to Assist.
+    # AI models: a provider's add-AI-Task flow keeping the settings the improver answers it with, by the names each
+    # provider gives them (checked on each AI Task the improver sets up).
+    "ai_task_flow": Touchpoint("homeassistant.config_entries:ConfigSubentryFlowManager", "ai_models", "ai_setup.py",
+                               ("async_init", "async_configure", "async_abort")),
+    # Changes: exposing a device to Assist, and the file Home Assistant's script editor keeps scripts in.
     "exposure": Touchpoint(_EXPOSE[0], "changes", "changeset.py", _EXPOSE[1]),
-    # Usage: what a provider reports for the improver's own calls and replays.
+    "script_config_path": Touchpoint("homeassistant.config:SCRIPT_CONFIG_PATH", "changes", "changeset.py"),
+    # Usage: what a provider reports for the improver's own calls, and for a replay's turns on each turn's chat log
+    # (chat_log_trace): a provider whose replays reported it before and reports none now stopped reporting it there.
     "conversation_trace": Touchpoint("homeassistant.components.conversation.trace:async_conversation_trace", "usage",
-                                     "reflective.py, simulate.py"),
+                                     "reflective.py"),
+    "provider_usage": Touchpoint("homeassistant.components.conversation:ChatLog.async_trace", "usage", "simulate.py",
+                                 ("agent_details",)),
+    # Home Assistant's own tools for the proposer and reviewer: the improver's system user, which they run as (built-in
+    # integrations make system users this way; it isn't documented for others).
+    "system_users": Touchpoint("homeassistant.auth:AuthManager", "ha_tools", "service_user.py",
+                               ("async_get_users", "async_create_system_user", "async_remove_user")),
+    "system_user_create": Touchpoint("homeassistant.auth:AuthManager.async_create_system_user", "ha_tools",
+                                     "service_user.py", ("name", "group_ids", "local_only")),
+    # And what marks one of Home Assistant's tools read-only (ha_tools.kept).
+    "llm_tools": Touchpoint("homeassistant.helpers.llm:ToolAnnotations", "ha_tools", "ha_tools.py", ("read_only",)),
 }
-# Not listed, as nothing at run time can tell they broke: the panel's registration (as panel_custom builds one) and the
-# provider settings a recording keeps by name (const.PROVIDER_OPTIONS), both checked before a release
-# (test_touchpoints.py); and a voice device's Assistant select, found by its unique ID (recorder.PIPELINE_SELECT): a
-# miss is still found in the voice assistant's own runs (recorder._pipeline_ran).
+# Not listed, as nothing at run time can tell they broke: a voice device's Assistant select, found by its translation
+# key (recorder.PIPELINE_SELECT): a miss is still found in the voice assistant's own runs (recorder._pipeline_ran); and
+# the worker's custom_components (worker.BOOT), where Home Assistant's loader finds the improver and a household's
+# custom providers: a miss is a sandbox that can't set them up.
 BROKEN: HassKey[dict[str, str]] = HassKey(f"{DOMAIN}_broken")  # Touchpoint -> why, while it's broken.
 
 
@@ -149,10 +173,11 @@ def _has(found, part):
 
 @contextmanager
 def relied_on(name):
-    """A use of a touchpoint: an AttributeError or TypeError inside is Home Assistant having changed it (Broken)."""
+    """A use of a touchpoint: an AttributeError, ImportError or TypeError inside is Home Assistant having changed it
+    (Broken)."""
     try:
         yield
-    except (AttributeError, TypeError) as err:
+    except (AttributeError, ImportError, TypeError) as err:
         raise Broken(name, f"{TOUCHPOINTS[name].path} failed with {type(err).__name__}: {err}") from err
 
 

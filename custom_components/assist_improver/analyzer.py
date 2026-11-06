@@ -29,7 +29,7 @@ from .exploration import BRIGHTNESS_TOLERANCE, RoleTool
 ROLE = "journey_analyzer"
 ASSISTANT = ("assistant", "follow-on of an assistant change on the same physical device")
 
-INSTRUCTIONS = """You analyse one recorded session between a household and its Home Assistant voice assistant ("Assist"). Your job is to work out what the user wanted. You start with an overview: the whole conversation (what the user and the assistant said in each turn, and what each of the assistant's calls acted on, as Home Assistant's responses name the devices), the household's areas and the assistant's tools. Read the whole conversation before deciding anything, since later turns often explain what earlier ones meant. Entity IDs, tool results and state changes appear only in read_turn, so read every turn with it before answering (several turns at once if you like). Explore the household with the other tools whenever you need to understand what the user meant: which device, which room, what a device can do. Before deciding what a request means for a device, find out how the household operates it: scripts or automations that drive it, and other entities on the same device. The tools answer from the recording, never the live home. Request several turns or lookups in one round when you can.
+INSTRUCTIONS = """You analyse one recorded session between a household and its Home Assistant voice assistant ("Assist"). Your job is to work out what the user wanted. You start with an overview: the whole conversation (what the user and the assistant said in each turn, and what each of the assistant's calls acted on, as Home Assistant's responses name the devices), the household's areas and the assistant's tools. Read the whole conversation before deciding anything, since later turns often explain what earlier ones meant. Entity IDs, tool results and state changes appear only in read_turn, so read every turn with it before answering (several turns at once if you like). Explore the household with the other tools whenever you need to understand what the user meant: which device, which room, what a device can do. Before deciding what a request means for a device, find out how the household operates it: scripts or automations that drive it, and other entities on the same device. The tools answer from the recording, never the live home, but for a device's actions, which are today's. Request several turns or lookups in one round when you can.
 
 List the user's goals. A goal is one thing the user wanted:
 - state: a device ending in a state (entity_id and state; add brightness_pct only if the user asked for a brightness);
@@ -47,7 +47,7 @@ A sub-goal exists only because of a goal: it is a part of the goal, or a reactio
 - thanks: thanking the assistant, or telling it unasked that all of it worked ("thanks", "it worked"), with no other fields.
 A conduct goal, a wrap-up and a thanks serve the turn where their goal itself starts. A fact asked together with a device request is a sub-goal at that turn; a fact asked later is a goal of its own, or, when it only checks on a goal, a step (while the goal wasn't met) or a conduct goal (once it was).
 
-Describe what the user wanted, not what the assistant did. Use only entity IDs the tools show you. Include a device in a goal only if the user wanted something from it.
+Describe what the user wanted, not what the assistant did. Include a device in a goal only if the user wanted something from it.
 
 Every turn needs at least one goal or sub-goal. Turns that are neither requests nor reactions, such as microphone tests or speech misfires, go in not_requests.
 
@@ -283,7 +283,7 @@ def home_couldnt(view, goal, goals):
     and each of its sub-goals'), so the home couldn't have reached it whatever Assist did then: context for an unmet
     root goal, not a state of its own; for an action, every device it's for, none of whose entities with a state was
     available (a satellite and its speaker are one device). An unknown device is a sleeping one a command wakes
-    (devices.ASLEEP), so it isn't one."""
+    (its stand-in takes the command), so it isn't one."""
     turn = goal.get("turn")
     entities = [goal["entity_id"]] if goal.get("entity_id") else goal.get("entity_ids") or []
     took = {turn} | {g["turn"] for g in goals if g.get("serves") is not None and root_turn(goals, g["serves"]) == turn}
@@ -478,13 +478,13 @@ def problems(view, answer, note=None, existing=(), revisions=()):
                 found.append(f"{where}: an action goal needs entity_ids: the devices it's for.")
             if unknown := [e for e in ids if e not in known]:
                 found.append(f"{where}: no device {', '.join(map(repr, unknown))} in this household; "
-                             "use entity IDs the tools show.")
+                             "find_devices finds every entity ID.")
         elif kind == "fact":
             if not goal.get("fact"):
                 found.append(f"{where}: a fact goal needs fact: what the answer needs.")
             if unknown := [e for e in goal.get("entity_ids") or [] if e not in known]:
                 found.append(f"{where}: no device {', '.join(map(repr, unknown))} in this household; "
-                             "use entity IDs the tools show.")
+                             "find_devices finds every entity ID.")
             words = next((t["user_says"] for t in view.digest["turns"] if t["turn"] == goal["turn"]), "")
             if (goal.get("quote") or "").strip() and not quoted(goal["quote"], words):
                 found.append(f"{where}: quote must be the form they asked for in their own words from turn "
@@ -499,11 +499,11 @@ def problems(view, answer, note=None, existing=(), revisions=()):
             unknown = [e for e in ids if e not in known]
             if unknown:
                 found.append(f"{where}: no device {', '.join(map(repr, unknown))} in this household; "
-                             "use entity IDs the tools show.")
+                             "find_devices finds every entity ID.")
         elif not entity:
             found.append(f"{where}: a {kind} goal needs entity_id.")
         elif entity not in known:
-            found.append(f"{where}: there is no device {entity!r} in this household; use an entity ID the tools show.")
+            found.append(f"{where}: there is no device {entity!r} in this household; find_devices finds every entity ID.")
         else:
             states = [goal.get("state")] if kind == "state" else list(goal.get("states") or [])
             if not states or None in states:

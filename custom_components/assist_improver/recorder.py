@@ -3,42 +3,97 @@
 Each recording's start, close and storage changes go in today's trace (trace.py); snapshots, packing and saves are
 timed there too.
 
-A recording keeps the state changes some reader uses (digest.worth_keeping). An active one is saved when a turn is
+A recording keeps every state change while it's active, but the improver's own AI Tasks' (digest.kept, the keep rule
+every reader labels changes by: readings and the voice assistant's own machinery). An active one is saved when a turn is
 added, when it closes, and otherwise at most every SAVE_EVERY seconds, so a crash loses at most those seconds; saves,
 and each turn's snapshot of the home, serialize off the event loop."""
 
 import asyncio
+from contextvars import ContextVar
 from copy import deepcopy
 from datetime import datetime, timedelta
+from functools import partial
 from hashlib import sha256
 import logging
-import re
 from uuid import uuid4
 
 import probatio
-from homeassistant.const import EVENT_HOMEASSISTANT_STOP, EVENT_STATE_CHANGED, __version__ as CORE_VERSION
+from homeassistant.const import (EVENT_CALL_SERVICE, EVENT_HOMEASSISTANT_STOP, EVENT_STATE_CHANGED,
+                                 __version__ as CORE_VERSION)
 from homeassistant.core import callback
 from homeassistant.helpers import entity_registry as er
+from homeassistant.helpers.debounce import Debouncer
+from homeassistant.helpers.start import async_at_started
 from homeassistant.helpers.storage import Store
 from homeassistant.util.dt import utcnow
 
 from . import touchpoints
 from .retention import CLOSED, pack, unpack
 from .const import DOMAIN, SAVE_DELAY, STORAGE_VERSION, VERSION
-from .digest import flap, worth_keeping
+from .digest import kept
 from .records import Recording, RecordingSummary
 from .reflective import ROLE_ACTIVE
 from .serialization import plain
-from .snapshot import answering, home, provider_config, state_record, subentry_of, taken
+from .settings import own_models
+from .snapshot import answering, home, provider_config, refresh, state_record, subentry_of, taken
 from .trace import journal, span, timed
 
 # Its error logs name only the exception's type: a message can carry what the household said or has.
 _LOGGER = logging.getLogger(__name__)
 SAVE_EVERY = 15  # Seconds an active recording's changes may wait to be saved, unless a turn was added or it closed.
 # A voice device's Assistant select (assist_pipeline's AssistPipelineSelect), by its unique ID: one per wake word.
-PIPELINE_SELECT = re.compile(r".+-pipeline(_\d+)?")
+PIPELINE_SELECT = ("pipeline", "pipeline_n")  # A voice device's Assistant selects, by Home Assistant's translation key.
 # What each chat log event carries that the recorder reads, as Home Assistant's subscription gives it.
 CARRIES = {"created": "chat_log", "updated": "chat_log", "content_added": "content"}
+SCENE_RELOADED = "scene_reloaded"  # homeassistant.components.scene's EVENT_SCENE_RELOADED: its scenes were reloaded.
+# The action call whose handler is running, where Actions heard it: (the actions it went in, its index, its context's
+# ID, the task it was called in, the call it's under).
+_CALLING: ContextVar[tuple | None] = ContextVar(f"{DOMAIN}_calling", default=None)
+
+
+class Actions:
+    """The action calls under requests (DETAILS P8.2.10): each call Home Assistant announces (EVENT_CALL_SERVICE) in a
+    request's context chain (its context, or one whose parent is in the chain: an automation it set off), kept with
+    the turn of that request as {at, action, data, context}, and under: the call it was made inside, in the same
+    context (a template light's own action under the light's call). A handler that starts a task (a script, a template
+    light's action) passes it what its own task holds (_CALLING): a call in that new task is inside the call before
+    it. A call a handler makes in its own task can't be told from its caller's next call: it's kept as coming after
+    the call, not inside it (a light group's calls to its lights)."""
+
+    def __init__(self):
+        self.chains = {}  # Context ID -> (recording ID, the actions of the turn whose request's chain it's in).
+
+    def watch(self, key, request_id, actions):
+        self.chains[request_id] = (key, actions)
+
+    def drop(self, key):
+        self.chains = {c: chain for c, chain in self.chains.items() if chain[0] != key}
+
+    @callback
+    def heard(self, event):
+        """Keep a call in a watched request's chain; the recording ID it went in, or None."""
+        context = event.context
+        if (chain := self.chains.get(context.id) or self.chains.get(context.parent_id or "")) is None:
+            return None
+        key, actions = self.chains.setdefault(context.id, chain)
+        task, calling, under = asyncio.current_task(), _CALLING.get(), None
+        if calling is not None and calling[0] is actions and calling[2] == context.id:
+            under = calling[1] if calling[3] is not task else calling[4]
+        actions.append({"at": plain(event.time_fired), "action": f"{event.data.get('domain')}.{event.data.get('service')}",
+                        "data": plain(event.data.get("service_data") or {}), "context": plain(context),
+                        **({"under": under} if under is not None else {})})
+        _CALLING.set((actions, len(actions) - 1, context.id, task, under))
+        return key
+
+
+def _tool_error(content):
+    """The error an Assist tool call ended in, as Home Assistant's chat log keeps its result ({data, error}); None
+    for none."""
+    result = content.get("result") if content.get("role") == "tool_result" else None
+    if not isinstance(result, dict) or not result.get("error"):
+        return None
+    data = result.get("data") or {}
+    return data.get("error_text") or data.get("error") or "error"
 
 
 def _frozen(session):
@@ -56,14 +111,6 @@ def _copied(recording):
     return unpack(deepcopy(recording))
 
 
-def _requests(session):
-    """The context IDs of the conversation's requests so far, which the changes Assist makes for them carry."""
-    found = {(((t.get("prepared") or {}).get("context") or {}).get("context") or {}).get("id")
-             for t in session["turns"]}
-    found.discard(None)
-    return found
-
-
 def _pipeline(hass, device_id):
     """The voice assistant (Assist pipeline) a request ran through, as the voice device it came from chooses it: its
     Assistant select, read as the device reads it ("preferred": Home Assistant's preferred assistant). None for a
@@ -74,7 +121,7 @@ def _pipeline(hass, device_id):
     from homeassistant.components.assist_pipeline import (OPTION_PREFERRED, PipelineNotFound, async_get_pipeline,
                                                           async_get_pipelines)
     chosen = {state.state for entry in er.async_entries_for_device(er.async_get(hass), device_id)
-              if entry.domain == "select" and PIPELINE_SELECT.fullmatch(entry.unique_id)
+              if entry.domain == "select" and entry.translation_key in PIPELINE_SELECT
               and (state := hass.states.get(entry.entity_id)) is not None}
     if len(chosen) != 1:
         return None
@@ -106,6 +153,15 @@ def _pipeline_ran(hass, conversation_id):
     return None
 
 
+def _pipeline_record(hass, pipeline_id):
+    """A voice assistant's settings, as Home Assistant keeps them (Pipeline.to_json); None once it's gone."""
+    from homeassistant.components.assist_pipeline import PipelineNotFound, async_get_pipeline
+    try:
+        return plain(async_get_pipeline(hass, pipeline_id).to_json())
+    except (KeyError, PipelineNotFound):
+        return None
+
+
 def _events(kind, data):
     """A chat log event as the recorder takes it in. A new chat log may come with the user's first words already in
     it, and no content_added for them (Home Assistant 2026.12): taken as the created event before them and the
@@ -126,10 +182,23 @@ def _agent(content, chat_log):
     return replies[-1]["agent_id"] if replies else None
 
 
+def _as_given(chat_log):
+    """A chat log as its AI was given it: its content up to where Home Assistant provided the AI's input."""
+    return {**chat_log.as_dict(), "content": [c.as_dict() for c in chat_log.content[:chat_log.llm_input_provided_index]]}
+
+
 def _given_this_turn(chat_log):
     """The AI was given the chat log up to the latest user words (not just an earlier turn's)."""
     users = [i for i, c in enumerate(chat_log.content) if c.role == "user"]
     return bool(users) and chat_log.llm_input_provided_index == users[-1] + 1
+
+
+def _ais_answer(active, content):
+    """An answer from the AI with Assist's tools to the latest words, which it was given. Not a reply something else
+    gave: a sentence trigger, Home Assistant's own intents or its error when the AI couldn't be set up this turn, or a
+    voice satellite's own words as it starts a conversation."""
+    return (active is not None and active.llm_api is not None and _given_this_turn(active)
+            and content.get("agent_id") == active.llm_api.llm_context.agent_id)
 
 
 class Recorder:
@@ -157,6 +226,11 @@ class Recorder:
         self.brief_cache = None  # Each recording's brief (sessions.BriefCache), loaded when a proposal first needs it.
         self.on_forgotten = None  # Awaited with a forgotten recording's ID: what was derived from it goes too.
         self.ignored = set()  # Conversations not kept (not Assist's, or deleted while going): never recorded again.
+        self.actions = Actions()  # The action calls under each turn's request.
+        self.tooled = {}  # Recording ID -> how many actions its turn had when Assist last called a tool.
+        # The to-do items, read ahead (snapshot.refresh) a moment after a list changes, never inside a turn.
+        self.todo_later = Debouncer(hass, _LOGGER, cooldown=1, immediate=False,
+                                    function=partial(refresh, hass, ("todo",)))
 
     def store(self, key):
         # Serializes in an executor: flush hands it a copy the event loop doesn't change (_frozen).
@@ -179,7 +253,10 @@ class Recorder:
                     await self.store(key).async_save(data)
         await self.index_store.async_save({"sessions": self.index})
         self.running = True
-        self.unsubscribers = [self.hass.bus.async_listen(EVENT_STATE_CHANGED, self.on_state)]
+        self.unsubscribers = [self.hass.bus.async_listen(EVENT_STATE_CHANGED, self.on_state),
+                              self.hass.bus.async_listen(EVENT_CALL_SERVICE, self.on_call),
+                              self.hass.bus.async_listen(SCENE_RELOADED, self.on_scenes),
+                              async_at_started(self.hass, self.read_ahead)]
         try:  # No public API hears Assist's conversations: its chat logs, their events and what capture reads.
             subscribe = touchpoints.get(self.hass, "chat_log_subscribe")
             touchpoints.get(self.hass, "chat_log_events")
@@ -189,6 +266,15 @@ class Recorder:
             pass
         # A once-listener removes itself when it fires; removing it again logs an error.
         self.stop_listener = self.hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STOP, self.on_stop)
+
+    async def read_ahead(self, hass=None):
+        """The reads a turn's moment finds cached (snapshot.refresh): once Home Assistant has started, then again as
+        they change (on_scenes, on_state)."""
+        await refresh(self.hass)
+
+    @callback
+    def on_scenes(self, event):
+        self.hass.async_create_task(refresh(self.hass, ("scenes",)), "assist_improver_scenes")
 
     @callback
     def on_stop(self, event):
@@ -317,14 +403,16 @@ class Recorder:
         for key in keys:
             if key not in self.dirty and self.sessions[key]["status"] != "active":
                 self.sessions.pop(key)
-                for kept in (self.logs, self.sampled, self.saved, self.answering):
-                    kept.pop(key, None)
+                for held in (self.logs, self.sampled, self.saved, self.answering, self.tooled):
+                    held.pop(key, None)
+                self.actions.drop(key)
 
     async def stop(self):
         self.running = False
         for unsubscribe in self.unsubscribers:
             unsubscribe()
         self.unsubscribers.clear()
+        self.todo_later.async_shutdown()
         if getattr(self, "stop_listener", None):
             self.stop_listener()
             self.stop_listener = None
@@ -393,9 +481,11 @@ class Recorder:
         content = data.get("content", {})
         turn_added = kind == "content_added" and content.get("role") == "user"
         self._pin(key, _agent(content, data.get("chat_log")))
+        if session["turns"] and kind == "content_added":
+            self._acted(key, session["turns"][-1], content)
         if turn_added:  # The home as the user's words came: read now, serialized off the event loop.
             with span("recorder.snapshot", recording_id=key):  # On the event loop: watched.
-                read = taken(self.hass)
+                read = taken(self.hass, moment=not session["turns"])  # The moment once, in the first turn.
             session["turns"].append(turn := {"user": plain(content)})
             task = self.hass.async_create_task(self._serialized(key, turn, read), "assist_improver_snapshot")
             self.sourcing.add(task)
@@ -409,11 +499,9 @@ class Recorder:
         given = data.get("chat_log") if active and kind == "updated" else None  # The chat log as the AI was given it.
         # Home Assistant gives a turn like the last one the last turn's prompt and tools, without an update: read at
         # its first answer.
-        kept = (given is None and active and active.llm_api and content.get("role") == "assistant" and session["turns"]
-                and "prepared" not in session["turns"][-1] and _given_this_turn(active))
-        if kept:
-            given = {**active.as_dict(),
-                     "content": [c.as_dict() for c in active.content[:active.llm_input_provided_index]]}
+        if (given is None and active and active.llm_api and content.get("role") == "assistant" and session["turns"]
+                and "prepared" not in session["turns"][-1] and _given_this_turn(active)):
+            given = _as_given(active)
         if given is not None:
             self.logs[key] = active
             if session["turns"]:
@@ -424,6 +512,7 @@ class Recorder:
                     ]
         if given is not None and active.llm_api:
             api = active.llm_api
+            self._pin(key, getattr(api.llm_context, "agent_id", None))  # Its settings are the ones kept.
             metadata = {"context": plain(api.llm_context), "api_id": api.api.id,
                         "api_prompt": api.api_prompt, "tools": [],
                         "provider_config": answering(provider_config(self.hass, api.llm_context.platform),
@@ -435,9 +524,15 @@ class Recorder:
                         custom_serializer=api.custom_serializer, openapi_version="3.1.0"))})
             if session["turns"]:
                 session["turns"][-1]["prepared"] = metadata
+                if request := (metadata["context"].get("context") or {}).get("id"):  # Its calls are kept with it.
+                    self.actions.watch(key, request, session["turns"][-1].setdefault("actions", []))
         if (kind == "content_added" and content.get("role") == "assistant" and content.get("content")
-                and not content.get("tool_calls") and session["turns"]):  # A turn's answer.
-            self._check_prepared(session, active, content)
+                and not content.get("tool_calls")):  # A turn's answer.
+            if session["turns"]:
+                self._check_prepared(session, active, content)
+            elif "recording_started_mid_session" not in session["limitations"] and _ais_answer(active, content):
+                # The AI answered words the recorder never saw.
+                touchpoints.report(self.hass, "chat_log_events", "an answer came while the recording had no turn")
         if "pipeline_id" not in session:  # Its voice assistant, whose settings say what Assist may do.
             found = None
             if given is not None:  # An AI preparing.
@@ -447,6 +542,9 @@ class Recorder:
                 found = _pipeline_ran(self.hass, conversation_id)
             if found:
                 session["pipeline_id"] = found
+        if session.get("pipeline_id") and session["turns"] and "pipeline" not in session["turns"][-1]:
+            if (pipeline := _pipeline_record(self.hass, session["pipeline_id"])) is not None:  # As it ran this turn.
+                session["turns"][-1]["pipeline"] = pipeline
         if "chat_log" in data:
             session["chat_log"] = plain(data["chat_log"])
         if kind == "deleted":
@@ -463,11 +561,10 @@ class Recorder:
     def _check_prepared(self, session, active, content):
         """A turn the AI with Assist's tools answered keeps what it was given, which a replay needs. One answered
         without it means Home Assistant changed how its chat log tells it: reported, never kept silently incomplete.
-        A reply something else gave (a sentence trigger, Home Assistant's own intents) isn't the AI's: not checked."""
+        A reply something else gave isn't checked (_ais_answer)."""
         if "prepared" in session["turns"][-1]:
             touchpoints.ok(self.hass, "chat_log_events")
-        elif (active is not None and active.llm_api is not None
-              and content.get("agent_id") == active.llm_api.llm_context.agent_id):
+        elif _ais_answer(active, content):
             touchpoints.report(self.hass, "chat_log_events",
                                f"turn {len(session['turns'])} was recorded without what its AI was given")
 
@@ -521,23 +618,62 @@ class Recorder:
         if self.on_filed_closed is not None:
             self.on_filed_closed(key)
 
+    def _acted(self, key, turn, content):
+        """Assist calling tools, and a tool's error: the action that failed is the last called since (inside a
+        script, the script's own failing step; DETAILS P8.2.10)."""
+        actions = turn.get("actions") or []
+        if content.get("role") == "assistant" and content.get("tool_calls"):
+            self.tooled[key] = len(actions)
+        elif (error := _tool_error(content)) and len(actions) > self.tooled.get(key, len(actions)):
+            actions[-1] = {**actions[-1], "error": error}  # A new entry: a save may be copying the old one.
+            self.tooled[key] = len(actions)
+
+    @callback
+    def on_call(self, event):
+        if not self.running:
+            return
+        if event.data.get("domain") == "todo" and event.data.get("service") != "get_items":  # A list may change.
+            self.todo_later.async_schedule_call()
+        if (key := self.actions.heard(event)) is None and self._asking(event):
+            key = self.actions.heard(event)
+        if key is not None and key in self.sessions:
+            self.schedule(key)
+
+    def _asking(self, event):
+        """A call made for a recorded turn whose request the recorder doesn't know yet: Home Assistant tells it at the
+        turn's first answer when the AI is given what it was last time, and an AI's tools can run while its answer is
+        still coming. The chat log the call is made in has it: the request is watched from now on. Whether it was."""
+        try:
+            active = touchpoints.get(self.hass, "current_chat_log").get()
+        except touchpoints.Broken:
+            return False
+        session = self.sessions.get(self.keys.get(active.conversation_id)) if active and active.llm_api else None
+        request = getattr(active.llm_api.llm_context.context, "id", None) if session else None
+        if not session or not session["turns"] or request not in (event.context.id, event.context.parent_id):
+            return False
+        turn = session["turns"][-1]
+        known = ((turn.get("prepared") or {}).get("context") or {}).get("context") or {}
+        if known.get("id", request) != request:  # The turn's words aren't in yet.
+            return False
+        self.actions.watch(session["id"], request, turn.setdefault("actions", []))
+        return True
+
     @callback
     def on_state(self, event):
         if not self.running:
             return
+        if event.data["entity_id"].startswith("todo."):  # A list changed: its items read again.
+            self.todo_later.async_schedule_call()
         watching = [s for s in self.sessions.values() if s["status"] == "active"]
         if not watching:
             return
         change = {"at": plain(event.time_fired), "entity_id": event.data["entity_id"],
                   "old": state_record(event.data.get("old_state")),
                   "new": state_record(event.data.get("new_state"))}
+        if kept(change, cut=own_models(self.hass)) is None:  # The improver's own AI Tasks (P8.1.4).
+            return
         for session in watching:
-            if worth_keeping(change, _requests(session)):
-                session["state_changes"].append(change)
-            elif flap(change):  # The digest says how many there were.
-                session["flaps_not_kept"] = session.get("flaps_not_kept", 0) + 1
-            else:
-                continue
+            session["state_changes"].append(change)
             self.schedule(session["id"])
 
     async def export(self, key):
@@ -565,8 +701,9 @@ class Recorder:
 
     def _drop(self, key):
         """What's kept in memory of a recording going for good, its conversation's ID among it."""
-        for kept in (self.sessions, self.logs, self.sampled, self.saved, self.answering):
-            kept.pop(key, None)
+        for held in (self.sessions, self.logs, self.sampled, self.saved, self.answering, self.tooled):
+            held.pop(key, None)
+        self.actions.drop(key)
         self.dirty.discard(key)
         self.urgent.discard(key)
         for conversation_id in [c for c, k in self.keys.items() if k == key]:

@@ -8,6 +8,7 @@
     "http",
     "intent",
     "open_router",
+    "panel_custom",
     "repairs",
     "script"
   ],
@@ -28,5 +29,5 @@
   "issue_tracker": "https://github.com/thngkaiyuan/ha-assist-improver/issues",
   "requirements": [],
   "single_config_entry": true,
-  "version": "0.40.23"
+  "version": "0.40.30"
 }

@@ -5,14 +5,12 @@ Replays themselves run in a sandboxed HA instance (sandbox.py, replay.py).
 
 from datetime import datetime, timedelta
 
-from homeassistant.helpers.entity import CONTEXT_RECENT_TIME_SECONDS
+from homeassistant.core import async_get_hass_or_none
 
-from .cases import CaseError
-from .devices import MOVERS, UNDERWAY
-
-
-# The conversation machinery's own entities change with every turn; they aren't the home.
-MACHINERY = {"conversation", "ai_task", "tts", "stt", "wake_word", "assist_satellite"}
+from . import touchpoints
+from .cases import CaseError, calls_in
+from .digest import kept, machinery
+from .standin import MOVERS, UNDERWAY
 
 
 class UnsupportedSimulation(CaseError):
@@ -22,28 +20,33 @@ class UnsupportedSimulation(CaseError):
 def _request_changes(recording, turn, until=None):
     """The changes the assistant made during one recorded turn, attributes too: the real changes HA attributes to the
     turn's request, until as long after the reply as HA puts what a device reports down to a command it got
-    (CONTEXT_RECENT_TIME_SECONDS): a real device may report a little after the reply (a garage relay's press, its last
-    step 60 ms after). until: a later end."""
+    (recent_context): a real device may report a little after the reply (a relay's press, its last step 60 ms after).
+    until: a later end."""
     start = turn["source"]["at"]
-    end = until or (datetime.fromisoformat(turn["ended"]) + timedelta(seconds=CONTEXT_RECENT_TIME_SECONDS)).isoformat()
+    if until is None:
+        hass = async_get_hass_or_none()  # None in a worker, which hands a break to the real instance to report.
+        recent = touchpoints.get(hass, "recent_context") if hass else touchpoints.resolve("recent_context")
+        until = (datetime.fromisoformat(turn["ended"]) + timedelta(seconds=recent)).isoformat()
+    end = until
     request = (turn.get("prepared") or {}).get("context", {}).get("context", {}).get("id")
+    gears = machinery(recording)  # The voice assistant's own entities change with every turn; they aren't the home.
     changes = [c for c in recording.get("state_changes", [])
                if request and request in ((c.get("new") or {}).get("context") or {}).values()]
     return [c for c in changes if start <= c["at"] <= end and c.get("old") and c.get("new")
-            and c["entity_id"].split(".", 1)[0] not in MACHINERY]
+            and kept(c, (request,), gears) != "machinery"]
 
 
 def recorded_transitions(recording, turn):
     """The state changes the assistant's request made during one recorded turn: the real changes HA attributes to the
-    turn's request, a template entity's own follow-ons among them."""
+    turn's request, a device's own follow-ons among them."""
     return [{"entity_id": c["entity_id"], "old": c["old"]["state"], "new": c["new"]["state"]}
             for c in _request_changes(recording, turn) if c["old"]["state"] != c["new"]["state"]]
 
 
 def assist_transitions(recording, turn):
     """The state changes Assist made itself during one recorded turn, as a replay's are compared with them (DETAILS
-    P6.6.1): recorded_transitions without a template entity's own follow-ons."""
-    follow = template_follow_ons(turn["source"], {c["entity_id"] for c in _request_changes(recording, turn)})
+    P6.6.1): recorded_transitions without a device's own follow-ons (follow_ons)."""
+    follow = follow_ons(turn)
     return [t for t in recorded_transitions(recording, turn) if t["entity_id"] not in follow]
 
 
@@ -79,13 +82,72 @@ def moved_by_others(recording, turns, turn):
     return out
 
 
-def template_follow_ons(source, changed):
-    """Of the entities one request changed, those a template entity it changed switches with its own actions (a
-    template light's helper; source["template_actions"], as snapshot.py records them): Home Assistant carries those
-    out as it runs that entity, under the same request, so they're its own follow-on, not changes Assist made itself.
-    A replay's sandbox emulates the template entity as a device instead (P11.1)."""
-    acts_on = source.get("template_actions") or {}
-    return {e for entity in changed for e in acts_on.get(entity, ()) if e in changed}
+def ended(recording):
+    """The home as a recording's conversation ended: its last turn's snapshot, each state as the recorded changes after
+    it left it, at the conversation's end (its last recorded activity, else its last change)."""
+    last = recording["turns"][-1]["source"]
+    states, at = dict(last.get("states") or {}), last.get("at")
+    for change in sorted((c for c in recording.get("state_changes", []) if c["at"] >= (at or "")),
+                         key=lambda c: c["at"]):
+        if change.get("new") is None:
+            states.pop(change["entity_id"], None)
+        else:
+            states[change["entity_id"]] = {**change["new"], "entity_id": change["entity_id"]}
+        at = max(at or "", change["at"])
+    return {**last, "states": states, "at": recording.get("last_activity") or at}
+
+
+# What exists to act on other entities: an action of one of these is the request's own, not a device's.
+ACTS_ON_OTHERS = {"script", "scene", "automation", "homeassistant"}
+
+
+def _targets(action):
+    """The entities an action call names (its entity_id, one or a list)."""
+    named = (action.get("data") or {}).get("entity_id") or []
+    return {e.strip() for e in (named.split(",") if isinstance(named, str) else named) if isinstance(e, str)}
+
+
+def recorded(recording, tools=()):
+    """What a replay's sandbox answers as the recording did (sandbox.seed): the tools the assistant had beyond Home
+    Assistant's Assist today (tools: today's names), as recorded; each tool call's result; each action that failed,
+    with its error, by the entities it named and the turn's moment (its at); and what each media search played, by the
+    media players it played on."""
+    turns, specs = recording.get("turns") or [], {}
+    for turn in turns:
+        for spec in (turn.get("prepared") or {}).get("tools") or []:
+            if spec["name"] not in tools:
+                specs.setdefault(spec["name"], spec)
+    calls = calls_in((recording.get("chat_log") or {}).get("content") or [])
+    actions = [a for turn in turns for a in turn.get("actions") or []]
+    failed = [{"action": a["action"], "entity_ids": sorted(_targets(a)), "error": a["error"],
+               "at": (turn.get("source") or {}).get("at")} for turn in turns for a in turn.get("actions") or []
+              if a.get("error")]
+    played = [a for a in actions if a["action"] == "media_player.play_media"]
+    media = [found for c in calls if isinstance(c["result"], dict) and isinstance(
+        found := ((c["result"].get("data") or {}).get("speech_slots") or {}).get("media"), dict)]
+    return {"tools": list(specs.values()),
+            "results": [{"tool_name": c["tool"], "tool_args": c["args"], "result": c["result"]} for c in calls],
+            "failed": failed,
+            "media": [{"entity_ids": sorted({e for a in played if (a.get("data") or {}).get("media_content_id")
+                                             == m.get("media_content_id") for e in _targets(a)}), "media": m}
+                      for m in media]}
+
+
+def follow_ons(turn):
+    """What a device one turn's request called did with its own actions (a template light switching its helper; the
+    turn's recorded action calls, DETAILS P8.2.10): the entities called inside a call to a device (any domain but
+    those that act on others: scripts, scenes, automations, homeassistant's), but those the request called itself.
+    Home Assistant carries them out as it runs that device, so they're its follow-on, not changes Assist made itself;
+    a replay's sandbox stands in for the device instead (P11.1)."""
+    actions = turn.get("actions") or []
+
+    def in_a_device(index):
+        while (index := actions[index].get("under")) is not None:
+            if actions[index]["action"].split(".", 1)[0] not in ACTS_ON_OTHERS:
+                return True
+        return False
+    called = {e for a in actions if a.get("under") is None for e in _targets(a)}
+    return {e for i, a in enumerate(actions) if in_a_device(i) for e in _targets(a)} - called
 
 
 def recorded_attributes(recording, turn, entities):
@@ -99,8 +161,8 @@ def recorded_attributes(recording, turn, entities):
 
 
 def reports_movement(recording):
-    """The devices the recording shows reporting their movement (a garage door "closing", a lock "locking"): a
-    replay's emulated devices report it the same way (devices.underway)."""
+    """The devices the recording shows reporting their movement (a garage door "closing", a lock "locking"): their
+    stand-ins in a replay report it the same way (standin.StandIn.hold)."""
     moving = set(UNDERWAY.values())
     seen = [(c["entity_id"], (c.get(side) or {}).get("state")) for c in recording.get("state_changes", [])
             for side in ("old", "new")]

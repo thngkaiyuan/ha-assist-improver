@@ -1,30 +1,49 @@
-"""Read-only tools for the agentic analyzer: read a session turn by turn and explore the household.
+"""Read-only tools for the roles: read a session turn by turn and explore the household.
 
-Everything answers from the recording (its conversation and the home snapshot
-taken at its first turn), never from the live home, so analysing a session
-can't change or reveal anything beyond what was recorded.
+What they show of the home comes from the recording (its conversation and the home snapshot taken at its first turn),
+never from the live home, so analysing a session can't change or reveal anything beyond what was recorded. Only what
+an entity can do (its actions) and its integration's name are Home Assistant's now (Setup). For the proposer and
+reviewer, SessionAPI adds Home Assistant's own read-only tools, which read the live home (ha_tools.py).
 """
 
+from contextlib import suppress
 from datetime import datetime
 import json
+import logging
 import math
 
 import probatio
 from homeassistant.helpers import llm
+from homeassistant.loader import IntegrationNotLoaded, async_get_loaded_integration
+from homeassistant.util import dt as dt_util
 
+from .actions import catalogue, controls, find_actions, operations
 from .cases import calls_in, recording_turns
-from .digest import (ACTION_DOMAINS, NOISE_DOMAINS, OWN_REPORTS, _clip, _entity_card, _naming, _text,
-                     async_time_zone, background, build_digest, time_zone)
-from .simulation import template_follow_ons
+from .digest import (_clip, _naming, _text, async_time_zone, build_digest, device_of, entity_card, filled, labelled,
+                     readings, time_zone)
+from .ha_tools import tools as ha_tools
+from .simulation import follow_ons
 from .trace import traced_tool
 
+_LOGGER = logging.getLogger(__name__)
 API_ID = "assist_improver_session"
-MAX_MATCHES = 25
+PAGE = 25  # Entities on a page of a listing; each says how many there are in all.
+# A registry record's fields search leaves out: its IDs, the IDs of the records it names, and its times (as Home
+# Assistant's registries have them, and had them), whose letters and digits match any word. A text field whose name
+# ends in _id, such as a device's model_id, is searched.
+UNSEARCHED = frozenset({
+    "id", "unique_id", "previous_unique_id", "identifiers", "connections", "entity_id", "device_id", "via_device_id",
+    "parent_device_id", "composite_device_id", "area_id", "floor_id", "label_id", "humidity_entity_id",
+    "temperature_entity_id", "config_entry_id", "config_subentry_id", "config_entries", "config_entries_subentries",
+    "primary_config_entry", "composite_primary_config_entry", "created_at", "modified_at", "split_at",
+    "orphaned_timestamp"})
 # Recorder notes meant for replays, not for analysing a session.
 INTERNAL_NOTES = ("provider_native_history_omitted",)
 LATE = 30  # Seconds after the assistant's reply beyond which a change is flagged as late.
 FOLLOW_ON = 10  # Seconds within which a same-device change counts as a follow-on of an assistant change.
 SETTLES = {("opening", "open"), ("closing", "closed"), ("locking", "locked"), ("unlocking", "unlocked")}
+TARGETS = {"entity_id", "device_id", "area_id", "floor_id", "label_id"}  # Whom an action call is for.
+NOBODY = "not the assistant (a person at the device or app, an automation, or the device itself)"
 BRIGHTNESS_TOLERANCE = 5  # Percent: the brightness a goal asked for, or Assist set, as a light reports it.
 
 
@@ -51,11 +70,12 @@ def _set_back(was, left, now):
     return True
 
 
-def _carries(assists, later):
+def _carries(assists, later, named=lambda turn: None):
     """Whether a later change on an entity Assist changed only carries Assist's change through (assists: Assist's
     changes to it before, oldest first): the state Assist's latest set, or settling from it, with a brightness Assist
-    set near it and nothing else it set set back. What the device reports on its own (OWN_REPORTS) and what Assist
-    never set may move with it."""
+    set near it and nothing else it set set back. What the device reports on its own and what Assist never set may
+    move with it: what Assist set is what its calls in that turn named (named(turn): their settings), or every
+    attribute its change moved, where a turn's calls weren't recorded (None)."""
     assist = assists[-1]
     if later["new"] != assist["new"] and (assist["new"], later["new"]) not in SETTLES:
         return False
@@ -65,31 +85,56 @@ def _carries(assists, later):
         return False
     was, left = {}, {}  # Each attribute Assist set: as it was before, and as Assist last left it.
     for change in assists:
+        keys = named(change["during_turn"])
         for k, (old, new) in (change.get("attributes_changed") or {}).items():
-            if k not in OWN_REPORTS and k not in ("brightness", "brightness_pct"):  # A brightness: near it, above.
+            if (keys is None or k in keys) and k not in ("brightness", "brightness_pct"):  # A brightness: above.
                 was.setdefault(k, old)
                 left[k] = new
     return not any(_set_back(was[k], left[k], now) for k, (_, now) in (later.get("attributes_changed") or {}).items()
                    if k in left)
 
 
-async def session_view(hass, recording):
-    """A SessionView for code on the event loop, made off it: its time zone (digest.time_zone), then the view, which
-    reads every turn of a recording of megabytes."""
+async def session_view(hass, recording, setup=True):
+    """A SessionView for code on the event loop, made off it (it reads every turn of a recording of megabytes): its
+    time zone (digest.time_zone) first and, with setup, what it reads of Home Assistant (Setup)."""
     first = (recording.get("turns") or [{}])[0].get("source") or {}
-    return await hass.async_add_executor_job(SessionView, recording, await async_time_zone(first.get("time_zone")))
+    zone = await async_time_zone(first.get("time_zone"))
+    return await hass.async_add_executor_job(SessionView, recording, zone, await Setup.read(hass) if setup else None)
+
+
+class Setup:
+    """What a view reads of Home Assistant itself, for what an entity can do and what its integration is called: its
+    actions (actions.catalogue), the entity domains they change (controls), and its integrations' names."""
+
+    def __init__(self, found=None, integrations=None):
+        self.actions, self.integrations = found or {}, integrations or {}
+        self.controls = controls(self.actions)
+
+    @classmethod
+    async def read(cls, hass):
+        """What Home Assistant has now; none, as offline, when reading it fails (logged): the views go on without."""
+        try:
+            names = {}
+            for domain in hass.config.top_level_components:
+                with suppress(IntegrationNotLoaded):
+                    names[domain] = async_get_loaded_integration(hass, domain).name
+            return cls(await catalogue(hass), names)
+        except Exception:  # noqa: BLE001 - an analysis or a proposal goes on without what an entity can do.
+            _LOGGER.exception("Couldn't read Home Assistant's actions and integrations")
+            return cls()
 
 
 class SessionView:
     """One recording, sliced for the tools. zone: its time zone, which code on the event loop resolves first
-    (session_view)."""
+    (session_view); setup: what it reads of Home Assistant (Setup), none offline."""
 
-    def __init__(self, recording, zone=None):
+    def __init__(self, recording, zone=None, setup=None):
         self.recording = recording
         self.turns = turns = recording_turns(recording, replay=False)  # As analysis reads them; never changed.
         self.source = turns[0]["source"]
         self.zone = zone or time_zone(self.source.get("time_zone"))
-        self.digest = build_digest(recording, self.zone)
+        self.setup = setup or Setup()
+        self.digest = build_digest(recording)
         self.starts = [t["messages"][0]["created"] for t in turns]
         self.replies = [max((m["created"] for m in t["messages"][1:] if m.get("role") == "assistant"), default=None)
                         for t in turns]
@@ -101,28 +146,31 @@ class SessionView:
                                if t.get("prepared") and t["prepared"].get("provider_config")), None)
         # {(entity, at): 1 if Assist's request is only its context's parent, 2 if only Assist's results name it} (_who).
         self._indirect = {}
-        self.changes = self._changes(recording.get("state_changes", []))
+        self.changes = self._changes()
         self.notes = {}  # Its notes, where the analyzer hears them, by their turns after those said (read_turn).
         # Each turn's calls with Home Assistant's results, for what leaves no device state (analyzer.announced); a
-        # script's own calls aren't recorded.
+        # script's own calls, kept in its turn's actions in recordings since they're kept (P8.2.10), aren't read here.
         self.calls, self.scripts_seen = {t["number"]: calls_in(t["messages"][1:]) for t in turns}, False
 
     def _turn_of(self, at):
         return sum(1 for start in self.starts if datetime.fromisoformat(at) >= datetime.fromisoformat(start))
 
-    def _changes(self, raw):
-        """Real changes by entity: turn, old and new state, changed attributes, and who."""
+    def _changes(self):
+        """The changes by entity, as the keep rule labels them (digest.labelled: the voice assistant's own machinery
+        isn't the home): turn, old and new state, changed attributes, who, and reading: true for a reading, which the
+        views list last. A reading that moved its state (a sensor's value) is never Assist's: nothing it calls sets
+        one, so its results naming it say nothing."""
         out = {}
-        for change in raw:
-            if background(change):  # The rule the recorder keeps changes by (digest.worth_keeping).
-                continue
+        for change, label in labelled(self.recording):
             entity_id, old, new = change["entity_id"], change.get("old") or {}, change.get("new") or {}
             before, after = old.get("attributes") or {}, new.get("attributes") or {}
             attributes = {k: [before.get(k), after.get(k)] for k in sorted(set(before) | set(after))
                           if before.get(k) != after.get(k) and k != "friendly_name"}
             turn = self._turn_of(change["at"])
+            by = (NOBODY if label == "reading" and old.get("state") != new.get("state")
+                  else self._who(entity_id, turn, new.get("context") or {}, change["at"]))
             entry = {"at": change["at"], "during_turn": turn, "old": old.get("state"), "new": new.get("state"),
-                     "by": self._who(entity_id, turn, new.get("context") or {}, change["at"])}
+                     "by": by, **({"reading": True} if label == "reading" else {})}
             if attributes:
                 if entity_id.startswith("light.") and "brightness" in attributes:
                     attributes["brightness_pct"] = [_pct(v) for v in attributes["brightness"]]
@@ -133,6 +181,14 @@ class SessionView:
             out.setdefault(entity_id, []).append(entry)
         self._mark_follow_ons(out)
         return out
+
+    def _named(self, turn):
+        """The settings a turn's action calls named (their data, but whom it's for): what Assist set in it. None
+        where its calls weren't recorded."""
+        raw = self.recording.get("turns", [])
+        if not 0 < turn <= len(raw) or "actions" not in raw[turn - 1]:
+            return None
+        return {k for a in raw[turn - 1]["actions"] for k in a.get("data") or {}} - TARGETS
 
     def _device(self, entity_id):
         return (self.source.get("entities", {}).get(entity_id) or {}).get("device_id")
@@ -145,15 +201,14 @@ class SessionView:
         the device's own reaction (a fan's climate turning off with it). Anything else is someone's, a correction
         above all. One credited to Assist only indirectly (_who) is held to carrying through Assist's change to it
         earlier in that turn when it comes after a more direct one (an automation Assist's change set off) or, named
-        only by Assist's results, after the turn's reply: else it's someone's, putting it back. What a template entity
-        Assist changed switches with its own actions, under the same request (a template light's helper), is that
-        entity's follow-on (simulation.template_follow_ons)."""
-        for turn, source in enumerate(self.sources, 1):
-            mine = {e: [c for c in cs if c["during_turn"] == turn and c["by"] == "assistant"]
-                    for e, cs in changes.items()}
-            for entity_id in template_follow_ons(source, {e for e, cs in mine.items() if cs}):
-                for c in mine[entity_id]:
-                    c["by"] = "follow-on of an assistant change on the same physical device"
+        only by Assist's results, after the turn's reply: else it's someone's, putting it back. What a device Assist
+        called does with its own actions, under the same request (a template light's helper), is that device's
+        follow-on (simulation.follow_ons)."""
+        for number, turn in enumerate(self.turns, 1):
+            for entity_id in follow_ons(turn):
+                for c in changes.get(entity_id, []):
+                    if c["during_turn"] == number and c["by"] == "assistant":
+                        c["by"] = "follow-on of an assistant change on the same physical device"
         stamped = sorted(((datetime.fromisoformat(c["at"]), e, c) for e, cs in changes.items() for c in cs),
                          key=lambda x: x[0])
         assists = {}  # {entity: Assist's changes to it so far, oldest first}
@@ -164,8 +219,8 @@ class SessionView:
             late = how == 2 and at > datetime.fromisoformat(self.replies[c["during_turn"] - 1] or c["at"])
             if c["by"] == "assistant" and how and any(
                     a["during_turn"] == c["during_turn"] and (late or self._indirect.get((entity_id, a["at"]), 0) < how)
-                    for a in own) and not _carries(own, c):
-                c["by"] = "not the assistant (a person at the device or app, an automation, or the device itself)"
+                    for a in own) and not _carries(own, c, self._named):
+                c["by"] = NOBODY
             if c["by"] == "assistant":
                 assists.setdefault(entity_id, []).append(c)
                 if device:
@@ -174,7 +229,7 @@ class SessionView:
             if c["by"] == "a person (signed in to Home Assistant)":
                 continue
             if own:  # Assist changed this entity: only carrying that through is its follow-on.
-                follows = (at - datetime.fromisoformat(own[-1]["at"])).total_seconds() <= FOLLOW_ON and _carries(own, c)
+                follows = (at - datetime.fromisoformat(own[-1]["at"])).total_seconds() <= FOLLOW_ON and _carries(own, c, self._named)
             else:
                 follows = bool(device) and any(d == device and 0 <= (at - t).total_seconds() <= FOLLOW_ON
                                                for d, t in near)
@@ -197,15 +252,21 @@ class SessionView:
             return "assistant"
         if context.get("user_id"):
             return "a person (signed in to Home Assistant)"
-        return "not the assistant (a person at the device or app, an automation, or the device itself)"
+        return NOBODY
+
+    def _entry(self, entity_id):
+        return self.source.get("entities", {}).get(entity_id) or {}
 
     def _card(self, entity_id, detailed=False):
-        card = _entity_card(self.source, entity_id, self.zone, detailed)
+        """An entity's card (digest.entity_card) in this session: its state at the start (whole, when detailed) and at
+        the end; detailed, what it can do (actions.operations, from Home Assistant's actions, where read)."""
+        state = self.source.get("states", {}).get(entity_id)
+        found = (operations(self.setup.actions, entity_id, self._entry(entity_id), state)
+                 if detailed and self.setup.actions else None)
+        card = entity_card(self.source, entity_id, detailed, found)
         card["state_at_start"] = card.pop("state")
         changes = self.changes.get(entity_id)
         card["state_at_end"] = changes[-1]["new"] if changes else "unchanged"
-        if detailed and "attributes" in card:
-            card["attributes_at_start"] = card.pop("attributes")
         if detailed:
             card["aliases"] = self.aliases(entity_id)
         if card.get("exposed"):
@@ -217,8 +278,8 @@ class SessionView:
     def _exposed_names(self):
         if not hasattr(self, "_names"):
             self._names = {}
-            for entity_id in self._entities():
-                if self._wanted(entity_id, False) and _entity_card(self.source, entity_id, self.zone).get("exposed"):
+            for entity_id, exposed in (self.source.get("exposure") or {}).items():
+                if exposed is True:
                     self._names.setdefault(_naming(self.source, entity_id)[0], []).append(entity_id)
         return self._names
 
@@ -298,79 +359,174 @@ class SessionView:
                 except ValueError:
                     pass
             steps.append(step)
-        changed, drift = [], []
+        changed, found_readings = [], []
         acted = {e for e, cs in self.changes.items() for c in cs if c["during_turn"] <= turn and c["by"] == "assistant"}
         for e, cs in self.changes.items():
             for c in cs:
                 if c["during_turn"] != turn:
                     continue
-                if (c["old"] == c["new"] and c["by"] != "assistant" and e not in acted
-                        and c["by"] != "a person (signed in to Home Assistant)"):
-                    drift.append(e)  # Only an attribute, by no one signed in, on what Assist hadn't changed yet.
+                if c.get("reading") and c["by"] != "assistant" and e not in acted:  # Listed last (digest.readings).
+                    found_readings.append((e, {k: c[k] for k in ("at", "old", "new", "attributes_changed") if k in c}))
                 else:
                     changed.append({"entity_id": e, "name": _naming(self.source, e)[0], **c})
         changed.sort(key=lambda c: c["at"])
         result = {**found, "assistant": steps, "state_changes_during_turn": changed}
-        if drift:
-            result["attribute_only_updates_elsewhere"] = sorted(set(drift))
+        lines, more = readings(sorted(found_readings, key=lambda r: r[1]["at"]))
+        if lines:
+            result["readings_elsewhere"] = lines
+        if more:
+            result["more_entities_with_readings"] = more
         return result
 
     def read_turns(self, turns):
         return {"turns": [self.read_turn(t) for t in turns]}
 
+    def read_readings(self, entity_id=None, turn=None, after=None, page=1):
+        """The session's readings (what devices reported on their own, kept: digest.kept), 25 to a page with the
+        total: without an entity, one line per entity (digest.readings: how many, the first and the last), those with
+        the most first; with one, its readings in time order. turn: only those during it; after: only those after a
+        time (ISO 8601; in the household's time zone if it names none)."""
+        since = None
+        if after is not None:
+            if (since := dt_util.parse_datetime(after)) is None:
+                return {"error": f"{after!r} isn't a time; give one like 2026-11-06T08:00:00."}
+            since = since if since.tzinfo else since.replace(tzinfo=self.zone)
+        found = sorted(((e, {k: c[k] for k in ("at", "during_turn", "old", "new", "attributes_changed") if k in c})
+                        for e, cs in self.changes.items() for c in cs if c.get("reading")
+                        and (turn is None or c["during_turn"] == turn)
+                        and (since is None or datetime.fromisoformat(c["at"]) > since)), key=lambda r: r[1]["at"])
+        page = max(page, 1)
+        start = (page - 1) * PAGE
+        if entity_id:
+            rows, key = [r for e, r in found if e == entity_id], "readings"
+        else:
+            rows, key = readings(found, len(found))[0], "entities"
+        return {**({"entity_id": entity_id} if entity_id else {"readings_in_all": len(found)}), "total": len(rows),
+                "page": page, key: rows[start:start + PAGE],
+                **({"next_page": page + 1} if start + PAGE < len(rows) else {})}
+
     def _entities(self):
         return sorted(set(self.source.get("states", {})) | set(self.source.get("entities", {})))
 
-    def _wanted(self, entity_id, include_sensors):
-        domain = entity_id.split(".", 1)[0]
-        entry = self.source.get("entities", {}).get(entity_id) or {}
-        if entry.get("disabled_by"):  # Disabled entities do nothing; listing them is noise.
-            return False
-        return domain not in NOISE_DOMAINS or (include_sensors and domain in ("sensor", "binary_sensor"))
+    def _rank(self, entity_id):
+        """How listings order entities: those Assist may use (exposed) first, then controls (what an action changes),
+        then the rest; within each, those with no entity category before diagnostic and configuration ones, and
+        enabled, visible ones before the others."""
+        entry = self._entry(entity_id)
+        return (self.source.get("exposure", {}).get(entity_id) is not True,
+                entity_id.split(".", 1)[0] not in self.setup.controls, bool(entry.get("entity_category")),
+                bool(entry.get("disabled_by") or entry.get("hidden_by")), entity_id)
+
+    def _page(self, entities, page, **about):
+        """One page of a listing, the entities ranked (_rank), with how many there are in all."""
+        ranked, page = sorted(entities, key=self._rank), max(page, 1)
+        start = (page - 1) * PAGE
+        return {**about, "total": len(ranked), "page": page,
+                "devices": [self._card(e) for e in ranked[start:start + PAGE]],
+                **({"next_page": page + 1} if start + PAGE < len(ranked) else {})}
+
+    def _search_text(self, entity_id):
+        """What search reads of an entity: its ID, names and aliases, and every text field of its registry entry, its
+        device's (a child device's maker and model are its parent's), its area's and labels', and its integration's
+        domain and name."""
+        if not hasattr(self, "_texts"):
+            self._texts = {}
+        if entity_id not in self._texts:
+            entry = self._entry(entity_id)
+            device = device_of(self.source, entry.get("device_id"))
+            name, area, aliases = _naming(self.source, entity_id)
+            area_record = self.source.get("areas", {}).get(entry.get("area_id") or device.get("area_id") or "") or {}
+            labels = [self.source.get("labels", {}).get(label) or {}
+                      for label in {*(entry.get("labels") or []), *(device.get("labels") or [])}]
+            parts = [entity_id, name, area, *aliases, *_strings(entry), *_strings(device), *_strings(area_record),
+                     *(s for label in labels for s in _strings(label)),
+                     self.setup.integrations.get(entry.get("platform") or "")]
+            self._texts[entity_id] = " ".join(p for p in parts if isinstance(p, str))
+        return self._texts[entity_id]
 
     def list_areas(self):
+        """Every area, with its aliases and how many entities it has, then the entities in none (No area)."""
         counts = {}
         for entity_id in self._entities():
-            if entity_id.split(".", 1)[0] not in NOISE_DOMAINS:
-                area = _naming(self.source, entity_id)[1] or "No area"
-                counts[area] = counts.get(area, 0) + 1
-        aliases = {a["name"]: a.get("aliases") or [] for a in self.source.get("areas", {}).values()}
-        return [{"area": area, "aliases": aliases.get(area, []), "devices": n} for area, n in sorted(counts.items())]
+            area = _naming(self.source, entity_id)[1] or "No area"
+            counts[area] = counts.get(area, 0) + 1
+        areas = sorted(self.source.get("areas", {}).values(), key=lambda a: a.get("name") or "")
+        return ([{"area": a["name"], "aliases": list(a.get("aliases") or []), "entities": counts.get(a["name"], 0)}
+                 for a in areas]
+                + ([{"area": "No area", "aliases": [], "entities": counts["No area"]}] if "No area" in counts else []))
 
-    def devices_in_area(self, area, include_sensors=False):
+    def devices_in_area(self, area, page=1):
         wanted = area.casefold()
         names = {a["name"] for a in self.source.get("areas", {}).values()
                  if wanted in [a["name"].casefold(), *(x.casefold() for x in a.get("aliases") or [])]}
         if not names and wanted != "no area":
             return {"error": f"No area called {area!r}. Areas: {', '.join(a['area'] for a in self.list_areas())}"}
-        cards = [self._card(e) for e in self._entities() if self._wanted(e, include_sensors)
-                 and (_naming(self.source, e)[1] or "No area") in (names or {"No area"})]
-        return {"area": area, "devices": cards}
+        return self._page([e for e in self._entities() if (_naming(self.source, e)[1] or "No area")
+                           in (names or {"No area"})], page, area=area)
 
-    def find_devices(self, query, include_sensors=False):
-        texts = {}
-        for entity_id in self._entities():
-            if self._wanted(entity_id, include_sensors):
-                name, area, aliases = _naming(self.source, entity_id)
-                texts[entity_id] = " ".join([entity_id, name or "", area or "", *aliases])
-        found, matched = _match(texts, query)
-        cards = [self._card(e) for e in found]
-        return {"query": query, "matched": matched, "devices": cards[:MAX_MATCHES], "more": max(0, len(cards) - MAX_MATCHES)}
+    def find_devices(self, query, page=1):
+        found, matched = _match({e: self._search_text(e) for e in self._entities()}, query)
+        return self._page(found, page, query=query, matched=matched)
 
-    def device_details(self, entity_id):
+    def device_details(self, entity_id, page=1):
+        """One entity in detail, with a page of the other entities of its device (25 to a page)."""
         if entity_id not in self._entities():
             return {"error": f"No device {entity_id!r} in this household's snapshot."}
-        device_id = (self.source.get("entities", {}).get(entity_id) or {}).get("device_id")
-        siblings = [e for e in self._entities() if device_id and e != entity_id and self._wanted(e, False)
-                    and (self.source.get("entities", {}).get(e) or {}).get("device_id") == device_id]
-        return {**self._card(entity_id, detailed=True), "changes_during_session": self.changes.get(entity_id, []),
-                "same_physical_device": [self._card(e) for e in siblings]}
+        device_id = self._entry(entity_id).get("device_id")
+        siblings = self._page([e for e in self._entities() if device_id and e != entity_id
+                               and self._entry(e).get("device_id") == device_id], page)
+        changes = self.changes.get(entity_id, [])
+        apart = not any(c["by"] == "assistant" for c in changes)  # Its readings, where Assist never changed it.
+        lines, _ = readings([(entity_id, c) for c in changes if apart and c.get("reading")])
+        return {**self._card(entity_id, detailed=True),
+                "changes_during_session": [c for c in changes if not (apart and c.get("reading"))],
+                **({"readings": lines[0]} if lines else {}),  # One line, last: how many, the first and the last.
+                "same_physical_device": siblings["devices"],
+                **({"same_physical_device_total": siblings["total"], "page": siblings["page"]}
+                   if siblings["total"] > PAGE else {}),
+                **({"next_page": siblings["next_page"]} if "next_page" in siblings else {})}
 
-    def list_scripts_and_scenes(self, query=""):
-        texts = {e: f"{e} {_naming(self.source, e)[0]}" for e in self._entities() if e.split(".", 1)[0] in ACTION_DOMAINS}
-        found, matched = _match(texts, query)
-        return {"query": query, "matched": matched, "total_in_household": len(texts),
-                "scripts_scenes_automations": [self._card(e) for e in found][:MAX_MATCHES * 2]}
+    def assistant_setup(self):
+        """The assistant as this session recorded it: every option of its settings (its subentry's data, where the
+        recording says which assistant answered), the tools Assist had with their parameters, the provider-hosted
+        tools it called, and the voice assistant (pipeline) the requests ran through."""
+        prepared = next((t["prepared"] for t in self.turns if t.get("prepared")), None) or {}
+        configs = prepared.get("provider_config") or []
+        hosted = {c["tool_name"] for t in self.turns for m in t["messages"] if m.get("role") == "assistant"
+                  for c in m.get("tool_calls") or [] if c.get("external")}
+        return filled({"assistant": configs[0].get("title") if len(configs) == 1 else None,
+                       "options": configs[0].get("options") if len(configs) == 1 else None,
+                       "tools": prepared.get("tools"), "hosted_tools_called": sorted(hosted),
+                       "pipeline": next((t["pipeline"] for t in self.recording.get("turns") or [] if t.get("pipeline")),
+                                        None)})
+
+    def read_definition(self, entity_id):
+        """A script's, automation's or scene's definition, as Home Assistant held it when this view's home was read
+        (a script by its object ID; an automation or scene by the configuration ID its state names, else its name)."""
+        domain, _, object_id = entity_id.partition(".")
+        attributes = (self.source.get("states", {}).get(entity_id) or {}).get("attributes") or {}
+        if domain == "script":
+            found = (self.source.get("scripts") or {}).get(object_id)
+        elif domain in ("automation", "scene"):
+            items = self.source.get(f"{domain}s") or []
+            found = (next((i for i in items if attributes.get("id") and i.get("id") == attributes["id"]), None)
+                     or next((i for i in items if attributes.get("friendly_name")
+                              and attributes["friendly_name"] in (i.get("alias"), i.get("name"))), None))
+        else:
+            return {"error": "read_definition reads a script, an automation or a scene: give its entity_id."}
+        if found is None:
+            return {"error": f"Home Assistant gave no definition for {entity_id}: it isn't there, or an integration "
+                             "other than Home Assistant's own editors made it."}
+        return {"entity_id": entity_id, "definition": found}
+
+
+def _strings(record):
+    """A registry record's text: its strings, alone or in a list, but its IDs and times (UNSEARCHED)."""
+    out = []
+    for key, value in (record or {}).items():
+        if key not in UNSEARCHED:
+            out.extend(v for v in (value if isinstance(value, list) else [value]) if isinstance(v, str))
+    return out
 
 
 def _pct(brightness):
@@ -415,7 +571,8 @@ class ReadTurn(RoleTool):
     name = "read_turn"
     description = ("Read turns of the session: what the user said, what the assistant said and every tool it called "
                    "with the result, and the state changes during the turn, each with who made it (the assistant or "
-                   "not) and any attributes that changed. Give one turn, or several as a list.")
+                   "not) and any attributes that changed, readings last (read_readings sifts them all). Give one "
+                   "turn, or several as a list.")
     parameters = probatio.Schema({probatio.Optional("turn"): int, probatio.Optional("turns"): [int]})
 
     def run(self, turn=None, turns=None):
@@ -426,56 +583,94 @@ class ReadTurn(RoleTool):
 
 class ListAreas(RoleTool):
     name = "list_areas"
-    description = "List the household's areas (rooms), their aliases and how many devices each has."
+    description = "List the household's areas (rooms), their aliases and how many entities each has."
     parameters = probatio.Schema({})
 
     def run(self):
         return {"areas": self.view.list_areas()}
 
 
+LISTING = ("Every entity, 25 to a page with the total: those the assistant may use (exposed) and controls first, each "
+           "with its state at the start of the session (and at the end, if it changed) and its labels (entity "
+           "category, disabled, hidden) where set.")
+
+
 class DevicesInArea(RoleTool):
     name = "devices_in_area"
-    description = ("List the devices in an area with their state at the start of the session (and at the end, if it "
-                   "changed), what they can do, and whether the assistant may use them (exposed). Sensors only on "
-                   "request.")
-    parameters = probatio.Schema({probatio.Required("area"): str, probatio.Optional("include_sensors"): bool})
+    description = "List the entities in an area. " + LISTING
+    parameters = probatio.Schema({probatio.Required("area"): str, probatio.Optional("page", default=1): int})
 
-    def run(self, area, include_sensors=False):
-        return self.view.devices_in_area(area, include_sensors)
+    def run(self, area, page=1):
+        return self.view.devices_in_area(area, page)
 
 
 class FindDevices(RoleTool):
     name = "find_devices"
-    description = ("Find devices whose name, alias, area or entity ID contains all the given words (plurals match "
-                   "too). Sensors and diagnostics only on request.")
-    parameters = probatio.Schema({probatio.Required("query"): str, probatio.Optional("include_sensors"): bool})
+    description = ("Find entities whose text holds all the given words (plurals match too): names, aliases, area, "
+                   "labels, entity ID, and the entity's, its device's and its integration's details. " + LISTING)
+    parameters = probatio.Schema({probatio.Required("query"): str, probatio.Optional("page", default=1): int})
 
-    def run(self, query, include_sensors=False):
-        return self.view.find_devices(query, include_sensors)
+    def run(self, query, page=1):
+        return self.view.find_devices(query, page)
 
 
 class DeviceDetails(RoleTool):
     name = "device_details"
-    description = ("One device in detail: its state and attributes at the start, what it can do, whether the "
-                   "assistant may use it, every change to it during the session (with who made it), and the other "
-                   "entities of the same physical device.")
+    description = ("One entity in detail: its state at the start, whole; its entity and device registry entries; what "
+                   "it can do (the actions that target its domain or integration, with their fields; not those any "
+                   "entity takes); whether the assistant may use it; every change to it during the session (with who "
+                   "made it); and the other entities of the same physical device, 25 to a page.")
+    parameters = probatio.Schema({probatio.Required("entity_id"): str, probatio.Optional("page", default=1): int})
+
+    def run(self, entity_id, page=1):
+        return self.view.device_details(entity_id, page)
+
+
+class ReadReadings(RoleTool):
+    name = "read_readings"
+    description = ("Sift through the session's readings: what devices reported on their own (a sensor's values, "
+                   "updates nobody caused). Without entity_id, one line per entity: how many, the first and the last, "
+                   "most first; with entity_id, its readings in time order. 25 to a page with the total; turn or after "
+                   "(a time) narrows them.")
+    parameters = probatio.Schema({probatio.Optional("entity_id"): str, probatio.Optional("turn"): int,
+                                  probatio.Optional("after"): str, probatio.Optional("page", default=1): int})
+
+    def run(self, **args):
+        return self.view.read_readings(**args)
+
+
+class ReadDefinition(RoleTool):
+    name = "read_definition"
+    description = ("Read a script's, automation's or scene's definition: its steps, its triggers and conditions, or "
+                   "its entities' states. Give its entity_id.")
     parameters = probatio.Schema({probatio.Required("entity_id"): str})
 
     def run(self, entity_id):
-        return self.view.device_details(entity_id)
+        return self.view.read_definition(entity_id)
 
 
-class ListScriptsAndScenes(RoleTool):
-    name = "list_scripts_and_scenes"
-    description = ("List scripts, scenes and automations, optionally filtered by words, with whether the "
-                   "assistant may use each (exposed).")
-    parameters = probatio.Schema({probatio.Optional("query"): str})
+class FindActions(RoleTool):
+    name = "find_actions"
+    description = ("Find Home Assistant's actions (what a script or automation step can call) whose ID, name, "
+                   "description or fields hold all the given words (any, if none has all): each with its description, "
+                   "what it targets and its fields, 25 to a page with the total.")
+    parameters = probatio.Schema({probatio.Required("query"): str, probatio.Optional("page", default=1): int})
 
-    def run(self, query=""):
-        return self.view.list_scripts_and_scenes(query)
+    def run(self, query, page=1):
+        return find_actions(self.view.setup.actions, query, page)
 
 
-TOOLS = (ReadTurn, ListAreas, DevicesInArea, FindDevices, DeviceDetails, ListScriptsAndScenes)
+class ReadAssistant(RoleTool):
+    name = "read_assistant"
+    description = ("The assistant as this session recorded it: every option of its settings, the tools Assist had "
+                   "with their parameters, the provider-hosted tools it called, and its voice assistant (pipeline).")
+    parameters = probatio.Schema({})
+
+    def run(self):
+        return self.view.assistant_setup()
+
+
+TOOLS = (ReadTurn, ListAreas, DevicesInArea, FindDevices, DeviceDetails, ReadReadings, ReadDefinition, ReadAssistant)
 
 
 # Existing improvements (Improvements.catalog: waiting for the household's review, or applied), which every AI role
@@ -553,10 +748,12 @@ class SessionAPI(llm.API):
     """The tools for one recording (or a given list of tools), handed to the AI Task for one role call. Each call
     of a tool gets a span in the current trace (trace.py)."""
 
-    def __init__(self, hass, view=None, extra_tools=(), tools=None):
+    def __init__(self, hass, view=None, extra_tools=(), tools=None, user_id=None):
         super().__init__(hass=hass, id=API_ID, name="Recorded session")
         tools = list(tools) if tools is not None else [tool(view) for tool in TOOLS] + list(extra_tools)
         self.tools = [traced_tool(tool) for tool in tools]
+        self.user_id = user_id  # The improver's user, for Home Assistant's own tools (the proposer's and reviewer's).
 
     async def async_get_api_instance(self, llm_context):
-        return llm.APIInstance(api=self, api_prompt="", llm_context=llm_context, tools=self.tools)
+        own = [traced_tool(tool) for tool in await ha_tools(self.hass, self.user_id)]
+        return llm.APIInstance(api=self, api_prompt="", llm_context=llm_context, tools=self.tools + own)

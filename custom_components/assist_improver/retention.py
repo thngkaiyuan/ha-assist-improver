@@ -1,13 +1,13 @@
 """Storage that doesn't grow without end, while every conversation stays in the regression set.
 
-A recording keeps a full snapshot of the home for each turn (about a megabyte in a large home). Once a recording
-closes it's packed, losslessly: later turns keep only what changed since the first turn's snapshot (rebuilt on
-read), and chat-log copies nothing reads are dropped. Every day, older recordings nothing needs in full any more
-are compacted: they keep the conversation, its tool calls, and the devices it involved (their states, names, areas
-and exposure), not the rest of the home. A compacted recording is still read by every AI role, but no longer
-replayed. Kept in full: recordings an improvement or a replay uses, or a round still needs (the daily tidy-up reads
-each conversation's flow record), recent ones (KEEP_FULL_DAYS), and the newest KEEP_NEWEST, which seed the sandbox.
-Recordings with no turns (Home Assistant handled them itself) are deleted.
+A recording keeps the moment, the whole home, once in its first turn (a few megabytes in a large home), and each later
+turn's states. Once a recording closes it's packed, losslessly: later turns keep only what changed since the first
+turn's snapshot (rebuilt on read), and chat-log copies nothing reads are dropped. Every day, older recordings nothing
+needs in full any more are compacted: they keep the conversation, its tool calls, and the devices it involved (their
+states, names, areas and exposure), not the rest of the home. A compacted recording is still read by every AI role, but
+no longer replayed. Kept in full: recordings an improvement or a replay uses, or a round still needs (the daily tidy-up
+reads each conversation's flow record), recent ones (KEEP_FULL_DAYS), and the newest KEEP_NEWEST: the roles read the
+home at the newest one's moment. Recordings with no turns (Home Assistant handled them itself) are deleted.
 
 The log of runs and AI role calls (diagnostics and profiling) is tidied the same way: what the pipeline still reads
 from it stays, runs stay for KEEP_HISTORY_DAYS, and every other record is deleted after KEEP_FULL_DAYS. What the
@@ -20,6 +20,7 @@ TRACE_MAX_BYTES of them, the oldest deleted first; a trace still being written i
 from copy import deepcopy
 from datetime import timedelta
 
+from homeassistant.helpers.storage import STORAGE_DIR
 from homeassistant.util.dt import parse_datetime, utcnow
 
 from .trace import journal
@@ -152,12 +153,12 @@ def compact(recording, also=()):
         if not source:
             continue
         devices = {e.get("device_id") for k, e in (source.get("entities") or {}).items() if k in keep}
-        for key in ("states", "entities", "exposure", "template_actions"):
+        for key in ("states", "entities", "exposure"):
             if isinstance(source.get(key), dict):
                 source[key] = {k: v for k, v in source[key].items() if k in keep}
         if isinstance(source.get("devices"), dict):
             source["devices"] = {k: v for k, v in source["devices"].items() if k in devices}
-        for key in ("scripts", "automations"):
+        for key in ("scripts", "automations", "scenes", "todo"):
             source.pop(key, None)
     recording["state_changes"] = [c for c in recording.get("state_changes", []) if c["entity_id"] in keep]
     recording["compact"] = True
@@ -244,7 +245,7 @@ async def prune_traces(hass, active=(), now=None):
     fit in TRACE_MAX_BYTES; an active one (`active`: their ids) never. Returns {"deleted": n, "bytes": total left}."""
     from .trace import remove, stored
     now = (now or utcnow()).timestamp()
-    files = sorted(await hass.async_add_executor_job(stored, hass.config.path(".storage")), key=lambda f: f["mtime"])
+    files = sorted(await hass.async_add_executor_job(stored, hass.config.path(STORAGE_DIR)), key=lambda f: f["mtime"])
     total, deleted = sum(f["bytes"] for f in files), 0
     for found in files:  # Oldest first.
         old = now - found["mtime"] > TRACE_DAYS * 86400

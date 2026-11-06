@@ -1,11 +1,12 @@
 """Guided choice of the AI Task entity the improver's roles call.
 
-Reads the chosen entity's settings where its integration exposes them, warns
-when they look too weak for these roles, and can create a new entry by driving
-that integration's own "Add AI Task" flow. Claude Opus 5.5 is recommended where
-the household can reach it (Anthropic, or OpenRouter when its account lists the
-model); OpenAI and Google get an entry with their own default settings. If a
-flow asks for anything unexpected, it stops and the user is told why.
+Reads the chosen entity's model from its device, as its integration names it,
+warns when it or its settings look too weak for these roles, and can create a
+new entry by driving that integration's own "Add AI Task" flow. Claude Opus 5.5
+is recommended where the household can reach it (Anthropic, or OpenRouter
+when its account lists the model); OpenAI and Google get an entry with their
+own default settings. If a flow asks for anything unexpected, it stops and the
+user is told why.
 """
 
 import asyncio
@@ -15,7 +16,7 @@ from homeassistant.config_entries import ConfigEntryState
 from homeassistant.const import EVENT_STATE_CHANGED
 from homeassistant.core import callback
 from homeassistant.data_entry_flow import UnknownFlow
-from homeassistant.helpers import entity_registry as er
+from homeassistant.helpers import device_registry as dr, entity_registry as er
 from homeassistant.helpers.storage import Store
 
 from . import touchpoints
@@ -39,18 +40,6 @@ def ai_task_entities(hass):
     return sorted(s.entity_id for s in hass.states.async_all("ai_task"))
 
 
-def suggested_entity(hass):
-    """Home Assistant's own default AI Task, else the first one."""
-    # No public route: ai_task offers this preference only over its websocket API.
-    preferred = None
-    with touchpoints.guarded(hass, "default_ai_task_entity"):
-        touchpoints.get(hass, "default_ai_task_entity")
-        if (preferences := hass.data.get(touchpoints.get(hass, "default_ai_task"))) is not None:
-            preferred = preferences.gen_data_entity_id
-    entities = ai_task_entities(hass)
-    return preferred if preferred in entities else (entities[0] if entities else None)
-
-
 def _provider_settings(hass, entity_id):
     entry = er.async_get(hass).async_get(entity_id)
     if not entry or not entry.config_entry_id:
@@ -66,24 +55,30 @@ def is_recommended(assessment):
     return assessment["ok"] and bool(RECOMMENDED_MODEL.search(assessment.get("model") or ""))
 
 
+def _device_model(hass, entity_id):
+    """The model an AI Task runs, as its integration names it on the AI Task's device: its ID, else its name."""
+    entry = er.async_get(hass).async_get(entity_id)
+    device = dr.async_get(hass).async_get(entry.device_id) if entry and entry.device_id else None
+    return (device.model_id or device.model) if device else None
+
+
 def assess(hass, entity_id):
-    """What the improver can tell about an AI Task entity, and any warnings."""
+    """What the improver can tell about an AI Task entity, and any warnings: its model (_device_model), and an
+    Anthropic AI Task's effort and output limit where its settings set them."""
     if not entity_id:
         return {"entity_id": None, "ok": False, "warnings": ["No AI Task entity is chosen yet."]}
     if hass.states.get(entity_id) is None:
         return {"entity_id": entity_id, "ok": False, "warnings": [f"{entity_id} is not available."]}
     provider, _, data = _provider_settings(hass, entity_id)
     result = {"entity_id": entity_id, "provider": provider, "warnings": []}
-    if provider == "open_router" and data is not None:
+    if provider == "open_router" and data is not None:  # OpenRouter names no model on its device: its settings do.
         result.update(model=data.get("model"), ok=True)
         if not RECOMMENDED_MODEL.search(result["model"] or ""):
             result["warnings"].append("It works, but Claude Opus 5.5 is recommended for the improver.")
         return result
-    if provider != "anthropic" or data is None:
-        # Most providers name the model in its settings (OpenAI and Gemini as chat_model, Ollama as model); the rest
-        # (effort, output limit) differ by provider, so only the model is judged.
-        model = (data or {}).get("chat_model") or (data or {}).get("model")
-        result.update(model=model, ok=True)
+    model = result["model"] = _device_model(hass, entity_id) if provider else None  # None: its provider is gone.
+    if provider != "anthropic" or data is None:  # Effort and output limit differ by provider: only the model is judged.
+        result["ok"] = True
         if not model:
             result["warnings"].append("The improver can't read this provider's settings. A strong model such as "
                                       "Claude Opus 5.5 with a high output limit is recommended.")
@@ -93,18 +88,8 @@ def assess(hass, entity_id):
         elif not RECOMMENDED_MODEL.search(model):
             result["warnings"].append("It works, but Claude Opus 5.5 is recommended for the improver.")
         return result
-    if data.get("recommended", False):
-        # No public route: what Anthropic's recommended settings stand for is only in its constants (the device
-        # registry names the model, not the effort or output limit judged here).
-        try:
-            defaults = touchpoints.get(hass, "ai_task_settings")
-        except touchpoints.Broken:
-            defaults = {}
-        model, effort, max_tokens = defaults.get("chat_model"), defaults.get("effort"), defaults.get("max_tokens")
-        result["uses_recommended_defaults"] = True
-    else:
-        model, effort, max_tokens = data.get("chat_model"), data.get("effort"), data.get("max_tokens")
-    result.update(model=model, effort=effort, max_tokens=max_tokens)
+    effort, max_tokens = data.get("effort"), data.get("max_tokens")
+    result.update(effort=effort, max_tokens=max_tokens)
     if model and any(word in model.lower() for word in WEAK_MODEL_WORDS):
         result["warnings"].append(f"It uses {model}, a small model. Claude Opus 5.5 is recommended for the improver.")
     if effort in WEAK_EFFORTS:
@@ -113,6 +98,9 @@ def assess(hass, entity_id):
         result["warnings"].append(f"Its output limit is {int(max_tokens)} tokens, which can cut the improver's "
                                   f"answers short. {RECOMMENDED['max_tokens']} is recommended.")
     result["ok"] = not result["warnings"]
+    if data.get("recommended", False):  # Said, not judged: what they stand for isn't public.
+        result["uses_recommended_defaults"] = True
+        result["warnings"].append("It uses Anthropic's recommended settings.")
     return result
 
 
@@ -211,9 +199,9 @@ def _read_back(hass, subentries, wanted, answered, chosen):
     meant |= set(answered) - {"name"}
     if lost := sorted(key for key in meant
                       if key not in answered or any(sub.data.get(key) != answered[key] for sub in subentries)):
-        touchpoints.report(hass, "ai_task_settings", f"a new AI Task didn't keep {', '.join(lost)}")
+        touchpoints.report(hass, "ai_task_flow", f"a new AI Task didn't keep {', '.join(lost)}")
     else:
-        touchpoints.ok(hass, "ai_task_settings")
+        touchpoints.ok(hass, "ai_task_flow")
 
 
 async def _appeared(hass, config_entry_id, created):

@@ -129,8 +129,8 @@ def scenario(analysis, view):
             turn["heard_by"] = device.get("name_by_user") or device.get("name")
         if line.get("assist_acted_on"):
             turn["assist_acted_on"] = line["assist_acted_on"]
-        started = [{**{k: g[k] for k in ("summary", "kind", "entity_id", "state", "states", "brightness_pct", "fact",
-                                         "reached") if k in g},
+        # Every field the goal has; its turn is the line's, and what the home couldn't do and why it's unmet in words.
+        started = [{**{k: v for k, v in g.items() if k not in ("turn", "answered", "home_couldnt")},
                     **({"home_couldnt": HOME_COULDNT} if g.get("home_couldnt") else {}),
                     **({"why": g["answered"]["why"]} if g.get("answered") and g.get("reached") is False else {})}
                    for g in top_level(goals) if g["turn"] == n and g["kind"] != "ask"]
@@ -194,7 +194,6 @@ def _local(at, zone):
     return moment.strftime("%a %Y-%m-%d %H:%M")
 
 
-# What Assist can do with an exposed device, by domain, as (tool name, what it does); see HA_PRIMER.
 def capabilities(view, entity_id, found):
     """What Assist can and can't do with one device: what HA carried out when each Assist tool was tried on it."""
     card = view._card(entity_id)

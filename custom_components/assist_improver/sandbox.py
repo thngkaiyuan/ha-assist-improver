@@ -2,66 +2,64 @@
 
 A sandbox runs only in a replay worker, a short-lived process of its own (worker.py), never in Home Assistant's own
 process; in tests, in the test's process (worker.INLINE). It is a separate HomeAssistant object in its own thread and
-event loop. It runs HA's own integrations (intents, the Assist API, scripts, automations, and the household's
-assistant by its provider's integration, which calls the model from here) over a copy of the home; only the commands
-to devices are emulated (devices.py). It has no network listener and no device integrations, so nothing in it can
-reach a real device. Its config folder is a throwaway one, gone with its worker. The worker's process is the
-sandbox's, so its time zone is the home's, as the household's Home Assistant has it.
+event loop, with the home's registries loaded whole from today's setup (start). It runs HA's own integrations (intents,
+the Assist API, scripts, automations, scenes, the household's storage and YAML helpers, and the household's assistant
+by its provider's integration, which calls the model from here) over a copy of the home; only the commands to devices
+(the stand-in integration, standin.py) and calls beyond the home (outside) are stood in. It has no network listener and
+no device integrations, so nothing in it can reach a real device. Its config folder is a throwaway one, gone with its
+worker. The worker's process is the sandbox's, so its time zone is the home's, as the household's Home Assistant has
+it.
 
-What Assist reads and sets off is as of the conversation: seeded as the home at a recorded turn's moment, and moved on
-to each later one, the sandbox renders Assist's instructions (their now()) and runs Assist's tool calls at that turn's
-time (HA's date and time tool, and the scripts and automations a call sets off, their time conditions included), as
-HA's own tests freeze time where they need to. Only there: HA's dt_util.now reads the recorded time inside those, and
-Home Assistant's own time everywhere else. HA's scheduler reads utcnow and the system clock, which stay real (timed
-automations aren't all due at once).
+The sandbox runs on one clock (clock.py, DETAILS P6.2.5): seeded as the home at a recorded turn's moment, it starts
+then, and moves on to each later turn's recorded time before that turn (advance), timers due on the way firing at
+their times. Inside a turn the clock runs at real speed, but while the turn's tool calls run and its result settles
+(windows, snapshot), waits pass at once: a script's delay, a timed automation due before the next recorded turn.
 """
 
 import asyncio
-from contextlib import contextmanager, suppress
-from contextvars import ContextVar
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import ExitStack, contextmanager, suppress
 from datetime import datetime
 import functools
+import json
 import logging
+from pathlib import Path
 import tempfile
 import threading
-import time
 from types import SimpleNamespace
 
+from homeassistant.const import EVENT_CALL_SERVICE, Platform
 from homeassistant.core import SupportsResponse, callback
 from homeassistant.exceptions import HomeAssistantError, ServiceNotSupported
 from homeassistant.util import dt as dt_util
 from homeassistant.util.hass_dict import HassKey
 
-from . import devices
+from . import clock, standin
 from .const import DOMAIN
+from .digest import kept
 from .touchpoints import relied_on, resolve
 
 _LOGGER = logging.getLogger(__name__)
 
 SANDBOX_KEY: HassKey["Sandbox"] = HassKey(f"{DOMAIN}_sandbox")  # In the sandbox's own instance.
 THREAD_NAME = "assist-improver-sandbox"
+EXECUTOR_WORKERS = 64  # Threads for Home Assistant's blocking jobs, as its own loop has.
+TEARDOWN_TIMEOUT = 5  # Seconds the tasks left when a sandbox ends get to finish cancelling, as Home Assistant gives them.
 SANDBOX_LOG_LIMIT = 200
-NOT_THE_HOME = ("conversation", "ai_task", "tts", "stt", "wake_word", "assist_satellite")  # Assist's own, not devices.
-DEVICE_SERVICES = {
-    "light": ("turn_on", "turn_off", "toggle"),
-    "switch": ("turn_on", "turn_off", "toggle"),
-    "fan": ("turn_on", "turn_off", "toggle", "set_percentage", "set_preset_mode", "increase_speed",
-            "decrease_speed", "oscillate", "set_direction"),
-    "media_player": ("turn_on", "turn_off", "toggle", "media_play", "media_pause", "media_stop",
-                     "media_play_pause", "volume_set", "volume_up", "volume_down", "volume_mute", "select_source"),
-    "climate": ("turn_on", "turn_off", "toggle", "set_hvac_mode", "set_temperature", "set_fan_mode",
-                "set_preset_mode", "set_humidity", "set_swing_mode"),
-    "cover": ("open_cover", "close_cover", "stop_cover", "set_cover_position"),
-    "valve": ("open_valve", "close_valve", "stop_valve", "set_valve_position"),
-    "lock": ("lock", "unlock", "open"),
-    "vacuum": ("start", "pause", "stop", "return_to_base", "clean_area", "clean_spot"),
-    "select": ("select_option",), "input_select": ("select_option",),
-    "number": ("set_value",), "input_number": ("set_value",),
-    "input_boolean": ("turn_on", "turn_off", "toggle"),
-    "humidifier": ("turn_on", "turn_off", "toggle", "set_humidity", "set_mode"),
-    "water_heater": ("turn_on", "turn_off", "set_temperature", "set_operation_mode"),
-    "siren": ("turn_on", "turn_off", "toggle"), "remote": ("turn_on", "turn_off", "toggle"),
-}
+# Real seconds the gap before a recorded turn may take (advance): well inside a worker call's limit, and far more than
+# a gap's waits need while they pass at once (an automation's whole week of runs every 30 s takes about 9).
+GAP_SECONDS = 30
+# Integrations a sandbox sets up for real (DETAILS P11.8), besides homeassistant, intent and llm (start), the storage
+# and YAML helpers the home has (setup_now's), the domains of the stand-ins' entities, and the improver for its
+# Assist tools (seed's filing).
+CORE = ("conversation", "assist_pipeline", "sun", "script", "automation", "scene")
+# Never set up in a sandbox, whatever the home or Assist's tools name: the Supervisor's integration, whose services act
+# on the host, the cloud, the network and discovery, and the recorder (DETAILS P11.8.3).
+NEVER = {"hassio", "cloud", "network", "recorder", "dhcp", "ssdp", "zeroconf", "usb", "bluetooth"}
+# What of hass.config a sandbox takes from today's (Config.async_update's names): never its folders, allowlists or
+# components.
+CONFIG = ("latitude", "longitude", "elevation", "radius", "location_name", "currency", "country", "language")
+MODELS = "ai_task"  # Each of its actions is a model call (_outside).
 
 
 class _Log(logging.Handler):
@@ -76,31 +74,77 @@ class _Log(logging.Handler):
             self.sandbox.log.append(f"{record.levelname} {record.name}: {record.getMessage()}"[:500])
 
 
-_AS_RECORDED = ContextVar("assist_improver_as_recorded", default=None)  # The recorded time, where Assist reads it.
-_NOW = dt_util.now  # Home Assistant's own.
+def _run_at(hass, source):
+    """In a sandbox's loop: the recorded turn it's now at is the one of this snapshot (its at): a command that failed
+    at home then fails here (standin.StandIn.async_request_call)."""
+    if source.get("at"):
+        hass.data[SANDBOX_KEY].at = _moment(source["at"])
 
 
-def _now(time_zone=None):
-    """dt_util.now in the worker's process: the recorded turn's time where Assist reads it (_as_recorded), Home
-    Assistant's own everywhere else."""
-    at = _AS_RECORDED.get()
-    return _NOW(time_zone) if at is None else at.astimezone(time_zone or dt_util.get_default_time_zone())
+def _moment(at):
+    return datetime.fromisoformat(at).astimezone(dt_util.UTC) if at else None
+
+
+def _epoch(at):
+    """A recorded time (ISO), in seconds since the epoch; None for none."""
+    return datetime.fromisoformat(at).timestamp() if at else None
 
 
 @contextmanager
-def _as_recorded(hass):
-    """In a sandbox's loop: what runs inside reads the time of the recorded turn the sandbox is at."""
-    token = _AS_RECORDED.set(hass.data[SANDBOX_KEY].at)
+def _held(hass):
+    """The replay's conversations held while its clock may move on between turns (advance, snapshot): they went on
+    at home through the gap, so their chat sessions last (Home Assistant ends one idle for five minutes), and their
+    chat logs carry on."""
+    from homeassistant.helpers import chat_session
+    with ExitStack() as held:
+        for conversation_id in hass.data[SANDBOX_KEY].conversations.values():
+            held.enter_context(chat_session.async_get_chat_session(hass, conversation_id, context=None))
+        yield
+
+
+async def advance(hass, at):
+    """In a sandbox's loop: its clock on to a recorded time (ISO) if that's later, each timer due on the way firing at
+    its time (clock.Window), what it sets off with it, the replay's conversations held (_held). Once the gap has taken
+    GAP_SECONDS (its waits couldn't pass at once), the clock moves there anyway, and what's still due fires then."""
+    if (moment := _epoch(at)) is not None and moment > hass.loop.clock.now():
+        with _held(hass):
+            await hass.loop.settle(moment, deadline=clock.REAL_MONOTONIC() + GAP_SECONDS)
+            hass.loop.clock.move_to(moment)
+
+
+@contextmanager
+def _tool_windows(hass, conversation_id, cap):
+    """In a sandbox's loop, while a turn runs: a window (clock.Window, never past cap) from each assistant message
+    with tool calls Home Assistant runs being added to the conversation's chat log (its stream has ended) until the
+    last of their results is (the next model call starts there)."""
+    from .serialization import plain
+    subscribe, events = resolve("chat_log_subscribe"), resolve("chat_log_events")
+    open_ = {}  # "window" and the "calls" whose results it waits for, while one is open.
+
+    def close():
+        if open_:
+            open_.pop("window").__exit__()
+            open_.clear()
+
+    def heard(chat, kind, data):
+        if chat != conversation_id or kind != events.CONTENT_ADDED:
+            return
+        content = plain(data.get("content") or {})
+        if content.get("role") == "assistant":
+            if calls := {c["id"] for c in content.get("tool_calls") or [] if not c.get("external")}:
+                close()
+                open_.update(window=clock.Window(hass.loop, cap).__enter__(), calls=calls)
+        elif content.get("role") == "tool_result" and open_:
+            open_["calls"].discard(content.get("tool_call_id"))
+            if not open_["calls"]:
+                close()
+    with relied_on("chat_log_subscribe"):
+        unsubscribe = subscribe(hass, heard)
     try:
         yield
     finally:
-        _AS_RECORDED.reset(token)
-
-
-def _run_at(hass, source):
-    """In a sandbox's loop: the recorded turn it's now at is the one of this snapshot (its at)."""
-    if source.get("at"):
-        hass.data[SANDBOX_KEY].at = datetime.fromisoformat(source["at"]).astimezone(dt_util.UTC)
+        unsubscribe()
+        close()
 
 
 STATS = {"started": 0, "start_seconds": 0.0, "slowest_start": 0.0, "assistants": 0, "assistant_seconds": 0.0,
@@ -112,48 +156,54 @@ def _timed(kind, seconds):
     STATS[f"slowest_{kind}"] = round(max(STATS[f"slowest_{kind}"], seconds), 3)
 
 
-class _NoWebServer:
-    """hass.http for an instance with no web server: integrations' views and static paths go nowhere."""
-
-    def __getattr__(self, name):
-        async def ignored_async(*args, **kwargs):
-            return None
-        return ignored_async if name.startswith("async_") else (lambda *args, **kwargs: None)
-
-
 class Sandbox:
     """Start with await Sandbox.start(...); run coroutines in it with await sandbox.run(fn, *args)."""
 
-    def __init__(self, time_zone):
+    def __init__(self, time_zone, home=None, setup=None):
         self.time_zone = time_zone
+        self.home = home or {}  # Today's home at the recorded moment (snapshot.at_moment), as seeded.
+        self.setup = setup or {}  # Today's setup beyond the home (replay.setup_now): config entries, helpers, services.
         self.hass = self.loop = self.thread = None
         self.commands, self.unsimulated, self.transitions = [], [], []
         self.spoken = []  # Each message spoken on devices, by whatever called it (_speak).
+        self.outside = []  # Each call beyond the home, as answered (outside): an outside receipt (DETAILS P11.7).
         # Each conversation's id here, by the id it has outside: Home Assistant starts a conversation it doesn't know
         # under an id of its own, as at home (run_turn).
         self.conversations = {}
         self.moving = set()  # Devices the recording shows reporting their movement (simulation.reports_movement).
+        self.machinery = set()  # The voice assistant's own entities, as today's pipeline has them (digest.machinery).
+        self.cut = set()  # The improver's own AI Tasks (settings.own_models).
+        self.recorded = {}  # What the recording answered and failed (replay.recorded): answers to the same calls.
+        self.failures = {}  # (entity_id, turn's at) -> the error its command failed with then (recorded's failed).
+        self.calls = []  # Each service call, as Home Assistant tells of it (calling): (domain, service, data).
+        self.groups = {}  # The stand-in entries' groups (_groups), by recorded config entry.
+        self.standins = {}  # entity_id -> its stand-in (standin.StandIn).
+        self.unheld = set()  # The states no integration here holds, seeded as they were (seed).
         self.observing = False  # True while recorded changes are applied, which aren't the replay's own.
-        self.at = None  # The time of the recorded turn it's at, which Assist reads (_as_recorded).
+        self.at = None  # The time of the recorded turn it's at (_run_at).
+        self.clock = None  # Its clock (clock.py), from the home's moment.
         self.log = []  # What HA logged inside the sandbox (_Log).
-        self.device_ids = {}  # Recorded device ID -> its ID in the sandbox.
         self.moment = {}  # The home as seeded (home_now), which each turn's home is told against (run_turn).
         self._dir = None  # Made and removed on the sandbox's own thread, never blocking the main loop.
 
     @classmethod
-    async def start(cls, time_zone):
-        began = time.monotonic()
-        sandbox = cls(time_zone)
+    async def start(cls, time_zone, home=None, setup=None):
+        """A sandbox set up as today's home (home: snapshot.at_moment's; setup: replay.setup_now's), its registries
+        loaded whole, disabled entries included, as Home Assistant loads its own; none: an empty home."""
+        began = clock.REAL_MONOTONIC()
+        sandbox = cls(time_zone, home, setup)
+        sandbox.clock = clock.current(_epoch((home or {}).get("at")))
         outer = asyncio.get_running_loop()
         ready = outer.create_future()
         log = _Log(sandbox)
-        # HA's own loop, with its executor, ended as its runner ends one.
-        create_loop, cancel_tasks, cancel_timeout = map(resolve, ("event_loop", "cancel_tasks", "cancel_timeout"))
 
         def run():
             try:
+                clock.join(sandbox.clock)
                 sandbox._dir = tempfile.TemporaryDirectory(prefix="assist-improver-sandbox-")
-                loop = sandbox.loop = create_loop()
+                loop = sandbox.loop = clock.Loop(sandbox.clock)
+                loop.set_default_executor(ThreadPoolExecutor(EXECUTOR_WORKERS, initializer=clock.join,
+                                                             initargs=(sandbox.clock,)))
                 asyncio.set_event_loop(loop)
                 try:
                     try:
@@ -163,11 +213,14 @@ class Sandbox:
                         return
                     outer.call_soon_threadsafe(ready.set_result, None)
                     loop.run_forever()
-                finally:  # As HA's runner ends a loop: cancel tasks, then shut its threads down.
+                finally:  # As HA ends its loop: cancel what's left, then end its threads.
                     try:
-                        cancel_tasks(loop, cancel_timeout)
+                        if tasks := asyncio.all_tasks(loop):
+                            for task in tasks:
+                                task.cancel()
+                            loop.run_until_complete(asyncio.wait(tasks, timeout=TEARDOWN_TIMEOUT))
                         loop.run_until_complete(loop.shutdown_asyncgens())
-                        loop.run_until_complete(loop.shutdown_default_executor())
+                        loop.run_until_complete(loop.shutdown_default_executor(TEARDOWN_TIMEOUT))
                     finally:
                         asyncio.set_event_loop(None)
                         loop.close()
@@ -187,7 +240,7 @@ class Sandbox:
                 await outer.run_in_executor(None, sandbox.thread.join, 30)
             raise
         STATS["started"] += 1
-        _timed("start", time.monotonic() - began)
+        _timed("start", clock.REAL_MONOTONIC() - began)
         return sandbox
 
     async def run(self, fn, *args):
@@ -217,181 +270,249 @@ class Sandbox:
         from homeassistant.setup import async_setup_component
         hass = self.hass = HomeAssistant(self._dir.name)  # This thread's instance only.
         hass.data[SANDBOX_KEY] = self
+        if self.home:
+            self.groups = await hass.async_add_executor_job(_groups, self.home, self.setup)
+            await hass.async_add_executor_job(_store, Path(self._dir.name), self.home, self.setup, self.groups)
         resolve("skip_pip")
         hass.config.skip_pip = True  # Nothing is installed from here (DETAILS P11.8.3): the worker's Python is HA's.
         await hass.config.async_set_time_zone(self.time_zone)  # The process's too: templates' now() reads it.
-        dt_util.now = _now  # The process's clock: the recorded turn's time where Assist reads it.
         resolve("loader")(hass)
         hass.config_entries = resolve("config_entries")(hass, {})
         if not await resolve("base_functionality")(hass):
             raise RuntimeError("The sandbox could not load Home Assistant's base functionality")
-        # Intents register a web view; the sandbox has no web server, so their views go nowhere.
-        hass.http = _NoWebServer()
-        hass.config.components.add("http")
-        for component in ("homeassistant", "intent", "llm"):
+        if config := self.home.get("config"):
+            await hass.config.async_update(**{k: config[k] for k in CONFIG if config.get(k) is not None},
+                                           **_units(config))
+        hass.bus.async_listen(EVENT_CALL_SERVICE, self.calling)
+        for component in ("homeassistant", "intent", "llm"):  # The web server they ask for is standin's no-op one.
             if not await async_setup_component(hass, component, {}):
                 raise RuntimeError(f"The sandbox could not set up {component}")
-        self.emulate_devices()
 
-    def emulate_devices(self, domains=()):
-        """Device commands go to the emulated drivers, also after an integration registers its own services; so does
-        every other command an integration has for the devices of these domains (one that answers nothing), which has
-        no emulation (unsimulated), rather than acting on no device."""
-        for domain in {*DEVICE_SERVICES, *domains}:
-            others = {s for s, handler in self.hass.services.async_services_for_domain(domain).items()
-                      if handler.supports_response is SupportsResponse.NONE} if domain in domains else set()
-            for service in {*DEVICE_SERVICES.get(domain, ()), *others}:
-                self.hass.services.async_register(domain, service, self._device_command)
+    @callback
+    def calling(self, event):
+        """A service call, as Home Assistant tells of it (in the calling task, unless it tells of another then):
+        what a stand-in's command is a call of (standin.StandIn._call)."""
+        self.calls.append((event.data["domain"], event.data["service"], event.data.get("service_data") or {}))
+        standin.CALLING.set((self, len(self.calls) - 1))
 
     @callback
     def state_changed(self, event):
         old, new = event.data.get("old_state"), event.data.get("new_state")
-        if self.observing or old is None or new is None or new.domain in NOT_THE_HOME:
+        if self.observing or old is None or new is None:
+            return
+        if kept({"entity_id": new.entity_id, "new": {"state": new.state}}, machinery=self.machinery,
+                cut=self.cut) in (None, "machinery"):  # Neither the home's nor a request's change.
             return
         if old.state != new.state:
             self.transitions.append({"entity_id": new.entity_id, "old": old.state, "new": new.state})
 
-    def stand_in_missing(self, scripts):
-        """The actions the household's scripts name that the sandbox has no service for (a phone's notification, a
-        scene it doesn't load): unsimulated when a script reaches one, and the script runs on, as it would at home."""
-        from .analyzer import speaking
-        for name in _actions(scripts or {}):
-            domain, _, service = name.partition(".")
-            if service and not self.hass.services.has_service(domain, service):  # A legacy engine's say: spoken.
-                self.hass.services.async_register(domain, service, functools.partial(_speak, self.hass)
-                                                  if speaking(name) else self._no_service)
 
-    async def _no_service(self, call):
-        self.unsimulated.append(f"{call.domain}.{call.service}")
-
-    async def _device_command(self, call):
-        """A device's driver, emulated: apply the command's effect to the sandbox's state."""
-        from homeassistant.helpers.service import async_extract_entity_ids
-        data = {k: v for k, v in call.data.items() if k not in ("entity_id", "device_id", "area_id", "floor_id",
-                                                                "label_id")}
-        for entity_id in sorted(await async_extract_entity_ids(call)):
-            if entity_id.split(".", 1)[0] != call.domain:
-                continue
-            state = self.hass.states.get(entity_id)
-            self.commands.append({"entity_id": entity_id, "service": f"{call.domain}.{call.service}", "data": dict(data)})
-            result = devices.effect(call.domain, call.service, state, data) if state is not None else None
-            if result is None or result[0] is None:
-                self.unsimulated.append(f"{call.domain}.{call.service} {entity_id}")
-                continue
-            # A device that reports its movement reports it on its way, as it did when recorded, then gets there
-            # right after (its travel time isn't emulated), both under the command, as HA's own device reports.
-            between = devices.underway(call.domain, call.service, state, *result) if entity_id in self.moving else None
-            self.hass.states.async_set(entity_id, between or result[0], result[1], context=call.context)
-            if between is not None:
-                self.hass.async_create_task(self._arrive(entity_id, between, result[0], call.context),
-                                            "assist_improver_sandbox_arrive", eager_start=False)
-
-    async def _arrive(self, entity_id, between, end, context):
-        """A device on its way gets there, unless it's been sent elsewhere since."""
-        if (state := self.hass.states.get(entity_id)) is not None and state.state == between:
-            self.hass.states.async_set(entity_id, end, dict(state.attributes), context=context)
+def _units(config):
+    """Today's unit system, by the name Config.async_update takes."""
+    from homeassistant.util.unit_system import METRIC_SYSTEM, US_CUSTOMARY_SYSTEM
+    for name, system in (("metric", METRIC_SYSTEM), ("us_customary", US_CUSTOMARY_SYSTEM)):
+        if config.get("unit_system") == system.as_dict():
+            return {"unit_system": name}
+    return {}
 
 
-# Tool prefixes that aren't an integration to set up: HA's core sets these up, and the improver's own (its
-# file_improvement tool) is no part of the home: a sandbox serves the improver's llm platform itself, for the
-# household's lines (household.serve) and a filing tool that files nothing (seed's filing), and the worker never runs
-# the integration's setup.
-INTEGRATION_TOOLS = {"intent", "homeassistant", "llm", "assist_improver"}
-# Never set up in a sandbox, whatever Assist's tools name (DETAILS P11.8.3): the Supervisor's integration, whose
-# services act on the host (reboot, shut down, restore a backup).
-NEVER = {"hassio"}
+def setup_of(today):
+    """What a sandbox sets up of today's setup (replay.setup_now's, with replay.today's assistant) beyond the home:
+    its config entries, storage and YAML helpers and actions, and the assistant's own entry (load_assistant's)."""
+    return {**{k: today.get(k) or {} for k in ("entries", "helpers", "services")},
+            "assistant": ((today.get("assistant") or {}).get("entry") or {}).get("entry_id")}
+
+
+def _real(setup):
+    """The integrations a sandbox sets up for real, by domain, and the config entries it loads as they are."""
+    domains = {*CORE, *(setup.get("helpers") or {}), "homeassistant", DOMAIN}
+    entries = {i for i, e in (setup.get("entries") or {}).items() if e["domain"] in domains}
+    return domains, entries | ({setup["assistant"]} if setup.get("assistant") else set())
+
+
+def _groups(home, setup):
+    """The stand-ins of a home's devices, one group per config entry they came from (its entry's title), or per
+    integration for those with none: {group: {title, registered: [entity_id], entities: {domain: [entity_id]}}}: the
+    entities of an entity domain (homeassistant.const.Platform, standin.standable) whose integration isn't set up for
+    real; those disabled, or with no state, aren't added (entities), as at home."""
+    domains, real = _real(setup)
+    entries, groups = setup.get("entries") or {}, {}
+    platforms = {p.value for p in Platform if standin.standable(p.value)}
+    for device in (home.get("devices") or {}).values():
+        if (entry := entries.get(device.get("config_entry_id"))) and device["config_entry_id"] not in real \
+                and not entry.get("disabled_by"):
+            groups.setdefault(device["config_entry_id"], {"title": entry["title"], "registered": [], "entities": {}})
+    for entity_id, entity in (home.get("entities") or {}).items():
+        domain, source = entity_id.split(".", 1)[0], entity.get("config_entry_id")
+        if domain not in platforms or entity["platform"] in domains or source in real:
+            continue
+        if (entry := entries.get(source)) is not None and entry.get("disabled_by"):
+            continue
+        group = groups.setdefault(source if entry else f"platform:{entity['platform']}",
+                                  {"title": entry["title"] if entry else entity["platform"], "registered": [],
+                                   "entities": {}})
+        group["registered"].append(entity_id)
+        if entity_id in (home.get("states") or {}) and not entity.get("disabled_by"):
+            group["entities"].setdefault(domain, []).append(entity_id)
+    return groups
+
+
+def _store(folder, home, setup, groups):
+    """Today's registries in Home Assistant's own storage form, for it to load whole (a stand-in's entity under the
+    stand-in integration, its unique ID its integration's and its own: two integrations may share one; no entry until
+    its stand-in's adds it, so moving its device to the stand-in doesn't remove it); the states
+    Home Assistant's own integrations restore (a helper's value, an automation on or off, when a script last ran); and
+    the helpers' own storage, as today's."""
+    import attr
+    from homeassistant.core import State
+    from homeassistant.helpers import (area_registry as ar, device_registry as dr, entity_registry as er,
+                                       floor_registry as fr, label_registry as lr, restore_state)
+    from homeassistant.helpers.json import json_dumps
+    resolve("entity_storage")
+    resolve("device_storage")
+    stored = resolve("restore_storage")
+    stood_in = {e for group in groups.values() for e in group["registered"]}
+    entity_fields = {f.name for f in attr.fields(er.RegistryEntry) if f.init}
+    devices = {f.name for f in attr.fields(dr.DeviceEntry) if f.init and not f.name.startswith("_")}
+    children = {f.name for f in attr.fields(dr.ChildDeviceEntry) if f.init}
+
+    def entity(record):
+        found = {k: v for k, v in record.items() if k in entity_fields}
+        found["aliases"] = [er.COMPUTED_NAME if a is None else a for a in found.get("aliases") or []]
+        if record["entity_id"] in stood_in:  # Its entry the stand-in's, once its platform adds it.
+            found |= {"platform": standin.STANDIN, "unique_id": f"{record['platform']}:{record['unique_id']}",
+                      "previous_unique_id": None, "config_entry_id": None, "config_subentry_id": None}
+        return er.RegistryEntry(**found).as_storage_fragment
+
+    def device(record):
+        kind, names = (dr.ChildDeviceEntry, children) if record.get("parent_device_id") else (dr.DeviceEntry, devices)
+        found = {k: v for k, v in record.items() if k in names}
+        for key in ("identifiers", "connections"):
+            if key in found:
+                found[key] = {tuple(i) for i in found[key]}
+        found["labels"] = set(found.get("labels") or ())
+        return kind(**found)
+    made = [device(d) for d in (home.get("devices") or {}).values()]
+    domains = {*CORE, *(setup.get("helpers") or {})}
+    stores = {
+        er: {"entities": [entity(e) for e in (home.get("entities") or {}).values()], "deleted_entities": [],
+             "settings": {"entity_id_parts": None}},  # How new entity IDs are made: Home Assistant's default.
+        dr: {"devices": [d.as_storage_fragment for d in made if not isinstance(d, dr.ChildDeviceEntry)],
+             "child_devices": [d.as_storage_fragment for d in made if isinstance(d, dr.ChildDeviceEntry)],
+             "deleted_devices": []},
+        ar: {"areas": list((home.get("areas") or {}).values())},
+        fr: {"floors": list((home.get("floors") or {}).values())},
+        lr: {"labels": list((home.get("labels") or {}).values())}}
+    storage = folder / resolve("storage_folder")
+    storage.mkdir()
+    for registry, data in stores.items():
+        (storage / registry.STORAGE_KEY).write_text(json_dumps({
+            "version": registry.STORAGE_VERSION_MAJOR, "minor_version": registry.STORAGE_VERSION_MINOR,
+            "key": registry.STORAGE_KEY, "data": data}))
+    now = dt_util.utcnow()
+    with relied_on("restore_storage"):
+        restored = [stored(State(e, s["state"], s.get("attributes") or {}), None, now).as_dict()
+                    for e, s in (home.get("states") or {}).items() if e.split(".", 1)[0] in domains]
+        (storage / restore_state.STORAGE_KEY).write_text(json_dumps({
+            "version": restore_state.STORAGE_VERSION, "key": restore_state.STORAGE_KEY, "data": restored}))
+    for domain, helper in (setup.get("helpers") or {}).items():
+        if helper.get("storage") is not None:
+            (storage / domain).write_text(json.dumps(helper["storage"]))
 
 
 def seed_options(today, turn):
-    """What today's setup (replay.setup_now's) says the sandbox needs for a recorded request: the integrations Assist's
-    tools come from, the request's device when it runs timers, and whether Assist can file the conversation."""
+    """What today's setup (replay.setup_now's) says the sandbox needs for a recorded request: the entity domains
+    Assist's tools come from (a light's intents), the request's device when it runs timers, and whether Assist can file
+    the conversation."""
     from .llm import FileImprovement
     names, device = today["tools"], turn["prepared"]["context"].get("device_id")
-    return {"integrations": sorted({n.split("__", 1)[0] for n in names if "__" in n} - INTEGRATION_TOOLS),
+    return {"integrations": sorted({n.split("__", 1)[0] for n in names if "__" in n} & {p.value for p in Platform}),
             "timer_device": device if device and device in today["timers"] else None,
             "filing": FileImprovement.name in names}
 
 
-async def seed(hass, source, *, user_name=None, integrations=(), timer_device=None, filing=False, scripts=None,
-               automations=None, exposure_changes=None, alias_changes=None, alias_removals=None, moving=()):
-    """Make the sandbox the home a snapshot holds (snapshot.at_moment's: today's setup at a recorded moment): its areas,
-    devices, entities (names, aliases, areas, a sensor's display precision), states and what Assist can see; the
-    integrations Assist's tools come from; then its scripts and automations, which create their own entities, each
-    automation on or off as the snapshot has it. exposure_changes ({entity_id: exposed}) and alias_changes
-    ({entity_id: [aliases added]}, alias_removals {entity_id: [aliases removed]}) apply on top. moving: the devices
-    that report their movement (simulation.reports_movement). Runs in the sandbox's loop. filing: Assist had the
-    improver's filing tool, which answers here as filing does and files nothing (llm.ReplayedFiling)."""
+async def seed(hass, *, person=None, integrations=(), timer_device=None, filing=False, scripts=None,
+               automations=None, exposure_changes=None, alias_changes=None, alias_removals=None, moving=(),
+               machinery=(), cut=(), recorded=None):
+    """Make the sandbox the home it was started as (Sandbox.start: snapshot.at_moment's, today's setup at a recorded
+    moment): Home Assistant's own integrations set up for real (CORE, the home's storage and YAML helpers, the entity
+    domains Assist's tools come from), a stand-in entry per config entry with devices (standin.py), every other state as
+    it was; calls beyond the home stood in (outside); then its scripts, automations and scenes, which create their own
+    entities. exposure_changes ({entity_id: exposed}) and alias_changes ({entity_id: [aliases added]}, alias_removals
+    {entity_id: [aliases removed]}) apply on top. moving: the devices that report their movement
+    (simulation.reports_movement); machinery: the voice assistant's own entities (digest.machinery), and cut: the
+    improver's own AI Tasks, neither ever the home's changes nor its home (digest.kept); recorded: what the recording
+    answered and failed (replay.recorded). Runs in the sandbox's loop. filing: Assist had the improver's filing tool,
+    which answers here as filing does and files nothing (llm.ReplayedFiling)."""
     from homeassistant.components.intent import async_register_timer_handler
+    from homeassistant.config_entries import SOURCE_IMPORT, ConfigEntryState
     from homeassistant.core import CoreState
-    from homeassistant.helpers import area_registry as ar, entity_registry as er
+    from homeassistant.helpers import entity_registry as er
     from homeassistant.setup import async_setup_component
     expose = resolve("sandbox_exposure")  # No public API exposes an entity, nor runs HA without starting it.
     resolve("running_state")
+    sandbox = hass.data[SANDBOX_KEY]
+    source, setup = sandbox.home, sandbox.setup
     _run_at(hass, source)
-    hass.config.location_name = source.get("home_name") or hass.config.location_name
-    # HA's chat log names the signed-in person; the sandbox has no accounts, only the recorded person.
-    hass.auth = SimpleNamespace(async_get_user=_user(user_name))
-    # Scripts and automations create their own entities once loaded; everything else is seeded here.
-    own = {domain for domain, loaded in (("script", scripts), ("automation", automations)) if loaded}
-    hass.data[SANDBOX_KEY].moving = set(moving)
+    # The sandbox has no accounts, only the person speaking, with their rights (replay._person).
+    resolve("auth_user")
+    with relied_on("auth_user"):
+        hass.auth = SimpleNamespace(async_get_user=_user(person))
+    sandbox.moving, sandbox.machinery, sandbox.cut = set(moving), set(machinery), set(cut)
+    sandbox.recorded = recorded or {}
+    sandbox.failures = {(e, _moment(f["at"])): f["error"] for f in sandbox.recorded.get("failed") or []
+                        for e in f["entity_ids"]}
     if filing:
         from .llm import REPLAYED_FILING
         hass.data[REPLAYED_FILING] = True
-        hass.config.components.add(DOMAIN)  # Home Assistant's Assist asks the platforms of loaded integrations.
-    for integration in integrations:  # Their Assist tools (lights, media, timers, ...), without their devices.
-        if integration in own or integration in NEVER:
-            continue  # Set up below with the household's own (set up empty first, it would never load them), or never.
-        if not await async_setup_component(hass, integration, {}):
-            raise RuntimeError(f"The sandbox could not set up {integration}")
-    # The devices seeded as states below: their integrations' commands reach the emulated drivers. Scripts and
-    # automations are entities of their own here, and to-do lists aren't devices.
-    hass.data[SANDBOX_KEY].emulate_devices({e.split(".", 1)[0] for e in source.get("states") or {}} - own - {"todo"})
-    if "script" not in own and any(e.startswith("script.") for e in source.get("states") or {}):
-        # Scripts the sandbox wasn't given (their configuration unread) never run: a command to one is one the
-        # emulated home has no model for, so it's flagged like any other.
-        for service in ("turn_on", "turn_off", "toggle"):
-            hass.services.async_register("script", service, hass.data[SANDBOX_KEY]._device_command)
-    areas = {area_id: ar.async_get(hass).async_create(area["name"], aliases=set(area.get("aliases") or [])).id
-             for area_id, area in (source.get("areas") or {}).items()}
-    devices = hass.data[SANDBOX_KEY].device_ids = _seed_devices(hass, source.get("devices") or {}, areas)
-    if timer_device:  # The request's device runs timers, in the registry or not.
-        async_register_timer_handler(hass, devices.get(timer_device, timer_device), lambda *args: None)
-    _hold_delayed_commands(hass)
-    registry = er.async_get(hass)
-    for entity_id, entry in (source.get("entities") or {}).items():
-        if entry.get("disabled_by") or entity_id not in source["states"] or entity_id.split(".", 1)[0] in own:
-            continue
-        domain, object_id = entity_id.split(".", 1)
-        registry.async_get_or_create(domain, entry.get("platform") or "recorded", entity_id,
-                                     suggested_object_id=object_id, supported_features=(
-                                         source["states"][entity_id].get("attributes") or {}).get(
-                                         "supported_features") or 0)  # As the device reports them.
-    for entity_id, state in source["states"].items():
-        if entity_id.split(".", 1)[0] not in own:
+        if not await async_setup_component(hass, DOMAIN, {}):  # Assist asks the platforms of set-up integrations.
+            raise RuntimeError("The sandbox could not set up the improver")
+    domains, real = _real(setup)
+    for entry_id, entry in (setup.get("entries") or {}).items():  # A core integration's own entry (the sun's).
+        if entry["domain"] in CORE and not entry.get("disabled_by"):
+            await hass.config_entries.async_add(_entry(entry_id, entry))
+    platforms = {p.value for p in Platform}
+    wanted = [d for d in ("conversation", "assist_pipeline", "sun", *(setup.get("helpers") or {}), *integrations)
+              if d not in hass.config.components]
+    for domain in wanted:
+        conf = ((setup.get("helpers") or {}).get(domain) or {}).get("yaml") or {}
+        if not await async_setup_component(hass, domain, conf):
+            raise RuntimeError(f"The sandbox could not set up {domain}")
+    unregistered = [e for e, s in (source.get("states") or {}).items() if e.split(".", 1)[0] in platforms
+                    and e not in (source.get("entities") or {}) and hass.states.get(e) is None
+                    and e.split(".", 1)[0] not in ("script", "automation", "scene")]
+    if unregistered:
+        found = sandbox.groups.setdefault("", {"title": "Home Assistant", "registered": [],
+                                               "entities": {}})["entities"]
+        for entity_id in unregistered:
+            found.setdefault(entity_id.split(".", 1)[0], []).append(entity_id)
+    for group, found in sandbox.groups.items():
+        made = await hass.config_entries.flow.async_init(standin.STANDIN, context={"source": SOURCE_IMPORT},
+                                                         data={"group": group, "title": found["title"]})
+        if made["result"].state is not ConfigEntryState.LOADED:
+            raise RuntimeError(f"The sandbox could not stand in for {found['title']}")
+    own = {domain for domain, loaded in (("script", scripts), ("automation", automations),
+                                         ("scene", source.get("scenes"))) if loaded}
+    assistant = {e for e, x in (source.get("entities") or {}).items()  # Its provider sets them up (load_assistant).
+                 if setup.get("assistant") and x.get("config_entry_id") == setup["assistant"]}
+    for entity_id, state in (source.get("states") or {}).items():  # What no integration here holds, as it was.
+        if hass.states.get(entity_id) is None and entity_id.split(".", 1)[0] not in own and entity_id not in assistant:
             hass.states.async_set(entity_id, state["state"], state.get("attributes") or {})
-    _stand_in_speakers(hass)
+            sandbox.unheld.add(entity_id)
+    if timer_device:  # The request's device runs timers, in the registry or not.
+        async_register_timer_handler(hass, timer_device, lambda *args: None)
+    _hold_delayed_commands(hass)
     _emulate_speaking(hass)
+    _outside(hass, setup.get("services") or {})
+    await _closed(hass, domains, setup)
     # Running, without firing HA's start events: automations are live, but none triggers on a start. They load
-    # after the states are seeded, so seeding triggers none either.
+    # after the states are seeded, so seeding triggers none either; each restores whether it's on as the home had it.
     hass.set_state(CoreState.running)
-    if scripts and not await async_setup_component(hass, "script", {"script": scripts}):
-        raise RuntimeError("The sandbox could not load the scripts")
-    hass.data[SANDBOX_KEY].stand_in_missing(scripts)
-    if automations and not await async_setup_component(hass, "automation", {"automation": automations}):
-        raise RuntimeError("The sandbox could not load the automations")
-    for wanted in ("on", "off") if automations else ():  # Each on or off as the home has it, not as configured.
-        if ids := [e for e, state in (source.get("states") or {}).items() if e.startswith("automation.")
-                   and state["state"] == wanted and getattr(hass.states.get(e), "state", wanted) != wanted]:
-            await hass.services.async_call("automation", f"turn_{wanted}", {"entity_id": ids}, blocking=True)
+    for domain, conf in (("script", scripts), ("automation", automations), ("scene", source.get("scenes"))):
+        if conf and not await async_setup_component(hass, domain, {domain: conf}):
+            raise RuntimeError(f"The sandbox could not load the {domain}s")
     await hass.async_block_till_done()
-    for entity_id, entry in (source.get("entities") or {}).items():
-        if registry.async_get(entity_id) is not None:
-            registry.async_update_entity(
-                entity_id, name=entry.get("name"), original_name=entry.get("original_name"), aliases=_aliases(entry),
-                area_id=areas.get(entry.get("area_id")), device_id=devices.get(entry.get("device_id")),
-                hidden_by=er.RegistryEntryHider(entry["hidden_by"]) if entry.get("hidden_by") else None)
-            if entry.get("sensor_options"):  # The display precision HA's live context rounds a sensor's state to.
-                registry.async_update_entity_options(entity_id, "sensor", entry["sensor_options"])
+    registry = er.async_get(hass)
     for entity_id in {*(alias_changes or {}), *(alias_removals or {})}:
         if (entry := registry.async_get(entity_id)) is None:
             raise RuntimeError(f"{entity_id} isn't in the sandbox")
@@ -405,24 +526,31 @@ async def seed(hass, source, *, user_name=None, integrations=(), timer_device=No
     for entity_id, exposed in exposure.items():
         if exposed is not None and hass.states.get(entity_id) is not None:
             expose(hass, "conversation", entity_id, bool(exposed))
-    sandbox = hass.data[SANDBOX_KEY]
     hass.bus.async_listen("state_changed", sandbox.state_changed)
     await hass.async_block_till_done()
     sandbox.moment = home_now(hass)
 
 
-def _actions(config):
-    """The actions (domain.service) a script or automation configuration names, its nested sequences' too; one named
-    by a template can't be known."""
-    if isinstance(config, dict):
-        for key, value in config.items():
-            if key in ("action", "service") and isinstance(value, str) and "{" not in value:
-                yield value
-            else:
-                yield from _actions(value)
-    elif isinstance(config, list):
-        for value in config:
-            yield from _actions(value)
+def _entry(entry_id, entry):
+    """A config entry of today's as Home Assistant builds one from its storage, its own id and title (its data and
+    options are never read)."""
+    from types import MappingProxyType
+    with relied_on("config_entry"):
+        return resolve("config_entry")(
+            domain=entry["domain"], entry_id=entry_id, title=entry["title"], data={}, options={}, source="user",
+            version=1, minor_version=1, unique_id=None, subentries_data=None, discovery_keys=MappingProxyType({}))
+
+
+async def _closed(hass, domains, setup):
+    """No integration that reaches devices or services is set up in a sandbox: each loaded one is set up for real
+    here, an entity domain, the stand-in or its web server, or one with no devices or services to reach (no iot_class,
+    or calculated), and never one of NEVER (DETAILS P11.8)."""
+    from homeassistant.loader import async_get_integration
+    allowed = {*domains, *(p.value for p in Platform), standin.STANDIN, "http", "intent", "llm"}
+    for domain in sorted(c for c in hass.config.components if "." not in c):
+        if domain in NEVER or (domain not in allowed and (await async_get_integration(hass, domain)).iot_class
+                               not in (None, "calculated")):
+            raise RuntimeError(f"The sandbox set up {domain}, which reaches devices or services")
 
 
 async def load_assistant(hass, entry, agent):
@@ -437,13 +565,9 @@ async def load_assistant(hass, entry, agent):
     from homeassistant.config_entries import ConfigEntryDisabler
     from homeassistant.helpers import entity_registry as er
     from homeassistant.util.enum import try_parse_enum
-    began = time.monotonic()
+    began = clock.REAL_MONOTONIC()
     ConfigEntry = resolve("config_entry")  # Built as HA builds one from its storage: no public API does.
     registry, entity_id = er.async_get(hass), agent["entity_id"]
-    # The seeded home holds the agent too, as a state of its own: it gives way to the agent itself.
-    if registry.async_get(entity_id) is not None:
-        registry.async_remove(entity_id)
-    hass.states.async_remove(entity_id)
     created, modified = datetime.fromisoformat(entry["created_at"]), datetime.fromisoformat(entry["modified_at"])
     with relied_on("config_entry"):
         loaded = ConfigEntry(  # As Home Assistant builds an entry from its storage.
@@ -457,14 +581,19 @@ async def load_assistant(hass, entry, agent):
             version=entry["version"])
     with relied_on("config_entries"):
         hass.config_entries._entries[loaded.entry_id] = loaded  # As HA's own test helpers add one.
-    _stand_in_apis(hass, entry["subentries"])
+    _stand_in_apis(hass, entry["subentries"], hass.data[SANDBOX_KEY].recorded)
     made = registry.async_get_or_create("conversation", agent["platform"], agent["unique_id"],
                                         suggested_object_id=entity_id.split(".", 1)[1], config_entry=loaded,
                                         config_subentry_id=agent["config_subentry_id"])
     if made.entity_id != entity_id:
         raise RuntimeError(f"The sandbox gave the assistant {made.entity_id}, not {entity_id}")
+    before = _actions(hass)
     set_up = await hass.config_entries.async_setup(loaded.entry_id)
     await hass.async_block_till_done()
+    # What the provider brought with it reaches beyond the home but for the turn's own call: its own actions, and
+    # those of what it set up (AI Tasks', text-to-speech's), stood in as every such call is (_outside).
+    _stand_in(hass, {k: hass.services.supports_response(*k) for k, found in _actions(hass).items()
+                     if before.get(k) is not found})
     if not set_up or conversation.async_get_agent(hass, entity_id) is None:
         from homeassistant.config_entries import ConfigEntryState
         from homeassistant.loader import IntegrationNotFound, async_get_integration
@@ -481,19 +610,53 @@ async def load_assistant(hass, entry, agent):
             raise CaseError(why + " | so it can't be replayed")
         raise RuntimeError(why)
     STATS["assistants"] += 1
-    _timed("assistant", time.monotonic() - began)
+    _timed("assistant", clock.REAL_MONOTONIC() - began)
     return entity_id
 
 
-def _stand_in_apis(hass, subentries):
+def _stand_in_apis(hass, subentries, recorded):
     """The LLM APIs an assistant uses beside Assist that the sandbox doesn't have (another integration's, a remote
-    server's): each stands in with no tools, so the assistant runs with Assist's; a call to one of the others gets
-    Home Assistant's own not-found."""
+    server's): they stand in with the tools the recording shows beyond Assist's (recorded's tools, as specified there),
+    each answering with the recorded result of the same call, else an empty one marked not simulated: an outside
+    receipt (DETAILS P11.7)."""
+    import probatio
     from homeassistant.helpers import llm
+
+    class Specified:
+        """A tool's parameters as recorded: any arguments pass, and they read as the recorded JSON schema."""
+
+        def __init__(self, schema):
+            self.schema = schema
+
+        def __call__(self, value):
+            return value
+
+    class Recorded(llm.Tool):
+        def __init__(self, spec):
+            self.name, self.description = spec["name"], spec.get("description")
+            self.integration = spec.get("integration") or DOMAIN
+            self.parameters = probatio.Schema(Specified(spec.get("parameters") or {}))
+
+        async def async_call(self, hass, tool_input, llm_context):
+            from .serialization import plain
+            sandbox, args = hass.data[SANDBOX_KEY], plain(tool_input.tool_args)
+            answer = next((r["result"] for r in sandbox.recorded.get("results") or []
+                           if r["tool_name"] == self.name and r["tool_args"] == args), None)
+            sandbox.outside.append({"action": f"tool {self.name}", "data": args,
+                                    "answer": "recorded" if answer is not None else "not simulated"})
+            if answer is None:
+                sandbox.unsimulated.append(f"tool {self.name}")
+            found = answer or {}
+            return llm.ToolResult(data=found.get("data", found), error=bool(found.get("error")))
+
+    def serializer(value):
+        return value.schema if isinstance(value, Specified) else probatio.UNSUPPORTED
+    tools = [Recorded(spec) for spec in recorded.get("tools") or []]
 
     class StandIn(llm.API):
         async def async_get_api_instance(self, llm_context):
-            return llm.APIInstance(api=self, api_prompt="", llm_context=llm_context, tools=[])
+            return llm.APIInstance(api=self, api_prompt="", llm_context=llm_context, tools=tools,
+                                   custom_serializer=serializer)
     have = {api.id for api in llm.async_get_apis(hass)}
     for subentry in subentries:
         named = subentry["data"].get("llm_hass_api") or []
@@ -501,11 +664,12 @@ def _stand_in_apis(hass, subentries):
             if api_id not in have:
                 llm.async_register_api(hass, StandIn(hass=hass, id=api_id, name=api_id))
                 have.add(api_id)
+                tools = []  # Each recorded tool once.
 
 
 def _hold_delayed_commands(hass):
-    """A timer's command for when it ends has no emulation (HA would hand it to the conversation agent that set it):
-    the timer runs without it."""
+    """A timer's command for when it ends isn't simulated (HA would hand it to the conversation agent that set it): the
+    timer runs without it, and the command is logged as an outside receipt."""
     timers = resolve("timers")  # No public API holds a timer's command back.
     resolve("timer_start")
     resolve("timer_device")
@@ -514,56 +678,79 @@ def _hold_delayed_commands(hass):
     start = manager.start_timer
 
     def start_timer(device_id, *args, conversation_command=None, conversation_agent_id=None, **kwargs):
-        if conversation_command and (device_id is None or not manager.is_timer_device(device_id)):
-            return None
+        if conversation_command:
+            hass.data[SANDBOX_KEY].outside.append({"action": "timer command", "answer": "not simulated",
+                                                   "data": {"command": conversation_command}})
+            if device_id is None or not manager.is_timer_device(device_id):
+                return None
         return start(device_id, *args, **kwargs)
-    manager.start_timer = start_timer
+    with relied_on("timer_start"):
+        manager.start_timer = start_timer
 
 
-def _stand_in_speakers(hass):
-    """Home Assistant's relative volume intent turns a media player's volume through the device itself, not a command:
-    each one seeded here has a stand-in its component hands out, whose volume goes to the emulated driver as the
-    command it stands for."""
-    players = resolve("media_players")  # No public API hands out an entity of one's own.
-    resolve("media_player_entities")
-
-    class Speaker:
-        available = False  # Never an entity action's: those reach the emulated driver, or none (a media search).
-
-        def __init__(self, entity_id):
-            self.entity_id = entity_id
-
-        @property
-        def volume_level(self):
-            return hass.states.get(self.entity_id).attributes.get("volume_level")
-
-        async def _command(self, service, **data):
-            await hass.services.async_call("media_player", service, {"entity_id": self.entity_id, **data},
-                                           blocking=True)
-
-        async def async_volume_up(self):
-            await self._command("volume_up")
-
-        async def async_volume_down(self):
-            await self._command("volume_down")
-
-        async def async_set_volume_level(self, volume):
-            await self._command("volume_set", volume_level=volume)
-    if (component := hass.data.get(players)) is not None:
-        for entity_id in hass.states.async_entity_ids("media_player"):
-            with relied_on("media_player_entities"):
-                component._entities.setdefault(entity_id, Speaker(entity_id))  # noqa: SLF001 - as a platform adds one.
-
-
-# An announcement on devices (DETAILS P9.10.5) leaves no state to emulate: each speaking service (analyzer.speaking)
+# An announcement on devices (DETAILS P9.10.5) leaves no state to simulate: each speaking service (analyzer.speaking)
 # is taken as done, and what it said or played where is logged, whatever called it (a broadcast, a script), for a
-# replay to judge an action by.
+# replay to judge an action by. A media player logs what it plays itself (standin.MediaPlayerStandIn).
 def _emulate_speaking(hass):
-    """Registered after the integrations' own and the emulated drivers, before the household's scripts load (a legacy
-    engine's say, configured in YAML, never loads here: stand_in_missing takes it)."""
+    """Registered after the integrations' own, before the household's scripts load (a legacy engine's say, configured
+    in YAML, never loads here: outside takes it)."""
     from .analyzer import SPEAKING
     for name in SPEAKING:
-        hass.services.async_register(*name.split("."), functools.partial(_speak, hass))
+        if not name.startswith("media_player."):
+            hass.services.async_register(*name.split("."), functools.partial(_speak, hass))
+
+
+def _outside(hass, services):
+    """Calls beyond the home: every action today's Home Assistant has that the sandbox doesn't (an integration's own,
+    a notification; a legacy engine's say speaks), and the model calls a sandbox never makes but the turn's own
+    (conversation.process on any agent but Home Assistant's built-in one, every AI Task action), each stood in by one
+    that logs it (_stand_in). services: today's, {domain: {service: whether it answers}}. What the assistant's provider
+    brings with it is stood in once it's loaded (load_assistant)."""
+    have = hass.services.async_services()
+    _stand_in(hass, {
+        **{(domain, service): SupportsResponse(answers) for domain, found in services.items()
+           for service, answers in found.items() if domain == MODELS or service not in have.get(domain, {})},
+        **{(MODELS, service): found.supports_response for service, found in have.get(MODELS, {}).items()}})
+    hass.services.async_register("conversation", "process", functools.partial(_process, hass),
+                                 supports_response=SupportsResponse.OPTIONAL)
+
+
+def _stand_in(hass, actions):
+    """Each action ({(domain, service): whether it answers}) stood in by one that logs it: what it spoke (_speak), or
+    a call beyond the home (_answer)."""
+    from .analyzer import speaking
+    for (domain, service), answers in actions.items():
+        spoken = speaking(f"{domain}.{service}")
+        hass.services.async_register(domain, service, functools.partial(_speak if spoken else _answer, hass),
+                                     supports_response=SupportsResponse.NONE if spoken else answers)
+
+
+def _actions(hass):
+    """Each action the sandbox has, by (domain, service): its handler."""
+    return {(domain, service): found for domain, services in hass.services.async_services().items()
+            for service, found in services.items()}
+
+
+async def _answer(hass, call):
+    """A call beyond the home, logged as an outside receipt: answered empty, as not simulated (no action's answer is
+    recorded)."""
+    from .serialization import plain
+    sandbox, name = hass.data[SANDBOX_KEY], f"{call.domain}.{call.service}"
+    sandbox.outside.append({"action": name, "data": plain(dict(call.data)), "answer": "not simulated"})
+    sandbox.unsimulated.append(name)
+    return {} if call.return_response else None
+
+
+async def _process(hass, call):
+    """conversation.process: Home Assistant's built-in agent answers here as at home; any other is a model call
+    beyond the turn's own (answer)."""
+    from homeassistant.components import conversation
+    if call.data.get("agent_id") not in (None, conversation.HOME_ASSISTANT_AGENT):
+        return await _answer(hass, call)
+    result = await conversation.async_converse(
+        hass, call.data["text"], call.data.get("conversation_id"), call.context, call.data.get("language"),
+        agent_id=call.data.get("agent_id"))
+    return result.as_dict() if call.return_response else None
 
 
 async def _speak(hass, call):
@@ -571,8 +758,7 @@ async def _speak(hass, call):
     (a chime); tts.speak speaks with its engine on its media players, a legacy engine's say on the media players it
     targets, the others on the entities they target. As Home Assistant's entity services skip an entity that's missing
     or unavailable, nothing is spoken there, and a satellite named that can't announce (or start a conversation)
-    refuses the call. A media player's play_media that's neither a spoken message nor an announcement has no
-    emulation."""
+    refuses the call."""
     from homeassistant.helpers import config_validation as cv
     from homeassistant.helpers.service import async_extract_entity_ids
     sandbox, data, service = hass.data[SANDBOX_KEY], dict(call.data), f"{call.domain}.{call.service}"
@@ -590,12 +776,6 @@ async def _speak(hass, call):
         named = data.get("entity_id") or []
         players = hass.states.async_entity_ids("media_player") if named == "all" else cv.entity_ids(named)
         targets, message = sorted(e for e in players if e.startswith("media_player.") and here(e)), data.get("message")
-    elif call.domain == "media_player":
-        targets = targeted
-        media = data.get("media_content_id") or (data.get("media") or {}).get("media_content_id")
-        message = _tts_message(media)
-        if message is None and not cv.boolean(data.get("announce") or False):
-            return await sandbox._device_command(call)  # noqa: SLF001 - the driver's, as for any other command.
     else:  # A satellite's announcement, or a conversation it starts: its words, or its audio.
         start, feature = ("start_", 2) if call.service == "start_conversation" else ("", 1)  # Its feature's bit.
         able = lambda e: int(hass.states.get(e).attributes.get("supported_features") or 0) & feature  # noqa: E731
@@ -607,7 +787,7 @@ async def _speak(hass, call):
         message = data.get(f"{start}message") or _tts_message(media)
     sandbox.spoken.append({"service": service, "message": str(message or ""), "targets": targets,
                            **({"media": str(media)} if media and _tts_message(media) is None else {})})
-    data = {k: v for k, v in data.items() if k not in ("entity_id", "device_id", "area_id", "floor_id", "label_id")}
+    data = {k: v for k, v in data.items() if k not in standin.TARGETS}
     sandbox.commands += [{"entity_id": e, "service": service, "data": data} for e in targets]  # A command to each.
 
 
@@ -619,69 +799,60 @@ def _tts_message(media):
     return URL(media).query.get("message")
 
 
-def _aliases(entry):
-    """The names as resolved when the snapshot was read."""
-    return list(entry.get("aliases") or [])
+# What a sandbox sets up of a home (a snapshot) besides the devices' states (seeded): its registries, and the rest.
+REGISTRIES = ("entities", "devices", "areas", "floors", "labels")
+SETUP = ("time_zone", "exposure", "scripts", "automations", "scenes", "household", "household_on")
+STAMPS = ("created_at", "modified_at")  # When a registry entry was made and last changed, which nothing reads here.
 
 
-def _seed_devices(hass, recorded, areas):
-    """The recorded devices, under one recorded config entry (devices need one). {recorded id: sandbox id}"""
-    from types import MappingProxyType
-    from homeassistant.config_entries import ConfigEntryState
-    from homeassistant.helpers import device_registry as dr
-    with relied_on("config_entry"):
-        entry = resolve("config_entry")(
-            domain="assist_improver_recorded", title="Recorded home", data={}, source="user", version=1,
-            minor_version=1, options={}, unique_id=None, subentries_data=None, discovery_keys=MappingProxyType({}),
-            state=ConfigEntryState.LOADED)
-    with relied_on("config_entries"):
-        hass.config_entries._entries[entry.entry_id] = entry  # As HA's own test helpers add an entry; never set up.
-    registry, out = dr.async_get(hass), {}
-    for device_id, device in recorded.items():
-        created = registry.async_get_or_create(config_entry_id=entry.entry_id, identifiers={("recorded", device_id)},
-                                               name=device.get("name"), manufacturer=device.get("manufacturer"),
-                                               model=device.get("model"))
-        registry.async_update_device(created.id, name_by_user=device.get("name_by_user"),
-                                     area_id=areas.get(device.get("area_id")))
-        out[device_id] = created.id
-    return out
+def seeded(home):
+    """What a sandbox sets up of a home besides the devices' states, which is what a replay depends on of a setup
+    (simulate.setup_digest): its registries whole but their time stamps, what Assist can see, its scripts,
+    automations and scenes, the household knowledge, and the config it takes (CONFIG)."""
+    return {**{k: {i: {f: v for f, v in x.items() if f not in STAMPS} for i, x in (home.get(k) or {}).items()}
+               for k in REGISTRIES},
+            **{k: home.get(k) for k in SETUP},
+            "config": {k: (home.get("config") or {}).get(k) for k in (*CONFIG, "unit_system")}}
 
 
-def _user(name):
-    async def get_user(user_id):  # The copy has nothing of the person's to keep from them.
-        return SimpleNamespace(id=user_id, name=name, is_admin=True) if name else None
+def _user(person):
+    """Home Assistant's lookup of the person speaking, as their user record has them today (replay._person): HA names
+    them, and checks what they may use and control."""
+    from homeassistant.auth.permissions.const import POLICY_CONTROL
+
+    async def get_user(user_id):
+        if person is None:
+            return None
+        refused = set(person["refused"])
+        return SimpleNamespace(
+            id=user_id, name=person["name"], is_admin=person["is_admin"],
+            groups=[SimpleNamespace(id=group) for group in person["group_ids"]],
+            permissions=SimpleNamespace(check_entity=lambda entity_id, key: key != POLICY_CONTROL or
+                                        entity_id not in refused))
     return get_user
 
 
-def sandbox_context(hass, llm_context):
-    """The recorded request's context, with its device as the sandbox knows it."""
-    from dataclasses import replace
-    device_id = hass.data[SANDBOX_KEY].device_ids.get(llm_context.device_id, llm_context.device_id)
-    return replace(llm_context, device_id=device_id)
-
-
 async def system_prompt(hass, llm_context, api_id, prompt):
-    """Assist's system prompt and tools, as HA builds them for this request in the sandbox, at the recorded turn's
-    time."""
+    """Assist's system prompt and tools, as HA builds them for this request in the sandbox."""
     from homeassistant.components.conversation import ChatLog
     chat_log = ChatLog(hass, "assist-improver-sandbox-prompt")
-    with _as_recorded(hass):
-        await chat_log.async_provide_llm_data(sandbox_context(hass, llm_context), user_llm_hass_api=api_id,
-                                              user_llm_prompt=prompt)
+    await chat_log.async_provide_llm_data(llm_context, user_llm_hass_api=api_id, user_llm_prompt=prompt)
     return chat_log.content[0].content, chat_log.llm_api
 
 
-MARKED = ("transitions", "commands", "spoken", "unsimulated")  # A turn's own lists (run_turn).
+MARKED = ("transitions", "commands", "spoken", "outside", "unsimulated")  # A turn's own lists (run_turn).
 
 
-async def run_turn(hass, text, conversation_id, context, language, agent_id, device_id=None, watch=()):
+async def run_turn(hass, text, conversation_id, context, language, agent_id, device_id=None, watch=(), until=None):
     """One Assist turn as Home Assistant runs it at home, on the household's assistant loaded here (load_assistant),
     at the recorded turn's time: HA opens the chat session and log as its pipeline does, the assistant renders its
-    prompt, builds its tools, asks its model and runs each tool call here, at once, as it comes. Its answer: what the
-    turn added to the chat log after the person's words (each as HA gives it), what the assistant was given (its
-    system prompt, its tools' names), the provider's usage as the assistant traces it, the watched entities'
-    attributes before and after, and the home once everything the turn set off has run (snapshot): its changes,
-    commands and speech, and its commands with no emulation (unemulated), the turn's own."""
+    prompt, builds its tools, asks its model and runs each tool call here, at once, as it comes, waits inside them
+    passing at once (_tool_windows), never past until (the next recorded turn's time, ISO; None: none). Its answer:
+    what the turn added to the chat log after the person's words (each as HA gives it), what the assistant was given
+    (its system prompt, its tools' names), the provider's usage as the assistant traces it, the watched entities'
+    attributes before and after, and the home once everything the turn set off has run or until came (snapshot): its
+    changes, commands, speech and calls beyond the home (outside), and what of it wasn't simulated (unemulated), the
+    turn's own."""
     from homeassistant.components import conversation
     from homeassistant.core import Context
     from homeassistant.helpers import chat_session
@@ -689,9 +860,10 @@ async def run_turn(hass, text, conversation_id, context, language, agent_id, dev
     sandbox, usage = hass.data[SANDBOX_KEY], []
     before = {e: dict(state.attributes) for e in watch if (state := hass.states.get(e)) is not None}
     marks = {k: len(getattr(sandbox, k)) for k in MARKED}
-    with _as_recorded(hass), chat_session.async_get_chat_session(  # Its owner: whoever says the turn (async_converse).
+    with chat_session.async_get_chat_session(  # Its owner: whoever says the turn (async_converse).
             hass, sandbox.conversations.get(conversation_id, conversation_id), context=None) as session, \
-            conversation.async_get_chat_log(hass, session) as chat_log:
+            conversation.async_get_chat_log(hass, session) as chat_log, \
+            _tool_windows(hass, session.conversation_id, _epoch(until)):
         sandbox.conversations[conversation_id] = session.conversation_id
         start = len(chat_log.content)
         resolve("chat_log_trace")  # What a provider reports of a turn reaches only the chat log's trace.
@@ -701,17 +873,18 @@ async def run_turn(hass, text, conversation_id, context, language, agent_id, dev
             if isinstance(agent_details.get("stats"), dict):
                 usage.append(plain(agent_details["stats"]))
             traced(agent_details)
-        chat_log.async_trace = trace
+        with relied_on("chat_log_trace"):
+            chat_log.async_trace = trace
         result = await conversation.async_converse(
             hass, text, session.conversation_id, Context(**context), language=language, agent_id=agent_id,
-            device_id=sandbox.device_ids.get(device_id, device_id) if device_id else None)
+            device_id=device_id)
         added = chat_log.content[start:]
         if added and added[0].role == "user":
             added = added[1:]
         api = chat_log.llm_api
         given = {"prompt": chat_log.content[0].content if chat_log.content else None,
                  "tools": [t.name for t in api.tools] if api else []}
-    found = await snapshot(hass, watch)
+    found = await snapshot(hass, watch, until)
     return {"content": plain([c.as_dict() for c in added]), "reply": plain(result.response.as_dict()),
             "given": given, "usage": usage, "before": plain(before), "attributes": plain(found["attributes"]),
             **{k: plain(found[k][marks[k]:]) for k in marks if k != "unsimulated"},
@@ -719,10 +892,12 @@ async def run_turn(hass, text, conversation_id, context, language, agent_id, dev
 
 
 def home_now(hass):
-    """The home's states now, each {state, attributes} in plain form: Assist's own entities aren't the home."""
+    """The home's states now, each {state, attributes} in plain form: the voice assistant's own entities and the
+    improver's own AI Tasks aren't the home (digest.kept)."""
     from .serialization import plain
+    gears = hass.data[SANDBOX_KEY].machinery | hass.data[SANDBOX_KEY].cut
     return {s.entity_id: {"state": s.state, "attributes": plain(dict(s.attributes))} for s in hass.states.async_all()
-            if s.domain not in NOT_THE_HOME}
+            if s.entity_id not in gears}
 
 
 def moved(moment, now):
@@ -748,7 +923,7 @@ async def carry(hass, conversation_id, llm_context, steps):
     tools at the branch turn, as at a conversation's first."""
     from homeassistant.components import conversation
     from homeassistant.helpers import chat_session, llm
-    sandbox, context = hass.data[SANDBOX_KEY], sandbox_context(hass, llm_context)
+    sandbox, context = hass.data[SANDBOX_KEY], llm_context
     with chat_session.async_get_chat_session(hass, conversation_id, context=None) as session, \
             conversation.async_get_chat_log(hass, session) as chat_log:
         sandbox.conversations[conversation_id] = session.conversation_id
@@ -794,39 +969,71 @@ def _done(result):
 
 
 async def call_tool(hass, api, tool_input):
-    """One of Assist's tools, called in the sandbox at the recorded turn's time: HA's date and time tool answers with
-    it, and what the call sets off (a script, the automations its changes trigger) reads it."""
-    with _as_recorded(hass):
-        return await api.async_call_tool(tool_input)
+    """One of Assist's tools, called in the sandbox."""
+    return await api.async_call_tool(tool_input)
 
 
 async def observe(hass, source, moves=()):
-    """Move on to the next recorded turn: its time, and what others in the home moved since, on top of what the replay
-    did itself. moves: each skipped turn's then this one's, in order (simulation.moved_by_others). What the moves set
-    off is waited for, as others' doing too."""
+    """Move on to the next recorded turn: its time (advance), and what others in the home moved since, on top of what
+    the replay did itself. moves: each skipped turn's then this one's, in order (simulation.moved_by_others). What the
+    moves set off is waited for, as others' doing too. A device's stand-in takes its move itself
+    (standin.StandIn.hold), what another integration here holds takes it through Home Assistant (_reproduce), and a
+    state nothing holds is set as it moved."""
+    from homeassistant.core import State
+    await advance(hass, source.get("at"))
     _run_at(hass, source)
     sandbox = hass.data[SANDBOX_KEY]
     sandbox.observing = True
     try:
         for moved in moves:
+            held = []
             for entity_id, move in moved.items():
                 if (current := hass.states.get(entity_id)) is None:
                     continue
+                state = move.get("state", current.state)
                 attributes = {k: v for k, v in current.attributes.items() if k not in move["removed"]}
-                hass.states.async_set(entity_id, move.get("state", current.state), attributes | move["attributes"])
+                if (device := sandbox.standins.get(entity_id)) is not None:
+                    device.hold(state, move["attributes"], move["removed"])
+                elif entity_id in sandbox.unheld:
+                    hass.states.async_set(entity_id, state, attributes | move["attributes"])
+                else:
+                    held.append(State(entity_id, state, attributes | move["attributes"]))
+            await _reproduce(hass, held)
         await hass.async_block_till_done()
     finally:
         sandbox.observing = False
 
 
-async def snapshot(hass, attributes=()):
-    """The sandbox's home once what's running has finished (a script's delay too): states, the replay's state changes,
-    its device commands and what it spoke; the attributes of the entities named (a light's brightness a goal asks
+async def _reproduce(hass, states):
+    """Others' moves on what an integration here holds (a helper's value, an automation on or off), made as a scene
+    sets a state: by Home Assistant's reproduce state, which each integration maps to its own actions, and HA checks.
+    One it can't set so (the sun, a script running) follows its own; one today's setup refuses (a helper's range
+    changed since) is logged."""
+    from homeassistant.helpers.state import async_reproduce_state
+    from homeassistant.loader import async_get_integration
+    for state in states:
+        if not (await async_get_integration(hass, state.domain)).platforms_exists(("reproduce_state",)):
+            continue
+        try:
+            await async_reproduce_state(hass, state)
+        except (HomeAssistantError, ValueError) as err:
+            _LOGGER.warning("Others' move on %s couldn't be made here: %s", state.entity_id, err)
+
+
+async def snapshot(hass, attributes=(), until=None):
+    """The sandbox's home once what's running has finished, its waits (a script's delay) passing at once, or once
+    nothing more can happen before until (a recorded time, ISO; None: none), which the clock never passes, the
+    replay's conversations held meanwhile (_held): states, the replay's state changes, its device commands, what it
+    spoke and its calls beyond the home; the attributes of the entities named (a light's brightness a goal asks
     for)."""
     from copy import deepcopy
+    from .serialization import plain
     sandbox = hass.data[SANDBOX_KEY]
-    await hass.async_block_till_done()
+    with _held(hass):
+        await hass.loop.settle(_epoch(until), until=hass.async_block_till_done())
     return {"states": {s.entity_id: s.state for s in hass.states.async_all()},
-            "attributes": {e: dict(state.attributes) for e in attributes if (state := hass.states.get(e)) is not None},
+            "attributes": plain({e: dict(state.attributes) for e in attributes
+                                 if (state := hass.states.get(e)) is not None}),
             "transitions": deepcopy(sandbox.transitions), "commands": deepcopy(sandbox.commands),
-            "unsimulated": list(sandbox.unsimulated), "spoken": deepcopy(sandbox.spoken)}
+            "unsimulated": list(sandbox.unsimulated), "spoken": deepcopy(sandbox.spoken),
+            "outside": deepcopy(sandbox.outside)}

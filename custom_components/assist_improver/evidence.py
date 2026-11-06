@@ -15,6 +15,9 @@ touched.
 - instructions: an assistant's instructions as a prompt change edits them, rendered by HA for that assistant's newest
   conversation as its chat log renders them (ha_name, user_name, llm_context): what Assist would read, or HA's error;
   and for a request without a signed-in person or an asking device, which HA renders them for too.
+- an automation's week: the home as the conversation ended, an automation change on top, run through a simulated week
+  on the sandbox's clock: each automation run, when, and what it changed; for a change to one the home has, without
+  the change too (DETAILS P6.13).
 
 The sandboxes run in replay workers (worker.py): each job below that starts one (JOBS) runs whole in a fresh worker
 of its own.
@@ -31,8 +34,8 @@ from .analyzer import top_level
 from .cases import CaseError, recording_turns, replayable_turns
 from .changes import setup_from_changes
 from .failures import contained
-from .sandbox import SANDBOX_KEY, Sandbox, observe, sandbox_context, seed, seed_options
-from .simulation import moved_by_others
+from .sandbox import SANDBOX_KEY, Sandbox, observe, seed, seed_options, setup_of
+from .simulation import ended, moved_by_others, recorded
 from .snapshot import at_moment, on_today, renamed, renaming
 from .touchpoints import Broken
 from .worker import job
@@ -40,8 +43,10 @@ from .worker import job
 CONCURRENT = 4  # Workers running the jobs below at once, per instance (worker.job).
 SIGNALS_SHOWN = 15  # Resolution signals listed in full; the count covers the rest.
 JOBS = {"replay": "_replay", "run_scripts": "run_scripts", "match_aliases": "match_aliases",
-        "capabilities": "probe_capabilities",
-        "render_instructions": "render_instructions"}  # What a worker runs here, by name: each starts its own sandbox.
+        "capabilities": "probe_capabilities", "render_instructions": "render_instructions",
+        "week": "run_week"}  # What a worker runs here, by name: each starts its own sandbox.
+WEEK_DAYS = 7  # An automation's week (automation_week): simulated days,
+WEEK_SECONDS = 60  # within this many real seconds.
 UNCHECKED = "Home Assistant couldn't check this: "  # A fact the sandbox couldn't give (failures.contained).
 NOT_REPLAYABLE = "can't be replayed"
 RENDERED_SHOWN = 2000  # Characters of rendered instructions shown with a draft.
@@ -76,14 +81,15 @@ def _context(turn):
 
 
 async def _start(recording, turn, today, setup=None):
-    """A sandbox seeded as today's home at this turn's moment (snapshot.at_moment), with a hypothesis's setup
-    (exposure, aliases, scripts) on top."""
+    """A sandbox seeded as today's home at this turn's moment (snapshot.at_moment), the person speaking with their
+    rights today (today's person, worker.job), with a hypothesis's setup (exposure, aliases, scripts) on top."""
     source = at_moment(today["home"], turn["source"])
     setup = setup or {}
     scripts = {**deepcopy(source.get("scripts") or {}), **(setup.get("scripts") or {})}
-    sandbox = await Sandbox.start(source.get("time_zone") or "UTC")
+    sandbox = await Sandbox.start(source.get("time_zone") or "UTC", source, setup_of(today))
     try:
-        await sandbox.run(lambda hass: seed(hass, source, **seed_options(today, turn), scripts=scripts,
+        await sandbox.run(lambda hass: seed(hass, person=today.get("person"), **seed_options(today, turn),
+                                            scripts=scripts, recorded=recorded(recording, today["tools"]),
                                             automations=source.get("automations") or [],
                                             exposure_changes=setup.get("exposure"),
                                             alias_changes=setup.get("aliases"),
@@ -151,7 +157,7 @@ async def _replay(recording, today, setup=None):
                 continue
 
             async def run(hass, calls=calls, context=context, turn=turn):
-                api = await llm.async_get_api(hass, llm.LLM_API_ASSIST, sandbox_context(hass, context))
+                api = await llm.async_get_api(hass, llm.LLM_API_ASSIST, context)
                 return [(turn["number"], c["tool_name"], c["tool_args"], await _call(hass, api, c["tool_name"],
                                                                                   c["tool_args"])) for c in calls]
             out += await sandbox.run(run)
@@ -435,7 +441,7 @@ async def render_instructions(recording, today, templates, user_name=None, quiet
     sandbox = await _start(recording, turns[0], today)
     try:
         async def render(hass):
-            recorded = sandbox_context(hass, context)
+            recorded = context
             quiet = replace(recorded, context=Context(), device_id=None)
 
             def one(template, name, llm_context):
@@ -507,7 +513,7 @@ async def probe_capabilities(recording, entity_ids, today):
     try:
         async def probe(hass):
             from homeassistant.components.homeassistant import async_should_expose
-            api = await llm.async_get_api(hass, llm.LLM_API_ASSIST, sandbox_context(hass, context))
+            api = await llm.async_get_api(hass, llm.LLM_API_ASSIST, context)
             out, commands = {}, hass.data[SANDBOX_KEY].commands
             for entity_id in entity_ids:
                 state = hass.states.get(entity_id)
@@ -535,5 +541,78 @@ async def probe_capabilities(recording, entity_ids, today):
                 out[entity_id] = {"exposed": exposed, "assist_can": can}
             return out
         return await sandbox.run(probe)
+    finally:
+        await sandbox.stop()
+
+
+async def automation_week(recording, today, change, seconds=WEEK_SECONDS):
+    """An automation change's week (DETAILS P6.13): change: {"automations": [an automation's whole config, by its
+    id: new, or in place of the home's], "on": {automation entity: on or off}}. {"with": the week with the change,
+    "without": the week without it, for a change to an automation the home has (None for a new one)}, each run_week's,
+    in a fresh worker of its own, within seconds."""
+    ids = {a.get("id") for a in (today["home"].get("automations") or [])}
+    edits = change.get("on") or any(a.get("id") in ids for a in change.get("automations") or [])
+    week = await job("week", recording=recording, today=today, change=change, seconds=seconds)
+    return {"with": week,
+            "without": await job("week", recording=recording, today=today, seconds=seconds) if edits else None}
+
+
+async def run_week(recording, today, change=None, seconds=WEEK_SECONDS):
+    """In the worker: the home as the conversation ended (simulation.ended), today's setup, the change on top, run
+    through WEEK_DAYS simulated days within seconds (real), waits passing at once (clock.Window): {"days": whole days
+    run, "runs": each automation run, {automation, id, at, changed: [{entity_id, old, new, attributes changed}]}}.
+    Devices don't act on their own: only what Home Assistant's own time (time, sun, timers) and the automations
+    themselves set off happens."""
+    from homeassistant.components.automation import EVENT_AUTOMATION_TRIGGERED
+    from homeassistant.const import EVENT_STATE_CHANGED
+    from homeassistant.core import callback
+    from . import clock
+    from .serialization import plain
+    change = change or {}
+    source = at_moment(today["home"], ended(recording))
+    replaced = {a["id"] for a in change.get("automations") or [] if a.get("id") is not None}
+    automations = [a for a in source.get("automations") or [] if a.get("id") is None or a["id"] not in replaced]
+    automations += change.get("automations") or []
+    turn = recording_turns(recording)[-1]
+    sandbox = await Sandbox.start(source.get("time_zone") or "UTC", source, setup_of(today))
+    try:
+        await sandbox.run(lambda hass: seed(hass, person=today.get("person"), **seed_options(today, turn),
+                                            scripts=deepcopy(source.get("scripts") or {}),
+                                            automations=automations,
+                                            recorded=recorded(recording, today["tools"])))
+
+        async def week(hass):
+            for entity_id, on in (change.get("on") or {}).items():
+                await hass.services.async_call("automation", "turn_on" if on else "turn_off",
+                                               {"entity_id": entity_id}, blocking=True)
+            runs, by_context = [], {}
+
+            @callback
+            def triggered(event):
+                state = hass.states.get(event.data.get("entity_id"))
+                runs.append({"automation": event.data.get("entity_id"),
+                             "id": state.attributes.get("id") if state else None,
+                             "at": event.time_fired.isoformat(), "changed": []})
+                by_context[event.context.id] = runs[-1]
+
+            @callback
+            def changed(event):
+                old, new = event.data.get("old_state"), event.data.get("new_state")
+                if new is None or (run := by_context.get(new.context.id) or by_context.get(
+                        new.context.parent_id)) is None or new.entity_id == run["automation"]:
+                    return
+                attributes = {k: v for k, v in new.attributes.items() if old is None or old.attributes.get(k) != v}
+                run["changed"].append({"entity_id": new.entity_id, "old": old.state if old else None,
+                                       "new": new.state, **({"attributes": plain(attributes)} if attributes else {})})
+            listening = [hass.bus.async_listen(EVENT_AUTOMATION_TRIGGERED, triggered),
+                         hass.bus.async_listen(EVENT_STATE_CHANGED, changed)]
+            start = hass.loop.clock.now()
+            try:
+                await hass.loop.settle(start + WEEK_DAYS * 86400, clock.REAL_MONOTONIC() + seconds)
+            finally:
+                for unlisten in listening:
+                    unlisten()
+            return {"days": min(WEEK_DAYS, int((hass.loop.clock.now() - start) // 86400)), "runs": runs}
+        return await sandbox.run(week)
     finally:
         await sandbox.stop()

@@ -3,7 +3,7 @@ in the run log however it ends."""
 
 from uuid import uuid4
 
-from . import hypotheses, trace, triage
+from . import hypotheses, service_user, trace, triage
 from .cases import CaseError
 from .exploration import session_view
 from .failures import closing
@@ -71,7 +71,8 @@ async def propose(hass, entry, runtime, analyses, *, tester, feedback=None, sent
            "sessions": sorted(sessions.analyses), **trace.ids()}
     async with closing(runtime.role_runs.record, run) as keep:  # Kept before any inference; closed however it ends.
         result, submit, ask, reviewer_run = await hypotheses.run_generator(
-            hass, sessions, entity_id, reviewer_entity_id=role_model(entry, "reviewer"), tester=tester)
+            hass, sessions, entity_id, reviewer_entity_id=role_model(entry, "reviewer"), tester=tester,
+            user_id=service_user.user_id(entry))
         run["reviews"] = ask.reviews
         run["reviewer_run"] = {k: reviewer_run.get(k) for k in ("status", "error", "usage", "output")}
         run.update(result, reply=result["output"], submissions=len(submit.submissions))
