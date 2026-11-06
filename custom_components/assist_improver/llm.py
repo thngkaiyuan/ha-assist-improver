@@ -9,14 +9,12 @@ the Assist API, so every assistant on Assist gets both:
 """
 
 import probatio
-# Not exported by the conversation root; the only way a tool finds the conversation it's called in.
-from homeassistant.components.conversation.chat_log import current_chat_log
 from homeassistant.components.llm import LLMTools
 from homeassistant.core import callback
 from homeassistant.helpers import llm
 from homeassistant.util.hass_dict import HassKey
 
-from . import household
+from . import household, touchpoints
 from .const import DOMAIN
 from .runtime import loaded
 
@@ -36,7 +34,11 @@ class FileImprovement(llm.Tool):
     integration = DOMAIN
 
     async def async_call(self, hass, tool_input, llm_context):
-        runtime, chat_log = loaded(hass), current_chat_log.get()
+        try:  # No public API tells a tool the conversation it's called in.
+            chat_log = touchpoints.get(hass, "current_chat_log").get()
+        except touchpoints.Broken:
+            chat_log = None
+        runtime = loaded(hass)
         user_id = getattr(getattr(llm_context, "context", None), "user_id", None)
         key = await runtime.recorder.file(chat_log.conversation_id, tool_input.tool_args.get("what_to_improve"),
                                           user_id) if runtime is not None and chat_log is not None else None

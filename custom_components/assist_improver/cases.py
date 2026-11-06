@@ -6,10 +6,6 @@ from hashlib import sha256
 import json
 import re
 
-import homeassistant.const as ha_const
-
-from .const import TESTED_PROVIDERS
-
 
 class CaseError(ValueError):
     """Evidence is incomplete, inconsistent, or outside the supported slice."""
@@ -171,49 +167,21 @@ def replayable_turns(recording):
 
 
 def replay_readiness(recording):
-    """What stops a replay of the whole conversation, reported before anything is spent (gaps), and what limits how
-    faithful it is (fidelity_notes); offline receipt playback does not fill them. A replay always starts at the first
-    turn and makes its own history from there."""
+    """What stops a replay of the whole conversation, reported before anything is spent (gaps), and what limits it
+    (notes). A replay always starts at the first turn and makes its own history from there, on today's setup."""
     turns = recording_turns(recording)
-    gaps, notes = [], []
-    running = ha_const.__version__
-    if recording.get("core_version") != running:
-        # The sandbox runs this HA's engine; the replay fidelity check shows whether the request still looks the same.
-        notes.append(f"recorded_on_ha_{recording.get('core_version')}_replayed_on_ha_{running}")
+    gaps, notes = [], ["replay_from_start_carries_its_own_native_history; no_historical_native_backfill"]
     if any(not t["prepared"]["context"].get("context", {}).get("id") for t in turns):
         gaps.append("structured_request_identity_missing")
-    if not {"scripts", "automations"} <= turns[0]["source"].keys():
-        # Replayed on today's scripts, it wouldn't be the conversation as it was (P0.1).
-        gaps.append("recorded_before_definitions_were_kept")
-    configs = turns[0]["prepared"].get("provider_config", [])
-    if len(configs) != 1:
-        gaps.append("provider_configuration_missing_or_ambiguous")
-    else:
-        options = configs[0]["options"]
-        if turns[0]["prepared"]["context"].get("platform") not in TESTED_PROVIDERS:
-            notes.append("provider_not_yet_tested_for_replay")
-        if any(t["prepared"].get("provider_config") != configs for t in turns):
-            gaps.append("provider_configuration_changed_during_journey")
-        if any(options.get(k) not in (None, False, "off") for k in ("code_execution", "web_fetch", "web_search")):
-            notes.append("original_hosted_tools_preserved; provider_execution_is_not_intercepted_by_HA")
-        notes.append("replay_from_start_carries_its_own_native_history; no_historical_native_backfill")
-        # The product promises HA-level context, not an identical provider wire
-        # request. Runtime model metadata is a fidelity note, not a new gate.
-        if "provider_model_capabilities" not in turns[0]["prepared"]:
-            notes.append("provider_runtime_capabilities_were_not_captured; exact_wire_identity_not_claimed")
-        if any(options.get(k) not in (None, False, "off") for k in ("web_search", "web_fetch")) and any(
-                key not in options for key in ("web_search_max_uses", "web_fetch_max_uses", "user_location")):
-            notes.append("uncaptured_hosted_tool_limits_and_location_use_pinned_HA_defaults; old_capture_does_not_prove_their_original_values")
     if any(c.get("external") and c["tool_name"] != "tool_search_tool_bm25"
            for t in turns for c in t["calls"]):
         gaps.append("recorded_provider_tool_outside_catalogue_search_coverage")
     if any(c.get("external") for t in turns for c in t["calls"]):
-        notes.append("tool_search_runs_in_provider_over_recorded_catalogue; receipts_are_not_replayed_as_functions")
-    return {"model_baseline_ready": not gaps, "gaps": gaps, "fidelity_notes": notes,
-            "paid_inference_performed": False}
+        notes.append("tool_search_runs_in_provider; receipts_are_not_replayed_as_functions")
+    return {"model_baseline_ready": not gaps, "gaps": gaps, "notes": notes, "paid_inference_performed": False}
 
 
 def started_from(source):
-    """The home and time a conversation started from (its first turn's source): what every replay of it starts from
-    too (P0.1)."""
+    """The home and time a conversation started from (its first turn's source): the moment every replay of it starts
+    from too, on today's setup (P0.1)."""
     return {"at": source.get("at"), "home": digest(source.get("states") or {})}

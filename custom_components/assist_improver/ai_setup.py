@@ -18,6 +18,8 @@ from homeassistant.data_entry_flow import UnknownFlow
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.storage import Store
 
+from . import touchpoints
+
 RECOMMENDED = {"chat_model": "claude-opus-5-5", "max_tokens": 16000, "effort": "high"}
 RECOMMENDED_NAME = "Assist Improver"
 CREATED_KEY = "assist_improver.created"  # The AI Tasks the improver set up in providers, removed when uninstalled.
@@ -40,11 +42,11 @@ def ai_task_entities(hass):
 def suggested_entity(hass):
     """Home Assistant's own default AI Task, else the first one."""
     # No public route: ai_task offers this preference only over its websocket API.
-    try:
-        from homeassistant.components.ai_task.const import DATA_PREFERENCES
-        preferred = hass.data[DATA_PREFERENCES].gen_data_entity_id
-    except (ImportError, KeyError, AttributeError):
-        preferred = None
+    preferred = None
+    with touchpoints.guarded(hass, "default_ai_task_entity"):
+        touchpoints.get(hass, "default_ai_task_entity")
+        if (preferences := hass.data.get(touchpoints.get(hass, "default_ai_task"))) is not None:
+            preferred = preferences.gen_data_entity_id
     entities = ai_task_entities(hass)
     return preferred if preferred in entities else (entities[0] if entities else None)
 
@@ -95,10 +97,9 @@ def assess(hass, entity_id):
         # No public route: what Anthropic's recommended settings stand for is only in its constants (the device
         # registry names the model, not the effort or output limit judged here).
         try:
-            from homeassistant.components.anthropic.const import DEFAULT
-        except ImportError:
-            DEFAULT = {}
-        defaults = DEFAULT if isinstance(DEFAULT, dict) else {}
+            defaults = touchpoints.get(hass, "ai_task_settings")
+        except touchpoints.Broken:
+            defaults = {}
         model, effort, max_tokens = defaults.get("chat_model"), defaults.get("effort"), defaults.get("max_tokens")
         result["uses_recommended_defaults"] = True
     else:
@@ -155,7 +156,7 @@ async def create_ai_task(hass, config_entry_id, kind, model=None, name=None):
               {"name": name or RECOMMENDED_NAME, "recommended": False, "chat_model": model, "model": model})
     before = set(entry.subentries)
     manager = hass.config_entries.subentries
-    result = {}
+    result, answered = {}, {}
     try:
         result = await manager.async_init((config_entry_id, "ai_task_data"), context={"source": "user"})
         for _ in range(6):
@@ -176,6 +177,7 @@ async def create_ai_task(hass, config_entry_id, kind, model=None, name=None):
                     answer[name] = picked
                 else:
                     answer[name] = wanted[name]
+            answered.update(answer)
             result = await manager.async_configure(result["flow_id"], answer)
         else:
             return None, "The provider's setup took more steps than expected"
@@ -193,9 +195,25 @@ async def create_ai_task(hass, config_entry_id, kind, model=None, name=None):
     created = [sid for sid, sub in entry.subentries.items()
                if sub.subentry_type == "ai_task_data" and sid not in before]
     await remember_created(hass, config_entry_id, created)
+    if created:
+        _read_back(hass, [entry.subentries[sid] for sid in created], wanted, answered, chosen=model is not None)
     if entity_id := await _appeared(hass, config_entry_id, created):
         return entity_id, None
     return None, "The entry was created, but its AI Task entity has not appeared yet; choose it after a moment"
+
+
+def _read_back(hass, subentries, wanted, answered, chosen):
+    """A new AI Task's settings against its flow's answers: one the flow no longer asks for, or didn't keep, is Home
+    Assistant having changed it (reported; the AI Task is still used)."""
+    meant = set(wanted) - {"name"}  # The name is the AI Task's title.
+    if chosen:  # A chosen model, the rest at the provider's defaults: each provider names the model its own way.
+        meant = {key for key in ("chat_model", "model") if key in answered} or {"chat_model"}
+    meant |= set(answered) - {"name"}
+    if lost := sorted(key for key in meant
+                      if key not in answered or any(sub.data.get(key) != answered[key] for sub in subentries)):
+        touchpoints.report(hass, "ai_task_settings", f"a new AI Task didn't keep {', '.join(lost)}")
+    else:
+        touchpoints.ok(hass, "ai_task_settings")
 
 
 async def _appeared(hass, config_entry_id, created):

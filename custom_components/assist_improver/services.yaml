@@ -8,12 +8,6 @@ export_recording:
       required: true
       selector:
         text:
-check_replay_fidelity:
-  fields:
-    recording_id:
-      required: true
-      selector:
-        text:
 replay_recording:
   fields:
     recording_id:

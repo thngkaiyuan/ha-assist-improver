@@ -333,6 +333,29 @@ def replay_view(turns, session_view, steps):
                            scripts_seen=True, changes=changes)
 
 
+def branch(goals, before, view, aside=(), shown=None):
+    """The turn a test of a change branches from its baseline at (DETAILS P6.2): where the change has to make the
+    difference. That's the first turn of the earliest root goal with trouble in the baseline (before: judged; view:
+    what its home did, replay_view's; DETAILS P6.8): a goal of its tree unmet and not set aside (P6.6.2), the root
+    taking another turn but a thanks, or a side effect left it owns (when its tree has a goal at the turn Assist first
+    changed the device, else it's the latest root before); or an earlier Assist turn the baseline showed an objection
+    in, as its judge said (shown: {key: [turns]}). 1 when there's none."""
+    roots = [g for g in goals if g.get("serves") is None and isinstance(g["label"], int)]
+    troubled = {root_of(goals, g) for g in goals if g["key"] not in aside and before["goals"].get(g["key"]) == "unmet"}
+    troubled |= {r["key"] for r in roots if r["key"] not in aside and len(
+        {g["label"] for g in goals if root_of(goals, g) == r["key"] and g.get("kind") != "thanks"}
+        & set(before["counted"].get(r["key"]) or ())) > 1}
+    for left in before["side_effects_left"]:
+        turn = min((c["during_turn"] for c in view.changes.get(left["entity_id"], []) if c["by"] in ASSISTANT),
+                   default=left["turn"])
+        at = [root_of(goals, g) for g in goals if g["label"] == turn]
+        earlier = [r["key"] for r in sorted(roots, key=lambda r: r["label"]) if r["label"] <= turn]
+        troubled |= set(at[:1] or earlier[-1:])
+    firsts = [min(turns) for r in troubled if (turns := before["counted"].get(r))]
+    firsts += [min(turns) for k, turns in (shown or {}).items() if k not in aside and turns]
+    return min(firsts, default=1)
+
+
 def judged_of(goals, devices_of):
     """What a test judged, for its record: {key: {summary, turn, root, devices, kind, home_couldnt?, and for a conduct
     goal quote and about}}. devices_of(goal): the devices a goal wants something from."""
@@ -390,16 +413,16 @@ def gains(after, before):
 
 def went_as_it_went(before, conversation, leave_out=()):
     """None when a replay without the change went as the conversation went (DETAILS P6.6): the same state for every
-    goal, the same turns counted for each root goal, and side effects left on the same devices; else why not.
-    leave_out: keys of goals not compared (those a model judges, before it has)."""
+    goal, the same turns counted for each root goal, and side effects left on the same devices; else why not, in a
+    few words. leave_out: keys of goals not compared (those a model judges, before it has)."""
     differ = sorted(k for k in conversation["goals"]
                     if k not in leave_out and before["goals"].get(k) != conversation["goals"][k])
     if differ:
-        return f"Without the change, goals {', '.join(differ)} didn't end as they did in the conversation."
+        return f"goals {', '.join(differ)} didn't end as they did in the conversation"
     if before["counted"] != conversation["counted"]:
-        return "Without the change, the goals didn't take the turns they took in the conversation."
+        return "the goals didn't take the turns they took in the conversation"
     if {s["entity_id"] for s in before["side_effects_left"]} != {s["entity_id"] for s in conversation["side_effects_left"]}:
-        return "Without the change, the side effects left weren't those the conversation left."
+        return "the side effects left weren't those the conversation left"
     return None
 
 

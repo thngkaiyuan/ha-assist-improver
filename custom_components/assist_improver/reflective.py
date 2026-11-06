@@ -7,7 +7,7 @@ Usage is what the provider reports through HA's conversation trace, if any.
 
 import asyncio
 from collections import deque
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from contextvars import ContextVar
 from copy import deepcopy
 import json
@@ -17,13 +17,11 @@ import re
 import orjson
 from homeassistant.components import ai_task
 from homeassistant.components.conversation import ConversationTraceEventType
-# Not exported by the conversation root. An AI Task's result carries no usage: a trace of the call's own holds what
-# the provider reports.
-from homeassistant.components.conversation.trace import async_conversation_trace
 from homeassistant.helpers.json import json_bytes
 from homeassistant.helpers.storage import Store
 from homeassistant.util.dt import parse_datetime, utcnow
 
+from . import touchpoints
 from .cases import CaseError, digest
 from .const import DOMAIN, STORAGE_VERSION
 from .failures import closing
@@ -43,6 +41,15 @@ def role_marker(role):
         yield
     finally:
         ROLE_ACTIVE.reset(token)
+
+
+def own_trace(hass):
+    """A conversation trace of the call's own, which holds what the provider reports for it (an AI Task's result
+    carries no usage, and a replay's is its own); none, the usage unknown, while Home Assistant's has changed."""
+    try:
+        return touchpoints.get(hass, "conversation_trace")()
+    except touchpoints.Broken:
+        return nullcontext()
 
 
 NO_TOOLS = re.compile(r"(does not|doesn't|do not|not) support (tools|tool use|tool calling|function calling)", re.I)
@@ -75,7 +82,7 @@ async def run_role(hass, *, role, entity_id, instructions, payload, structure, l
     async with closing(None, record):
         # One span per call; the tools it calls get theirs inside (trace.traced_tool).
         async with span(f"ai.{role}", role=role, model=entity_id, input_chars=len(text)) as section:
-            with role_marker(role), async_conversation_trace() as trace:
+            with role_marker(role), own_trace(hass) as trace:
                 try:
                     result = await ai_task.async_generate_data(
                         hass, task_name=f"Assist Improver: {role}", entity_id=entity_id,
@@ -86,13 +93,11 @@ async def run_role(hass, *, role, entity_id, instructions, payload, structure, l
                     record.update(status="failed", error={"type": type(err).__name__,
                                                           "message": explained(str(err))[:500]})
                     section.fail(f"{type(err).__name__}: {err}")
-            try:  # The usage the provider reported, if it can be read: never the call's outcome.
-                stats = [plain(e["data"]["stats"]) for e in trace.as_dict()["events"]
+            stats = []  # The usage the provider reported, if it can be read: never the call's outcome.
+            with touchpoints.guarded(hass, "conversation_trace"):
+                stats = [plain(e["data"]["stats"]) for e in (trace.as_dict()["events"] if trace else ())
                          if e["event_type"] == ConversationTraceEventType.AGENT_DETAIL
                          and isinstance(e["data"], dict) and "stats" in e["data"]]
-            except Exception:  # noqa: BLE001 - whatever stops the read, the usage is unavailable.
-                _LOGGER.debug("%s: its usage couldn't be read from the conversation trace", role, exc_info=True)
-                stats = []
             section.tag(status=record["status"], tokens=tokens(stats) or None)
         record["usage"] = {"status": "provider_reported_partial" if stats else "unavailable", "events": stats,
                            "billing_total": None,

@@ -282,11 +282,12 @@ class ReplayEntry(TypedDict, total=False):
     at: str
     status: str  # running, reproduced, not_reproducible, done, unsupported, infrastructure_failure, interrupted or
     # cancelled.
-    error: dict | None
+    error: dict | None  # type, message, and the turn it stopped at once it was saying its turns (DETAILS P6.6.5).
     notes: list[str]
     usage: dict | None
     said: list[int]
-    steps: list[dict]  # Each turn said: turn, input, reply, output, transitions, brightness, external_calls, ...
+    steps: list[dict]  # Each turn said (a test's before its branch: its baseline's): turn, input, reply, output,
+    # transitions, brightness, external_calls, a baseline's home after it (sandbox.moved), ...
     verdicts: dict  # {digest of the goals judged: model, answers {goal's content digest: [{turn, shows, why}]},
     #   usage}: the judge's, on whether its Assist turns show what the household objected to.
 

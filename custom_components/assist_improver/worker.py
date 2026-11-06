@@ -1,12 +1,12 @@
 """Replay sandboxes in worker processes of their own (N6).
 
-A sandbox is Home Assistant's own engine seeded as a recorded home (sandbox.py). Each replay, and each evidence probe
+A sandbox is Home Assistant's own engine seeded as the household's home (sandbox.py). Each replay, and each evidence probe
 (evidence.py), gets a fresh worker process: it starts for that one job, seeds and serves it, and is killed once the job
 is done or given up, or the improver unloads. So nothing a sandbox does can reach the real instance's process (its
 memory, its logging, HA's process-wide helpers) or another sandbox, a sandbox that hangs or crashes takes only its own
 job down, and nothing of it outlives the job.
 
-Everything a replay runs, runs in its worker: seeding the recorded home, building Assist's prompt and tools, the
+Everything a replay runs, runs in its worker: seeding the home, building Assist's prompt and tools, the
 household's assistant answering each turn (its model is called from there), the tool calls, and the evidence probes.
 The real instance only drives which recorded turn is said (replay.py, simulate.py). To load the assistant, its
 provider's config entry, API key included, goes to the worker over the pipe to its stdin; it stays in the worker's
@@ -36,6 +36,7 @@ from homeassistant.core import async_get_hass
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.util.hass_dict import HassKey
 
+from . import touchpoints
 from .cases import CaseError
 from .const import DOMAIN
 from .sandbox import STATS as SANDBOX_STATS
@@ -107,7 +108,7 @@ class Worker:
             worker.folder = await hass.async_add_executor_job(_folder, providers or {})
             worker.process = await asyncio.create_subprocess_exec(
                 sys.executable, "-c", BOOT, str(IMPROVER), worker.folder, stdin=asyncio.subprocess.PIPE,
-                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, limit=LIMIT)
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, limit=LIMIT, env=environment())
         except BaseException:
             await worker.stop()
             raise
@@ -126,7 +127,10 @@ class Worker:
             answer = await self._send(message)
         self.stats = answer.get("stats") or self.stats
         if "error" in answer:
-            raise raised(answer["error"])
+            err = raised(answer["error"])
+            if isinstance(err, touchpoints.Broken):  # The worker's Home Assistant is this one: reported here.
+                touchpoints.report(self.hass, err.name, err.reason)
+            raise err
         return answer["result"]
 
     async def _send(self, message):
@@ -210,6 +214,12 @@ def _folder(providers):
     return folder
 
 
+def environment():
+    """A worker's environment: the real instance's, without its Supervisor access (DETAILS P11.8.3), so nothing in a
+    sandbox can reach the host through the Supervisor."""
+    return {k: v for k, v in os.environ.items() if not k.startswith(("SUPERVISOR", "HASSIO"))}
+
+
 def _line(message):
     return (json.dumps(message, separators=(",", ":")) + "\n").encode()
 
@@ -242,6 +252,8 @@ def raised(error):
         return CaseError(message)
     if kind == "unsupported":
         return UnsupportedSimulation(message)
+    if kind == "touchpoint":  # The machinery's: never a verdict.
+        return touchpoints.Broken(name, message)
     base = {"ha": HomeAssistantError, "invalid": probatio.Invalid}.get(kind)
     if base is None:
         return WorkerError(f"{name}: {message}")
@@ -292,7 +304,7 @@ class RemoteSandbox:
 # The worker's side.
 
 class Server:
-    """What a worker serves: its recorded home, the evidence probes, and its statistics."""
+    """What a worker serves: its home, the evidence probes, and its statistics."""
 
     def __init__(self):
         self.sandbox = self.api = None
@@ -333,16 +345,12 @@ class Server:
         from .sandbox import load_assistant
         return self._reported({"agent": await self.sandbox.run(lambda hass: load_assistant(hass, entry, agent))})
 
-    async def op_home_household(self, knowledge, legacy=False):
-        """The household knowledge the sandbox's Assist reads; legacy: through the household API (up to 0.37)."""
-        from .household import LegacyAPI, serve
-        from .replay import register
+    async def op_home_household(self, knowledge):
+        """The household knowledge the sandbox's Assist reads."""
+        from .household import serve
 
         async def read(hass):
-            if legacy:
-                await register(hass, LegacyAPI(hass, knowledge))
-            else:
-                serve(hass, knowledge)
+            serve(hass, knowledge)
         await self.sandbox.run(read)
         return self._reported()
 
@@ -364,6 +372,12 @@ class Server:
         from .sandbox import run_turn
         return self._reported(await self.sandbox.run(lambda hass: run_turn(
             hass, text, conversation_id, context, language, agent_id, device_id, watch)))
+
+    async def op_home_carry(self, conversation_id, context, steps):
+        """A test's turns before its branch, its baseline's, in the replay's chat log (sandbox.carry)."""
+        from .sandbox import carry
+        await self.sandbox.run(lambda hass: carry(hass, conversation_id, llm_context(context), steps))
+        return self._reported()
 
     async def op_home_tool(self, tool_name, tool_args, call_id=None, external=False):
         from homeassistant.helpers import llm
@@ -410,6 +424,8 @@ def context_data(llm_context):
 
 
 def _error(err):
+    if isinstance(err, touchpoints.Broken):
+        return {"kind": "touchpoint", "name": err.name, "message": err.reason}
     kind = ("unsupported" if isinstance(err, UnsupportedSimulation) else "case" if isinstance(err, CaseError)
             else "ha" if isinstance(err, HomeAssistantError) else "invalid" if isinstance(err, probatio.Invalid)
             else "other")

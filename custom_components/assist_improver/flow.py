@@ -544,7 +544,8 @@ class Flow:
 
     def tests_left(self, rid):
         """The tests the conversation's round has left: its cap, less each test it ran (P0.6: each round has its
-        own). A test whose replay an earlier round ran is reused, never resampled, and still one of this round's."""
+        own). A test whose replay an earlier round ran on the same setup is reused, never resampled, and still one of
+        this round's."""
         return self.tests_cap() - len(self.tests(rid))
 
     async def test(self, rid, hypothesis, cap):
@@ -573,7 +574,7 @@ class Flow:
             raise Failed(str(err)) from err
         earlier = [t["after"]["plan"] for n, r in conv["rounds"].items() if n != str(conv["round"])
                    for t in (r["records"].get("Propose") or {}).get("tests") or []]
-        if test["after"]["plan"] in earlier:  # Its replay with the change an earlier round ran, kept: reused, not paid.
+        if test["after"]["plan"] in earlier:  # Its replay an earlier round ran on the same setup, kept: reused, not paid.
             test["reused"] = True
         if record.get("tests"):  # A test after another: that one sent the proposer back (an idea untested isn't one).
             self._trip(conv, "Simulate", "Propose", {"budget": f"tests:{rid}:{conv['round']}", "cap": cap})

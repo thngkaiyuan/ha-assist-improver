@@ -16,14 +16,13 @@ import re
 from uuid import uuid4
 
 import probatio
-# Not exported by the conversation root; the only way to observe Assist conversations passively.
-from homeassistant.components.conversation.chat_log import async_subscribe_chat_logs, current_chat_log
 from homeassistant.const import EVENT_HOMEASSISTANT_STOP, EVENT_STATE_CHANGED, __version__ as CORE_VERSION
 from homeassistant.core import callback
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.storage import Store
 from homeassistant.util.dt import utcnow
 
+from . import touchpoints
 from .retention import CLOSED, pack, unpack
 from .const import DOMAIN, SAVE_DELAY, STORAGE_VERSION, VERSION
 from .digest import flap, worth_keeping
@@ -38,6 +37,8 @@ _LOGGER = logging.getLogger(__name__)
 SAVE_EVERY = 15  # Seconds an active recording's changes may wait to be saved, unless a turn was added or it closed.
 # A voice device's Assistant select (assist_pipeline's AssistPipelineSelect), by its unique ID: one per wake word.
 PIPELINE_SELECT = re.compile(r".+-pipeline(_\d+)?")
+# What each chat log event carries that the recorder reads, as Home Assistant's subscription gives it.
+CARRIES = {"created": "chat_log", "updated": "chat_log", "content_added": "content"}
 
 
 def _frozen(session):
@@ -92,15 +93,16 @@ def _pipeline_ran(hass, conversation_id):
     run whose intent step names this conversation. None for one that didn't run through one (an action), or once that
     log can't be read: the household's view then names the assistant by the AI that answered
     (household.voice_assistant)."""
-    try:  # No public API names a conversation's pipeline run: assist_pipeline's own debug log of runs, read only here.
-        from homeassistant.components.assist_pipeline.pipeline import KEY_ASSIST_PIPELINE
-        for pipeline_id, runs in list(hass.data[KEY_ASSIST_PIPELINE].pipeline_debug.items()):
+    if "assist_pipeline" not in hass.config.components:  # Not set up: not known.
+        return None
+    # No public API names a conversation's pipeline run: assist_pipeline's own debug log of runs, read only here.
+    with touchpoints.guarded(hass, "pipeline_debug"):
+        touchpoints.get(hass, "pipeline_runs")
+        for pipeline_id, runs in list(hass.data[touchpoints.get(hass, "pipeline_debug")].pipeline_debug.items()):
             for run in reversed(list(runs.values())):
                 if any(e.type == "intent-start" and (e.data or {}).get("conversation_id") == conversation_id
                        for e in run.events):
                     return pipeline_id
-    except Exception:  # noqa: BLE001 - not set up, or Home Assistant changed it: not known.
-        return None
     return None
 
 
@@ -166,10 +168,14 @@ class Recorder:
                     await self.store(key).async_save(data)
         await self.index_store.async_save({"sessions": self.index})
         self.running = True
-        self.unsubscribers = [
-            async_subscribe_chat_logs(self.hass, self.on_chat),
-            self.hass.bus.async_listen(EVENT_STATE_CHANGED, self.on_state),
-        ]
+        self.unsubscribers = [self.hass.bus.async_listen(EVENT_STATE_CHANGED, self.on_state)]
+        try:  # No public API hears Assist's conversations: its chat logs, their events and what capture reads.
+            subscribe = touchpoints.get(self.hass, "chat_log_subscribe")
+            touchpoints.get(self.hass, "chat_log_events")
+            touchpoints.get(self.hass, "chat_log")
+            self.unsubscribers.append(subscribe(self.hass, self.on_chat))
+        except touchpoints.Broken:  # Reported: nothing is recorded until the improver is updated.
+            pass
         # A once-listener removes itself when it fires; removing it again logs an error.
         self.stop_listener = self.hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STOP, self.on_stop)
 
@@ -349,6 +355,8 @@ class Recorder:
         self.ignored.discard(conversation_id)
 
     def capture(self, conversation_id, kind, data):
+        if (carries := CARRIES.get(kind)) and not isinstance(data.get(carries), dict):  # Reported until an update.
+            touchpoints.report(self.hass, "chat_log_subscribe", f"a {kind} event came without its {carries}")
         key = self.keys.get(conversation_id)
         now = utcnow().isoformat()
         if key not in self.sessions:
@@ -380,7 +388,10 @@ class Recorder:
             task = self.hass.async_create_task(self._serialized(key, turn, read), "assist_improver_snapshot")
             self.sourcing.add(task)
             task.add_done_callback(self.sourcing.discard)
-        active = current_chat_log.get()
+        try:  # The chat log of the request being answered, which says what its AI is given.
+            active = touchpoints.get(self.hass, "current_chat_log").get()
+        except touchpoints.Broken:
+            active = None
         if not active or active.conversation_id != conversation_id:
             active = None
         given = data.get("chat_log") if active and kind == "updated" else None  # The chat log as the AI was given it.
@@ -410,10 +421,11 @@ class Recorder:
                     "integration": tool.integration,
                     "parameters": plain(probatio.to_openapi(tool.parameters,
                         custom_serializer=api.custom_serializer, openapi_version="3.1.0"))})
-            if kept:  # The last turn's, not built at this turn's time: a replay holds it to the last turn's.
-                metadata["prompt_kept"] = True
             if session["turns"]:
                 session["turns"][-1]["prepared"] = metadata
+        if (kind == "content_added" and content.get("role") == "assistant" and content.get("content")
+                and not content.get("tool_calls") and session["turns"]):  # A turn's answer.
+            self._check_prepared(session, active, content)
         if "pipeline_id" not in session:  # Its voice assistant, whose settings say what Assist may do.
             found = None
             if given is not None:  # An AI preparing.
@@ -435,6 +447,17 @@ class Recorder:
         self.schedule(key, soon=turn_added)
         if kind == "deleted":
             self._closed(key)
+
+    def _check_prepared(self, session, active, content):
+        """A turn the AI with Assist's tools answered keeps what it was given, which a replay needs. One answered
+        without it means Home Assistant changed how its chat log tells it: reported, never kept silently incomplete.
+        A reply something else gave (a sentence trigger, Home Assistant's own intents) isn't the AI's: not checked."""
+        if "prepared" in session["turns"][-1]:
+            touchpoints.ok(self.hass, "chat_log_events")
+        elif (active is not None and active.llm_api is not None
+              and content.get("agent_id") == active.llm_api.llm_context.agent_id):
+            touchpoints.report(self.hass, "chat_log_events",
+                               f"turn {len(session['turns'])} was recorded without what its AI was given")
 
     async def _serialized(self, key, turn, now):
         """A turn's home, as snapshot.taken read it on the event loop, serialized in the executor and attached to the

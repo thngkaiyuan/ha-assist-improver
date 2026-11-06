@@ -31,7 +31,7 @@ from copy import deepcopy
 import json
 import os
 
-from homeassistant.components.homeassistant.exposed_entities import async_expose_entity, async_should_expose
+from homeassistant.components.homeassistant import async_should_expose
 from homeassistant.config import SCRIPT_CONFIG_PATH
 from homeassistant.core import callback
 from homeassistant.exceptions import HomeAssistantError, TemplateError
@@ -40,6 +40,7 @@ from homeassistant.helpers.script import async_validate_actions_config
 from homeassistant.helpers.storage import Store
 from homeassistant.util.yaml import load_yaml
 
+from . import touchpoints
 from .const import DOMAIN, STORAGE_VERSION
 
 # assistant_api: an assistant switched to the household API (up to 0.37), last; still undone, never planned now.
@@ -110,7 +111,7 @@ async def write(hass, kind, target, value):
         aliases = [er.COMPUTED_NAME if a is None else a for a in value]  # None: its own name (_aliases).
         er.async_get(hass).async_update_entity(target, aliases=aliases)
     elif kind == "exposure":
-        async_expose_entity(hass, "conversation", target, value)
+        touchpoints.get(hass, "exposure")(hass, "conversation", target, value)  # No public API exposes one.
     elif kind in ("prompt", "assistant_api"):
         entry_id, subentry_id = target.split("/")
         entry = hass.config_entries.async_get_entry(entry_id)
@@ -150,7 +151,7 @@ async def loaded(hass, object_id, value):
 async def plan_steps(hass, proposal):
     """(steps, already, conflicts) for a proposal: {changes, setup, tested: {scripts, exposure}, provider, user_ids}.
 
-    tested holds the values the replays started from (the recorded home); a live value that's neither that nor
+    tested holds the values the replays ran on (the household's setup then); a live value that's neither that nor
     the proposed one was changed by the user since, and is a conflict. user_ids: the people it was tested for (a line
     for the person speaking goes to each)."""
     from homeassistant.helpers.template import Template

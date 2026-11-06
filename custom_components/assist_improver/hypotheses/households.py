@@ -25,6 +25,7 @@ class Sessions(Assistants, SessionSet):
     def __init__(self, analyses, views=(), **lazy):
         super().__init__(analyses, views, **lazy)
         self.evidence, self.capability_facts = None, None
+        self.today = None  # Today's setup (replay.setup_now's), which the household view and the checks look up.
         self.feedback = []  # The household's decisions on earlier improvements.
         self.sent_back = None  # What the household sent back for this round: a revision or a conflict (flow.py).
         self.answered = []  # The household's answers to the proposer's questions this round: [{question, answer}].
@@ -32,16 +33,15 @@ class Sessions(Assistants, SessionSet):
         self.existing = []  # Improvements waiting for review or applied (Improvements.catalog), for list_improvements.
         self._upfront = None  # The open friction the generator gets in full (prepare).
 
-    async def load_evidence(self, definitions):
-        """Facts from HA's own engine: what Assist can do with each device in open friction, and an Evidence for
-        checking drafts. definitions: the household's scripts and automations, for recordings without them. Facts
-        the household's conversation can't give are left out (each device's are unknown; a problem of the run's
-        unless the sandbox said it can't); the rest goes on."""
-        self.evidence, self.capability_facts = evidence.Evidence(self, definitions), {}
+    async def load_evidence(self):
+        """Facts from HA's own engine, on today's setup: what Assist can do with each device in open friction, and an
+        Evidence for checking drafts. Facts the household's conversation can't give are left out (each device's are
+        unknown; a problem of the run's unless the sandbox said it can't); the rest goes on."""
+        self.evidence, self.capability_facts = evidence.Evidence(self, self.today), {}
         session = short(self.household.recording["id"])
         async with contained("propose", session, step=PROBE, expected=(CaseError,)):  # CaseError: it can't.
             self.capability_facts = await evidence.capabilities(self.household.recording, self._entities_in_friction(),
-                                                                definitions)
+                                                                self.today)
 
     def open_friction(self):
         """[(session, its goal turns with friction)], newest first: what the generator has to place, each goal in a

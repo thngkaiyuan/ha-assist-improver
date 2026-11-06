@@ -9,8 +9,7 @@ every assistant or none.
 
 Up to 0.37 the lines came through a second LLM API, "Assist with household
 knowledge", chosen instead of Assist; an assistant could tick both and read every
-tool twice. Only replays of conversations recorded through it still use it
-(LegacyAPI, in a sandbox).
+tool twice.
 
 Uninstalling writes nothing into any assistant's instructions: the settings'
 Uninstall shows the lines to save first, and removing the improver from Home
@@ -153,23 +152,6 @@ def serve(hass, knowledge):
     """In a sandbox: its Assist reads these lines, through this integration's llm platform as on the real instance."""
     hass.data[KEY] = Fixed(knowledge)
     hass.config.components.add(DOMAIN)  # Home Assistant's Assist asks the platforms of loaded integrations.
-
-
-class LegacyAPI(llm.API):
-    """The household API up to 0.37: Assist, with the household's lines appended to its prompt. Only a sandbox serves
-    it now, to replay a conversation recorded through it as it was."""
-
-    def __init__(self, hass, knowledge):
-        super().__init__(hass=hass, id=API_ID, name=API_NAME)
-        self.knowledge = knowledge
-
-    async def async_get_api_instance(self, llm_context):
-        assist = await llm.async_get_api(self.hass, llm.LLM_API_ASSIST, llm_context)
-        user_id = llm_context.context.user_id if llm_context.context else None
-        extra = render(self.knowledge, user_id)
-        return llm.APIInstance(api=self, api_prompt=assist.api_prompt + (f"\n\n{extra}" if extra else ""),
-                               llm_context=llm_context, tools=assist.tools,
-                               custom_serializer=assist.custom_serializer)
 
 
 async def async_setup(hass):

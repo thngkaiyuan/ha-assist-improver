@@ -10,9 +10,20 @@ from .failures import closing
 from .records import Proposal
 from .sessions import catalog
 from .settings import role_model
+from .snapshot import at_moment, on_today
 
 
-async def window(runtime, analyses, *, feedback=None, sent_back=None, so_far=None, answered=None, existing=None):
+def as_today(recording, home):
+    """A recording with each turn's home as today's at that turn's moment (snapshot.on_today, at_moment): the household
+    as the proposer, its reviewer and code's checks look its devices, names, aliases, what Assist can see and the
+    household knowledge up (DETAILS P6.9), on the setup replays run on."""
+    recording = on_today(recording, home)
+    return {**recording, "turns": [{**t, "source": at_moment(home, t["source"])} if t.get("source") else t
+                                   for t in recording.get("turns") or []]}
+
+
+async def window(runtime, analyses, *, feedback=None, sent_back=None, so_far=None, answered=None, existing=None,
+                 today=None):
     """The sessions a proposal works over, by code alone (hypotheses.Sessions): the analyses given that can be read,
     and every other recording too, analysed or not, as a rule is tested where it would apply, sessions without
     friction included. Each comes as a brief; a full recording is loaded only when a tool or a check opens it. With
@@ -20,7 +31,9 @@ async def window(runtime, analyses, *, feedback=None, sent_back=None, so_far=Non
     revision or a conflict, with the improvement in full: sent_back), the round's tests and reviews so far for a
     proposer picking it up (so_far: stamps.so_far), the household's answers to the proposer's questions this round
     (answered: [{question, answer}]), and the other conversations' improvements waiting for review or applied
-    (existing). The preflight loads the same (tools/preflight.py)."""
+    (existing). The household is today's setup (today: replay.setup_now's, read now unless given) at its newest
+    conversation's moment. The preflight loads the same (tools/preflight.py), on a setup of its own."""
+    from .replay import setup_now
     recorder = runtime.recorder
     analyses, given = list(analyses), {a["recording_id"] for a in analyses}
     others = [rid for rid in sorted(set(recorder.index) - given)
@@ -34,7 +47,10 @@ async def window(runtime, analyses, *, feedback=None, sent_back=None, so_far=Non
 
     async def load(recording_id):
         return await session_view(recorder.hass, await recorder.export(recording_id))
+    today = today if today is not None else await setup_now(recorder.hass)
+    household = await session_view(recorder.hass, as_today(household.recording, today["home"]))
     sessions = hypotheses.Sessions(analyses, briefs=briefs, loader=load, household=household, assistant=assistant)
+    sessions.today = today
     sessions.feedback, sessions.sent_back, sessions.so_far = list(feedback or []), sent_back, dict(so_far or {})
     sessions.answered = list(answered or [])
     sessions.existing = list(existing or [])  # For list_improvements.

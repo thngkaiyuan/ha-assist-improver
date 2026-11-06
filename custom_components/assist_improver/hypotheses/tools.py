@@ -184,11 +184,12 @@ class ReadSessionTurn(RoleTool):
 
 
 class DeviceDetailsAt(RoleTool):
-    """device_details, optionally as of one session: the household snapshot is the newest session's."""
+    """device_details, optionally as of one session: by default as the household has it now, its state as of the
+    newest session."""
     name = "device_details"
     description = ("Everything about one device: its states and attributes, aliases, whether Assist can see it, its "
-                   "changes, and other entities on the same physical device. By default as of the newest session; "
-                   "give session to see it as it was in that session.")
+                   "changes, and other entities on the same physical device. By default as the household has it now, "
+                   "its state as of the newest session; give session to see it as it was in that session.")
     parameters = probatio.Schema({probatio.Required("entity_id"): str, probatio.Optional("session"): str})
 
     def __init__(self, sessions):
@@ -204,12 +205,14 @@ class DeviceDetailsAt(RoleTool):
         view = self.sessions.views.get(session) if session else self.sessions.household
         if view is None:
             return {"error": f"There is no session {session!r}; list_sessions shows them."}
-        return {"as_of_session": session or "the newest session", **view.device_details(entity_id)}
+        return {"as_of_session": session or "now (its state as of the newest session)", **view.device_details(entity_id)}
 
 
 class DevicesInAreaNow(DevicesInArea):
-    """devices_in_area over the household snapshot, which is the newest session's (the analyzer's tool reads one)."""
-    description = ("List the devices in an area with their state as of the newest session, what they can do, and "
+    """devices_in_area over the household as it is now, states as of the newest session (the analyzer's tool reads one
+    session)."""
+    description = ("List the devices in an area as the household has them now, with their state as of the newest "
+                   "session, what they can do, and "
                    "whether Assist may use them (exposed). Use device_details with a session for an earlier state. "
                    "Sensors only on request.")
 
@@ -439,7 +442,7 @@ class CheckHypothesis(RoleTool):
     """Facts from Home Assistant itself about a draft hypothesis, run in sandboxes: no model, no device."""
     name = "check_hypothesis"
     description = ("Check a draft hypothesis (same fields as submit_hypotheses) with Home Assistant itself, in a "
-                   "sandbox of the recorded home. implementation: for each named goal, each new, edited or newly "
+                   "sandbox of the household's home as it is now. implementation: for each named goal, each new, edited or newly "
                    "exposed script runs alone from the state the goal started in (and all of them together if none "
                    "reaches it alone), showing whether the goal's devices end up as the goal wants, including what "
                    "the user chose for settings left open; new aliases are matched by Home Assistant's own name "

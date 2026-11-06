@@ -9,9 +9,6 @@
     "export_recording": {
       "service": "mdi:export"
     },
-    "check_replay_fidelity": {
-      "service": "mdi:compare"
-    },
     "replay_recording": {
       "service": "mdi:replay"
     },

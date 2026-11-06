@@ -47,16 +47,6 @@
         }
       }
     },
-    "check_replay_fidelity": {
-      "name": "Check replay fidelity",
-      "description": "Rebuild a recorded conversation's home in a sandbox and compare Assist's system prompt and tools there with the recorded ones. The conversation's assistant is loaded there too, which fetches its provider's model list; no AI model is called.",
-      "fields": {
-        "recording_id": {
-          "name": "Recording",
-          "description": "The recording to check."
-        }
-      }
-    },
     "replay_recording": {
       "name": "Replay a recording",
       "description": "Replay a recorded conversation's first turns with the assistant it used, in a sandbox, and report whether the assistant changed the same devices the same way. Calls that assistant's AI model; nothing is stored.",
@@ -123,6 +113,26 @@
     "step_models": {
       "title": "Some Assist Improver steps can't run",
       "description": "The AI model chosen for {steps} isn't available anymore. Runs wait until you choose another in [Assist Improver's settings]({link})."
+    },
+    "update_recording": {
+      "title": "Assist Improver can't fully record conversations",
+      "description": "Assist Improver needs an update for this version of Home Assistant."
+    },
+    "update_replays": {
+      "title": "Assist Improver can't test improvements",
+      "description": "Assist Improver needs an update for this version of Home Assistant."
+    },
+    "update_ai_models": {
+      "title": "Assist Improver can't fully set up AI models",
+      "description": "Assist Improver needs an update for this version of Home Assistant."
+    },
+    "update_changes": {
+      "title": "Assist Improver can't apply some improvements",
+      "description": "Assist Improver needs an update for this version of Home Assistant."
+    },
+    "update_usage": {
+      "title": "Assist Improver can't count tokens used",
+      "description": "Assist Improver needs an update for this version of Home Assistant."
     }
   },
   "exceptions": {

@@ -1,11 +1,15 @@
 """Simulate (SPEC.md P0.1, DETAILS P6): an idea tested on the conversation it's proposed for.
 
-The whole conversation is replayed in a sandbox (sandbox.py, replay.py) with the household's own assistant and the
-user's recorded words, in order, from the home and time it started from: once without the change (the before), which
-must go as the conversation went, and once with it (the after), leaving out the turns DETAILS P6.4 lets it skip. Code
-judges both by P0.1.1's measures (measures.py); a small model judges only whether an Assist turn shows what the
+The conversation is replayed in a sandbox (sandbox.py, replay.py) set up as the household's Home Assistant is today,
+with its own assistant as set up now and the user's recorded words, in order, from the moment it started (its devices'
+states and time). Without the change (the baseline), the whole conversation is replayed up to three times, until a try
+goes as the conversation went (DETAILS P6.6.5): Assist varies from run to run, so the trouble may not come up in one.
+With the change (the test), it branches from that baseline where the change has to make the difference: the turns
+before are the baseline's, its home and its history; from there it says the turns DETAILS P6.4 doesn't let it skip.
+Code judges both by P0.1.1's measures (measures.py); a small model judges only whether an Assist turn shows what the
 household objected to (a conduct goal), one turn at a time, with what it said and did. Each replay runs once for its
-plan and is kept (Replays): a settled one is reused, never resampled; one the machinery cut off runs again.
+plan, which names the setup it runs on, and is kept (Replays): a settled one is reused, never resampled, while the
+setup is unchanged; one the machinery cut off runs again.
 """
 
 import asyncio
@@ -16,12 +20,8 @@ from pathlib import Path
 from uuid import uuid4
 
 import probatio
-# No public route: only a trace of its own keeps a replay's model and tool reports out of the caller's.
-from homeassistant.components.conversation.trace import async_conversation_trace
 from homeassistant.const import __version__ as CORE_VERSION
-from homeassistant.core import Context
 from homeassistant.exceptions import HomeAssistantError
-from homeassistant.helpers import llm
 from homeassistant.helpers.storage import Store
 from homeassistant.util.dt import utcnow
 
@@ -34,10 +34,12 @@ from .const import DOMAIN, STORAGE_VERSION, TESTED_PROVIDERS
 from .digest import _clip, _naming
 from .failures import closing
 from .instructions import target
-from .replay import SandboxHome, assistant_of
+from .reflective import own_trace
+from .replay import SandboxHome, today as setup_today
+from .serialization import plain
 from .simulation import (UnsupportedSimulation, _request_changes, assist_transitions, moved_by_others, per_entity,
                          recorded_attributes, same_brightness, same_effects, setting_off)
-from .snapshot import assist_config
+from .snapshot import assist_config, at_moment, on_today, renamed, renaming
 from .trace import span
 
 # How a replay can end. Settled: its result stands for its plan (never run again). Transient: the machinery's doing
@@ -46,8 +48,8 @@ SETTLED = ("reproduced", "not_reproducible", "done", "unsupported")
 TRANSIENT = ("running", "infrastructure_failure", "interrupted", "cancelled")
 NOT_REACHED = "It only changes the instructions of an assistant this conversation didn't use."
 ASKED_IN_NOTE = "They asked again in the note they sent it in with."
-NOTHING_AGAIN = ("Without the change, nothing the household had trouble with happened again, so a change can't be "
-                 "shown to remove it.")
+NOTHING_AGAIN = "nothing the household had trouble with happened again"
+TRIES = 3  # The baseline's tries on one setup (DETAILS P6.6.6).
 # Whether a replay's Assist turns show what the household objected to: a small model judges only that, one turn at a
 # time, with the turn they objected to as the example (DETAILS P6.1.9, P6.1.11). Its model is set where the feedback
 # check's was (settings' role key).
@@ -92,9 +94,9 @@ def engine_version(folder):
 REPLAY_ENGINE = engine_version(Path(__file__).parent)  # Read once, as the integration loads (off HA's event loop).
 
 
-def before_plan(recording):
-    """The replay without a change: the whole recorded conversation, as its assistant ran it. It doesn't depend on
-    the goals, so a conversation has one (P6.6.6). Untestable (conversation) when it can't be replayed."""
+def agent_of(recording):
+    """The assistant that answered a conversation (its entity id), and what limits its replay (its notes,
+    cases.replay_readiness): Untestable (conversation) when it can't be replayed."""
     if "practice" in recording:  # Left by earlier versions: its devices were simulated, so there's nothing to match.
         raise Untestable("It can't be replayed: it was recorded in sandbox mode", conversation=True)
     try:
@@ -107,27 +109,79 @@ def before_plan(recording):
     agents = {m["agent_id"] for t in turns for m in t["messages"] if m["role"] == "assistant"}
     if len(agents) != 1:
         raise Untestable("Which assistant answered this conversation is missing or ambiguous.", conversation=True)
-    first = turns[0]
-    platform = first["prepared"]["context"].get("platform")
-    plan = {"kind": "before", "recording_id": recording["id"], "recording_digest": digest(recording),
-            "core_version": CORE_VERSION, "replay_engine": REPLAY_ENGINE, "agent_id": agents.pop(),
-            "provider": deepcopy(first["prepared"]["provider_config"][0]), "platform": platform,
+    return agents.pop(), readiness["notes"]
+
+
+# What of an entity Assist can't see a replay doesn't depend on: how it's named, and whether it has a state now.
+UNSEEN = ("name", "original_name", "aliases", "alias_entries", "has_state")
+
+
+def setup_digest(today):
+    """What a plan carries of the setup its replay runs on (DETAILS P6.7.1): a digest of what a replay depends on in it
+    (replay.today's): not the devices' states, when it was read or how the recorder keeps attributes, nor how what
+    Assist can't see is named. The assistant is its whole configuration as the sandbox loads it, secrets redacted."""
+    home = today["home"]
+    exposed = {e for e, on in (home.get("exposure") or {}).items() if on}
+    entities = {e: {k: v for k, v in x.items() if e in exposed or k not in UNSEEN}
+                for e, x in (home.get("entities") or {}).items()}
+    seen = {(entities.get(e) or {}).get("device_id") for e in exposed}
+    devices = {d: x if d in seen else {"area_id": x.get("area_id")} for d, x in (home.get("devices") or {}).items()}
+    named = {e: (((home.get("states") or {}).get(e) or {}).get("attributes") or {}).get("friendly_name")
+             for e in exposed}
+    entry = today["assistant"]["entry"]
+    return digest({"home": {**{k: v for k, v in home.items() if k not in (
+        "states", "at", "attribute_policy", "exposure", "entities", "devices")}, "entities": entities,
+        "devices": devices, "exposed": named, "all": sorted({*entities, *(home.get("states") or {})})},
+        "assistant": plain({"domain": entry["domain"], "data": entry.get("data"), "options": entry.get("options"),
+                            "settings": entry["subentries"][0].get("data")}),
+        **{k: today[k] for k in ("tools", "timers")}})
+
+
+def before_plan(recording, today, attempt=1):
+    """The replay without a change: the whole recorded conversation, said to its assistant in today's setup (today:
+    replay.today's). It doesn't depend on the goals, so a conversation has one per setup and try (attempt: 1 to TRIES,
+    P6.6.6). Untestable (conversation) when it can't be replayed."""
+    agent, notes = agent_of(recording)
+    platform, options = today["assistant"]["entry"]["domain"], today["provider"]["options"]
+    if platform not in TESTED_PROVIDERS:
+        notes = [*notes, "provider_not_yet_tested_for_replay"]
+    if any(options.get(k) not in (None, False, "off") for k in ("code_execution", "web_fetch", "web_search")):
+        notes = [*notes, "hosted_tools_kept_on; provider_execution_is_not_intercepted_by_HA"]
+    plan = {"kind": "before", "try": attempt, "recording_id": recording["id"], "recording_digest": digest(recording),
+            "core_version": CORE_VERSION, "replay_engine": REPLAY_ENGINE, "setup": setup_digest(today),
+            "agent_id": agent, "provider": deepcopy(today["provider"]), "platform": platform,
             "provider_tested": platform in TESTED_PROVIDERS,
             "expected_effects": "recorded_changes",  # What a turn's effects are compared with.
-            "user_inputs": [t["messages"][0]["content"] for t in turns],
-            "prompt_digests": [digest(t["history"][0]["content"]) for t in turns],
-            "tool_digests": [digest(t["prepared"]["tools"]) for t in turns],
-            "definitions": digest({k: first["source"][k] for k in ("scripts", "automations")}),
-            "notes": readiness["fidelity_notes"]}
+            "user_inputs": [t["messages"][0]["content"] for t in recording_turns(recording)], "notes": notes}
     plan["id"] = digest(plan)
     return plan
 
 
-def after_plan(before, setup, goals, aside=(), judge=None):
-    """The replay with a change: its before's, the change as the sandbox runs it (setup_for), and the goals, which
-    decide the turns it may skip, with those set aside (aside: keys), whose turns it says, and the model that judges
-    the objections and questions it may skip on (P6.7: it decides which turns are said too)."""
-    plan = {"kind": "after", "before": before["id"], "setup": deepcopy(setup),
+def tried_again(before):
+    """The plan of the baseline's next try, after this one (before_plan's)."""
+    plan = {**{k: v for k, v in before.items() if k != "id"}, "try": before["try"] + 1}
+    plan["id"] = digest(plan)
+    return plan
+
+
+async def planned(hass, recording):
+    """(before, today): today's setup for replaying a conversation (replay.today), read once for its baseline and
+    the tests compared with it, and its replay without a change on it (before_plan). Untestable (conversation) when
+    it can't be replayed."""
+    agent, _ = await hass.async_add_executor_job(agent_of, recording)
+    try:
+        today = await setup_today(hass, agent)
+    except CaseError as err:
+        raise Untestable(str(err), conversation=True) from err
+    return await hass.async_add_executor_job(before_plan, recording, today), today  # Its digest reads it all.
+
+
+def after_plan(before, setup, goals, aside=(), judge=None, branch=1):
+    """The replay with a change: the baseline it branches from (before: its plan) at its branch turn, the change as
+    the sandbox runs it (setup_for), and the goals, which decide the turns it may skip, with those set aside (aside:
+    keys), whose turns it says, and the model that judges the objections and questions it may skip on (P6.7: it decides
+    which turns are said too)."""
+    plan = {"kind": "after", "before": before["id"], "branch": branch, "setup": deepcopy(setup),
             "goals": digest([[g.get(k) for k in GOAL_FIELDS] for g in goals]),
             **({"aside": sorted(aside)} if aside else {}),
             **({"judge": judge} if any(g.get("kind") == "conduct" or g.get("kind") == "fact" and g.get("serves") is None
@@ -136,23 +190,23 @@ def after_plan(before, setup, goals, aside=(), judge=None):
     return plan
 
 
-def setup_for(hypothesis, recording, hass):
-    """(setup, tested, provider) of an idea on a conversation: its changes as the sandbox runs them, on the first
-    turn's scripts and its assistant's instructions, for the person speaking; what it was tested against (the
-    recorded configuration of the scripts it touches and of the exposure it changes, and the instructions it edits as
+def setup_for(hypothesis, recording, today, hass):
+    """(setup, tested, provider) of an idea on a conversation: its changes as the sandbox runs them, on today's setup
+    (today: replay.today's) and its assistant's instructions now, for the person speaking; what it was tested against
+    (the configuration of the scripts it touches and of the exposure it changes, and the instructions it edits, as
     Home Assistant has them now: applying it later finds a conflict if one changed since); the assistant it ran on."""
     if not isinstance(hypothesis, dict) or not hypothesis.get("changes"):
         raise CaseError("The idea has no changes to test.")
     turn = recording_turns(recording)[0]
-    source, config = turn["source"], turn["prepared"]["provider_config"][0]
-    scripts = source["scripts"]
+    source, config = at_moment(today["home"], turn["source"]), today["provider"]
+    scripts = source.get("scripts") or {}
     setup = setup_from_changes(hypothesis["changes"], source=source, prompt=config["options"].get("prompt"),
                                scripts=scripts, user_id=(turn["prepared"].get("context") or {}).get("context", {})
                                .get("user_id"), assistant=target(config))
     touched = {c["entity_id"].split(".", 1)[1] for c in hypothesis["changes"]
                if c.get("kind") in ("script", "exposure") and (c.get("entity_id") or "").startswith("script.")}
     tested = {"scripts": {oid: deepcopy(scripts[oid]) for oid in sorted(touched) if oid in scripts},
-              "exposure": {e: bool(source["exposure"].get(e)) for e in sorted(setup["exposure"])}}
+              "exposure": {e: bool((source.get("exposure") or {}).get(e)) for e in sorted(setup["exposure"])}}
     if prompts := instructions_now(hass, hypothesis):
         tested["prompts"] = prompts
     return setup, tested, {k: config.get(k) for k in ("config_entry_id", "subentry_id", "title")}
@@ -514,18 +568,20 @@ class Replays:
 
 
 class Trial:
-    """One replay of a conversation under its plan, from the first turn, the user's recorded words in order (through
-    the turn `through`, for a developer's replay): the before, each turn's effects on the devices the recorded Assist
-    changed matching the recording's (not_reproducible at the first that doesn't), or the after, with the change in
-    the sandbox, saying only the turns it can't skip (DETAILS P6.4), with the judge (judge: its model) asked about
-    the objections as it goes (session: the recording as the analysis read it, exploration.SessionView, where the
-    caller has one). It runs once; its sandbox closes however it ends."""
+    """One replay of a conversation under its plan, on today's setup (today: replay.today's, the one its plan names),
+    the user's recorded words in order (through the turn `through`, for a developer's replay): the before, from the
+    first turn, each turn's effects on the devices the recorded Assist changed matching the recording's
+    (not_reproducible at the first that doesn't), or the after, with the change in the sandbox, from its branch turn
+    on (branch: its plan's), the turns before its baseline's (baseline: that replay, as kept): its steps, its home after
+    the turn before and its history, saying only the turns it can't skip (DETAILS P6.4), with the judge (judge: its
+    model) asked about the objections as it goes (session: the recording as the analysis read it,
+    exploration.SessionView, where the caller has one). It runs once; its sandbox closes however it ends."""
 
-    def __init__(self, hass, plan, recording, *, before=None, goals=None, setup=None, aside=(), judge=None,
-                 through=None, session=None):
-        self.hass, self.plan, self.recording = hass, plan, recording
-        self.assistant = before or plan  # Whose plan names the assistant and its recorded settings: the before's.
+    def __init__(self, hass, plan, recording, today, *, goals=None, setup=None, aside=(), judge=None, through=None,
+                 session=None, baseline=None):
+        self.hass, self.plan, self.recording, self.today = hass, plan, recording, today
         self.goals, self.setup, self.after, self.aside = goals or [], setup or {}, plan["kind"] == "after", set(aside)
+        self.baseline, self.branch = baseline, plan.get("branch", 1)
         self.judge, self.states, self.facts = judge, {}, {}  # The judge's model; its answers so far.
         self.turns = recording_turns(recording)
         self.through = through or len(self.turns)
@@ -540,32 +596,35 @@ class Trial:
     async def run(self):
         # In a conversation trace of its own: what the replay's model and tools report is the replay's, never the
         # caller's (the proposer's, when a test runs as its tool).
-        with async_conversation_trace():
+        with own_trace(self.hass):
             return await self._run()
 
     async def _run(self):
-        """The household's assistant runs each turn in the replay's sandbox, loaded from its own config entry with the
-        recorded provider settings (a change's instructions in their place): a turn runs there whole, the model seeing
-        what Home Assistant builds there, which must be the recorded prompt and tools (SandboxHome.faithful)."""
-        entry, setup, turns = self.entry, self.setup, self.turns
-        source = turns[0]["source"]
+        """The household's assistant runs each turn in the replay's sandbox, loaded from its own config entry as it's
+        set up now (a change's instructions in place of its own): a turn runs there whole, the model seeing what Home
+        Assistant builds there."""
+        entry, turns, saying = self.entry, self.turns, None
         try:
+            for turn in turns[self.branch - 1:self.through]:  # Each said as its user: else it can't start (P6.2.14).
+                identity = turn["prepared"]["context"].get("context") or {}
+                if not identity.get("id") or not {"id", "user_id", "parent_id"} <= identity.keys():
+                    raise CaseError("Cannot backfill missing historical identity")
             if self.after and self.session is None:  # What the replay with the change is judged on.
                 from .exploration import session_view
                 self.session = await session_view(self.hass, self.recording)
+            said = self.branch - 1  # The turns before the branch: the baseline's (DETAILS P6.2).
+            carried = [s for s in self.baseline["steps"] if s["turn"] <= said] if said else []
             self.home = home = SandboxHome(
-                self.hass, self.recording, turns[0], self.conversation_id,
-                scripts={**source["scripts"], **(setup.get("scripts") or {})}, automations=source["automations"],
-                exposure_changes=setup.get("exposure"), alias_changes=setup.get("aliases"),
-                alias_removals=setup.get("alias_removals"), household=setup.get("household"),
-                watch=[e for e in source["states"] if e.startswith("light.")])
-            provider = deepcopy(self.assistant["provider"])
-            if setup.get("prompt") is not None:
-                provider["options"] = {**provider["options"], "prompt": setup["prompt"]}
-            self.agent = await home.load_assistant(self.assistant["agent_id"], provider)
-            said = 0
-            for turn in turns[:self.through]:
-                number = turn["number"]
+                self.hass, self.recording, turns[0], self.conversation_id, self.today, change=self.setup,
+                watch=[e for e in self.today["home"]["states"] if e.startswith("light.")],
+                start=carried[-1]["home"] if carried else None)
+            self.agent = await home.load_assistant()
+            if carried:
+                await home.carry(carried)
+                entry["said"], entry["steps"] = [s["turn"] for s in carried], deepcopy(carried)
+                entry["verdicts"] = before_the_branch(self.baseline.get("verdicts"), self.branch)
+            for turn in turns[said:self.through]:
+                number = saying = turn["number"]
                 if number > 1:
                     if self.after and not await self._needed(number):
                         continue
@@ -582,7 +641,9 @@ class Trial:
             raise
         except Exception as err:
             entry["status"] = "unsupported" if isinstance(err, CaseError) else "infrastructure_failure"
-            entry["error"] = {"type": type(err).__name__, "message": str(err)[:500]}
+            # The turn it was at, once it was saying its turns (DETAILS P6.6.5); without one, it couldn't start.
+            entry["error"] = {"type": type(err).__name__, "message": str(err)[:500],
+                              **({"turn": saying} if saying else {})}
         finally:
             entry["usage"] = usage_report(self.usage)
             if self.home is not None:
@@ -623,15 +684,6 @@ class Trial:
     async def _turn(self, turn):
         """Replay one turn and keep it as a step; False when the before's turn didn't go as recorded."""
         number, home = turn["number"], self.home
-        identity = turn["prepared"]["context"].get("context") or {}
-        if not identity.get("id") or not {"id", "user_id", "parent_id"} <= identity.keys():
-            raise CaseError("Cannot backfill missing historical identity")
-        recorded_context = llm.LLMContext(**{**turn["prepared"]["context"], "context": Context(**identity)})
-        if not self.after:  # The replay with a change says turns its before has shown are rebuilt exactly.
-            if not await home.faithful(turn, recorded_context):
-                raise UnsupportedSimulation("The sandbox doesn't rebuild this turn's instructions and tools exactly")
-        else:  # The household knowledge Assist reads: the change's, or as recorded.
-            await home.prepare(turn, recorded_context)
         async with span("replay.turn", replay=self.plan["kind"], turn=number):
             found = await home.turn(turn, self.agent, self.conversation_id)
         self.usage += found["usage"]
@@ -652,8 +704,7 @@ class Trial:
                       for e in home.watch}
         step = {"turn": number, "input": turn["messages"][0]["content"], "reply": new[-1]["content"], "output": new,
                 "transitions": transitions, "brightness": {e: v for e, v in brightness.items() if v[0] != v[1]},
-                "external_calls": external, "spoken": found["spoken"], "commands": found["commands"],
-                "prompt_matches_recording": found["given"]["prompt"] == turn["history"][0]["content"]}
+                "external_calls": external, "spoken": found["spoken"], "commands": found["commands"]}
         self.entry["said"].append(number)
         self.entry["steps"].append(step)
         if self.after:
@@ -668,7 +719,7 @@ class Trial:
         lights = sorted(e for e in mine
                         if e.startswith("light.") and (attributes.get(e) or {}).get("brightness") is not None)
         then = recorded_attributes(self.recording, turn, lights)
-        step.update(recorded_transitions=expected,
+        step.update(home=found["home"], recorded_transitions=expected,  # Its home: where a test may branch from.
                     matched=all(same_effects(actual_by.get(e, []), expected_by.get(e, [])) for e in mine)
                     and all(same_brightness(attributes.get(e), then[e]) for e in lights),
                     differences_elsewhere={e: {"replay": [list(c) for c in actual_by.get(e, [])],
@@ -680,6 +731,18 @@ class Trial:
         return step["matched"]
 
 
+def before_the_branch(verdicts, branch):
+    """The judge's answers kept with a baseline on its turns before a test's branch, which the test carries: what was
+    said of those turns stands, never asked again."""
+    out = {}
+    for name, check in (verdicts or {}).items():
+        answers = {goal: kept for goal, found in (check.get("answers") or {}).items()
+                   if (kept := [a for a in found if a["turn"] < branch])}
+        if answers:
+            out[name] = {**check, "answers": answers, "usage": None}  # Paid for by the baseline.
+    return out
+
+
 def usage_report(events):
     """The provider-neutral statistics HA's assistant traced for a replay's turns: absence is unknown, never zero
     usage or a billing guarantee."""
@@ -688,18 +751,12 @@ def usage_report(events):
             "limits": "HA trace statistics may omit cache writes, tool fees and retries; events are not request counts"}
 
 
-async def _settled(hass, replays, plan, before, recording, **kwargs):
-    """The plan's replay: a settled one as kept (never resampled); otherwise run now, kept from before its first
-    inference and closed however it ends. Transient when the machinery cut it off; Untestable (nothing kept) when the
-    conversation's assistant can't run it."""
+async def _settled(hass, replays, plan, recording, today, **kwargs):
+    """The plan's replay, on the setup it names (today): a settled one as kept (never resampled); otherwise run now,
+    kept from before its first inference and closed however it ends. Transient when the machinery cut it off."""
     if (kept := replays.get(plan["id"])) and kept["status"] in SETTLED:
         return kept
-    try:
-        if assistant_of(hass, before["agent_id"], before["provider"]) is None:
-            raise CaseError("The assistant this conversation used is no longer set up, so it can't be replayed.")
-    except CaseError as err:
-        raise Untestable(str(err), conversation=True) from err
-    trial = Trial(hass, plan, recording, before=before, **kwargs)
+    trial = Trial(hass, plan, recording, today, **kwargs)
     async with closing(replays.save, deepcopy(trial.entry)) as keep:
         async with span("replay", kind=plan["kind"], plan_id=plan["id"]) as section:
             found = await keep(await trial.run())
@@ -710,11 +767,19 @@ async def _settled(hass, replays, plan, before, recording, **kwargs):
 
 
 def _why(replay):
-    """Why a settled replay can't be judged."""
-    if replay["status"] == "not_reproducible":
-        return (f"Without the change, turn {replay['steps'][-1]['turn']} didn't do what it did in the conversation, "
-                "so a change can't be judged against it.")
+    """Why a replay that ran into what it can't replay can't be judged."""
     return (replay.get("error") or {}).get("message") or "It couldn't be replayed."
+
+
+class Unlike(Exception):
+    """A try of the baseline that didn't go as the conversation went (DETAILS P6.6.1, P6.6.2), or stopped as
+    unsupported once it was saying its turns (P6.6.5): why, in a few words."""
+
+
+def unlike(whys):
+    """Why the conversation is not reproducible once none of its baseline's tries went as it went (DETAILS P6.6.5):
+    how many ran, and why each didn't, said once."""
+    return f"Tried {len(whys)} times without the change: {'; '.join(dict.fromkeys(whys))}."
 
 
 def _devices(goal):
@@ -722,8 +787,9 @@ def _devices(goal):
     return {e for e in [goal.get("entity_id"), *(goal.get("entity_ids") or [])] if e}
 
 
-def _replay(replay, judged, heard, told, aside, source, setup):
-    """A replay as its test keeps it: how it went (its replies) and how it fulfilled the goals, from where, with each
+def _replay(replay, judged, heard, told, aside, source, seeded, setup):
+    """A replay as its test keeps it: how it went (its replies) and how it fulfilled the goals, from the moment it
+    started (source: the recording's first snapshot) and on what (seeded: today's setup at that moment), with each
     conduct goal's and question's state, what the judge said of it (heard, told) and whether it was set aside."""
     replies = [{"turn": step["turn"], "you": said["you"], "assistant": said["assist"],
                 **({"failed": said["failed"]} if said.get("failed") else {})}
@@ -732,10 +798,10 @@ def _replay(replay, judged, heard, told, aside, source, setup):
             "goals": judged["goals"], "goals_met": judged["goals_met"],
             "turns_per_root_goal": judged["turns_per_root_goal"], "counted": judged["counted"],
             "home_couldnt": judged["home_couldnt"],
-            "side_effects_left": [{"entity_id": s["entity_id"], "name": _naming(source, s["entity_id"])[0],
+            "side_effects_left": [{"entity_id": s["entity_id"], "name": _naming(seeded, s["entity_id"])[0],
                                    "start": s["start"], "end": s["end"], "turn": s["turn"]}
                                   for s in judged["side_effects_left"]],
-            "started_from": started_from(source), "config": assist_config(source, setup),
+            "started_from": started_from(source), "config": assist_config(seeded, setup),
             "conduct": {k: {"state": judged["goals"][k], "answers": (heard.get(k) or {}).get("answers", []),
                             **({"set_aside": True} if k in aside else {})} for k in heard},
             "facts": {k: {"state": judged["goals"][k], "answers": (told.get(k) or {}).get("answers", []),
@@ -755,12 +821,74 @@ async def test(hass, entry, runtime, rid, goals, hypothesis):
         raise Untestable(str(err), conversation=True) from err
     if not reaches(hypothesis, recording):
         raise Untestable(NOT_REACHED)
-    before = await hass.async_add_executor_job(before_plan, recording)  # Its digest reads it all: off the loop.
-    without = await _settled(hass, replays, before, before, recording)
-    if without["status"] != "reproduced":
-        raise Untestable(_why(without), conversation=True)
+    # One setup for the baseline and the test compared with it: once it has changed, the baseline runs again. A device
+    # whose entity ID changed since is the same device under its new one, in the conversation and its goals alike.
+    before, today = await planned(hass, recording)
+    renames = renamed(recording, today["home"])
+    recording, goals = renaming(recording, renames), renaming(goals, renames)
     turns, session = recording_turns(recording), await session_view(hass, recording)
     went = measures.judge(goals, session, range(1, len(turns) + 1), measures.CONVERSATION)
+    model = judge_model(entry)
+    # The baseline: up to TRIES whole replays without the change, each under a plan of its own and kept, until one goes
+    # as the conversation went; a try the machinery cut off isn't one, and runs again (Transient).
+    whys = []
+    while True:
+        without = await _settled(hass, replays, before, recording, today)
+        try:
+            baseline = await _baseline(hass, model, replays, without, recording, goals, session, went)
+            break
+        except Unlike as err:
+            whys.append(str(err))
+        if before["try"] == TRIES:
+            raise Untestable(unlike(whys), conversation=True)
+        before = tried_again(before)
+    b, heard_before, told_before, aside = (baseline[k] for k in ("judged", "conduct", "facts", "aside"))
+    try:
+        setup, tested, provider = setup_for(hypothesis, recording, today, hass)
+    except CaseError as err:
+        raise Untestable(str(err)) from err
+    # The test branches from the baseline where the change has to make the difference (DETAILS P6.2).
+    branch = measures.branch(goals, b, baseline["home"], aside, {
+        k: [a["turn"] for a in v["answers"] if a["shows"]] for k, v in heard_before.items()})
+    with_change = await _settled(hass, replays, after_plan(before, setup, goals, aside, model, branch), recording,
+                                 today, goals=goals, setup=setup, aside=aside, judge=model, session=session,
+                                 baseline=without)
+    if with_change["status"] != "done":  # It can't run with this change: the idea's, not counted (P6.3.5).
+        raise Untestable(_why(with_change))
+    heard_after = {k: {} for k in heard_before if k in aside}  # Set aside: not judged again.
+    heard_after.update(await conduct(hass, model, replays, with_change, recording,
+                                     [g for g in goals if g["key"] not in aside]))
+    told_after = {k: {} for k in told_before if k in aside}
+    told_after.update(await questions(hass, model, replays, with_change, recording,
+                                      [q for q in baseline["asking"] if q["key"] not in aside], goals, session))
+    a = measures.judge(goals, measures.replay_view(turns, session, with_change["steps"]), with_change["said"],
+                       {k: v["state"] for k, v in heard_after.items() if v}, aside,
+                       {k: v["answers"] for k, v in told_after.items() if v})
+    source = turns[0]["source"]
+    seeded = at_moment(today["home"], source)
+    return {"idea": hypothesis.get("title"), "changes": digest(hypothesis.get("changes")),
+            "hypothesis": deepcopy(hypothesis), "at": utcnow().isoformat(),
+            "judged": measures.judged_of(goals, _devices),
+            "before": _replay(without, b, heard_before, told_before, aside, source, seeded, None),
+            "after": _replay(with_change, a, heard_after, told_after, aside, source, seeded, setup),
+            "gains": measures.gains(a, b), "validated": measures.easier(a, b),
+            "setup": setup, "tested": tested, "provider": provider,
+            "user_id": (turns[0]["prepared"]["context"].get("context") or {}).get("user_id"),
+            "recorded": transcript(recording), "notes": list(before["notes"])}
+
+
+async def _baseline(hass, model, replays, without, recording, goals, session, went):
+    """A try of the baseline, judged (without: its replay, settled): {judged, conduct, facts, aside, asking, home} once
+    it went as the conversation went (went: judged; DETAILS P6.6.1, P6.6.2); Unlike, with why, when it didn't, or
+    stopped as unsupported once it was saying its turns, as another try may go otherwise (P6.6.5); Untestable
+    (conversation) when it couldn't start, as no try could."""
+    if without["status"] == "not_reproducible":
+        raise Unlike(f"turn {without['steps'][-1]['turn']} didn't do what it did in the conversation")
+    if without["status"] == "unsupported" and (without["error"] or {}).get("turn"):
+        raise Unlike(_why(without))
+    if without["status"] != "reproduced":
+        raise Untestable(_why(without), conversation=True)
+    turns = recording_turns(recording)
     home = measures.replay_view(turns, session, without["steps"])
     # What code judges first: a before that didn't go as the conversation went costs no judge's call. What it can't
     # test is set aside (open for saying turns, indeterminate in both replays): a wrap-up it finds met, then an
@@ -773,8 +901,7 @@ async def test(hass, entry, runtime, rid, goals, hypothesis):
     aside = measures.set_aside(found, went, goals) - objections - theirs  # Those are the judge's to tell, next.
     actions = measures.told_by(goals, {g["key"] for g in goals if g.get("kind") == "action"})  # From calls.
     if why := measures.went_as_it_went(found, went, leave_out=objections | theirs | aside | actions):
-        raise Untestable(why, conversation=True)
-    model = judge_model(entry)
+        raise Unlike(why)
     heard_before = await conduct(hass, model, replays, without, recording, goals)
     states = {k: v["state"] for k, v in heard_before.items()}
     told_before = await questions(hass, model, replays, without, recording, asking, goals, session)
@@ -793,45 +920,20 @@ async def test(hass, entry, runtime, rid, goals, hypothesis):
     untold = {g["key"] for g in goals if g.get("kind") == "action" and "indeterminate" in (
         b["goals"].get(g["key"]), went["goals"].get(g["key"]))}
     if why := measures.went_as_it_went(b, went, leave_out=aside | measures.told_by(goals, untold)):
-        raise Untestable(why, conversation=True)
+        raise Unlike(why)
     if (aside or {k for k in untold if went["goals"].get(k) == "unmet"}) and not b["side_effects_left"] and not any(
             v == "unmet" for k, v in b["goals"].items() if k not in aside | measures.told_by(goals, untold)):
-        raise Untestable(NOTHING_AGAIN, conversation=True)  # What's set aside left nothing to remove (P6.6.5).
-    try:
-        setup, tested, provider = setup_for(hypothesis, recording, hass)
-    except CaseError as err:
-        raise Untestable(str(err)) from err
-    with_change = await _settled(hass, replays, after_plan(before, setup, goals, aside, model), before, recording,
-                                 goals=goals, setup=setup, aside=aside, judge=model, session=session)
-    if with_change["status"] != "done":  # It can't run with this change: the idea's, not counted (P6.3.5).
-        raise Untestable(_why(with_change))
-    heard_after = {k: {} for k in heard_before if k in aside}  # Set aside: not judged again.
-    heard_after.update(await conduct(hass, model, replays, with_change, recording,
-                                     [g for g in goals if g["key"] not in aside]))
-    told_after = {k: {} for k in told_before if k in aside}
-    told_after.update(await questions(hass, model, replays, with_change, recording,
-                                      [q for q in asking if q["key"] not in aside], goals, session))
-    a = measures.judge(goals, measures.replay_view(turns, session, with_change["steps"]), with_change["said"],
-                       {k: v["state"] for k, v in heard_after.items() if v}, aside,
-                       {k: v["answers"] for k, v in told_after.items() if v})
-    source = turns[0]["source"]
-    return {"idea": hypothesis.get("title"), "changes": digest(hypothesis.get("changes")),
-            "hypothesis": deepcopy(hypothesis), "at": utcnow().isoformat(),
-            "judged": measures.judged_of(goals, _devices),
-            "before": _replay(without, b, heard_before, told_before, aside, source, None),
-            "after": _replay(with_change, a, heard_after, told_after, aside, source, setup),
-            "gains": measures.gains(a, b), "validated": measures.easier(a, b),
-            "setup": setup, "tested": tested, "provider": provider,
-            "user_id": (turns[0]["prepared"]["context"].get("context") or {}).get("user_id"),
-            "recorded": transcript(recording), "notes": list(before["notes"])}
+        raise Unlike(NOTHING_AGAIN)  # What's set aside left nothing to remove (P6.6.2).
+    return {"judged": b, "conduct": heard_before, "facts": told_before, "aside": aside, "asking": asking,
+            "home": home}
 
 
 async def replay_recording(hass, recorder, recording_id, last_turn=1):
-    """A recording's first turns replayed as a before would (its assistant, a sandbox in the replay worker), each
-    checked against what the recorded assistant did: for checking the replay engine end to end (DETAILS P6.12, a
-    developer service). Paid: the assistant's own model. Nothing is kept."""
+    """A recording's first turns replayed as a before would (its assistant, a sandbox in the replay worker, today's
+    setup), each checked against what the recorded assistant did: for checking the replay engine end to end (DETAILS
+    P6.12, a developer service). Paid: the assistant's own model. Nothing is kept."""
     recording = await recorder.export(recording_id)
-    plan = await hass.async_add_executor_job(before_plan, recording)
-    found = await Trial(hass, plan, recording, through=last_turn).run()
+    plan, today = await planned(hass, recording)
+    found = await Trial(hass, plan, on_today(recording, today["home"]), today, through=last_turn).run()
     return {"agent_id": plan["agent_id"], "model": (plan["provider"].get("options") or {}).get("chat_model"),
             **{k: v for k, v in found.items() if k != "plan"}}

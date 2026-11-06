@@ -1,93 +1,97 @@
-"""A replay's recorded home: a sandbox seeded as the recorded home, where the household's assistant runs each turn.
+"""A replay's home: a sandbox set up as the household's Home Assistant is today, at the moment of the conversation,
+where the household's assistant runs each turn (DETAILS P6.2.4).
 
-The assistant loads there from its own config entry, by its provider's integration (assistant_of,
-sandbox.load_assistant), with the recorded settings; HA builds its prompt and tools there, its model is asked from
-there, and each tool call runs there: HA's own intents, scripts and automations act on the sandbox's copy of the
-home, and only device commands are emulated. The sandbox runs in a replay worker of its own (worker.py); the real
-instance only drives which recorded turn is said (simulate.Trial).
+Today's setup is read at replay time, the way the recorder reads a home (snapshot.py, setup_now), with the
+conversation's assistant as it's set up now (today); only the moment comes from the recording: what was said, the
+devices' states as it started (snapshot.at_moment) and others' changes between turns, and its time. The assistant loads
+in the sandbox from its own config entry, by its provider's integration (sandbox.load_assistant); HA builds its prompt
+and tools there, its model is asked from there, and each tool call runs there: HA's own intents, scripts and
+automations act on the sandbox's copy of the home, and only device commands are emulated. The sandbox runs in a replay
+worker of its own (worker.py); the real instance only drives which recorded turn is said (simulate.Trial).
 """
 
-from collections.abc import Callable
-from uuid import uuid4
+from copy import deepcopy
 
 from homeassistant.core import Context
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import entity_registry as er, llm
-from homeassistant.util.hass_dict import HassKey
 
-from .cases import CaseError, recording_turns
-from .const import DOMAIN
+from .cases import CaseError
+from .const import DOMAIN, PROVIDER_OPTIONS
 from .sandbox import seed_options
+from .serialization import plain
 from .simulation import UnsupportedSimulation, reports_movement
+from .snapshot import at_moment
+from .touchpoints import Broken
 from .trace import span
 from .worker import RemoteSandbox, WorkerError, context_data
 
+GONE = "The assistant this conversation used is no longer set up, so it can't be replayed."
+
 
 class SandboxHome:
-    """One replay's sandbox, started on first use from the recording's first turn.
+    """One replay's sandbox, started on first use: today's setup (today: replay.today's) at the recording's first turn
+    (snapshot.at_moment), with a change on top (change: changes.setup_from_changes's scripts, exposure, aliases,
+    household knowledge and instructions); for a test that branches from its baseline, set to the baseline's home after
+    the turn before the branch (start: how it differed from that moment then, sandbox.moved). watch: the entities whose
+    attributes a turn is judged on (a light's brightness)."""
 
-    scripts ({object id: config}) and automations are those the sandbox runs: the recorded ones, with a change's on
-    top. watch: the entities whose attributes a turn is judged on (a light's brightness).
-    """
-
-    def __init__(self, hass, recording, turn, run_id, *, scripts, automations, exposure_changes=None,
-                 alias_changes=None, alias_removals=None, prompt_template=None, household=None, watch=()):
-        self.hass, self.id, self.recording, self.first_turn = hass, run_id, recording, turn
-        self.scripts, self.automations, self.exposure_changes = scripts, automations, exposure_changes or {}
-        self.alias_changes, self.prompt_template = alias_changes or {}, prompt_template
-        self.alias_removals = alias_removals or {}
-        self.household = household  # A change's household knowledge, which Assist reads.
+    def __init__(self, hass, recording, turn, run_id, today, *, change=None, watch=(), start=None):
+        self.hass, self.id, self.recording, self.first_turn, self.today = hass, run_id, recording, turn, today
+        self.change = change or {}
+        self.source = as_moved(at_moment(today["home"], turn["source"]), start)  # What the sandbox is seeded as.
         self.sandbox = None
-        self.tools = None  # Assist's tools as HA built them in the sandbox: name, description, parameters.
         self.watch = sorted(watch)
-        self.prompt = None  # The system prompt HA builds in the sandbox, for comparison with the recorded one.
-        self.checked = None  # The last turn faithful found rebuilt exactly.
+
+    def knowledge(self):
+        """The household knowledge Assist reads in the sandbox: a change's, else today's while it's on; None for
+        none."""
+        if self.change.get("household") is not None:
+            return self.change["household"]
+        return self.source.get("household") if self.source.get("household_on") else None
 
     async def start(self):
         if self.sandbox is not None:
             return
-        source, prepared = self.first_turn["source"], self.first_turn["prepared"]
         user_name = None
-        if (user_id := prepared["context"].get("context", {}).get("user_id")) and getattr(self.hass, "auth", None):
+        if (user_id := _user_id(self.first_turn)) and getattr(self.hass, "auth", None):
             user = await self.hass.auth.async_get_user(user_id)
             user_name = getattr(user, "name", None)
+        source = self.source
         self.sandbox = await RemoteSandbox.start(self.hass, source.get("time_zone") or self.hass.config.time_zone,
                                                  custom_providers(self.hass))
         try:
             async with span("sandbox.seed"):
                 await self.sandbox.call(
-                    "seed", source=source, user_name=user_name, options=seed_options(self.first_turn),
-                    scripts=self.scripts, automations=self.automations, exposure_changes=self.exposure_changes,
-                    alias_changes=self.alias_changes, alias_removals=self.alias_removals,
+                    "seed", source=source, user_name=user_name, options=seed_options(self.today, self.first_turn),
+                    scripts={**(source.get("scripts") or {}), **(self.change.get("scripts") or {})},
+                    automations=source.get("automations") or [], exposure_changes=self.change.get("exposure"),
+                    alias_changes=self.change.get("aliases"), alias_removals=self.change.get("alias_removals"),
                     moving=reports_movement(self.recording))
         except Exception as err:
             await self.stop()
-            raise UnsupportedSimulation(f"The sandbox could not be seeded as the recorded home: {err}") from err
+            if isinstance(err, Broken):  # Home Assistant changed: the machinery's fault, never the recording's.
+                raise
+            raise UnsupportedSimulation(f"The sandbox could not be set up as the household's home: {err}") from err
+        if (knowledge := self.knowledge()) is not None:
+            from .household import render
+            await self.sandbox.call("household", knowledge=knowledge)
+            lines = render(knowledge, user_id)
+            # Never a test without the lines it's meant to read: the sandbox's fault.
+            if lines and lines not in ((await self.assist(self.first_turn))["api_prompt"] or ""):
+                raise WorkerError("Assist didn't read the household knowledge in the sandbox")
 
-    async def prepare(self, turn, llm_context):
-        """Assist as HA builds it in the sandbox for this turn: its system prompt (prompt) and tools (tools), the
-        household knowledge it reads served first (a change's, or as recorded)."""
+    async def assist(self, turn):
+        """Assist's system prompt, its own part (api_prompt) and its tools, as Home Assistant builds them in the sandbox
+        for this recorded request, with the assistant's instructions now (or a change's)."""
         await self.start()
-        options = turn["prepared"]["provider_config"][0]["options"]
-        template = self.prompt_template if self.prompt_template is not None else options.get("prompt")
-        from .household import API_ID, api_ids, render
-        apis = api_ids(turn["prepared"].get("api_id") or "assist")
-        # Recorded through the household API (up to 0.37): replayed through it, so the prompt is the one recorded.
-        legacy = API_ID in apis
-        if (legacy or "assist" in apis) and (self.household is not None or reads_household(turn)):
-            # The household knowledge Assist read then, or as a change would make it.
-            knowledge = self.household if self.household is not None else turn["source"].get("household")
-            await self.sandbox.call("household", knowledge=knowledge, legacy=legacy)
-            lines = render(knowledge, getattr(llm_context.context, "user_id", None))
-        else:
-            lines = ""
-        built = await self.sandbox.call("prompt", context=context_data(llm_context),
-                                        api_id=apis if len(apis) > 1 else apis[0], template=template)
-        self.prompt = built["prompt"]
-        if built["api_prompt"] is None:
-            raise UnsupportedSimulation("Home Assistant's Assist tools are unavailable in the sandbox")
-        if lines not in built["api_prompt"]:  # Never a test without the lines it's meant to read: the sandbox's fault.
-            raise WorkerError("Assist didn't read the household knowledge in the sandbox")
-        self.tools, self.api_prompt = built["tools"], built["api_prompt"]
+        ctx = turn["prepared"]["context"]
+        context = llm.LLMContext(**{**ctx, "context": Context(**(ctx.get("context") or {}))})
+        template = self.change.get("prompt")
+        if template is None:
+            template = self.today["assistant"]["entry"]["subentries"][0]["data"].get("prompt")
+        return await self.sandbox.call("prompt", context=context_data(context), api_id=llm.LLM_API_ASSIST,
+                                       template=template)
 
     async def observe(self, source, moves):
         await self.sandbox.call("observe", source=source, moves=moves)
@@ -96,13 +100,15 @@ class SandboxHome:
         """The sandbox's home now (sandbox.snapshot): its states, the replay's changes, commands and what it spoke."""
         return await self.sandbox.call("snapshot", **({"attributes": self.watch} if self.watch else {}))
 
-    async def load_assistant(self, agent_id, provider):
-        """The household's assistant in the sandbox, from its own config entry, with the recorded provider settings
-        (provider: a turn's provider configuration; assistant_of): its entity id there."""
+    async def load_assistant(self):
+        """The household's assistant in the sandbox, from its own config entry as it's set up now, a change's
+        instructions in place of its own: its entity id there."""
         from homeassistant.loader import IntegrationNotFound, async_get_integration
         await self.start()
-        if (found := assistant_of(self.hass, agent_id, provider)) is None:
-            raise CaseError("The assistant this conversation used is no longer set up, so it can't be replayed.")
+        found = deepcopy(self.today["assistant"])
+        if self.change.get("prompt") is not None:
+            subentry = found["entry"]["subentries"][0]
+            subentry["data"] = {**subentry["data"], "prompt": self.change["prompt"]}
         domain = found["entry"]["domain"]
         try:
             built_in = (await async_get_integration(self.hass, domain)).is_built_in
@@ -111,26 +117,6 @@ class SandboxHome:
         if not built_in and domain not in custom_providers(self.hass):  # Not loaded at home: none to load here.
             raise CaseError(f"This assistant's provider ({domain}) isn't loaded, so it can't be replayed.")
         return (await self.sandbox.call("assistant", **found))["agent"]
-
-    async def faithful(self, turn, llm_context):
-        """Whether Home Assistant, in the sandbox, builds this turn's recorded system prompt and tools exactly, with
-        the recorded instructions: the model sees what the sandbox builds, so a replay runs only where that's the
-        recording (DETAILS P6.2.6). Before the turn's model call. A turn Home Assistant gave the last turn's prompt
-        and tools (recorded prompt_kept) gets them in the sandbox too: its recorded prompt must be the last turn's."""
-        if turn["prepared"].get("prompt_kept") and self.checked is not None:
-            same = turn["history"][0]["content"] == self.checked["history"][0]["content"]
-        else:
-            options = turn["prepared"]["provider_config"][0]["options"]
-            saved = self.prompt_template
-            self.prompt_template = options.get("prompt")
-            try:
-                await self.prepare(turn, llm_context)
-            finally:
-                self.prompt_template = saved
-            same = self.prompt == turn["history"][0]["content"]
-        same = same and [t["name"] for t in self.tools] == [t["name"] for t in turn["prepared"]["tools"]]
-        self.checked = turn if same else None
-        return same
 
     async def turn(self, turn, agent_id, conversation_id):
         """One recorded turn said to the household's assistant in the sandbox (sandbox.run_turn), in the context it
@@ -142,29 +128,69 @@ class SandboxHome:
             context={k: identity.get(k) for k in ("id", "user_id", "parent_id")}, language=ctx.get("language") or "en",
             agent_id=agent_id, device_id=ctx.get("device_id"), watch=self.watch)
 
+    async def carry(self, steps):
+        """A test's turns before its branch, its baseline's steps, in the replay's chat log as its own history
+        (sandbox.carry)."""
+        ctx = self.first_turn["prepared"]["context"]
+        context = llm.LLMContext(**{**ctx, "context": Context(**(ctx.get("context") or {}))})
+        await self.sandbox.call("carry", conversation_id=self.id, context=context_data(context),
+                                steps=[{"input": s["input"], "output": s["output"]} for s in steps])
+
     async def stop(self):
         if self.sandbox is not None:
-            sandbox, self.sandbox, self.tools = self.sandbox, None, None
+            sandbox, self.sandbox = self.sandbox, None
             await sandbox.stop()
 
 
-def reads_household(turn):
-    """Whether Assist read the household knowledge in this recorded turn: it was on (recorded since the lines came
-    with Assist), or the assistant used the household API (up to 0.37)."""
-    from .household import API_ID, api_ids
-    return bool(turn["source"].get("household_on")) or API_ID in api_ids(turn["prepared"].get("api_id"))
+def as_moved(source, moved):
+    """A snapshot (source) with its states as they differed from it later (moved: sandbox.moved's), so a sandbox is
+    seeded as that home: before the household's automations load, which nothing seeded sets off."""
+    if not moved:
+        return source
+    states = deepcopy(source.get("states") or {})
+    for entity_id, move in moved.items():
+        if move is None:
+            states.pop(entity_id, None)
+            continue
+        was = states.get(entity_id) or {"entity_id": entity_id, "attributes": {}}
+        kept = {k: v for k, v in (was.get("attributes") or {}).items() if k not in move["removed"]}
+        states[entity_id] = {**was, "state": move["state"], "attributes": {**kept, **move["attributes"]}}
+    return {**source, "states": states}
 
 
-# In a sandbox: what unregisters the household API it serves (register).
-LEGACY_API: HassKey[Callable[[], None]] = HassKey(f"{DOMAIN}_legacy_api")
+def _user_id(turn):
+    return ((turn["prepared"].get("context") or {}).get("context") or {}).get("user_id")
 
 
-async def register(hass, api):
-    """In the sandbox: serve this API there (the household API up to 0.37, with a replay's knowledge), in place of the
-    one it served: a sandbox serves one replay's knowledge at a time."""
-    if (unregister := hass.data.pop(LEGACY_API, None)) is not None:
-        unregister()
-    hass.data[LEGACY_API] = llm.async_register_api(hass, api)
+async def setup_now(hass):
+    """Today's setup, as a replay and code's checks seed a sandbox with it (DETAILS P6.2.4): the household's Home
+    Assistant as the recorder reads a home (snapshot.py); the tools Home Assistant's Assist has there, as the household's
+    own conversations get them (an improver role's never file); and the devices that run timers."""
+    from homeassistant.components.intent import async_device_supports_timers
+    from homeassistant.helpers import device_registry as dr
+    from .reflective import role_marker
+    from .snapshot import home, taken
+    read = taken(hass)
+    context = llm.LLMContext(platform=DOMAIN, context=Context(), language=hass.config.language,
+                             assistant="conversation", device_id=None)
+    try:
+        with role_marker(None):
+            tools = sorted(t.name for t in (await llm.async_get_api(hass, llm.LLM_API_ASSIST, context)).tools)
+    except HomeAssistantError:  # No Assist at home: no tools.
+        tools = []
+    timers = sorted(d.id for d in dr.async_get(hass).devices if async_device_supports_timers(hass, d.id))
+    return {"home": await hass.async_add_executor_job(home, read), "tools": tools, "timers": timers}
+
+
+async def today(hass, agent_id):
+    """Today's setup for replaying a conversation of this assistant (setup_now), with the assistant as it's set up now
+    (assistant: assistant_of's) and as a plan keeps it (provider). CaseError when it's no longer set up."""
+    assistant = assistant_of(hass, agent_id)
+    subentry = assistant["entry"]["subentries"][0]
+    provider = {"config_entry_id": assistant["entry"]["entry_id"], "subentry_id": subentry["subentry_id"],
+                "title": subentry.get("title"),
+                "options": plain({k: v for k, v in subentry["data"].items() if k in PROVIDER_OPTIONS})}
+    return {**await setup_now(hass), "assistant": assistant, "provider": provider}
 
 
 def custom_providers(hass):
@@ -188,73 +214,18 @@ def custom_providers(hass):
     return found
 
 
-def assistant_of(hass, agent_id, provider=None):
-    """A conversation agent's assistant for a sandbox (sandbox.load_assistant): its provider's config entry in HA's
-    storage form, with only the agent's subentry, and the agent's registry identity. provider: a turn's recorded
-    provider configuration, which must be the agent's subentry: its settings are the subentry's, today's kept only for
-    what the recorder doesn't keep (PROVIDER_OPTIONS). None when it isn't set up."""
-    from .const import PROVIDER_OPTIONS
-    if (agent := er.async_get(hass).async_get(agent_id or "")) is None or (
-            entry := hass.config_entries.async_get_entry(agent.config_entry_id or "")) is None:
-        return None
+def assistant_of(hass, agent_id):
+    """A conversation agent's assistant as it's set up now, for a sandbox (sandbox.load_assistant): its provider's
+    config entry in HA's storage form, with only the agent's subentry, and the agent's registry identity. CaseError
+    when it's no longer set up."""
+    if (getattr(hass, "config_entries", None) is None or (agent := er.async_get(hass).async_get(agent_id or "")) is None
+            or (entry := hass.config_entries.async_get_entry(agent.config_entry_id or "")) is None):
+        raise CaseError(GONE)
     if agent.config_subentry_id is None:
         raise CaseError("This assistant keeps no settings of its own to replay it with.")
-    if provider is not None and (provider.get("config_entry_id"), provider.get("subentry_id")) != (
-            agent.config_entry_id, agent.config_subentry_id):
-        raise CaseError("Selected HA agent does not match the recorded provider entry")
-    recorded = (provider or {}).get("options")
     # HA's storage form as it is, the provider's key in it (never plain(), which redacts it): it goes only to the
     # sandbox's worker (sandbox.load_assistant). How HA found the entry is no part of the assistant.
     stored = {**entry.as_dict(), "discovery_keys": {}}
-    stored["subentries"] = [{**s, "data": s["data"] if recorded is None else {
-        **{k: v for k, v in s["data"].items() if k not in PROVIDER_OPTIONS}, **recorded}}
-        for s in stored["subentries"] if s["subentry_id"] == agent.config_subentry_id]
+    stored["subentries"] = [s for s in stored["subentries"] if s["subentry_id"] == agent.config_subentry_id]
     return {"entry": stored, "agent": {"entity_id": agent.entity_id, "unique_id": agent.unique_id,
-                                              "platform": agent.platform,
-                                              "config_subentry_id": agent.config_subentry_id}}
-
-
-async def check_fidelity(hass, recording, turn_number=1, assistant=False):
-    """Seed a sandbox from a recording's first turn and compare what HA builds there with what was recorded:
-    the system prompt and the tools. No model call. Differences point at gaps in recording or seeding. assistant: also
-    load the conversation's assistant there from its config entry (its provider's model list is fetched), and report
-    its entity id there (agent), or why it couldn't (agent_error)."""
-    import difflib
-    from time import monotonic
-    turn = recording_turns(recording)[turn_number - 1]
-    ctx = turn["prepared"]["context"]
-    identity = ctx.get("context", {})
-    if not identity.get("id") or not {"id", "user_id", "parent_id"} <= identity.keys():
-        raise CaseError("Cannot backfill missing historical identity")
-    started = monotonic()
-    source = turn["source"]
-    home = SandboxHome(hass, recording, turn, f"improver-fidelity-{uuid4()}", scripts=source.get("scripts") or {},
-                       automations=source.get("automations") or [])
-    try:
-        await home.prepare(turn, llm.LLMContext(**{**ctx, "context": Context(**identity)}))
-        seeded = round(monotonic() - started, 2)
-        recorded_prompt = turn["history"][0]["content"]
-        recorded_tools = [t["name"] for t in turn["prepared"]["tools"]]
-        tools = [t["name"] for t in home.tools]
-        report = {"recording_id": recording["id"], "prompt_matches": home.prompt == recorded_prompt,
-                "tools_match": tools == recorded_tools,
-                "missing_tools": sorted(set(recorded_tools) - set(tools)),
-                "extra_tools": sorted(set(tools) - set(recorded_tools)),
-                "prompt_diff": list(difflib.unified_diff(recorded_prompt.splitlines(), home.prompt.splitlines(),
-                                                         "recorded", "sandbox", lineterm="", n=0))[:60],
-                "seconds_to_seed": seeded, "paid_inference_performed": False,
-                # What HA logged while setting up the recorded home (an automation it couldn't set up, say).
-                "sandbox_log": list(home.sandbox.log)[:40]}
-        if assistant:
-            agents = {m["agent_id"] for t in recording_turns(recording) for m in t["messages"]
-                      if m["role"] == "assistant"}
-            try:
-                report["agent"] = await home.load_assistant(
-                    next(iter(agents)) if len(agents) == 1 else None, turn["prepared"]["provider_config"][0])
-            except Exception as err:  # noqa: BLE001 - reported, the probe's other findings stand.
-                report["agent"], report["agent_error"] = None, f"{type(err).__name__}: {err}"  # HA's why in it.
-    finally:
-        stopping = monotonic()
-        await home.stop()
-    report["seconds_to_stop"] = round(monotonic() - stopping, 2)
-    return report
+                                       "platform": agent.platform, "config_subentry_id": agent.config_subentry_id}}

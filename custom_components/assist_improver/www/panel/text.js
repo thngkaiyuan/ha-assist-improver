@@ -87,7 +87,7 @@ export const TEXT = {
   assistant: {tip: "The assistant Assist uses by default", none: "Add an assistant in Settings → Voice assistants first."},
   simulate: {label: "Your assistant", tip: "At most {n} tests of a conversation each round, on your assistant.",
              per: "tests per conversation, each round",
-             cost: "Each test replays one of your conversations with a fix, on your own assistant: {n} each round costs at most about {n} times that conversation, plus one replay of it without the fix"},
+             cost: "Each test replays one of your conversations with a fix, on your own assistant: {n} each round costs at most about {n} times that conversation, plus up to three replays of it without the fix"},
   passThrough: {label: "Pass through", tip: "No triage model: conversations pass straight on to analysis."},
   repliesOff: "Replies are checked with the write-up model when off",
   models: {large: "Needs judgement: a strong model works best.", small: "A small, quick model is enough.",

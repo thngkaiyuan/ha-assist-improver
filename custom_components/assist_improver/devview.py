@@ -143,8 +143,11 @@ def resolve(runtime, query, trace_ids=()):
 
 
 def _replayed(replay):
-    """A replay in a few words: which (without the change, or with it), of which conversation, and how it ended."""
-    which = "without the change" if replay["plan"]["kind"] == "before" else "with the change"
+    """A replay in a few words: which (without the change, its try; or with it, from the turn it branched at), of which
+    conversation, and how it ended."""
+    plan = replay["plan"]
+    which = (f"without the change (try {plan.get('try', 1)})" if plan["kind"] == "before"
+             else f"with the change (from turn {plan.get('branch', 1)})")
     why = (replay.get("error") or {}).get("message")
     return (f"Replay {which} of {_short(replay['recording_id'])}: {replay['status']}"
             + (f" ({why})" if why else ""))

@@ -12,7 +12,7 @@ from homeassistant.helpers.service import async_register_admin_service
 from homeassistant.helpers.start import async_at_started
 from homeassistant.helpers.storage import Store
 
-from . import ai_setup, household, panel, retention, settings, trace
+from . import ai_setup, household, panel, retention, settings, touchpoints, trace
 from .const import CONF_ACCEPTED_WEAK, CONF_AI_TASK, CONF_DEVELOPER, CONF_SCHEDULE, DOMAIN, STORAGE_VERSION
 from .cases import CaseError
 from .conversations import Transcripts
@@ -30,8 +30,8 @@ CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 SERVICES = ("status", "export_recording")  # For bug reports: what the improver holds, and one recording.
 # Developer mode only (a hidden setting): what the improver holds, and a recording's replay, for debugging. They skip
 # the panel's run guard and confirmation, so households never get them.
-DEVELOPER_SERVICES = ("list_recordings", "list_improvements", "check_replay_fidelity", "replay_recording")
-ISSUES = ("ai_task_setup", "step_models")  # Its Repairs notices (_update_setup_issue).
+DEVELOPER_SERVICES = ("list_recordings", "list_improvements", "replay_recording")
+ISSUES = ("ai_task_setup", "step_models", *touchpoints.ISSUES)  # Its Repairs notices (_update_setup_issue).
 
 
 async def async_setup(hass, config):
@@ -210,13 +210,6 @@ async def async_setup_entry(hass, entry):
         except ValueError as err:
             raise HomeAssistantError(translation_domain=DOMAIN, translation_key="recording_unavailable") from err
 
-    async def check_replay_fidelity(call):
-        from .replay import check_fidelity
-        try:
-            return await check_fidelity(hass, await recorder.export(known(call)), assistant=True)
-        except (CaseError, ValueError) as err:
-            raise cannot_replay(err) from err
-
     async def replay_recording(call):
         if not call.data.get("allow_paid_inference"):
             raise ServiceValidationError(translation_domain=DOMAIN, translation_key="paid_inference_not_allowed")
@@ -236,7 +229,6 @@ async def async_setup_entry(hass, entry):
         ("export_recording", export, probatio.Schema({probatio.Required("recording_id"): str})),
         ("list_recordings", list_recordings, probatio.Schema({})),
         ("list_improvements", list_improvements, probatio.Schema({})),
-        ("check_replay_fidelity", check_replay_fidelity, probatio.Schema({probatio.Required("recording_id"): str})),
         ("replay_recording", replay_recording, probatio.Schema({
             probatio.Required("recording_id"): str,
             probatio.Optional("last_turn", default=1): probatio.All(int, probatio.Range(min=1, max=20)),
@@ -304,5 +296,6 @@ async def _undo(hass, recorder, runtime):
 
 
 def _delete_issues(hass):
+    hass.data.pop(touchpoints.BROKEN, None)  # A break still there is reported again where it's next used.
     for issue_id in ISSUES:
         ir.async_delete_issue(hass, DOMAIN, issue_id)

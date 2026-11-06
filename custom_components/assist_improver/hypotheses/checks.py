@@ -92,7 +92,7 @@ def _open_goals(sessions, answer):
 
 
 def household_knowledge(sessions):
-    """The household knowledge as last recorded (lines every assistant on Assist reads)."""
+    """The household knowledge as it is now (lines every assistant on Assist reads), in today's setup."""
     from ..household import normalized
     return normalized(sessions.household.source.get("household"))
 
@@ -106,9 +106,13 @@ def known_lines(sessions):
 
 
 def instructions(sessions):
-    """The assistant's instructions template as last recorded, or None."""
+    """(template, configuration) of the newest recorded assistant: its instructions as they are now (as it ran with
+    them when it's no longer set up, or isn't told apart), or None."""
+    from ..instructions import target
     assistant = getattr(sessions.assistant_view, "assistant", None)
-    return (assistant or {}).get("options", {}).get("prompt"), assistant
+    record = sessions.assistants().get(target(assistant)) if assistant else None
+    return (sessions.current_template(record) if record else (assistant or {}).get("options", {}).get("prompt"),
+            assistant)
 
 
 def _edit_problems(sessions, where, hypothesis, facts_added):

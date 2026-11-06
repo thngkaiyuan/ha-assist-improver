@@ -22,7 +22,7 @@ Assist Improver aims for that with your assistant. The goal is to cut the effort
 
 1. **Learns from your own use.** Keeps your Assist conversations and their results in your Home Assistant, next to the history it already keeps. It's as private as your Home Assistant setup.
 2. **Thinks.** A deep-thinking AI looks for where you had to step in and proposes changes that would have spared you the effort.
-3. **Tests.** Replays the same conversations with each change, as a counterfactual experiment, on your own assistant. The replay runs in a sandboxed copy of your Home Assistant, set up as your home was during that conversation: Home Assistant's own logic, scripts and automations run there, and only your devices are simulated, so nothing in your home moves.
+3. **Tests.** Replays the same conversations with each change, as a counterfactual experiment, on your own assistant. The replay runs in a sandboxed copy of your Home Assistant as it is today, with your devices as they were during that conversation: Home Assistant's own logic, scripts and automations run there, and only your devices are simulated, so nothing in your home moves.
 4. **Asks you.** Only changes that proved they save effort reach you. You approve, ask for a revision, or decline.
 
 Approved improvements stay even if you uninstall Assist Improver.
@@ -69,7 +69,7 @@ For bug reports (Developer tools → Actions, administrators only):
 - **Recording status:** whether it's recording, how many conversations it keeps, and its last error.
 - **Export recording:** one conversation as JSON, with what was said.
 
-Developer mode (hidden, for debugging) adds List recordings, List improvements, Check replay fidelity and Replay a recording.
+Developer mode (hidden, for debugging) adds List recordings, List improvements and Replay a recording.
 
 ## Your data
 

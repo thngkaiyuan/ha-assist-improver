@@ -1,6 +1,8 @@
 """Facts from HA's own engine about a hypothesis, so the AI roles judge evidence instead of guessing it.
 
-All of it runs in sandboxes seeded from recorded sessions; no model is called and no device is touched.
+All of it runs in sandboxes set up as the household's Home Assistant is today, at a recorded session's moment
+(today: replay.setup_now's; snapshot.at_moment), the setup replays run on; no model is called and no device is
+touched.
 
 - implementation: HA loads the hypothesis's scripts, each runs from the state its goals started in, and the goal's
   devices are compared with the goal; a new alias is matched by HA's own name matching.
@@ -31,6 +33,8 @@ from .changes import setup_from_changes
 from .failures import contained
 from .sandbox import SANDBOX_KEY, Sandbox, observe, sandbox_context, seed, seed_options
 from .simulation import moved_by_others
+from .snapshot import at_moment, on_today, renamed, renaming
+from .touchpoints import Broken
 from .worker import job
 
 CONCURRENT = 4  # Workers running the jobs below at once, per instance (worker.job).
@@ -71,26 +75,17 @@ def _context(turn):
     return llm.LLMContext(**{**ctx, "context": Context(**identity)})
 
 
-def _tools_api(turn):
-    """The API whose tools a recorded turn used: the household API (up to 0.37) has Assist's own tools, so Assist's
-    stand in for it (the evidence sandbox carries no household knowledge, and needs none to try a tool); a merged id
-    (a|b) is its APIs."""
-    from .household import as_assist
-    ids = as_assist(turn["prepared"].get("api_id") or "assist")
-    return ids[0] if len(ids) == 1 else ids
-
-
-async def _start(recording, turn, definitions, setup=None):
-    """A sandbox seeded as the home at this turn, with a hypothesis's setup (exposure, aliases, scripts) on top."""
-    source = turn["source"]
-    scripts = deepcopy(source["scripts"]) if "scripts" in source else deepcopy(definitions["scripts"])
-    automations = source.get("automations") if "automations" in source else definitions["automations"]
+async def _start(recording, turn, today, setup=None):
+    """A sandbox seeded as today's home at this turn's moment (snapshot.at_moment), with a hypothesis's setup
+    (exposure, aliases, scripts) on top."""
+    source = at_moment(today["home"], turn["source"])
     setup = setup or {}
-    scripts.update(setup.get("scripts") or {})
+    scripts = {**deepcopy(source.get("scripts") or {}), **(setup.get("scripts") or {})}
     sandbox = await Sandbox.start(source.get("time_zone") or "UTC")
     try:
-        await sandbox.run(lambda hass: seed(hass, source, **seed_options(turn), scripts=scripts,
-                                            automations=automations, exposure_changes=setup.get("exposure"),
+        await sandbox.run(lambda hass: seed(hass, source, **seed_options(today, turn), scripts=scripts,
+                                            automations=source.get("automations") or [],
+                                            exposure_changes=setup.get("exposure"),
                                             alias_changes=setup.get("aliases"),
                                             alias_removals=setup.get("alias_removals")))
     except BaseException:
@@ -127,22 +122,23 @@ async def _call(hass, api, name, args):
     return normalize(result.data if isinstance(result, llm.ToolResult) else result)
 
 
-async def replay_calls(recording, definitions, setup=None):
+async def replay_calls(recording, today, setup=None):
     """Each recorded HA tool call of a session, replayed in order without the model: [(turn, tool, args, result)]."""
-    return await job("replay", recording=recording, definitions=definitions, setup=setup)
+    return await job("replay", recording=recording, today=today, setup=setup)
 
 
-async def capabilities(recording, entity_ids, definitions):
+async def capabilities(recording, entity_ids, today):
     """What Assist can do with each device: each Assist tool tried on it by name in a sandbox, and what HA did."""
-    return await job("capabilities", recording=recording, entity_ids=sorted(entity_ids), definitions=definitions)
+    return await job("capabilities", recording=recording, entity_ids=sorted(entity_ids), today=today)
 
 
-async def _replay(recording, definitions, setup=None):
+async def _replay(recording, today, setup=None):
     """In the worker: replay_calls."""
+    recording = on_today(recording, today["home"])
     turns = replayable_turns(recording)
     if not turns or (context := _context(turns[0])) is None:
         return None
-    sandbox = await _start(recording, turns[0], definitions, setup)
+    sandbox = await _start(recording, turns[0], today, setup)
     out = []
     try:
         for index, turn in enumerate(turns):
@@ -155,7 +151,7 @@ async def _replay(recording, definitions, setup=None):
                 continue
 
             async def run(hass, calls=calls, context=context, turn=turn):
-                api = await llm.async_get_api(hass, _tools_api(turn), sandbox_context(hass, context))
+                api = await llm.async_get_api(hass, llm.LLM_API_ASSIST, sandbox_context(hass, context))
                 return [(turn["number"], c["tool_name"], c["tool_args"], await _call(hass, api, c["tool_name"],
                                                                                   c["tool_args"])) for c in calls]
             out += await sandbox.run(run)
@@ -166,27 +162,33 @@ async def _replay(recording, definitions, setup=None):
 
 
 class Evidence:
-    """Facts for one generator run's sessions; the replays without a change are reused across hypotheses."""
+    """Facts for one generator run's sessions, on today's setup (today: replay.setup_now's); the replays without a
+    change are reused across hypotheses."""
 
-    def __init__(self, sessions, definitions):
-        self.sessions, self.definitions = sessions, definitions
+    def __init__(self, sessions, today):
+        self.sessions, self.today = sessions, today
         self._baselines, self._lock = {}, asyncio.Lock()
 
     def setup(self, hypothesis, session=None):
+        """A hypothesis's changes as a sandbox runs them, on today's setup and the instructions of the session's
+        assistant now (the household's newest session's by default)."""
         from .instructions import assistant_config, target
         view = self.sessions.views[session] if session else self.sessions.household
         turn = recording_turns(view.recording)[0]
-        configs = turn["prepared"]["provider_config"]
-        return setup_from_changes(self.sessions.with_targets(hypothesis.get("changes")), source=turn["source"],
-                                  prompt=configs[0]["options"].get("prompt"), scripts=self._scripts(turn["source"]),
+        assistant = target(assistant_config(turn["prepared"]["provider_config"]))
+        record = self.sessions.assistants().get(assistant)
+        return setup_from_changes(self.sessions.with_targets(hypothesis.get("changes")),
+                                  source=at_moment(self.today["home"], turn["source"]),
+                                  prompt=self.sessions.current_template(record) if record else None,
+                                  scripts=self._scripts(),
                                   user_id=(turn["prepared"].get("context") or {}).get("context", {}).get("user_id"),
-                                  assistant=target(assistant_config(configs)))
+                                  assistant=assistant)
 
     async def render(self, view, templates, user_name=None, quiet_only=False):
         """Each template rendered as an assistant's instructions for this session's first request, and for one
         without a signed-in person or an asking device, in a sandbox of its home: [{"rendered"} or {"error"}], or
         None when it can't seed one (render_instructions; quiet_only: the latter only)."""
-        return await job("render_instructions", recording=view.recording, definitions=self.definitions,
+        return await job("render_instructions", recording=view.recording, today=self.today,
                          templates=list(templates), user_name=user_name, quiet_only=quiet_only)
 
     async def instructions(self, hypothesis, hass=None):
@@ -217,8 +219,8 @@ class Evidence:
             facts.append(fact)
         return facts
 
-    def _scripts(self, source):
-        return deepcopy(source["scripts"]) if "scripts" in source else deepcopy(self.definitions["scripts"])
+    def _scripts(self):
+        return deepcopy(self.today["home"].get("scripts") or {})
 
     async def check(self, hypothesis, hass=None):
         """The facts for a draft; problems with the change itself (HA can't load it) come first."""
@@ -244,7 +246,7 @@ class Evidence:
             signals = {"note": "Only instruction lines change: HA resolves devices as before; their effect needs a "
                                "replay with the model."}
         from .hypotheses.checks import speech
-        talk = speech(hypothesis, self.definitions.get("scripts"))  # What it would have Assist say, for the reviewer.
+        talk = speech(hypothesis, self.today["home"].get("scripts"))  # What it would have Assist say, for the reviewer.
         return {"implementation": implementation, "resolution_signals": signals, **({"speech": talk} if talk else {}),
                 **({"instructions": edited} if edited else {})}
 
@@ -256,10 +258,12 @@ class Evidence:
             analysis, view = self.sessions.analyses.get(session), await self.sessions.load(session)
             if analysis is None or view is None:
                 continue
-            turns = replayable_turns(view.recording)
+            renames = renamed(view.recording, self.today["home"])  # Its devices under today's entity IDs.
+            recording = renaming(view.recording, renames)
+            turns = replayable_turns(recording)
             if not 1 <= turn_no <= len(turns):  # Not there, or a conversation that can't be replayed.
                 continue
-            targets = goal_targets(analysis, turn_no)
+            targets = renaming(goal_targets(analysis, turn_no), renames)
             # New and edited scripts, and existing ones the change exposes: what Assist would now run.
             exposed = [e.split(".", 1)[1] for e, on in setup["exposure"].items() if on and e.startswith("script.")]
             scripts = sorted(set(setup["scripts"]) | set(exposed))
@@ -268,7 +272,7 @@ class Evidence:
             # A goal HA couldn't check is said so (a problem of the run's, unless it's a case it can't replay); the
             # other facts still come.
             async with contained("propose", f"{session}:{turn_no}", step="script check", expected=(CaseError,)) as one:
-                facts.append(await self._try_scripts(view.recording, turns[turn_no - 1], setup, scripts, targets,
+                facts.append(await self._try_scripts(recording, turns[turn_no - 1], setup, scripts, targets,
                                                      f"{session}:{turn_no}"))
             if one.failed:
                 facts.append({"goal": f"{session}:{turn_no}", "reaches_goal": None, "note": UNCHECKED + one.error})
@@ -280,14 +284,14 @@ class Evidence:
         return facts
 
     async def _run_scripts(self, recording, turn, setup, scripts, targets):
-        return await job("run_scripts", recording=recording, turn=turn, definitions=self.definitions, setup=setup,
+        return await job("run_scripts", recording=recording, turn=turn, today=self.today, setup=setup,
                          scripts=scripts, targets=targets)
 
     async def _try_scripts(self, recording, turn, setup, scripts, targets, goal):
         """Each script alone from the goal's starting state; if none reaches the goal alone, all of them together
         (one goal may need several, such as a script per door). Order never decides the result. A script that takes
         inputs from Assist would run here with nothing given, so it's left to the replays."""
-        defined = {**self._scripts(turn["source"]), **setup["scripts"]}
+        defined = {**self._scripts(), **setup["scripts"]}
         taking = [s for s in scripts if (defined.get(s) or {}).get("fields")]
         left = {"left_to_the_replays": [f"script.{s} takes inputs that Assist gives when it runs it"
                                         for s in taking]} if taking else {}
@@ -312,7 +316,7 @@ class Evidence:
         return out
 
     async def _match_aliases(self, setup, entity_id, aliases):
-        matched = await job("match_aliases", recording=self.sessions.household.recording, definitions=self.definitions,
+        matched = await job("match_aliases", recording=self.sessions.household.recording, today=self.today,
                             setup=setup, aliases=aliases)
         return {"alias_for": entity_id, "matches": matched,
                 "ambiguous": [a for a, found in matched.items() if len(found) > 1]}
@@ -334,10 +338,10 @@ class Evidence:
                 # can't replay); the others go on.
                 async with contained("propose", session, step="replay", expected=(CaseError,)) as attempt:
                     if not cached:
-                        before = await replay_calls(view.recording, self.definitions)
+                        before = await replay_calls(view.recording, self.today)
                         async with self._lock:
                             self._baselines[session] = before
-                    after = await replay_calls(view.recording, self.definitions, setup)
+                    after = await replay_calls(view.recording, self.today, setup)
                     return session, self._baselines[session], after, None
                 return session, None, None, attempt.error
         results = await asyncio.gather(*(one(s) for s in chosen))
@@ -355,11 +359,13 @@ class Evidence:
                 "sessions_checked": len(results) - len(skipped), "skipped": skipped, "how_to_read": SIGNALS_NOTE}
 
 
-async def run_scripts(recording, turn, definitions, setup, scripts, targets):
+async def run_scripts(recording, turn, today, setup, scripts, targets):
     """In the worker: each script run in a sandbox at the goal's starting state, and the goal's devices after."""
     names = [f"script.{s}" for s in scripts]
     try:
-        sandbox = await _start(recording, turn, definitions, setup)
+        sandbox = await _start(recording, turn, today, setup)
+    except Broken:  # The machinery's, not the change's.
+        raise
     except Exception as err:  # noqa: BLE001 - HA couldn't load the change: that's the fact.
         return {"scripts": names, "loads": False, "why": str(err)[:300]}
     try:
@@ -397,11 +403,11 @@ async def run_scripts(recording, turn, definitions, setup, scripts, targets):
         await sandbox.stop()
 
 
-async def match_aliases(recording, definitions, setup, aliases):
+async def match_aliases(recording, today, setup, aliases):
     """In the worker: what each alias matches through HA's own name matching, with the change applied."""
     from homeassistant.helpers import intent
     turn = recording_turns(recording)[0]
-    sandbox = await _start(recording, turn, definitions, setup)
+    sandbox = await _start(recording, turn, today, setup)
     try:
         async def match(hass):
             out = {}
@@ -415,7 +421,7 @@ async def match_aliases(recording, definitions, setup, aliases):
         await sandbox.stop()
 
 
-async def render_instructions(recording, definitions, templates, user_name=None, quiet_only=False):
+async def render_instructions(recording, today, templates, user_name=None, quiet_only=False):
     """In the worker: each template rendered as an assistant's instructions are for the recording's first request, as
     HA's chat log renders them (ha_name, user_name, llm_context), in a sandbox seeded as its home: {"rendered"}, or
     {"error"}. HA renders them for requests without a signed-in person or an asking device too (a voice satellite's),
@@ -426,7 +432,7 @@ async def render_instructions(recording, definitions, templates, user_name=None,
     turns = replayable_turns(recording)
     if not turns or (context := _context(turns[0])) is None:
         return None
-    sandbox = await _start(recording, turns[0], definitions)
+    sandbox = await _start(recording, turns[0], today)
     try:
         async def render(hass):
             recorded = sandbox_context(hass, context)
@@ -491,17 +497,17 @@ def _sample(schema):
     return "sample"
 
 
-async def probe_capabilities(recording, entity_ids, definitions):
+async def probe_capabilities(recording, entity_ids, today):
     """In the worker: what Assist can do with each device: each Assist tool tried on it by name, and what HA did."""
     import probatio
     turns = replayable_turns(recording)
     if not turns or (context := _context(turns[0])) is None:
         return {}
-    sandbox = await _start(recording, turns[0], definitions)
+    sandbox = await _start(recording, turns[0], today)
     try:
         async def probe(hass):
-            from homeassistant.components.homeassistant.exposed_entities import async_should_expose
-            api = await llm.async_get_api(hass, _tools_api(turns[0]), sandbox_context(hass, context))
+            from homeassistant.components.homeassistant import async_should_expose
+            api = await llm.async_get_api(hass, llm.LLM_API_ASSIST, sandbox_context(hass, context))
             out, commands = {}, hass.data[SANDBOX_KEY].commands
             for entity_id in entity_ids:
                 state = hass.states.get(entity_id)

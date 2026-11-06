@@ -8,20 +8,21 @@ snapshot(hass) does both at once."""
 
 from copy import deepcopy
 
-from homeassistant.components.automation import DATA_COMPONENT as AUTOMATIONS
-from homeassistant.components.homeassistant.exposed_entities import async_should_expose
+from homeassistant.components.homeassistant import async_should_expose
 from homeassistant.helpers import area_registry as ar, device_registry as dr, entity_registry as er
 from homeassistant.helpers.entity_component import EntityComponent
 from homeassistant.util.dt import utcnow
 from homeassistant.util.hass_dict import HassKey
 
+from . import touchpoints
 from .const import ATTRIBUTES, PROVIDER_OPTIONS
 from .household import KEY as HOUSEHOLD
 from .serialization import plain, SECRET
 
 # No public accessor gives script or automation configurations: they're read from the entity components the two
-# integrations keep in hass.data (automation's typed key; script keeps its component under its domain, untyped).
+# integrations keep in hass.data under their domains.
 SCRIPTS: HassKey[EntityComponent] = HassKey("script")
+AUTOMATIONS: HassKey[EntityComponent] = HassKey("automation")
 # What a recording's states keep of their attributes, as its snapshot says (allowlist-v1, in older recordings: the
 # replay engine's attributes alone).
 ATTRIBUTE_POLICY = ("allowlist-v2: the replay engine's attributes and what Assist's live context shows (Home "
@@ -128,59 +129,122 @@ def subentry_of(hass, agent_id):
     return getattr(er.async_get(hass).async_get(agent_id), "config_subentry_id", None) if agent_id else None
 
 
-def live_definitions(hass):
-    """The script and automation configurations, as the household has them now (a copy)."""
-    return deepcopy(_definitions(hass))
-
-
 def _definitions(hass):
-    """The script and automation configurations, each the one Home Assistant holds (a reload replaces it)."""
+    """The script and automation configurations, each the one Home Assistant holds (a reload replaces it), as far as
+    they can be read (touchpoints.guarded)."""
     scripts, automations = {}, []
-    if (component := hass.data.get(SCRIPTS)) is not None:
-        for entity in getattr(component, "entities", ()):
-            if getattr(entity, "raw_config", None):
+    with touchpoints.guarded(hass, "script_configs"):
+        for entity in _entities(hass, SCRIPTS):
+            if entity.raw_config:
                 scripts[entity.entity_id.split(".", 1)[1]] = dict(entity.raw_config)
-    if (component := hass.data.get(AUTOMATIONS)) is not None:
-        for entity in getattr(component, "entities", ()):
-            if getattr(entity, "raw_config", None):
+    with touchpoints.guarded(hass, "automation_configs"):
+        for entity in _entities(hass, AUTOMATIONS):
+            if entity.raw_config:
                 automations.append(dict(entity.raw_config))
     return scripts, automations
+
+
+def _entities(hass, key):
+    """The entities of the integration keeping its component under this key, once it's set up (a KeyError: it keeps
+    it elsewhere now)."""
+    return hass.data[key].entities if key in hass.config.components else ()
 
 
 def template_actions(hass):
     """{template entity: the entities its own actions act on}, as Home Assistant's script engine finds them: what HA
     itself switches, under the request, when the entity is commanded (a template light's helper). An entity whose
-    actions can't be read this way (Home Assistant changed them) acts on none known: a recording never fails for it."""
+    actions can't be read this way (Home Assistant changed them) acts on none known, which is reported: a recording
+    never fails for it."""
     from homeassistant.helpers.entity_platform import async_get_platforms
-    found = {}
-    for platform in async_get_platforms(hass, "template"):
-        for entity_id, entity in platform.entities.items():
-            try:  # No public API gives a template entity's actions, YAML ones included; its scripts hold them.
-                acts_on = {e for script in getattr(entity, "_action_scripts", {}).values()
-                           for e in script.referenced_entities} - {entity_id}
-            except Exception:  # noqa: BLE001 - see the docstring.
-                continue
-            if acts_on:
-                found[entity_id] = sorted(acts_on)
+    found, failed = {}, []
+    with touchpoints.guarded(hass, "template_actions"):
+        for platform in async_get_platforms(hass, "template"):
+            for entity_id, entity in platform.entities.items():
+                try:  # No public API gives a template entity's actions, YAML ones included; its scripts hold them.
+                    acts_on = {e for script in entity._action_scripts.values()  # noqa: SLF001
+                               for e in script.referenced_entities} - {entity_id}
+                except Exception as err:  # noqa: BLE001 - see the docstring.
+                    failed.append(err)
+                    continue
+                if acts_on:
+                    found[entity_id] = sorted(acts_on)
+        if failed:
+            raise failed[0]
     return found
 
 
 def live_script_definitions(hass, entities):
     """Current UI/YAML script configs; later observations, never historical snapshots."""
     from .cases import CaseError
-    component = hass.data.get(SCRIPTS)
     definitions = {}
     for entity in entities:
-        script = component.get_entity(entity) if component else None
-        if script is None or not getattr(script, "raw_config", None):
+        config = None
+        with touchpoints.guarded(hass, "script_configs"):
+            script = hass.data[SCRIPTS].get_entity(entity) if SCRIPTS in hass.config.components else None
+            config = script.raw_config if script is not None else None
+        if not config:
             raise CaseError(f"Script {entity} has no readable configuration")
-        definitions[entity] = deepcopy(dict(script.raw_config))
+        definitions[entity] = deepcopy(dict(config))
     return definitions
 
 
+def renamed(recording, home):
+    """{entity ID in a recording: its entity ID in today's home (a snapshot)}, for each entity whose ID was changed
+    since (DETAILS P6.2.4): an entity gone since and one new since are the same when they're the only two sharing a
+    domain, an integration and its entry, a device and the name the integration gives it, none of which a new entity ID
+    changes. One with neither a device nor such a name has nothing to be known by."""
+    then = {e: x for turn in recording.get("turns") or []
+            for e, x in ((turn.get("source") or {}).get("entities") or {}).items()}
+    now = home.get("entities") or {}
+
+    def unmatched(entities, others):
+        found = {}
+        for entity_id, x in entities.items():
+            if entity_id not in others and (x.get("device_id") or x.get("original_name")):
+                found.setdefault((entity_id.split(".", 1)[0], x.get("platform"), x.get("config_entry_id"),
+                                  x.get("device_id"), x.get("original_name")), []).append(entity_id)
+        return found
+    gone, new = unmatched(then, now), unmatched(now, then)
+    return {ids[0]: new[key][0] for key, ids in gone.items() if len(ids) == 1 and len(new.get(key) or ()) == 1}
+
+
+def renaming(value, renames):
+    """A recording, or what's read from one (its goals), with each entity ID renames has as today's (renamed's),
+    wherever it's whole: a key or a string."""
+    if isinstance(value, dict):
+        return {renames.get(k, k): renaming(v, renames) for k, v in value.items()}
+    if isinstance(value, list):
+        return [renaming(v, renames) for v in value]
+    return renames.get(value, value) if isinstance(value, str) else value
+
+
+def on_today(recording, home):
+    """A recording with each entity whose ID was changed since under its ID in today's home (renamed)."""
+    renames = renamed(recording, home)
+    return renaming(recording, renames) if renames else recording
+
+
+def at_moment(home, source):
+    """Today's home (a snapshot) at a recorded moment (a recording's snapshot then, on_today's, DETAILS P6.2.4): the
+    recorded time, and each device as it was then, where it's still there; one that's new since starts as it is now,
+    and one that's gone since is absent. Everything else (areas, devices, names, aliases, what Assist can see, scripts,
+    automations, the household knowledge) is today's."""
+    then, states = source.get("states") or {}, {}
+    for entity_id, now in (home.get("states") or {}).items():
+        was = then.get(entity_id)
+        if was is None:
+            states[entity_id] = now
+            continue
+        attributes = {k: v for k, v in (was.get("attributes") or {}).items() if k != "friendly_name"}
+        if "friendly_name" in (now.get("attributes") or {}):  # A name is setup: today's.
+            attributes["friendly_name"] = now["attributes"]["friendly_name"]
+        states[entity_id] = {**was, "attributes": attributes}
+    return {**home, "at": source.get("at"), "states": states}
+
+
 def assist_config(source, setup=None):
-    """What Assist was set up with in a replay: the recorded scripts ({object id: config}) with a change's on top, and
-    the entities exposed to it (sorted), as the sandbox is seeded with them."""
+    """What Assist was set up with in a replay: the scripts ({object id: config}) the sandbox was seeded with, with a
+    change's on top, and the entities exposed to it (sorted)."""
     setup = setup or {}
     exposure = {**(source.get("exposure") or {}), **(setup.get("exposure") or {})}
     return {"scripts": {**(source.get("scripts") or {}), **(setup.get("scripts") or {})},

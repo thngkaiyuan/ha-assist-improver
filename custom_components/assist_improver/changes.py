@@ -1,4 +1,4 @@
-"""A hypothesis's changes as a sandbox setup: what a replay changes in the recorded home.
+"""A hypothesis's changes as a sandbox setup: what a replay changes in the household's home.
 
 Each change kind maps onto HA's own configuration: exposure, entity aliases,
 the household knowledge, the instruction template of the assistant the
@@ -75,11 +75,12 @@ def setup_from_changes(changes, *, source, prompt, scripts, user_id=None, assist
     """{exposure, aliases, alias_removals (when any), household (when any), prompt, scripts, prompt_changed} for a
     sandbox, from a hypothesis's changes.
 
-    source is the recorded home, prompt the recorded instruction template of the assistant the conversation used
-    (assistant: its target), scripts the household's script definitions ({object id: config}), user_id the person
-    speaking. Household lines go into the household knowledge (household.py), as applying puts them: everyone's, or
-    the speaking person's for this_user; the replay reads them through Assist, as the assistant will. An edit of an
-    assistant's own instructions changes this conversation's template only when it used that assistant.
+    source is the home the sandbox is seeded as (snapshot.at_moment's: today's setup at the conversation's moment),
+    prompt the instruction template of the assistant the conversation used as it is now (assistant: its target),
+    scripts the household's script definitions ({object id: config}), user_id the person speaking. Household lines go
+    into the household knowledge (household.py), as applying puts them: everyone's, or the speaking person's for
+    this_user; the replay reads them through Assist, as the assistant will. An edit of an assistant's own instructions
+    changes this conversation's template only when it used that assistant.
     """
     from . import household, instructions
     exposure, aliases, removals, new_scripts = {}, {}, {}, {}
@@ -93,7 +94,7 @@ def setup_from_changes(changes, *, source, prompt, scripts, user_id=None, assist
             template, problems = instructions.edit(template, [change])
             if problems:
                 raise CaseError(f"{where}: the lines it replaces aren't in the instructions this conversation's "
-                                "assistant ran with")
+                                "assistant has")
             prompt_changed = True
         elif kind in ("preference", "prompt"):
             base = knowledge if knowledge is not None else source.get("household") or household.EMPTY
@@ -105,14 +106,14 @@ def setup_from_changes(changes, *, source, prompt, scripts, user_id=None, assist
         elif kind == "alias":
             alias = (change.get("alias") or "").strip()
             if entity_id not in source["states"] or not alias:
-                raise CaseError(f"{where}: needs a recorded device and an alias")
+                raise CaseError(f"{where}: needs a device in the household's home and an alias")
             aliases.setdefault(entity_id, []).append(alias)
             for old in change.get("replaces") or []:
                 removals.setdefault(entity_id, []).append(old)
             prompt_changed = True  # Assist's device list shows aliases.
         elif kind == "exposure":
             if entity_id not in source["states"]:
-                raise CaseError(f"{where}: {entity_id} isn't in the recorded home")
+                raise CaseError(f"{where}: {entity_id} isn't in the household's home")
             exposure[entity_id] = change.get("expose", True)
             prompt_changed = prompt_changed or not entity_id.startswith("script.")  # Scripts aren't listed.
         elif kind == "script":

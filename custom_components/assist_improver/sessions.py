@@ -6,8 +6,8 @@ Why each piece is there (what it helps the roles do):
   lets code list, filter and search sessions, and find the ones a change would apply to, without loading them.
   Briefs are kept between runs (BriefCache), so a recording is read in full once to make its brief.
 - A full recording (about 9 MB in memory) is what read_session, read_session_turn, device_details and the
-  sandboxes need. At most LOADED stay loaded; the household's snapshot (the newest replayable session) and the
-  assistant's configuration stay for the whole run.
+  sandboxes need. At most LOADED stay loaded; the household (today's setup at the newest replayable session's
+  moment) and the assistant's configuration stay for the whole run.
 - where_it_applies: the sessions whose recorded calls or requests touch a change's devices, their names or areas,
   and every session on an assistant whose own instructions it edits. Sessions without friction come first: they're
   where a rule could misfire on requests that already work. The regression replays use the same test (without the
@@ -197,7 +197,8 @@ class SessionSet:
         else:
             self.briefs = {b["session"]: b for b in briefs or [] if b["session"] in self.analyses}
         self.household, self.assistant_view = household, assistant
-        self._pinned = {short(v.recording["id"]): v for v in (household, assistant) if v is not None}
+        # The household is today's setup, never a session as it went: only the assistant's view stands for one.
+        self._pinned = {short(assistant.recording["id"]): assistant} if assistant is not None else {}
         self.views = _Views(self)
 
     def _view(self, session):
