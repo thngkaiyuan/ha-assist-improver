@@ -127,19 +127,20 @@ def _stop_all():
 
 
 _WORKER = int(os.environ.get("PYTEST_XDIST_WORKER", "gw0").removeprefix("gw"))  # With -n: gw0, gw1, ...
-_SHARE = (32768 - 10000) // int(os.environ.get("PYTEST_XDIST_WORKER_COUNT", "1"))  # Ports per worker (free_port).
+_SHARE = (32768 - 10081) // int(os.environ.get("PYTEST_XDIST_WORKER_COUNT", "1"))  # Ports per worker (free_port).
 
 
 def free_port():
     """A port for a Home Assistant: on HA OS its own, 8123; else a free one at random from this worker's share of
-    10000-32767, below the range the system hands out to bind(0) and outgoing connections (from 32768 on Linux, 49152
-    on macOS). One from that range could go to another process (another suite's server: the bench's suites share the
-    machine's network) in the tens of seconds before Home Assistant binds it on a slow machine, and that process would
-    get Home Assistant's requests. Shares keep a run's workers apart; at random, two runs on one machine rarely meet."""
+    10081-32767: above the ports browsers refuse (ERR_UNSAFE_PORT; the highest is 10080), below the range the system
+    hands out to bind(0) and outgoing connections (from 32768 on Linux, 49152 on macOS). One from that range could go
+    to another process (another suite's server: the bench's suites share the machine's network) in the tens of seconds
+    before Home Assistant binds it on a slow machine, and that process would get Home Assistant's requests. Shares keep
+    a run's workers apart; at random, two runs on one machine rarely meet."""
     if HAOS:
         return 8123
     for _ in range(100):
-        port = 10000 + _SHARE * _WORKER + random.randrange(_SHARE)
+        port = 10081 + _SHARE * _WORKER + random.randrange(_SHARE)
         with socket.socket() as sock:
             try:
                 sock.bind(("127.0.0.1", port))
