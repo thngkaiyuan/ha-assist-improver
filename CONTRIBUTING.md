@@ -13,7 +13,8 @@ uv pip install --python tools/e2e/.venv/bin/python -r tools/e2e/requirements.txt
 PLAYWRIGHT_BROWSERS_PATH=tools/ui/browsers tools/e2e/.venv/bin/python -m playwright install chromium
 ```
 
-On Linux, add `--with-deps` to the last line.
+On Linux, add `--with-deps` to the last line. Have ffmpeg on the PATH too, as Home Assistant's images do
+(`brew install ffmpeg`, `sudo apt-get install ffmpeg`).
 
 ## Test
 
