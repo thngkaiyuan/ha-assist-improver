@@ -7,8 +7,8 @@ what the household objected to is a sub-goal in their own words, about a turn of
 sub-goal, has a state that says what happened to it.
 """
 
-from household import (BOTH_DOORS, FILED, FRICTION, GOAL_STATES, HEATER_LEFT_OFF, NESTED, NO_GAIN, OBJECTED_AND_FILED,
-                       THANKS_AND_NOTE, TROUBLE_IN_THE_MIDDLE, TWO_TIMES, UNCLEAR, UNMET,
+from household import (BOTH_DOORS, FILED, FRICTION, GOAL_STATES, HEATER_LEFT_OFF, LOOKED_UP, NESTED, NO_GAIN,
+                       OBJECTED_AND_FILED, THANKS_AND_NOTE, TROUBLE_IN_THE_MIDDLE, TWO_TIMES, UNCLEAR, UNMET,
                        UNMET_BESIDE_INDETERMINATE, Household)
 from spec_graph import refines
 
@@ -379,6 +379,17 @@ def test_whether_a_goal_was_met_follows_what_assist_did_whatever_the_analyzer_sa
     tree = analysed_with(HEATER_LEFT_OFF, says_otherwise)
     [heater] = [goal for goal in tree.goals if goal not in tree.roots and goal.parent not in tree.roots]
     assert heater.state == "unmet" and heater.parent.state == "met"
+
+
+@refines("test_any_goal_root_or_sub_goal_is_met_if_assist_reached_it_unmet_if_it_missed_and_indeterminate_while_unclear")
+def test_a_question_is_judged_on_what_assists_tools_returned_and_one_beyond_the_record_cant_be_told():
+    """What the user asked to know is judged true to the home and to what Assist's tools returned in its turn (DETAILS
+    P9.10.4). Asked how long is left on the pasta timer, Assist looked the timer up and said what the lookup returned:
+    the question names no device and asks no form, yet it's judged, and met. Asked whether the fridge is plugged in,
+    Assist looked nothing up: beyond the record and with no form asked, it can't be told."""
+    [question] = analysed(LOOKED_UP).roots
+    assert question.state == "met"
+    assert "indeterminate" in {goal.state for goal in analysed(UNMET_BESIDE_INDETERMINATE).roots}
 
 
 @refines("test_any_goal_root_or_sub_goal_is_met_if_assist_reached_it_unmet_if_it_missed_and_indeterminate_while_unclear")

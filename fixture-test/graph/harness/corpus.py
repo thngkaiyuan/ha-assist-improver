@@ -96,7 +96,8 @@ class Say:
     broadcast: a message Assist broadcast (HassBroadcast), which reached no device: the household has no satellite.
     local: Home Assistant answered it itself, not the AI (nothing prepared for a model): with its built-in commands
     (True), or as the agent named (an automation's sentence trigger). failed: the error each of its calls failed with
-    at home, changing nothing (the turn keeps its call log)."""
+    at home, changing nothing (the turn keeps its call log). looked_up: (tool, what it returned): a tool Assist called
+    that changes nothing, a timer's status, say."""
     text: str
     calls: tuple = ()
     reply: str = "Done."
@@ -104,6 +105,7 @@ class Say:
     broadcast: str | None = None
     local: bool | str = False
     failed: str | None = None
+    looked_up: tuple = ()
 
 
 @dataclass(frozen=True)
@@ -510,6 +512,11 @@ KINDS = {kind.name: kind for kind in (
                  (on(PORCH), ("button.press", CHIME)), "Turns on the porch light and rings the chime.",
                  "The porch light comes on when asked"),
          fix_works=True, fixed={1: "fix"}),
+    # A question about the pasta timer, answered from what Assist's lookup of it returned: no device, no form.
+    Kind("looked up", "How long is left on the pasta timer?",
+         talk=(Say("How long is left on the pasta timer?", reply="4 minutes left",
+                   looked_up=("HassTimerStatus", {"data": {"timers": [{"name": "pasta", "left": "4 minutes left"}]}})),),
+         analysis=goals(goal(1, "Time left on the pasta timer", fact="how long is left on the pasta timer"))),
     # The heater asked for, then again; its command failed at home both times, so the home couldn't do it whatever
     # Assist did.
     Kind("heater failed", "Turn the heater on.", start={HEATER: "off"},
@@ -634,6 +641,9 @@ def _built(kind, said, began):
                                  "additionalProperties": False}})
     tools += [{"name": f"FixtureExtra{i}", "description": "Unused fixture tool", "integration": "fixture",
                "parameters": {"type": "object", "properties": {}}} for i in range(8)]
+    tools += [{"name": tool, "description": "Look something up", "integration": "intent",
+               "parameters": {"type": "object", "properties": {}}}
+              for tool in dict.fromkeys(say.looked_up[0] for say in kind.talk if say.looked_up)]
     if any(say.broadcast for say in kind.talk):
         tools.append({"name": "assist_satellite__HassBroadcast", "description": "Broadcast a message",
                       "integration": "assist_satellite", "parameters": {
@@ -688,6 +698,13 @@ def _built(kind, said, began):
                 "success": [{"name": _name(entity), "type": "entity", "id": entity}], "failed": []}}, "error": False}
             messages.append({"role": "tool_result", "agent_id": "conversation.fixture", "tool_call_id": call["id"],
                              "tool_name": call["tool_name"], "result": result, "created": tick()})
+        if say.looked_up:
+            tool, returned = say.looked_up
+            call = {"tool_name": tool, "tool_args": {}, "id": f"call-{number}-looked-up", "external": False}
+            messages.append({"role": "assistant", "agent_id": "conversation.fixture", "tool_calls": [call],
+                             "created": tick()})
+            messages.append({"role": "tool_result", "agent_id": "conversation.fixture", "tool_call_id": call["id"],
+                             "tool_name": tool, "result": deepcopy(returned), "created": tick()})
         if say.broadcast:
             call = {"tool_name": "assist_satellite__HassBroadcast", "tool_args": {"message": say.broadcast},
                     "id": f"call-{number}-broadcast", "external": False}

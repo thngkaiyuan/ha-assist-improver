@@ -691,7 +691,17 @@ class Roles:
 
     async def feedback_check(self, hass, payload, tools):
         """The judge: an Assist turn shows what the household objected to when its reply is one the kind says shows
-        that objection (Kind.shows), else unless it's just "Done."."""
+        that objection (Kind.shows), else unless it's just "Done."; a reply gives what a question needs when what a
+        tool returned in its turn says it."""
+        if "questions" in payload:
+            answers = []
+            for question in payload["questions"]:
+                [turn] = [t for t in payload["turns"] if t[0]["turn"] == question["turn"]]
+                returned = json.dumps([did["result"] for did in turn[2]["assistant_did"]])
+                gives = turn[3]["assistant_replied"] in returned
+                answers.append({"goal": question["goal"], "turn": question["turn"], "gives": gives,
+                                "why": "A tool's result says so." if gives else "Nothing returned says so."})
+            return {"answers": answers}
         kind = self.conversations[payload["replay"][0][1]["user_said"]].kind
         replies = {turn[0]["turn"]: turn[3]["assistant_replied"] for turn in payload["replay"]}
         answers = []

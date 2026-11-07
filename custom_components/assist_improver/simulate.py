@@ -58,8 +58,9 @@ CONDUCT_STRUCTURE = probatio.Schema({probatio.Required("answers"): [{
     probatio.Required("goal"): str, probatio.Required("turn"): int, probatio.Required("shows"): bool,
     probatio.Required("why"): str}]})
 # Whether a reply gives what the user asked to know (DETAILS P9.7.4): the same small model judges it, one turn at a
-# time, with the home as it was then (the devices the question is about) and the form they asked for.
-FACT_INSTRUCTIONS = """A household asked their home assistant ("Assist") something they wanted to know. Each question below has what they asked (asked: the turn and their words), what the answer needs (needs), the form they asked for the answer in, if any (form: their own words), the turn whose reply to judge (turn), and, when it's about the home, the devices it's about as the home had them when Assist answered (home: each device's name, its state and attributes as that turn started, and what changed in it before the reply). Then each turn to judge (turns), as it went: what the user said, what Assist did (each tool call with Home Assistant's result), what it replied, and what the home did (each message spoken or sound played and on which devices, each device changed, and in a replay each command its devices were sent; a replayed turn with none of these did nothing of the kind, while a recorded one names each script it ran). For each question, does that turn's reply give what the answer needs, true to the home as given, in the form asked for (when given)? A question with no home is beyond what the home records: judge only whether the reply answers it in the form asked for, never whether its content is true. Answer for each with gives (true or false) and a short reason (why). Judge only the question: a reply that gives it with more besides still gives it; one that is wrong about the home, leaves out what the answer needs, or ignores the form asked for doesn't."""
+# time, with the home as it was then (the devices the question is about), what Assist's tools returned in that turn,
+# and the form they asked for.
+FACT_INSTRUCTIONS = """A household asked their home assistant ("Assist") something they wanted to know. Each question below has what they asked (asked: the turn and their words), what the answer needs (needs), the form they asked for the answer in, if any (form: their own words), the turn whose reply to judge (turn), and, when it's about the home, the devices it's about as the home had them when Assist answered (home: each device's name, its state and attributes as that turn started, and what changed in it before the reply). Then each turn to judge (turns), as it went: what the user said, what Assist did (each tool call with Home Assistant's result), what it replied, and what the home did (each message spoken or sound played and on which devices, each device changed, and in a replay each command its devices were sent; a replayed turn with none of these did nothing of the kind, while a recorded one names each script it ran). For each question, does that turn's reply give what the answer needs, true to the home as given and to what that turn's tool calls returned (what Assist saw before replying), in the form asked for (when given)? A question neither speaks to is beyond what's recorded: judge only whether the reply answers it, in the form asked for when given, never whether its content is true. Answer for each with gives (true or false) and a short reason (why). Judge only the question: a reply that gives it with more besides still gives it; one that is wrong about the home or a tool's result, leaves out what the answer needs, or ignores the form asked for doesn't."""
 FACT_STRUCTURE = probatio.Schema({probatio.Required("answers"): [{
     probatio.Required("goal"): str, probatio.Required("turn"): int, probatio.Required("gives"): bool,
     probatio.Required("why"): str}]})
@@ -321,11 +322,14 @@ def _recorded_turn(recording, recorded, number):
         turn["messages"][1:], raw.get("actions") if "actions" in raw else None, turn["source"], changes))
 
 
-def judgeable(goal, view):
-    """Whether a fact can be judged: its truth is in the record (it names a device the recording holds a state of), or
-    the user asked for a form; a question beyond the home with no form asked holds nothing to check (P9.10.4)."""
-    recorded = view.source.get("states") or {}
+def judgeable(goal, view, goals):
+    """Whether a fact can be judged (DETAILS P9.10.4): its truth is in the record, as the home (it names a device the
+    recording holds a state of) or what a tool returned to Assist in a turn of its run (analyzer.question_run), or the
+    user asked for a form; a question beyond both with no form asked holds nothing to check."""
+    from .analyzer import question_run
+    recorded, calls = view.source.get("states") or {}, getattr(view, "calls", None) or {}
     return goal.get("kind") == "fact" and (any(e in recorded for e in goal.get("entity_ids") or [])
+                                           or any(calls.get(t) for t in question_run(goals, goal))
                                            or bool((goal.get("quote") or "").strip()))
 
 
@@ -390,7 +394,7 @@ async def answered(hass, model, view, goals):
     from .analyzer import question_run
     roots = {n: g for n, g in enumerate(goals) if g.get("serves") is None and g.get("kind") == "fact"}
     found, runs = {}, {n: question_run(goals, g) for n, g in roots.items()  # Not one in the note: no reply.
-                       if judgeable(g, view) and g["turn"] <= len(recorded)}
+                       if judgeable(g, view, goals) and g["turn"] <= len(recorded)}
     for n, run in runs.items():
         if run[-1] > len(recorded):  # Asked again in the note: its last reply said gave nothing either.
             found[n] = {"turn": max(t for t in run if t <= len(recorded)), "gives": False, "why": ASKED_IN_NOTE}
@@ -417,7 +421,7 @@ def _well_formed(structure, output):
 
 def questions_in(goals, view, aside=()):
     """The questions a replay judges: the judgeable fact roots not set aside."""
-    return [g for g in goals if g.get("serves") is None and judgeable(g, view) and g["key"] not in aside]
+    return [g for g in goals if g.get("serves") is None and judgeable(g, view, goals) and g["key"] not in aside]
 
 
 async def judged_facts(hass, model, recording, view, steps, questions, goals, verdicts, upto=None):

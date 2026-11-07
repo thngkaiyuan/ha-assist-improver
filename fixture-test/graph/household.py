@@ -74,6 +74,7 @@ DIMMED = "dimmed"            # the lamp asked for at half brightness and turned 
 UNPRESSED = "unpressed"      # a button (the chime) asked to be pressed, and Assist can't; a fix presses it
 CHIMED_UNASKED = "chimed unasked"  # UNMET, where the fix's script also presses the chime, unasked
 HEATER_FAILED = "heater failed"  # the heater asked for twice, its command failing at home both times
+LOOKED_UP = "looked up"      # a question about the pasta timer, answered from what Assist's lookup returned
 
 
 class Missing(Exception):

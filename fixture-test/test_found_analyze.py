@@ -175,8 +175,9 @@ async def test_what_the_user_asked_to_know_is_judged_once_on_the_reply_that_ends
 
 @pytest.mark.asyncio
 async def test_a_question_beyond_the_home_is_judged_only_on_the_form_asked_for_and_without_one_not_at_all():
-    """DETAILS P9.10.4: the improver holds no truth beyond the home; only the form the user asked for is checkable.
-    One naming no device and no form isn't judged: it can't be told."""
+    """DETAILS P9.10.4: the improver holds no truth beyond the home and what Assist's tools returned; only the form
+    the user asked for is checkable. One naming no device, in a turn whose tools returned nothing, with no form isn't
+    judged: it can't be told."""
     from custom_components.assist_improver import simulate
     from custom_components.assist_improver.exploration import SessionView
     view = SessionView(make_recording())
@@ -186,16 +187,48 @@ async def test_a_question_beyond_the_home_is_judged_only_on_the_form_asked_for_a
         asked.append(questions)
         return {"status": "completed", "usage": {}, "answers": [
             {"goal": q["goal"], "turn": q["turn"], "gives": True, "why": "One sentence."} for q in questions]}
-    sky = {"turn": 1, "summary": "Why the sky is blue", "kind": "fact", "fact": "Why the sky is blue"}
+    sky = {"turn": 2, "summary": "Why the sky is blue", "kind": "fact", "fact": "Why the sky is blue"}  # No tool call.
     with pytest.MonkeyPatch.context() as patch:
         patch.setattr(simulate, "check_facts", check)
         assert await simulate.answered(None, "ai_task.judge", view, [sky]) == ({}, None) and not asked
         unrecorded = {**sky, "entity_ids": ["switch.registered_only"]}  # In the registry, with no state recorded.
         assert await simulate.answered(None, "ai_task.judge", view, [unrecorded]) == ({}, None) and not asked
         found, _ = await simulate.answered(None, "ai_task.judge", view, [{**sky, "quote": "the fixture relay"}])
-    assert found == {0: {"turn": 1, "gives": True, "why": "One sentence."}}
+    assert found == {0: {"turn": 2, "gives": True, "why": "One sentence."}}
     [[question]] = asked
     assert question["form"] == "the fixture relay" and "home" not in question
+
+
+@pytest.mark.asyncio
+async def test_a_question_answered_from_a_tools_result_is_judged_with_what_that_turn_returned(monkeypatch):
+    """DETAILS P9.10.4: a question is judged against the home and what Assist's tools returned in its turn, so one
+    about anything a tool reported is judgeable though it names no device and asks no form; the judge reads the
+    result in that turn."""
+    from custom_components.assist_improver import simulate
+    from custom_components.assist_improver.exploration import SessionView
+    record = make_recording()
+    content = record["chat_log"]["content"]
+    at = next(i for i, m in enumerate(content) if m.get("content") == "Recorded response 2.")
+    call = {"tool_name": "HassTimerStatus", "tool_args": {}, "id": "call-2-timer", "external": False}
+    result = {"data": {"timers": [{"name": "Pasta", "seconds_left": 240}]}, "error": False}
+    content[at:at] = [{"role": "assistant", "agent_id": "conversation.fixture", "tool_calls": [call],
+                       "created": content[at]["created"]},
+                      {"role": "tool_result", "agent_id": "conversation.fixture", "tool_call_id": call["id"],
+                       "tool_name": call["tool_name"], "result": result, "created": content[at]["created"]}]
+    seen = []
+
+    async def check(hass, entity_id, questions, turns):
+        seen.append((questions, turns))
+        return {"status": "completed", "usage": {}, "answers": [
+            {"goal": q["goal"], "turn": q["turn"], "gives": True, "why": "."} for q in questions]}
+    monkeypatch.setattr(simulate, "check_facts", check)
+    timer = {"turn": 2, "summary": "Time left on the pasta timer", "kind": "fact", "fact": "Minutes left"}
+    found, _ = await simulate.answered(None, "ai_task.judge", SessionView(record), [timer])
+    assert found == {0: {"turn": 2, "gives": True, "why": "."}}
+    [([question], [turn])] = seen
+    assert "home" not in question and "form" not in question
+    [did] = next(part["assistant_did"] for part in turn if "assistant_did" in part)
+    assert did["called"] == "HassTimerStatus" and "Pasta" in did["result"] and "240" in did["result"]
 
 
 def judging_facts(gives=True):
