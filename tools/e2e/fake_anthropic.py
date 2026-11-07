@@ -4,7 +4,8 @@ Home Assistant's real anthropic integration talks to it (the anthropic SDK reads
 Assistant passes no base_url of its own), so everything between the screen and the model is the product's and Home
 Assistant's own code. The server answers:
 
-- GET /v1/models (the integration's key check, and its model list) with a few Claude models;
+- GET /v1/models (the integration's key check, and its model list) with a few Claude models, each with its
+  capabilities as the Models API gives them;
 - POST /v1/messages, streamed or not, with the key the throwaway config was given (any other key is refused, as
   Anthropic refuses it).
 
@@ -37,8 +38,13 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-MODELS = (("claude-opus-5-5", "Claude Opus 5.5"), ("claude-sonnet-5", "Claude Sonnet 5"),
-          ("claude-haiku-4-5", "Claude Haiku 4.5"), ("claude-haiku-5-5", "Claude Haiku 5.5"))
+# Each model, with the effort levels and thinking types the Models API says it takes: Home Assistant's anthropic flow
+# offers those (Opus 5.5 always thinks, adaptively; Haiku 4.5 takes a thinking budget and no effort).
+EFFORTS = ("low", "medium", "high", "xhigh", "max")
+MODELS = (("claude-opus-5-5", "Claude Opus 5.5", EFFORTS, ("adaptive",)),
+          ("claude-sonnet-5", "Claude Sonnet 5", EFFORTS, ("adaptive", "disabled")),
+          ("claude-haiku-4-5", "Claude Haiku 4.5", (), ("enabled", "disabled")),
+          ("claude-haiku-5-5", "Claude Haiku 5.5", EFFORTS, ("adaptive", "disabled")))
 # s: how long a household reply's stream stays open after its words, as a real model's does (its usage comes last).
 # The Assist dialog shows the words before the turn ends, so every journey with a next turn crosses that window.
 TAIL = 0.5
@@ -756,6 +762,18 @@ def answer(request):
 
 # The server.
 
+def _capabilities(efforts, thinking):
+    """A model's capabilities as the Models API gives them, every key present: the effort levels and thinking types
+    it takes, and the rest supported (the structured output each AI role asks for among them)."""
+    yes = {"supported": True}
+    return {"batch": yes, "citations": yes, "code_execution": yes, "image_input": yes, "pdf_input": yes,
+            "structured_outputs": yes, "context_management": {"supported": True},
+            "server_tools": {"supported": True, "code_execution": yes, "web_search": yes},
+            "effort": {"supported": bool(efforts), **{e: {"supported": e in efforts} for e in EFFORTS}},
+            "thinking": {"supported": bool({"adaptive", "enabled"} & set(thinking)), "types": {
+                t: {"supported": t in thinking} for t in ("adaptive", "between_tools", "disabled", "enabled")}}}
+
+
 def _message(blocks, model, number):
     calls = any(b["type"] == "tool_use" for b in blocks)
     return {"id": f"msg_e2e_{number:06d}", "type": "message", "role": "assistant", "model": model,
@@ -831,8 +849,8 @@ class FakeAnthropic:
                     return
                 path = self.path.split("?", 1)[0].rstrip("/")
                 models = [{"type": "model", "id": i, "display_name": name, "created_at": "2026-01-01T00:00:00Z",
-                           "lifecycle": "active"}
-                          for i, name in MODELS]
+                           "lifecycle": "active", "capabilities": _capabilities(efforts, thinking)}
+                          for i, name, efforts, thinking in MODELS]
                 if path == "/v1/models":
                     self._send(200, {"data": models, "has_more": False, "first_id": models[0]["id"],
                                      "last_id": models[-1]["id"]})
