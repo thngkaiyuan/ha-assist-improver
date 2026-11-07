@@ -49,6 +49,7 @@ import base64
 import itertools
 import json
 import os
+import random
 import re
 import secrets
 import shlex
@@ -123,18 +124,19 @@ def _stop_all():
 
 
 _WORKER = int(os.environ.get("PYTEST_XDIST_WORKER", "gw0").removeprefix("gw"))  # With -n: gw0, gw1, ...
-_PORTS = itertools.cycle(range(20000 + 100 * _WORKER, 20100 + 100 * _WORKER))  # This worker's own (free_port).
+_SHARE = (32768 - 10000) // int(os.environ.get("PYTEST_XDIST_WORKER_COUNT", "1"))  # Ports per worker (free_port).
 
 
 def free_port():
-    """A port for a Home Assistant: on HA OS its own, 8123; else a free one of this worker's own, below the range the
-    system hands out to bind(0) and outgoing connections (from 32768 on Linux, 49152 on macOS). One from that range
-    could go to another process (another suite's server: the bench's suites share the machine's network) before Home
-    Assistant binds it, and that process would get Home Assistant's requests."""
+    """A port for a Home Assistant: on HA OS its own, 8123; else a free one at random from this worker's share of
+    10000-32767, below the range the system hands out to bind(0) and outgoing connections (from 32768 on Linux, 49152
+    on macOS). One from that range could go to another process (another suite's server: the bench's suites share the
+    machine's network) in the tens of seconds before Home Assistant binds it on a slow machine, and that process would
+    get Home Assistant's requests. Shares keep a run's workers apart; at random, two runs on one machine rarely meet."""
     if HAOS:
         return 8123
     for _ in range(100):
-        port = next(_PORTS)
+        port = 10000 + _SHARE * _WORKER + random.randrange(_SHARE)
         with socket.socket() as sock:
             try:
                 sock.bind(("127.0.0.1", port))
@@ -338,10 +340,10 @@ def _onboarded(folder):
 def _start_process(folder, model_url, port):
     """Home Assistant on the config folder, in a session of its own (_stop_process). SETUP_PORT makes Home Assistant's
     last-resort HTTP default (recovery mode) the same port, never 8123. That default listens on every interface, so
-    only losing the port to another listener between free_port() and Home Assistant binding it (a second or two) could
-    reach it. On the bench, Home Assistant's image instead (its container's lifetime is the process's), in the
-    household's time zone, as the Supervisor gives Core the system's; or HA OS's own, the folder copied in first,
-    started by its Supervisor (the process follows its log until it stops)."""
+    only losing the port to another listener between free_port() and Home Assistant binding it could reach it. On the
+    bench, Home Assistant's image instead (its container's lifetime is the process's), in the household's time zone,
+    as the Supervisor gives Core the system's; or HA OS's own, the folder copied in first, started by its Supervisor
+    (the process follows its log until it stops)."""
     env = {k: v for k, v in os.environ.items() if not k.lower().endswith("_proxy")}
     own = dict(ANTHROPIC_BASE_URL=model_url, NO_PROXY="127.0.0.1,localhost", no_proxy="127.0.0.1,localhost",
                SETUP_PORT=str(port))
