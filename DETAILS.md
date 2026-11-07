@@ -1311,7 +1311,8 @@ Citations in parentheses name the maintainer's earlier notes, which aren't in th
     be ones the device actually has, as Home Assistant has them, not the user's word: the device's own options and
     ranges where it shows them, else its domain's ('cool' is wrong for a climate device whose modes are off, fan_only
     and heat). A setting is one in any of Home Assistant's forms of it (a colour as rgb or hue and saturation, a
-    brightness as a percentage or 0 to 255), and a number is reached within 5% of its range. (MILESTONE-4.md; S5)
+    brightness as a percentage or 0 to 255), and a number is reached within 5% of its range, or of the device's own
+    step where that's coarser (a three-speed fan's). (MILESTONE-4.md)
   - **P9.7.2** The start state matters: a device already off changes what a request means. (PRODUCT-SPEC.md)
   - **P9.7.3** When either of two devices gets the home to the same end state, either is fine: a smart plug or the
     lamp itself both turn a lamp off. (Kai, 2026-10-23)

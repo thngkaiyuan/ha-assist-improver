@@ -70,6 +70,18 @@ def test_a_thermostats_target_temperature_is_met_within_tolerance_of_its_range_a
     assert analyzer.reached(set_to(22), goal(THERMOSTAT, "heat", temperature=22, fan_mode="low")) is False  # Unset.
 
 
+def test_a_number_is_met_within_the_devices_own_step_where_its_coarser():
+    """A three-speed fan asked for 50% goes to its nearest speed, which Home Assistant shows as 67: that's 50% for this
+    fan (its percentage_step), not two speeds off."""
+    fan = "fan.bedroom"
+    shows = {"percentage": 0, "percentage_step": 100 / 3, "preset_modes": None}
+    view = SimpleNamespace(source={"states": {fan: {"state": "off", "attributes": shows}}}, changes={fan: [
+        {"at": "2026-01-01T09:00:00+00:00", "during_turn": 1, "old": "off", "new": "on", "by": "assistant",
+         "attributes_changed": {"percentage": [0, 67]}}]})
+    assert analyzer.reached(view, goal(fan, "on", percentage=50)) is True
+    assert analyzer.reached(view, goal(fan, "on", percentage=30)) is False  # A speed away.
+
+
 def test_another_setting_moving_neither_reaches_nor_undoes_a_goal():
     later = home((THERMOSTAT, "heat", {"temperature": 22}), (THERMOSTAT, "heat", {"current_temperature": 19}))
     later.changes[THERMOSTAT][1]["by"] = "not the assistant"

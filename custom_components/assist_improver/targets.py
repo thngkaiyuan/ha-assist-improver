@@ -8,7 +8,8 @@ range as the entity shows them (its capability attributes), else as the field's 
 be given in any of its representations, compared by Home Assistant's own conversions (homeassistant.util.color): a
 colour as hs, rgb, xy, rgbw, rgbww, a name or a colour temperature; a brightness as brightness or brightness_pct.
 Numbers match within TOLERANCE of the setting's range (as the entity shows it, else as the field's selector gives it),
-else of the value asked for. A temperature is the entity's own unit, as it shows it.
+else of the value asked for, or within the step the entity shows for it where that's coarser (a three-speed fan's). A
+temperature is the entity's own unit, as it shows it.
 """
 
 from enum import StrEnum
@@ -158,9 +159,19 @@ def _range(domain, name, found):
     return (bounds["min"], bounds["max"]) if _number(bounds.get("max")) else None
 
 
-def _close(asked, now, bounds):
+def _step(name, found):
+    """The step a device takes a setting in, as it shows it, named as _range names a range: a fan's percentage_step
+    (a three-speed fan asked for 50% goes to 67), a thermostat's target_temp_step; None for none."""
+    stems = [k[:-5] for k in found if k.endswith("_step") and _number(found[k])]
+    stem = max((k for k in stems if k in name or k.rsplit("_", 1)[-1] in name), key=len, default=None)
+    return found[f"{stem}_step"] if stem else None
+
+
+def _close(asked, now, bounds, step=None):
+    """Whether a number is the one asked for: within TOLERANCE of its range (else of the value asked for), or of the
+    device's own step where that's coarser."""
     span = (bounds[1] - bounds[0]) if bounds else abs(asked)
-    return abs(asked - now) <= TOLERANCE * span
+    return abs(asked - now) <= max(TOLERANCE * span, step or 0)
 
 
 def _percent(name, value):
@@ -227,7 +238,7 @@ def holds(domain, wanted, attributes, found=None):
             shows, now = _colour(attributes)
             if name == shows == "color_temp_kelvin":
                 if not (_number(asked) and _number(now)
-                        and _close(asked, now, _range(domain, name, found))):
+                        and _close(asked, now, _range(domain, name, found), _step(name, found))):
                     return False
                 continue
             mine, theirs = _hs(name, asked, found), _hs(shows, now, found) if shows else None
@@ -235,7 +246,7 @@ def holds(domain, wanted, attributes, found=None):
                 return False
         elif _number(asked):
             now = attributes.get(name)
-            if not (_number(now) and _close(asked, now, _range(domain, name, found))):
+            if not (_number(now) and _close(asked, now, _range(domain, name, found), _step(name, found))):
                 return False
         elif attributes.get(name) != asked:
             return False
