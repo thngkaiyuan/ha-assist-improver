@@ -24,7 +24,7 @@ import re
 
 import probatio
 
-from . import targets
+from . import happened, standin, targets
 from .exploration import RoleTool
 
 ROLE = "journey_analyzer"
@@ -36,7 +36,7 @@ List the user's goals. A goal is one thing the user wanted:
 - state: a device ending in a state (entity_id and state; attributes: only the settings the user asked for, by the names the device's actions give them, such as brightness_pct, rgb_color, temperature or fan_mode);
 - sequence: a device passing through states in order (entity_id and states), such as a relay pressed off then on;
 - fact: something the user needed to know. fact: what the answer needs (the facts, distinctions or limits it must give, never the answer itself); entity_ids: the devices the answer is about, when it's about the home; quote: the form they asked for the answer in ("in a single brief sentence"), in their own words, only when they asked for one;
-- action: something done that leaves no device in a new state. outcome announce: something spoken or played on devices, whatever its content; entity_ids: every device it's for, in one action (each speaker the household has, when they say all of them). Asked together with a device request, it's a part at that turn;
+- action: something done that leaves no device in a new state. outcome announce: something spoken or played on devices, whatever its content; command: a device told to do something it keeps no state of, such as a button pressed; entity_ids: every device it's for, in one action (each speaker the household has, when they say all of them). Asked together with a device request, it's a part at that turn. A scene asked for is its devices' states;
 - ask: devices whose settings the user's words leave open (entity_ids). Don't guess what the user didn't say: list the controls the user should set, as narrow as their words allow. One control when only its value is open (a heater with no level given); the related controls of a device when only the device or the theme is clear ("make the den cosy": its heating controls). The user will be shown those controls and set them.
 Give each goal the turn where the user first asked for it. A goal is one state of the home at one time: several things asked for at once are one goal, so give the first device as the goal and each other device as a sub-goal with the same turn that serves it. What later turns reveal changes the earlier goal: a correction or clarification makes it more exact rather than adding a goal. When the assistant asks the user a follow-up question, the answer makes the earlier request more exact: give those details the turn of the original request. When the assistant answers a vague request by guessing and asking what the user wants, the user's reply says what they wanted all along: those goals belong to the vague request's turn, and the assistant's guess is not a goal. When a later turn shows how a goal must be reached (such as a relay pressed off then on), change the earlier goal itself. Once a goal has been reached, asking for the same thing again is a new goal with the new turn. Respect the timing and separation of the user's requests: what they asked for separately, at different times, stays separate goals; what they asked for together is one request. Never turn them into a broader request the user didn't make, even if their intent seems predictable.
 
@@ -75,7 +75,8 @@ Some of what went wrong here may already have a fix: an improvement waiting for 
 
 An applied improvement can also be the cause of what the household objected to: when one applied before this session makes Assist do what a conduct goal is about (a household line telling it how to word something, a script it ran), name it in that conduct goal's improvement."""
 
-OUTCOMES = {"announce": "a message spoken on devices"}  # What an action goal can want: the outcome, not a service.
+OUTCOMES = {  # What an action goal can want: the outcome, not a service.
+    "announce": "a message spoken or played on devices", "command": "a device told to do something it keeps no state of"}
 STRUCTURE = probatio.Schema({
     probatio.Required("goals"): [{
         probatio.Required("turn"): int,
@@ -146,36 +147,15 @@ def destination(goals, step):
     return []
 
 
-# Services that speak or play an announcement; a legacy text-to-speech engine's own say service (tts.<engine>_say) too.
-SPEAKING = ("tts.speak", "assist_satellite.announce", "assist_satellite.start_conversation", "media_player.play_media")
+def source_at(view, turn):
+    """The home as a turn began, by that turn's snapshot (view.sources; else the first turn's)."""
+    homes = getattr(view, "sources", None) or [view.source]
+    return homes[min(max(turn, 1), len(homes)) - 1]
 
 
 def state_at(view, entity, turn):
-    """An entity's state as a turn began, by that turn's snapshot of the home (view.sources; else the first turn's)."""
-    homes = getattr(view, "sources", None) or [view.source]
-    return ((homes[min(max(turn, 1), len(homes)) - 1].get("states") or {}).get(entity) or {}).get("state")
-
-
-def speaking(service):
-    """Whether a service speaks or plays an announcement (SPEAKING, or a legacy engine's tts.<engine>_say)."""
-    return service in SPEAKING or service.startswith("tts.") and service.endswith("_say")
-
-
-def spoken(calls):
-    """What a turn's calls spoke or played, and on which devices: [{message, media, targets}] (media: the audio an
-    announcement played, such as a chime), from a broadcast's result (the satellites it was sent to) and the speaking
-    calls a replay's sandbox logged (service, the devices that spoke, the message or media)."""
-    out = []
-    for call in calls:
-        if speaking(call.get("service") or ""):  # Logged by a replay's sandbox, wherever it was called from.
-            out.append({"message": call.get("message") or "", "media": call.get("media"),
-                        "targets": set(call.get("targets") or [])})
-        elif (call.get("tool") or "").endswith("HassBroadcast"):
-            data = (call.get("result") or {}).get("data") if isinstance(call.get("result"), dict) else None
-            inner = data.get("data") if isinstance(data, dict) else None
-            out.append({"message": str((call.get("args") or {}).get("message") or ""), "media": None,
-                        "targets": {t.get("id") for t in (inner or {}).get("success") or [] if isinstance(t, dict)}})
-    return out
+    """An entity's state as a turn began (source_at)."""
+    return ((source_at(view, turn).get("states") or {}).get(entity) or {}).get("state")
 
 
 def carries(goal, announcement):
@@ -184,37 +164,39 @@ def carries(goal, announcement):
     return True
 
 
-def announced(view, goal, turns):
-    """Whether an announce action was done over these turns' calls (view.calls): an announcement (words that aren't
-    blank, or audio such as a chime) that carries it, on every device it's for, by any call (DETAILS P9.7.6); a device
-    is reached when any of its entities spoke (a voice satellite and its speaker are one device), one unavailable as
-    its turn began (view.sources: each turn's home) speaking nowhere, though a broadcast's result names it. None when
-    that can't be told: no calls kept, or a script ran that a recording doesn't see into (view.scripts_seen: a
-    replay's sandbox logs what scripts speak)."""
+def done(view, goal, turns):
+    """Whether an action was done over these turns, by what happened in them (view.calls and view.actions: each tool
+    call with its result, and the call log; happened.py), on every device it's for (DETAILS P9.10.5): for announce, a
+    call carrying words or media (that carries it) at the device; for command, a call that reached the device, or its
+    own change by Assist (a button's last press). An entity counts for its whole device (a voice satellite and its
+    speaker are one), one unavailable as its turn began reaching nothing. None when that can't be told: no calls kept,
+    or a script ran in a turn that kept no call log."""
     if getattr(view, "calls", None) is None:
         return None
-    entities = view.source.get("entities") or {}
+    entities, actions = view.source.get("entities") or {}, getattr(view, "actions", None) or {}
     device = lambda e: (entities.get(e) or {}).get("device_id") or e  # noqa: E731
-    calls = [c for t in turns for c in view.calls.get(t, [])]
-    reached = {device(e) for t in turns for s in spoken(view.calls.get(t, []))
-               if (s["message"].strip() or s["media"]) and carries(goal, s)
-               for e in s["targets"] if state_at(view, e, t) != "unavailable"}
-    if {device(e) for e in goal.get("entity_ids") or []} <= reached:
+    found = set()
+    for t in turns:
+        calls, source = view.calls.get(t, []), source_at(view, t)
+        if goal.get("outcome") == "command":
+            hit = happened.reached(calls, actions.get(t), source) | {
+                e for e in goal.get("entity_ids") or [] for c in view.changes.get(e, [])
+                if c["during_turn"] == t and c["by"] in ASSISTANT}
+        else:
+            hit = {e for s in happened.announcements(calls, actions.get(t), source) if carries(goal, s)
+                   for e in s["targets"]}
+        found |= {device(e) for e in hit if state_at(view, e, t) != "unavailable"}
+    if {device(e) for e in goal.get("entity_ids") or []} <= found:
         return True
-    if not getattr(view, "scripts_seen", False) and ran_scripts(calls):
+    if any(happened.unseen(view.calls.get(t, []), actions.get(t)) for t in turns):
         return None
     return False
 
 
-def ran_scripts(calls):
-    """The scripts these calls ran, each by its tool's name (script__name), in order, once each."""
-    return list(dict.fromkeys(c["tool"] for c in calls if re.search(r"(^|__)script__", c.get("tool") or "")))
-
-
-def spoken_before(view, goals, action, turn):
-    """Whether an action was done by the turns of its request before this turn (announced)."""
+def done_before(view, goals, action, turn):
+    """Whether an action was done by the turns of its request before this turn (done)."""
     root = root_turn(goals, action["turn"])
-    return announced(view, action, [t for t in range(action["turn"], turn) if root_turn(goals, t) == root]) is True
+    return done(view, action, [t for t in range(action["turn"], turn) if root_turn(goals, t) == root]) is True
 
 
 def question_run(goals, root):
@@ -439,7 +421,7 @@ def problems(view, answer, note=None, existing=(), revisions=()):
             if kind == "step" and serves is not None and (parent := destination(answer["goals"], goal)) and all(
                     g.get("kind") in ("state", "sequence") and g.get("entity_id") in known
                     and reached(view, g, goal["turn"]) or g.get("kind") == "action"
-                    and spoken_before(view, answer["goals"], g, goal["turn"]) for g in parent):
+                    and done_before(view, answer["goals"], g, goal["turn"]) for g in parent):
                 found.append(f"{where}: what it serves was already done by turn {goal['turn']}, so it isn't a step "
                              "towards it: a check because a reply left them unsure, or an objection, is a conduct goal "
                              "about that reply, and a new request a goal of its own.")
@@ -480,6 +462,9 @@ def problems(view, answer, note=None, existing=(), revisions=()):
             found.append(f"{where}: a {kind} goal needs entity_id.")
         elif entity not in known:
             found.append(f"{where}: there is no device {entity!r} in this household; find_devices finds every entity ID.")
+        elif standin.trigger_only(entity.split(".", 1)[0]):
+            found.append(f"{where}: {entity} keeps no state to reach: pressing or running it is an action goal with "
+                         "outcome command; a scene asked for is its devices' states.")
         else:
             states = [goal.get("state")] if kind == "state" else list(goal.get("states") or [])
             if not states or None in states:

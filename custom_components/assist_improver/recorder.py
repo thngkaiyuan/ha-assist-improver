@@ -95,6 +95,18 @@ def _tool_error(content):
     return data.get("error_text") or data.get("error") or "error"
 
 
+def acted(actions, content, since):
+    """A turn's call log as Assist calls tools and one ends in an error: the action that failed is the last called
+    since its tools were called (inside a script, the script's own failing step; DETAILS P8.2.10). since: the log's
+    length when they were (None: none called yet); its new value."""
+    if content.get("role") == "assistant" and content.get("tool_calls"):
+        return len(actions)
+    if (error := _tool_error(content)) and since is not None and len(actions) > since:
+        actions[-1] = {**actions[-1], "error": error}  # A new entry: a save may be copying the old one.
+        return len(actions)
+    return since
+
+
 def _frozen(session):
     """The recording as it is now, for a save that serializes in another thread: a copy of each list and dict the
     recorder adds to or sets keys in later; their entries are shared, since nothing changes an entry once recorded."""
@@ -618,14 +630,7 @@ class Recorder:
             self.on_filed_closed(key)
 
     def _acted(self, key, turn, content):
-        """Assist calling tools, and a tool's error: the action that failed is the last called since (inside a
-        script, the script's own failing step; DETAILS P8.2.10)."""
-        actions = turn.get("actions") or []
-        if content.get("role") == "assistant" and content.get("tool_calls"):
-            self.tooled[key] = len(actions)
-        elif (error := _tool_error(content)) and len(actions) > self.tooled.get(key, len(actions)):
-            actions[-1] = {**actions[-1], "error": error}  # A new entry: a save may be copying the old one.
-            self.tooled[key] = len(actions)
+        self.tooled[key] = acted(turn.get("actions") or [], content, self.tooled.get(key))
 
     @callback
     def on_call(self, event):

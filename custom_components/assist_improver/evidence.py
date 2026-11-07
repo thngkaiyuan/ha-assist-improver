@@ -31,6 +31,7 @@ from homeassistant.core import Context
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import llm
 
+from . import happened
 from .analyzer import top_level
 from .cases import CaseError, recording_turns, replayable_turns
 from .changes import RESOLVING, changed, setup_from_changes
@@ -388,18 +389,19 @@ async def run_scripts(recording, turn, today, setup, scripts, targets):
     try:
         runs = []
         for object_id in scripts:
-            before, spoke = len(sandbox.transitions), len(sandbox.spoken)
+            before, called = len(sandbox.transitions), len(sandbox.calls)
 
             async def run(hass, object_id=object_id):
                 await hass.services.async_call("script", object_id, blocking=True)
                 await hass.async_block_till_done()
             try:
                 await sandbox.run(run)
+                said = happened.announcements([], [{"action": f"{d}.{s}", "data": data} for d, s, data
+                                                   in sandbox.calls[called:]], sandbox.home)  # What its calls carried.
                 runs.append({"script": f"script.{object_id}", "devices_changed": [
                     f"{t['entity_id']}: {t['old']}→{t['new']}" for t in sandbox.transitions[before:]],
                     **({"spoken": [f"{s['message'] or s.get('media') or ''!r} on "  # Its words, or its audio.
-                                   f"{', '.join(s['targets']) or 'no device'}" for s in sandbox.spoken[spoke:]]}
-                       if sandbox.spoken[spoke:] else {})})
+                                   f"{', '.join(sorted(s['targets'])) or 'no device'}" for s in said]} if said else {})})
             except Exception as err:  # noqa: BLE001
                 runs.append({"script": f"script.{object_id}", "error": str(err)[:300]})
         final = await sandbox.run(lambda hass: _states(hass, [t["entity_id"] for t in targets]))

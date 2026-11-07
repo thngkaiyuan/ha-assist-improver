@@ -449,8 +449,9 @@ Citations in parentheses name the maintainer's earlier notes, which aren't in th
   - **P6.1.9 Feedback.** Feedback on how Assist behaves (in the conversation, or in a note sent with it) is a turn with
     a goal: unmet in the conversation as it went, met in a replay once no Assist turn before its own (every turn, for a
     note's) shows what the household objected to, as a small model judges one Assist turn at a time, with what it said
-    and did and what the home did then (what was spoken where, each device changed, and each script a recorded turn ran,
-    the rest of what the script did unrecorded), and the turn they objected to as the example. (DESIGN.md, 2026-10-25;
+    and did and what the home did then (by its call log, P9.10.5: what was spoken where and each other call; each device
+    changed; and each script a recorded turn with no call log ran, the rest of what it did unrecorded), and the turn
+    they objected to as the example. (DESIGN.md, 2026-10-25;
     TEXT-REVIEW.md, 2026-10-25; P2.2, P2.3.4; Kai, 2026-10-26: "if the assistant was flawless in meeting the goal,
     except for its verbosity, addressing the verbosity would be the obvious solution for turn minimization"; Kai,
     2026-10-27)
@@ -1322,11 +1323,13 @@ Citations in parentheses name the maintainer's earlier notes, which aren't in th
     that doesn't change moves no door. Nothing claims a door's position from the relay alone. (Kai, 2026-10-23: "they'd
     check if destination was reached by checking if the assistant activated those states in those sequences";
     INSTALL.md)
-  - **P9.7.6** For something done that leaves no device in a new state (an announcement on speakers), the destination is
-    the outcome, not a service: what it does and the devices it's for, whatever the words. Any call that does it reaches
-    it. (Kai, 2026-10-29; Kai, 2026-10-30: "the outcome to measure here is whether or not the assistant was able to
-    trigger a broadcast with words/audio of its choice ... not the content of those which really depends on the
-    intelligence of the assistant model")
+  - **P9.7.6** For something done that leaves no device in a new state, the destination is the outcome, not a service:
+    what it does and the devices it's for, whatever the words. An announcement is speech or audio on devices; a command
+    is a device told to do something it keeps no state of (a button pressed, an integration's own action). A button, a
+    scene or a script keeps no state to reach, only when it was last used: a scene asked for is its devices' target
+    States (P9.7.1). Any call that does it reaches it. (Kai, 2026-10-29; Kai, 2026-10-30: "the outcome to measure here
+    is whether or not the assistant was able to trigger a broadcast with words/audio of its choice ... not the content
+    of those which really depends on the intelligence of the assistant model")
 - **P9.8 Not requests.** A turn that isn't a request to Assist (a speech test, a misfire such as silence heard as a
   request, small talk) is never trouble: it's no extra turn, and no device or preference fix is invented for it.
   (Kai, 2026-10-22: "a speech test, not a real request"; PRODUCT-SPEC.md; LABELS.md)
@@ -1379,16 +1382,18 @@ Citations in parentheses name the maintainer's earlier notes, which aren't in th
     (a reply a step follows is unmet by the step itself, as is the last one said when the note asks again); a wrong
     answer is an unmet goal, trouble. One beyond the home is judged only on the form asked for, and with none it can't
     be told.
-  - **P9.10.5** An action (P9.7.6) is met when the calls of its own request's turns, from its turn on, sent an
-    announcement to every device it's for: any speech or audio (words, a chime), its content not judged for now (an
-    entity counts for its whole device; one unavailable as its turn began reached nothing): a broadcast's result names
-    the satellites it was sent to, and a replay's sandbox logs every speaking call, a script's included, a legacy
-    engine's say among them. One for a device none of whose entities was available in the turns it took is one the home
-    couldn't do (P9.10). Code decides it from the calls; one a script ran in a recording can't be told, since a
-    recording doesn't keep a script's own calls. (Kai, 2026-10-30: "It's hard to judge the content of those audio. We
-    can create an abstraction that decides based on the content of these announcements (eg audio/text that's going to
-    be translated to speech), but just stub them out (passthru) for now, because it's undecided whether parsing the
-    contents to match user intent is a worthy cost or not.")
+  - **P9.10.5** An action (P9.7.6) is met when the calls of its own request's turns, from its turn on, did it on every
+    device it's for (an entity counts for its whole device; one unavailable as its turn began reached nothing): an
+    announcement is a call at the device carrying words or media (a chime), its content not judged for now; a command
+    is a call that reached it. What happened is one record, read the same way recorded and replayed: each turn's tool
+    calls with their results (a broadcast's names the satellites it was sent to), and its call log, every action call
+    under the turn's request, a script's own included (P8.2.10; a replay's sandbox keeps one the same way). A call that
+    failed reaches nothing. One for a device none of whose entities was available in the turns it took is one the home
+    couldn't do (P9.10). Code decides it from the calls; where a recording ran a script and kept no call log, it can't
+    be told. (Kai, 2026-10-30: "It's hard to judge the content of those audio. We can create an abstraction that
+    decides based on the content of these announcements (eg audio/text that's going to be translated to speech), but
+    just stub them out (passthru) for now, because it's undecided whether parsing the contents to match user intent is
+    a worthy cost or not.")
 - **P9.11 Trouble.** Trouble is any of four: extra turns, unmet goals, side effects left, and the household's feedback
   on how Assist behaved. Each kind flows through every stage, from the analysis to Your review. (Kai, 2026-10-26:
   "let's make sure it plumbs/flows its way correctly down the pipeline all the way through"; PRODUCT-SPEC.md,

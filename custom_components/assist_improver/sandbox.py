@@ -30,7 +30,7 @@ from types import SimpleNamespace
 
 from homeassistant.const import EVENT_CALL_SERVICE, Platform
 from homeassistant.core import SupportsResponse, callback
-from homeassistant.exceptions import HomeAssistantError, ServiceNotSupported
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.util import dt as dt_util
 from homeassistant.util.hass_dict import HassKey
 
@@ -147,6 +147,31 @@ def _tool_windows(hass, conversation_id, cap):
         close()
 
 
+@contextmanager
+def _call_log(hass, held, request_id):
+    """In a sandbox's loop, while a turn runs: its call log, as a recording keeps one (recorder.Actions, DETAILS
+    P8.2.10): every action call under the turn's request (request_id: its context's), a script's own included, the
+    one a failing tool call of its conversation (held's) ended in marked with its error (recorder.acted). Each {at,
+    action, data, context, under?, error?}."""
+    from .recorder import Actions, acted
+    from .serialization import plain
+    subscribe, events = resolve("chat_log_subscribe"), resolve("chat_log_events")
+    log, actions, since = Actions(), [], [None]
+    log.watch(None, request_id, actions)
+
+    def heard(chat, kind, data):
+        if chat == held.get("conversation") and kind == events.CONTENT_ADDED:
+            since[0] = acted(actions, plain(data.get("content") or {}), since[0])
+    stop_calls = hass.bus.async_listen(EVENT_CALL_SERVICE, log.heard)
+    with relied_on("chat_log_subscribe"):
+        unsubscribe = subscribe(hass, heard)
+    try:
+        yield actions
+    finally:
+        unsubscribe()
+        stop_calls()
+
+
 STATS = {"started": 0, "start_seconds": 0.0, "slowest_start": 0.0, "assistants": 0, "assistant_seconds": 0.0,
          "slowest_assistant": 0.0}  # Diagnostics: where time goes.
 
@@ -166,7 +191,6 @@ class Sandbox:
         self.hass = self.loop = self.thread = None
         self.commands, self.unsimulated, self.transitions = [], [], []
         self.changes = []  # Each change of a state or its attributes: {entity_id, old, new, attributes_changed}.
-        self.spoken = []  # Each message spoken on devices, by whatever called it (_speak).
         self.outside = []  # Each call beyond the home, as answered (outside): an outside receipt (DETAILS P11.7).
         # Each conversation's id here, by the id it has outside: Home Assistant starts a conversation it doesn't know
         # under an id of its own, as at home (run_turn).
@@ -292,7 +316,8 @@ class Sandbox:
     @callback
     def calling(self, event):
         """A service call, as Home Assistant tells of it (in the calling task, unless it tells of another then):
-        what a stand-in's command is a call of (standin.StandIn._call)."""
+        what a stand-in's command is a call of (standin.StandIn._call), or how one does it (standin.passed_on)."""
+        standin.passed_on()
         self.calls.append((event.data["domain"], event.data["service"], event.data.get("service_data") or {}))
         standin.CALLING.set((self, len(self.calls) - 1))
 
@@ -507,7 +532,6 @@ async def seed(hass, *, person=None, integrations=(), timer_device=None, filing=
     if timer_device:  # The request's device runs timers, in the registry or not.
         async_register_timer_handler(hass, timer_device, lambda *args: None)
     _hold_delayed_commands(hass)
-    _emulate_speaking(hass)
     _outside(hass, setup.get("services") or {})
     await _closed(hass, domains, setup)
     # Running, without firing HA's start events: automations are live, but none triggers on a start. They load
@@ -686,21 +710,9 @@ def _hold_delayed_commands(hass):
         manager.start_timer = start_timer
 
 
-# An announcement on devices (DETAILS P9.10.5) leaves no state to simulate: each speaking service (analyzer.speaking)
-# is taken as done, and what it said or played where is logged, whatever called it (a broadcast, a script), for a
-# replay to judge an action by. A media player logs what it plays itself (standin.MediaPlayerStandIn).
-def _emulate_speaking(hass):
-    """Registered after the integrations' own, before the household's scripts load (a legacy engine's say, configured
-    in YAML, never loads here: outside takes it)."""
-    from .analyzer import SPEAKING
-    for name in SPEAKING:
-        if not name.startswith("media_player."):
-            hass.services.async_register(*name.split("."), functools.partial(_speak, hass))
-
-
 def _outside(hass, services):
     """Calls beyond the home: every action today's Home Assistant has that the sandbox doesn't (an integration's own,
-    a notification; a legacy engine's say speaks), and the model calls a sandbox never makes but the turn's own
+    a notification, a legacy engine's say), and the model calls a sandbox never makes but the turn's own
     (conversation.process on any agent but Home Assistant's built-in one, every AI Task action), each stood in by one
     that logs it (_stand_in). services: today's, {domain: {service: whether it answers}}. What the assistant's provider
     brings with it is stood in once it's loaded (load_assistant)."""
@@ -714,13 +726,10 @@ def _outside(hass, services):
 
 
 def _stand_in(hass, actions):
-    """Each action ({(domain, service): whether it answers}) stood in by one that logs it: what it spoke (_speak), or
-    a call beyond the home (_answer)."""
-    from .analyzer import speaking
+    """Each action ({(domain, service): whether it answers}) stood in by one that logs it as a call beyond the home
+    (_answer); what it carried is in the turn's call log (_call_log), as for any call."""
     for (domain, service), answers in actions.items():
-        spoken = speaking(f"{domain}.{service}")
-        hass.services.async_register(domain, service, functools.partial(_speak if spoken else _answer, hass),
-                                     supports_response=SupportsResponse.NONE if spoken else answers)
+        hass.services.async_register(domain, service, functools.partial(_answer, hass), supports_response=answers)
 
 
 def _actions(hass):
@@ -749,52 +758,6 @@ async def _process(hass, call):
         hass, call.data["text"], call.data.get("conversation_id"), call.context, call.data.get("language"),
         agent_id=call.data.get("agent_id"))
     return result.as_dict() if call.return_response else None
-
-
-async def _speak(hass, call):
-    """Log what a speaking call said or played: {service, message, targets}, with media for an announcement's audio
-    (a chime); tts.speak speaks with its engine on its media players, a legacy engine's say on the media players it
-    targets, the others on the entities they target. As Home Assistant's entity services skip an entity that's missing
-    or unavailable, nothing is spoken there, and a satellite named that can't announce (or start a conversation)
-    refuses the call."""
-    from homeassistant.helpers import config_validation as cv
-    from homeassistant.helpers.service import async_extract_entity_ids
-    sandbox, data, service = hass.data[SANDBOX_KEY], dict(call.data), f"{call.domain}.{call.service}"
-    here = lambda e: (state := hass.states.get(e)) is not None and state.state != "unavailable"  # noqa: E731
-    found = sorted(e for e in await async_extract_entity_ids(call) if here(e))
-    targeted, media = [e for e in found if e.split(".", 1)[0] == call.domain], None
-    if service == "tts.speak":
-        if not targeted:  # No engine to speak with.
-            return
-        players = data.get("media_player_entity_id") or []
-        targets = sorted(p.strip() for p in (players.split(",") if isinstance(players, str) else players) if here(
-            p.strip()))
-        message = data.get("message")
-    elif call.domain == "tts":  # A legacy engine's say, on its media players (named, as its schema reads them, or all).
-        named = data.get("entity_id") or []
-        players = hass.states.async_entity_ids("media_player") if named == "all" else cv.entity_ids(named)
-        targets, message = sorted(e for e in players if e.startswith("media_player.") and here(e)), data.get("message")
-    else:  # A satellite's announcement, or a conversation it starts: its words, or its audio.
-        start, feature = ("start_", 2) if call.service == "start_conversation" else ("", 1)  # Its feature's bit.
-        able = lambda e: int(hass.states.get(e).attributes.get("supported_features") or 0) & feature  # noqa: E731
-        named = data.get("entity_id") or []
-        if refused := [e for e in targeted if e in cv.entity_ids(named) and not able(e)]:
-            raise ServiceNotSupported(call.domain, call.service, refused[0])
-        targets, media = [e for e in targeted if able(e)], data.get(f"{start}media_id")
-        media = media.get("media_content_id") if isinstance(media, dict) else media  # As the media selector gives it.
-        message = data.get(f"{start}message") or _tts_message(media)
-    sandbox.spoken.append({"service": service, "message": str(message or ""), "targets": targets,
-                           **({"media": str(media)} if media and _tts_message(media) is None else {})})
-    data = {k: v for k, v in data.items() if k not in standin.TARGETS}
-    sandbox.commands += [{"entity_id": e, "service": service, "data": data} for e in targets]  # A command to each.
-
-
-def _tts_message(media):
-    """The message a text-to-speech media source speaks (media-source://tts/<engine>?message=...), else None."""
-    from yarl import URL
-    if not isinstance(media, str) or not media.startswith("media-source://tts"):
-        return None
-    return URL(media).query.get("message")
 
 
 # What a sandbox sets up of a home (a snapshot) besides the devices' states (seeded): its registries, and the rest.
@@ -838,7 +801,7 @@ async def system_prompt(hass, llm_context, api_id, prompt):
     return chat_log.content[0].content, chat_log.llm_api
 
 
-MARKED = ("transitions", "changes", "commands", "spoken", "outside", "unsimulated")  # A turn's own lists (run_turn).
+MARKED = ("transitions", "changes", "commands", "outside", "unsimulated")  # A turn's own lists (run_turn).
 
 
 async def run_turn(hass, text, conversation_id, context, language, agent_id, device_id=None, watch=(), until=None):
@@ -848,44 +811,47 @@ async def run_turn(hass, text, conversation_id, context, language, agent_id, dev
     passing at once (_tool_windows), never past until (the next recorded turn's time, ISO; None: none). Its answer:
     what the turn added to the chat log after the person's words (each as HA gives it), what the assistant was given
     (its system prompt, its tools' names), the provider's usage as the assistant traces it, the watched entities'
-    attributes before and after, and the home once everything the turn set off has run or until came (snapshot): its
-    changes, commands, speech and calls beyond the home (outside), and what of it wasn't simulated (unemulated), the
-    turn's own."""
+    attributes before and after, the turn's call log (each action it set off, a script's own among them, as recorded
+    at home: recorder.Actions), and the home once everything the turn set off has run or until came (snapshot): its
+    changes, commands and calls beyond the home (outside), and what of it wasn't simulated (unemulated), the turn's
+    own."""
     from homeassistant.components import conversation
     from homeassistant.core import Context
     from homeassistant.helpers import chat_session
     from .serialization import plain
-    sandbox, usage = hass.data[SANDBOX_KEY], []
+    sandbox, usage, held = hass.data[SANDBOX_KEY], [], {}
     before = {e: dict(state.attributes) for e in watch if (state := hass.states.get(e)) is not None}
     marks = {k: len(getattr(sandbox, k)) for k in MARKED}
-    with chat_session.async_get_chat_session(  # Its owner: whoever says the turn (async_converse).
-            hass, sandbox.conversations.get(conversation_id, conversation_id), context=None) as session, \
-            conversation.async_get_chat_log(hass, session) as chat_log, \
-            _tool_windows(hass, session.conversation_id, _epoch(until)):
-        sandbox.conversations[conversation_id] = session.conversation_id
-        start = len(chat_log.content)
-        resolve("chat_log_trace")  # What a provider reports of a turn reaches only the chat log's trace.
-        traced = chat_log.async_trace
+    with _call_log(hass, held, context["id"]) as actions:  # Until what the turn set off has run (snapshot).
+        with chat_session.async_get_chat_session(  # Its owner: whoever says the turn (async_converse).
+                hass, sandbox.conversations.get(conversation_id, conversation_id), context=None) as session, \
+                conversation.async_get_chat_log(hass, session) as chat_log, \
+                _tool_windows(hass, session.conversation_id, _epoch(until)):
+            sandbox.conversations[conversation_id] = held["conversation"] = session.conversation_id
+            start = len(chat_log.content)
+            resolve("chat_log_trace")  # What a provider reports of a turn reaches only the chat log's trace.
+            traced = chat_log.async_trace
 
-        def trace(agent_details):  # As the assistant reports it, provider-neutral (absent: unknown, never zero).
-            if isinstance(agent_details.get("stats"), dict):
-                usage.append(plain(agent_details["stats"]))
-            traced(agent_details)
-        with relied_on("chat_log_trace"):
-            chat_log.async_trace = trace
-        result = await conversation.async_converse(
-            hass, text, session.conversation_id, Context(**context), language=language, agent_id=agent_id,
-            device_id=device_id)
-        added = chat_log.content[start:]
-        if added and added[0].role == "user":
-            added = added[1:]
-        api = chat_log.llm_api
-        given = {"prompt": chat_log.content[0].content if chat_log.content else None,
-                 "tools": [t.name for t in api.tools] if api else []}
-    found = await snapshot(hass, watch, until)
+            def trace(agent_details):  # As the assistant reports it, provider-neutral (absent: unknown, never zero).
+                if isinstance(agent_details.get("stats"), dict):
+                    usage.append(plain(agent_details["stats"]))
+                traced(agent_details)
+            with relied_on("chat_log_trace"):
+                chat_log.async_trace = trace
+            result = await conversation.async_converse(
+                hass, text, session.conversation_id, Context(**context), language=language, agent_id=agent_id,
+                device_id=device_id)
+            added = chat_log.content[start:]
+            if added and added[0].role == "user":
+                added = added[1:]
+            api = chat_log.llm_api
+            given = {"prompt": chat_log.content[0].content if chat_log.content else None,
+                     "tools": [t.name for t in api.tools] if api else []}
+        found = await snapshot(hass, watch, until)
     return {"content": plain([c.as_dict() for c in added]), "reply": plain(result.response.as_dict()),
             "given": given, "usage": usage, "before": plain(before), "attributes": plain(found["attributes"]),
             **{k: plain(found[k][marks[k]:]) for k in marks if k != "unsimulated"},
+            "actions": [{k: v for k, v in a.items() if k != "context"} for a in actions],  # Its ids differ each run.
             "unemulated": found["unsimulated"][marks["unsimulated"]:], "home": moved(sandbox.moment, home_now(hass))}
 
 
@@ -1021,9 +987,9 @@ async def _reproduce(hass, states):
 async def snapshot(hass, attributes=(), until=None):
     """The sandbox's home once what's running has finished, its waits (a script's delay) passing at once, or once
     nothing more can happen before until (a recorded time, ISO; None: none), which the clock never passes, the
-    replay's conversations held meanwhile (_held): states, the replay's state changes, its device commands, what it
-    spoke and its calls beyond the home; the attributes of the entities named (a light's brightness a goal asks
-    for)."""
+    replay's conversations held meanwhile (_held): states, the replay's state changes (each with the attributes it
+    changed), its device commands and its calls beyond the home; the attributes of the entities named (a light's
+    brightness a goal asks for)."""
     from copy import deepcopy
     from .serialization import plain
     sandbox = hass.data[SANDBOX_KEY]
@@ -1034,5 +1000,5 @@ async def snapshot(hass, attributes=(), until=None):
                                  if (state := hass.states.get(e)) is not None}),
             "transitions": deepcopy(sandbox.transitions), "changes": deepcopy(sandbox.changes),
             "commands": deepcopy(sandbox.commands),
-            "unsimulated": list(sandbox.unsimulated), "spoken": deepcopy(sandbox.spoken),
+            "unsimulated": list(sandbox.unsimulated),
             "outside": deepcopy(sandbox.outside)}

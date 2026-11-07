@@ -818,7 +818,7 @@ def test_an_action_names_its_outcome_and_the_devices_it_is_for():
     assert analyzer.problems(view, unknown) == [
         "Goal 4 (turn 4): no device 'media_player.nowhere' in this household; find_devices finds every entity ID."]
     unsaid = {**answer, "goals": [*answer["goals"][:3], {k: v for k, v in said.items() if k != "outcome"}]}
-    assert analyzer.problems(view, unsaid) == ["Goal 4 (turn 4): an action goal needs outcome: announce."]
+    assert analyzer.problems(view, unsaid) == ["Goal 4 (turn 4): an action goal needs outcome: announce, command."]
     later = {**answer, "goals": [*answer["goals"][:3], {**said, "serves": 1}]}
     assert any("an action asked at a later turn is a goal of its own" in p for p in analyzer.problems(view, later))
 

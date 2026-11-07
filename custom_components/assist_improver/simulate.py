@@ -25,8 +25,7 @@ from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.storage import Store
 from homeassistant.util.dt import utcnow
 
-from . import measures, touchpoints
-from .analyzer import speaking
+from . import happened, measures, touchpoints
 from .cases import (CaseError, calls_in, digest, recording_turns, replay_readiness, replayed, started_from,
                     transcript)
 from .changes import setup_from_changes
@@ -275,44 +274,51 @@ def _turn(number, user, items, home=None):
             *([{"home_did": home}] if home else [])]
 
 
-def _spoke(spoken):
-    return [{"message": s["message"], **({"media": s["media"]} if s.get("media") else {}), "on": sorted(s["targets"])}
-            for s in spoken]
+def _home_did(items, actions, source, changes):
+    """What the home did in a turn, read the same way recorded or replayed (happened.py), by its call log, else (a
+    recording from before one was kept) by Assist's tool calls' results: each message said or sound played on devices,
+    and on which (one unavailable as the turn began, by source, reached nothing); each other call of its call log, its
+    data clipped, a failed one with its error; each change (entity_id, old, new, attributes_changed), its state, else
+    its settings; and, where the turn kept no call log, each script it ran, saying what that did isn't recorded beyond
+    any change listed. items: what Assist added to the conversation in the turn."""
+    states, calls = source.get("states") or {}, calls_in(items)
+    spoke = [{"message": s["message"], **({"media": s["media"]} if s["media"] else {}),
+              "on": sorted(e for e in s["targets"] if (states.get(e) or {}).get("state") != "unavailable")}
+             for s in happened.announcements(calls if actions is None else [], actions, source) if s["targets"]]
+    called = [f"{a['action']}" + (f" {_clip(json.dumps(data, ensure_ascii=False, sort_keys=True, default=str), 200)}"
+                                  if (data := a.get("data")) else "")
+              + (f": failed, {_clip(str(a['error']), 200)}" if a.get("error") else "")
+              for a in actions or [] if a.get("error") or not (  # Said on devices: in spoke, once.
+                  happened.carried(a.get("data") or {}) and happened.named(a["action"], a.get("data") or {}, source))]
+    changed = []
+    for change in changes:
+        settings = list((change.get("attributes_changed") or {}).items())[:3]
+        changed.append(f"{change['entity_id']}: " + (f"{change['old']} → {change['new']}" if change["old"] != change[
+            "new"] else ", ".join(f"{k} {old} → {new}" for k, (old, new) in settings)))
+    return {"spoke": spoke, "called": called, "changed": changed, "ran_scripts": [
+        f"{s}: what it did isn't recorded, beyond any change listed" for s in happened.ran_scripts(calls)
+        if actions is None]}
 
 
 def _replayed_turn(step):
-    """A replay's turn as the judge reads it (_turn), with what its sandbox logged the home doing: each message spoken
-    or sound played and on which devices, each command its devices were sent, and each device whose state changed."""
-    return _turn(step["turn"], step["input"], step.get("output") or [], {
-        "spoke": _spoke(step.get("spoken") or []),
-        "commanded": [f"{c['service']} {c['entity_id']}"  # What was spoken is in spoke, once.
-                      + (f" {_clip(json.dumps(c['data'], ensure_ascii=False, sort_keys=True, default=str), 200)}"
-                         if c.get("data") else "") for c in step.get("commands") or []
-                      if not speaking(c["service"])],
-        "changed": [f"{t['entity_id']}: {t['old']} → {t['new']}" for t in step.get("transitions") or []]})
+    """A replay's turn as the judge reads it (_turn), with what the home did in it (_home_did): its call log, and each
+    change its sandbox logged."""
+    return _turn(step["turn"], step["input"], step.get("output") or [], _home_did(
+        step.get("output") or [], step.get("actions") or [], {}, step.get("changes") or []))
 
 
 def _recorded_turn(recording, recorded, number):
-    """A recorded turn as the judge reads it (_turn), with what the recording shows the home doing: what a broadcast
-    reached (a device available as the turn began), each device the turn's request changed, its state or its
-    settings (a recording keeps no commands), and each script it ran, saying the rest of what that did isn't kept."""
-    from .analyzer import ran_scripts, spoken
+    """A recorded turn as the judge reads it (_turn), with what the home did in it (_home_did): its call log where the
+    recording keeps one (P8.2.10), and each change of a device's state or settings the turn's request made."""
     turn = recorded[number - 1]
-    states, calls = turn["source"].get("states") or {}, calls_in(turn["messages"][1:])
-    heard = [{**s, "targets": {e for e in s["targets"] if (states.get(e) or {}).get("state") != "unavailable"}}
-             for s in spoken(calls)]
-    changed = []
-    for change in _request_changes(recording, turn):
-        old, new = change["old"], change["new"]
-        if old.get("state") != new.get("state"):
-            changed.append(f"{change['entity_id']}: {old.get('state')} → {new.get('state')}")
-        elif settings := [k for k, v in (new.get("attributes") or {}).items()
-                          if (old.get("attributes") or {}).get(k) != v][:3]:
-            changed.append(f"{change['entity_id']}: " + ", ".join(
-                f"{k} {(old.get('attributes') or {}).get(k)} → {new['attributes'][k]}" for k in settings))
-    return _turn(number, turn["messages"][0]["content"], turn["messages"][1:],
-                 {"spoke": _spoke(heard), "changed": changed, "ran_scripts": [
-                     f"{s}: what it did isn't recorded, beyond any change listed" for s in ran_scripts(calls)]})
+    raw = (recording.get("turns") or [])[number - 1] if number <= len(recording.get("turns") or []) else {}
+    changes = [{"entity_id": c["entity_id"], "old": c["old"].get("state"), "new": c["new"].get("state"),
+                "attributes_changed": {k: [(c["old"].get("attributes") or {}).get(k), v]
+                                       for k, v in (c["new"].get("attributes") or {}).items()
+                                       if (c["old"].get("attributes") or {}).get(k) != v}}
+               for c in _request_changes(recording, turn)]
+    return _turn(number, turn["messages"][0]["content"], turn["messages"][1:], _home_did(
+        turn["messages"][1:], raw.get("actions") if "actions" in raw else None, turn["source"], changes))
 
 
 def judgeable(goal, view):
@@ -718,7 +724,7 @@ class Trial:
         transitions, attributes = found["transitions"], found["attributes"]
         step = {"turn": number, "input": turn["messages"][0]["content"], "reply": new[-1]["content"], "output": new,
                 "transitions": transitions, "changes": found["changes"],
-                "external_calls": external, "spoken": found["spoken"], "commands": found["commands"],
+                "external_calls": external, "actions": found["actions"], "commands": found["commands"],
                 "outside": found["outside"], "not_simulated": found["unemulated"]}
         self.entry["said"].append(number)
         self.entry["steps"].append(step)

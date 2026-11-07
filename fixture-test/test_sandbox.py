@@ -102,12 +102,28 @@ async def test_scripts_and_automations_run_in_the_sandbox(hass, effect_guards):
         await sandbox.stop()
 
 
+async def logged(hass, action, data=None):
+    """A call made under a request of its own, with the call log a sandbox keeps of a turn (sandbox._call_log)."""
+    context = Context()
+    with sandbox_module._call_log(hass, {}, context.id) as actions:
+        await hass.services.async_call(*action.split("."), data or {}, blocking=True, context=context)
+        await hass.async_block_till_done()
+    return actions
+
+
+def said(actions, home):
+    """What a call log said or played where, as a test reads it (happened.announcements)."""
+    from custom_components.assist_improver import happened
+    return [(a["message"], a["media"], sorted(a["targets"])) for a in happened.announcements([], actions, home)]
+
+
 @pytest.mark.asyncio
-async def test_what_a_script_speaks_is_logged_with_its_devices_and_media_that_isnt_a_message_plays(
+async def test_what_a_script_speaks_is_in_its_call_log_with_its_devices_and_media_that_isnt_a_message_plays(
         hass, effect_guards):
-    """DETAILS P9.10.5: each speaking service is taken as done and logged with its message and devices, whatever
-    called it (here a script): tts.speak on its media players, an announcement on its satellites, a media player
-    playing a spoken message. A media player playing anything else plays it (its stand-in, standin.py)."""
+    """DETAILS P9.10.5: what a script says or plays is in the turn's call log, each call with its words or media and
+    the devices it's for: tts.speak through its engine, which plays it on its media players as Home Assistant's own
+    speech engine does, an announcement on a satellite, a media player playing a spoken message. Each is taken as done
+    (simulated, leaving no state); a media player playing anything else plays it (its stand-in, standin.py)."""
     kitchen, hall = "media_player.kitchen", "assist_satellite.hall"
     play = lambda media: {"action": "media_player.play_media", "target": {"entity_id": kitchen},  # noqa: E731
                           "data": {"media_content_id": media, "media_content_type": "music"}}
@@ -119,37 +135,25 @@ async def test_what_a_script_speaks_is_logged_with_its_devices_and_media_that_is
         {"action": "assist_satellite.announce", "target": {"entity_id": hall}, "data": {"message": "Dinner"}},
         play("media-source://tts/speech?message=Come%20down"), play("jazz")]}})
     try:
-        await sandbox.run(lambda h: h.services.async_call("script", "say", blocking=True))
-        assert sandbox.spoken == [
-            {"service": "tts.speak", "message": "Dinner is ready", "targets": [kitchen]},
-            {"service": "assist_satellite.announce", "message": "Dinner", "targets": [hall]},
-            {"service": "media_player.play_media", "message": "Come down", "targets": [kitchen]}]
+        actions = await sandbox.run(logged, "script.say")
+        assert said(actions, speakers) == [
+            ("Dinner is ready", None, [kitchen, "tts.speech"]), ("Dinner is ready", None, [kitchen]),  # Its engine's.
+            ("Dinner", None, [hall]), ("Come down", None, [kitchen]), ("", "jazz", [kitchen])]
         playing = sandbox.hass.states.get(kitchen)
         assert playing.state == "playing" and playing.attributes["media_content_id"] == "jazz"
         assert sandbox.unsimulated == [] and effect_guards == []
-
-        async def unavailable(hass):  # As Home Assistant skips a missing or unavailable entity: nothing is spoken.
-            hass.data[SANDBOX_KEY].standins[hall].hold("unavailable")
-            for engine in ("tts.speech", "tts.missing"):
-                await hass.services.async_call("tts", "speak", {"entity_id": engine, "message": "Hi",
-                                                                "media_player_entity_id": f"{kitchen}, {hall}"},
-                                               blocking=True)
-            await hass.services.async_call("assist_satellite", "announce", {"entity_id": hall, "message": "Hi"},
-                                           blocking=True)
-        await sandbox.run(unavailable)
-        assert sandbox.spoken[3:] == [{"service": "tts.speak", "message": "Hi", "targets": [kitchen]},
-                                      {"service": "assist_satellite.announce", "message": "Hi", "targets": []}]
     finally:
         await sandbox.stop()
 
 
 @pytest.mark.asyncio
-async def test_a_chime_a_legacy_engines_say_and_a_conversation_started_are_each_logged_as_an_announcement(
+async def test_a_chime_a_legacy_engines_say_and_a_conversation_started_are_each_in_the_call_log_as_announcements(
         hass, effect_guards):
     """Kai, 2026-10-30: any speech or audio sent to a device announces (DETAILS P9.10.5). A satellite's chime (its
     media, no words), a media player's announcement, a legacy engine's say (one the sandbox doesn't load, as a
-    household configures it in YAML) and a conversation a satellite starts are each logged where they played. A
-    satellite named that can't start a conversation refuses it, as Home Assistant's service does."""
+    household configures it in YAML: a call beyond the home) and a conversation a satellite starts are each in the
+    call log with where they played. A satellite named that can't start a conversation refuses it, as Home
+    Assistant's service does by its features."""
     from homeassistant.exceptions import ServiceNotSupported
     kitchen, hall, porch = "media_player.kitchen", "assist_satellite.hall", "assist_satellite.porch"
     chime = "media-source://media_source/local/chime.mp3"
@@ -166,18 +170,16 @@ async def test_a_chime_a_legacy_engines_say_and_a_conversation_started_are_each_
              "data": {"start_message": "Coming down?"}}]}})
     try:
         async def call(hass):
-            await hass.services.async_call("script", "call", blocking=True)
+            actions = await logged(hass, "script.call")
             with pytest.raises(ServiceNotSupported):
                 await hass.services.async_call("assist_satellite", "start_conversation", {
                     "entity_id": porch, "start_message": "Coming down?"}, blocking=True)
             await hass.async_block_till_done()
-        await sandbox.run(call)
-        assert sandbox.spoken == [
-            {"service": "assist_satellite.announce", "message": "", "media": chime, "targets": [hall]},
-            {"service": "media_player.play_media", "message": "", "media": chime, "targets": [kitchen]},
-            {"service": "tts.cloud_say", "message": "Dinner", "targets": [kitchen]},
-            {"service": "assist_satellite.start_conversation", "message": "Coming down?", "targets": [hall]}]
-        assert sandbox.unsimulated == [] and sandbox.outside == [] and effect_guards == []
+            return actions
+        actions = await sandbox.run(call)
+        assert said(actions, speakers) == [
+            ("", chime, [hall]), ("", chime, [kitchen]), ("Dinner", None, [kitchen]), ("Coming down?", None, [hall])]
+        assert sandbox.unsimulated == ["tts.cloud_say"] and effect_guards == []  # An outside receipt (P11.3).
     finally:
         await sandbox.stop()
 
@@ -516,7 +518,8 @@ async def test_every_entity_domain_has_a_stand_in_and_each_service_on_it_changes
     """DETAILS P11.4: a device of each entity domain Home Assistant has (homeassistant.const.Platform) is a
     stand-in of its domain's own class, but one whose integration sets up no config entries (an image processor's,
     standin.standable). Each of the domain's services on it, as Home Assistant validates it, changes it (writes its
-    state), answers, speaks or is reported not simulated: none is taken silently, none breaks. One Home Assistant
+    state), answers, is done by the calls Home Assistant's own part of it makes (a speech engine speaking on a media
+    player) or is reported not simulated: none is taken silently, none breaks. One Home Assistant
     refuses (its data, the device's features) never reaches it, as at home."""
     import voluptuous as vol
     from homeassistant.const import EVENT_STATE_CHANGED, EVENT_STATE_REPORTED, Platform
@@ -536,7 +539,7 @@ async def test_every_entity_domain_has_a_stand_in_and_each_service_on_it_changes
             for service, description in (descriptions.get(platform) or {}).items():
                 if "target" not in description:  # Not a service on a device.
                     continue
-                marks = (len(sandbox.commands), len(sandbox.unsimulated), len(sandbox.spoken), len(written))
+                marks = (len(sandbox.commands), len(sandbox.unsimulated), len(written), len(sandbox.calls))
                 try:
                     answer = await h.services.async_call(
                         platform, service, {"entity_id": entity_id, **required(description.get("fields"), entity_id)},
@@ -550,10 +553,10 @@ async def test_every_entity_domain_has_a_stand_in_and_each_service_on_it_changes
                     outcomes[f"{platform}.{service}"] = f"broke: {err!r}"
                     continue
                 outcomes[f"{platform}.{service}"] = (
-                    "silent" if len(sandbox.commands) == marks[0] else "taken" if entity_id in written[marks[3]:]
+                    "silent" if len(sandbox.commands) == marks[0] else "taken" if entity_id in written[marks[2]:]
                     else "not simulated" if len(sandbox.unsimulated) > marks[1]
-                    else "spoken" if len(sandbox.spoken) > marks[2]
-                    else "answered" if (answer or {}).get(entity_id) is not None else "silent")
+                    else "answered" if (answer or {}).get(entity_id) is not None
+                    else "passed on" if len(sandbox.calls) > marks[3] + 1 else "silent")
         return outcomes
     try:
         outcomes = await sandbox.run(each_service)

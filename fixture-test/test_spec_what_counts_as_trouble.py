@@ -487,9 +487,10 @@ def test_a_revision_asking_again_for_a_broadcast_is_a_step_that_a_fix_speaking_i
     assert [g["label"] for g in tree] == [1, 2, "note", "revision:2"]
     went = measures.judge(tree, view, [1, 2], measures.CONVERSATION)
     assert went["goals"]["1:0"] == "unmet" and went["goals"]["4:3"] == "unmet"  # Never spoken: the step stands open.
-    fixed = SimpleNamespace(source=view.source, changes={}, scripts_seen=True, calls={1: [
-        {"tool": "script__speak_it", "args": {}, "result": {"data": {}}},
-        {"service": "tts.speak", "message": "Hello everyone", "targets": [SPEAKER]}]})
+    fixed = SimpleNamespace(source=view.source, changes={}, calls={1: [  # The script spoke it: its call log says.
+        {"tool": "script__speak_it", "args": {}, "result": {"data": {}}}]}, actions={1: [
+            {"action": "script.speak_it", "data": {}}, {"action": "tts.speak", "under": 0, "data": {
+                "entity_id": ["tts.speech"], "media_player_entity_id": [SPEAKER], "message": "Hello everyone"}}]})
     after = measures.judge(tree, fixed, [1], {"3:2": "met"})
     assert after["goals"]["1:0"] == after["goals"]["4:3"] == "met"  # Spoken: the root, and the step towards it.
 
@@ -586,6 +587,83 @@ def test_the_judge_at_analysis_hears_that_a_recorded_turn_ran_a_script_whose_doi
                                                     "listed"]}}
     plain = broadcast("bcast-unscripted", (VOICE,))
     assert "ran_scripts" not in simulate._recorded_turn(plain, recording_turns(plain, replay=False), 1)[4]["home_did"]
+
+
+def both_sides(record, goal):
+    """Whether an action was done, read the same way recorded and replayed (happened.py): by the recording's analysis
+    (True, False or None: can't be told), and by a replay whose turn did what the recorded one did, its tool calls and
+    its call log (met, unmet or indeterminate)."""
+    from custom_components.assist_improver import measures
+    from custom_components.assist_improver.cases import recording_turns
+    view = view_of(record)
+    [analysed] = analyzer.to_analysis(record["id"], {"goals": [goal], "not_requests": [], "question_for_user": ""},
+                                      view)["goals"]
+    output = [m for m in record["chat_log"]["content"][2:] if m["role"] != "user"]
+    output = [{**m, "tool_result": m["result"]} if m["role"] == "tool_result" else m for m in output]
+    replayed = measures.replay_view(recording_turns(record), view, [{"turn": 1, "changes": [], "output": output, **(
+        {"actions": record["turns"][0]["actions"]} if "actions" in record["turns"][0] else {})}])
+    return analysed["reached"], measures.judge(measures.goals_of({"turns": 1, "goals": [goal]}), replayed, [1], {})[
+        "goals"]["1:0"]
+
+
+def test_an_announcement_by_a_script_by_tts_speak_or_by_a_satellite_meets_an_action_on_both_sides():
+    """DETAILS P9.10.5: what happened is one record on both sides, each turn's tool calls with their results and its
+    call log, a script's own calls in it: words played on the speaker by a script (tts.speak under it), by tts.speak
+    itself, or announced on the satellite of the speaker's device each meet the action, recorded as replayed. A call
+    that failed says nothing; a script whose call log spoke nothing leaves it unmet; one recorded with no call log
+    can't be told."""
+    speech = {"entity_id": ["tts.fixture_engine"], "media_player_entity_id": [SPEAKER], "message": "hello everyone"}
+    logs = {"script": [{"action": "script.say_it", "data": {}},
+                       {"action": "tts.speak", "data": speech, "under": 0}],
+            "tts.speak": [{"action": "tts.speak", "data": speech}],
+            "satellite": [{"action": "assist_satellite.announce", "data": {"entity_id": [VOICE],
+                                                                          "message": "hello everyone"}}]}
+    for name, log in logs.items():
+        record = broadcast(f"said-{name}", (), "script__say_it")
+        record["turns"][0]["actions"] = log
+        assert both_sides(record, SPOKEN) == (True, "met"), name
+        record["turns"][0]["actions"] = [*log[:-1], {**log[-1], "error": "The speaker didn't answer"}]
+        assert both_sides(record, SPOKEN) == (False, "unmet"), name
+    record = broadcast("said-nothing", (), "script__say_it")
+    record["turns"][0]["actions"] = logs["script"][:1]
+    assert both_sides(record, SPOKEN) == (False, "unmet")  # Its call log: it spoke nothing.
+    assert both_sides(broadcast("said-untold", (), "script__say_it"), SPOKEN)[0] is None  # A replay always keeps one.
+
+
+GATE = "button.fixture_gate"
+PRESSED = {"turn": 1, "summary": "Open the gate", "kind": "action", "outcome": "command", "entity_ids": [GATE]}
+
+
+def gate(rid, reached):
+    """A button pressed by Assist's one call, whose result names the devices it reached."""
+    record = broadcast(rid, (), "intent__HassTurnOn")
+    for message in record["chat_log"]["content"]:
+        if message.get("role") == "tool_result":
+            message["result"]["data"]["data"]["success"] = [{"name": "Gate", "type": "entity", "id": e}
+                                                            for e in reached]
+    for turn in record["turns"]:
+        turn["source"]["states"][GATE] = {"entity_id": GATE, "state": "2026-01-01T08:00:00+00:00",
+                                          "attributes": {"friendly_name": "Gate"}}
+        turn["source"]["entities"][GATE] = {"name": "Gate", "aliases": [], "area_id": "fixture_area"}
+    return record
+
+
+def test_a_button_press_is_an_action_met_when_the_call_reached_it_and_never_a_state_to_reach():
+    """DETAILS P9.10.5: a button keeps no state but when it was last pressed, so pressing it is an action goal
+    (outcome command), met by a call that reached it, recorded as replayed, by Assist's call's result or by the call
+    log; a press that failed or went elsewhere leaves it unmet. A state goal on it is refused, with how to say it."""
+    assert both_sides(gate("gate-pressed", (GATE,)), PRESSED) == (True, "met")
+    assert both_sides(gate("gate-missed", ()), PRESSED) == (False, "unmet")
+    logged = gate("gate-logged", ())
+    logged["turns"][0]["actions"] = [{"action": "button.press", "data": {"entity_id": [GATE]}}]
+    assert both_sides(logged, PRESSED) == (True, "met")
+    logged["turns"][0]["actions"][0]["error"] = "The gate didn't answer"
+    assert both_sides(logged, PRESSED) == (False, "unmet")
+    record = gate("gate-state", (GATE,))
+    as_state = {"turn": 1, "summary": "Open the gate", "kind": "state", "entity_id": GATE, "state": "pressed"}
+    assert analyzer.problems(view_of(record), {"goals": [as_state], "not_requests": [], "question_for_user": ""}) == [
+        f"Goal 1 (turn 1): {GATE} keeps no state to reach: pressing or running it is an action goal with outcome "
+        "command; a scene asked for is its devices' states."]
 
 
 def test_asking_again_for_a_message_already_spoken_isnt_a_step_towards_it():

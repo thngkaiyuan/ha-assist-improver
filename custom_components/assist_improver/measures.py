@@ -11,7 +11,7 @@ conversation went (P0.1: easier than it was for the household).
 from datetime import datetime, timedelta
 from types import SimpleNamespace
 
-from .analyzer import ASSISTANT, announced, destination, question_run, reached, root_turn, side_effects_left
+from .analyzer import ASSISTANT, destination, done, question_run, reached, root_turn, side_effects_left
 from .cases import calls_in
 from .exploration import with_percent
 
@@ -77,9 +77,9 @@ def _turns_of(goals, action):
 
 
 def _done_by(goals, view, action, turn):
-    """An action as a turn starts: whether its turns before it spoke it (analyzer.announced); None when that can't be
+    """An action as a turn starts: whether its turns before it did it (analyzer.done); None when that can't be
     told."""
-    return announced(view, action, [t for t in _turns_of(goals, action) if t < turn])
+    return done(view, action, [t for t in _turns_of(goals, action) if t < turn])
 
 
 def question_state(goal, turn, facts):
@@ -219,7 +219,7 @@ def judge(goals, view, said, conduct=CONVERSATION, aside=(), facts=None):
         elif kind == "step":
             states[key] = _step(goals, view, windows, goal, goal["turn"], facts)
         elif kind == "action":
-            found = announced(view, goal, [t for t in _turns_of(goals, goal) if t in said])
+            found = done(view, goal, [t for t in _turns_of(goals, goal) if t in said])
             states[key] = "met" if found else "unmet" if found is False and goal.get("turn") in said else (
                 "indeterminate")
         elif kind == "fact" and goal.get("serves") is None:
@@ -284,10 +284,10 @@ def replay_view(turns, session_view, steps):
     """What the home did in a replay, as judge() reads it: from the first recorded turn's home, each step's changes
     (by Assist, in the step's turn: states and attributes), with what people did to devices neither the recorded
     Assist nor the replay had touched by then, and, on the devices the recorded Assist changed, what others moved
-    between the turns it said, as the replay's sandbox applies it (simulation.moved_by_others); what each step called
-    and spoke (calls); and each recorded turn's home as it began (sources), as the conversation's view has it. turns:
-    the recording's turns; steps: the replay's, each {turn, output (Assist's messages), spoken (the sandbox's log),
-    changes: [{entity_id, old, new, attributes_changed: {attribute: [old, new]}}]}."""
+    between the turns it said, as the replay's sandbox applies it (simulation.moved_by_others); what happened in each
+    step (calls, actions: happened.py); and each recorded turn's home as it began (sources), as the conversation's view
+    has it. turns: the recording's turns; steps: the replay's, each {turn, output (Assist's messages), actions (its
+    call log), changes: [{entity_id, old, new, attributes_changed: {attribute: [old, new]}}]}."""
     from .simulation import moved_by_others
     assistant = {e for e, cs in session_view.changes.items() if any(c["by"] in ASSISTANT for c in cs)}
     changes, touched, said = {}, {}, 1
@@ -316,11 +316,12 @@ def replay_view(turns, session_view, steps):
         for change in recorded:
             if change["by"] not in ASSISTANT and change["during_turn"] < touched.get(entity, 10**9):
                 changes.setdefault(entity, []).append(dict(change))
-    # What each turn called, and what it spoke wherever it was called from (a script's too, logged by the sandbox).
-    calls = {step["turn"]: calls_in(step.get("output") or []) + step.get("spoken", []) for step in steps}
+    # What happened in each turn (happened.py): its tool calls with their results, and its call log.
+    calls = {step["turn"]: calls_in(step.get("output") or []) for step in steps}
+    actions = {step["turn"]: step.get("actions") or [] for step in steps}
     changes = {e: sorted(cs, key=lambda c: c["at"]) for e, cs in changes.items()}
     return SimpleNamespace(source=turns[0]["source"], sources=[t["source"] for t in turns], calls=calls,
-                           scripts_seen=True, changes=changes)
+                           actions=actions, changes=changes)
 
 
 def branch(goals, before, view, aside=(), shown=None):

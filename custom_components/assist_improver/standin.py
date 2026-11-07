@@ -58,6 +58,13 @@ CALLING = ContextVar("assist_improver_standin_calling", default=(None, None))
 _IN_CALL = ContextVar("assist_improver_standin_in_call", default=None)  # The stand-in a service call is running on.
 
 
+def passed_on():
+    """A call made while a stand-in takes one: Home Assistant's own part of it (a speech engine speaking on its media
+    players), which does it, so the stand-in's call is simulated (sandbox.Sandbox.calling)."""
+    if (taker := _IN_CALL.get()) is not None:
+        taker._handled = True
+
+
 def write(folder):
     """The sandbox's own integrations, written into a custom_components folder (a worker's own)."""
     files = {
@@ -270,6 +277,19 @@ def attribute_of(domain, field):
     """The attribute a command's field sets: FIELDS's name for it (a cover's position: current_position), else its own."""
     name = FIELDS.get(field, field)
     return name.get(domain, field) if isinstance(name, dict) else name
+
+
+@functools.cache
+def trigger_only(domain):
+    """Whether a domain's entities hold no state of their own to reach, only when they were last used or ran: a
+    button's, a scene's or a notifier's (the classes whose state Home Assistant sets itself: _NOW), an event entity's,
+    or a script, on only while it runs."""
+    from homeassistant.components.event import EventEntity
+    used = tuple(entity_class(d) for d, commands in _table().items() if any(s is _NOW for s, _ in commands.values()))
+    try:
+        return domain == "script" or issubclass(entity_class(domain), (*used, EventEntity))
+    except (ImportError, ValueError):  # No one class its entities derive from.
+        return False
 
 
 def held(domain, attribute):
@@ -490,8 +510,8 @@ class StandIn:
 
 class MediaPlayerStandIn(StandIn):
     """A media player: its volume steps as asked (Home Assistant's own volume step), a spoken message or an
-    announcement it plays is logged as speech (DETAILS P9.10.5), and a search or a browse answers with what the
-    recording's search found on it, else is not simulated."""
+    announcement it plays is taken as done, leaving what it played (DETAILS P9.10.5: the call is in the turn's call
+    log), and a search or a browse answers with what the recording's search found on it, else is not simulated."""
 
     async def async_volume_up(self):
         await self._step(1)
@@ -508,16 +528,11 @@ class MediaPlayerStandIn(StandIn):
         self.hold(self._state, {"volume_level": round(max(0.0, min(1.0, level + direction * self.volume_step)), 2)})
 
     async def async_play_media(self, media_type, media_id, **kwargs):
-        from .sandbox import _tts_message
+        from .happened import tts_message
         self._refuse()
-        if (message := _tts_message(media_id)) is not None or kwargs.get("announce"):
-            self._handled = True
-            self._sandbox.spoken.append({"service": "media_player.play_media", "message": message or "",
-                                         "targets": [self.entity_id],
-                                         **({"media": str(media_id)} if message is None else {})})
-            return
         self._handled = True
-        self.hold("playing", {"media_content_type": media_type, "media_content_id": media_id})
+        if tts_message(media_id) is None and not kwargs.get("announce"):  # Spoken words, or an announcement, pass.
+            self.hold("playing", {"media_content_type": media_type, "media_content_id": media_id})
 
     async def async_search_media(self, query):
         from homeassistant.components.media_player import SearchMedia
@@ -536,6 +551,20 @@ class MediaPlayerStandIn(StandIn):
         names = inspect.signature(BrowseMedia).parameters
         return [BrowseMedia(**{k: v for k, v in m["media"].items() if k in names})
                 for m in self._sandbox.recorded.get("media") or [] if self.entity_id in m["entity_ids"]]
+
+
+class AssistSatelliteStandIn(StandIn):
+    """A voice satellite: an announcement it makes or a conversation it starts is taken as done (DETAILS P9.10.5: the
+    call, with its words or media, is in the turn's call log), refused as at home when the recording shows it failed
+    there. Home Assistant checks first that it can (its features)."""
+
+    async def async_internal_announce(self, *args, **kwargs):
+        self._refuse()
+        self._handled = True
+
+    async def async_internal_start_conversation(self, *args, **kwargs):
+        self._refuse()
+        self._handled = True
 
 
 class TodoStandIn(StandIn):
@@ -584,4 +613,4 @@ class TodoStandIn(StandIn):
         self._changed()
 
 
-_EXTRA = {"media_player": MediaPlayerStandIn, "todo": TodoStandIn}
+_EXTRA = {"media_player": MediaPlayerStandIn, "assist_satellite": AssistSatelliteStandIn, "todo": TodoStandIn}

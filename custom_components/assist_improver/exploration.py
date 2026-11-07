@@ -148,9 +148,12 @@ class SessionView:
         self._indirect = {}
         self.changes = self._changes()
         self.notes = {}  # Its notes, where the analyzer hears them, by their turns after those said (read_turn).
-        # Each turn's calls with Home Assistant's results, for what leaves no device state (analyzer.announced); a
-        # script's own calls (kept in its turn's actions in newer recordings, P8.2.10) aren't read here.
-        self.calls, self.scripts_seen = {t["number"]: calls_in(t["messages"][1:]) for t in turns}, False
+        # What happened in each turn (happened.py): its tool calls with Home Assistant's results, and its call log
+        # (None: a recording from before it kept one, P8.2.10).
+        raw = recording.get("turns") or []
+        self.calls = {t["number"]: calls_in(t["messages"][1:]) for t in turns}
+        self.actions = {t["number"]: raw[t["number"] - 1].get("actions") if "actions" in raw[t["number"] - 1] else None
+                        for t in turns}
 
     def _turn_of(self, at):
         return sum(1 for start in self.starts if datetime.fromisoformat(at) >= datetime.fromisoformat(start))

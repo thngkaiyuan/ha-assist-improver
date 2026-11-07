@@ -1188,8 +1188,9 @@ async def test_the_judge_gets_the_turn_objected_to_and_each_replay_turn_with_wha
     [replayed] = first[2]["assistant_did"]
     assert replayed["called"] == "intent__HassTurnOff" and "Fixture relay" in replayed["result"]
     assert first[3] == {"assistant_replied": "Generated response 1."} and objection["judge"] == [1, 2]
-    assert first[4] == {"home_did": {"commanded": ["switch.turn_off switch.fixture_relay"],
-                                     "changed": ["switch.fixture_relay: on → off"]}}
+    assert first[4] == {"home_did": {"called": [  # Its call log: the intent's call, and the one that made.
+        'homeassistant.turn_off {"entity_id": "switch.fixture_relay"}',
+        'switch.turn_off {"entity_id": ["switch.fixture_relay"]}'], "changed": ["switch.fixture_relay: on → off"]}}
 
 
 FILED = {**ANALYSIS, "turns": 4, "goals": [*ANALYSIS["goals"][:3], {
@@ -1477,23 +1478,27 @@ async def test_a_deleted_conversations_replays_go_with_it(hass):
 def test_the_judge_hears_what_a_replays_sandbox_spoke_where_the_scripts_result_says_nothing():
     """A household's broadcast revision: a script spoke the message on every speaker, its own
     result empty, and Assist replied "Sent to the speakers." The judge, asked whether that reply is the unchecked
-    claim they objected to, is shown what the replay's sandbox heard spoken and where, beside the tool call."""
+    claim they objected to, is shown what the replay's call log has spoken and where, beside the tool call; the
+    action is met by it (DETAILS P9.10.5)."""
+    players = ["media_player.upstairs", "media_player.kitchen"]
     step = {"turn": 1, "input": "Tell Jordan and Riley to come in", "output": [
         {"role": "assistant", "tool_calls": [{"id": "s", "tool_name": "script__announce_on_speakers",
                                               "tool_args": {"message": "Jordan and Riley, please come in."}}]},
         {"role": "tool_result", "tool_call_id": "s", "tool_name": "script__announce_on_speakers", "tool_result": {}},
         {"role": "assistant", "content": "Sent to the speakers."}],
-        "spoken": [{"service": "tts.speak", "message": "Jordan and Riley, please come in.",
-                    "targets": ["media_player.upstairs", "media_player.kitchen"]}], "transitions": []}
+        "actions": [{"action": "script.announce_on_speakers", "data": {"message": "Jordan and Riley, please come in."}},
+                    {"action": "tts.speak", "data": {"media_player_entity_id": players, "entity_id": ["tts.speech"],
+                                                     "message": "Jordan and Riley, please come in."}, "under": 0}],
+        "transitions": [], "changes": []}
     turn = simulate._replayed_turn(step)
     assert turn[3] == {"assistant_replied": "Sent to the speakers."} and turn[4] == {"home_did": {"spoke": [
-        {"message": "Jordan and Riley, please come in.", "on": ["media_player.kitchen", "media_player.upstairs"]}]}}
+        {"message": "Jordan and Riley, please come in.", "on": sorted([*players, "tts.speech"])}], "called": [
+        'script.announce_on_speakers {"message": "Jordan and Riley, please come in."}']}}  # It names no device.
     assert "what the home did" in simulate.CONDUCT_INSTRUCTIONS and "what the home did" in simulate.FACT_INSTRUCTIONS
-    assert simulate._replayed_turn({**step, "spoken": []})[4:] == []  # Nothing done: no home_did to read.
-    home = SimpleNamespace(source={"states": {}, "entities": {}}, sources=[{"states": {}}], scripts_seen=True,
-                           calls={1: step["spoken"]}, changes={})
-    come_in = {"turn": 1, "summary": "Come in", "kind": "action", "outcome": "announce",
-               "entity_ids": ["media_player.upstairs", "media_player.kitchen"]}
+    assert simulate._replayed_turn({**step, "actions": []})[4:] == []  # Nothing done: no home_did to read.
+    home = SimpleNamespace(source={"states": {}, "entities": {}}, sources=[{"states": {}}], changes={},
+                           calls={1: []}, actions={1: step["actions"]})
+    come_in = {"turn": 1, "summary": "Come in", "kind": "action", "outcome": "announce", "entity_ids": players}
     assert measures.judge(measures.goals_of({"turns": 1, "goals": [come_in]}), home, [1], {})["goals"]["1:0"] == (
         "met")  # Spoken on both speakers, whatever the words.
 

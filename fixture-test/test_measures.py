@@ -320,8 +320,8 @@ def test_an_action_is_judged_on_its_own_turns_by_device_whatever_the_words():
         "data": {"data": {"success": [{"id": e} for e in reached], "failed": []}}}}
     home = view({speaker: "idle"})
     home.source["entities"] = {speaker: {"device_id": "d1"}, voice: {"device_id": "d1"}}
-    home.calls, home.scripts_seen = {1: [broadcast("dinner is ready")], 2: [], 3: [broadcast("dinner is ready", voice)],
-                                     4: [broadcast("dinner is ready", voice)]}, False
+    home.calls = {1: [broadcast("dinner is ready")], 2: [], 3: [broadcast("dinner is ready", voice)],
+                  4: [broadcast("dinner is ready", voice)]}
     said = {"turn": 1, "summary": "Dinner", "kind": "action", "outcome": "announce", "entity_ids": [speaker]}
     asked = {"turn": 2, "summary": "Is it on", "kind": "fact", "fact": "Its state"}
     again = {"turn": 3, "summary": "Again", "kind": "step", "serves": 1}
@@ -334,14 +334,19 @@ def test_an_action_is_judged_on_its_own_turns_by_device_whatever_the_words():
         assert measures.judge(goals, home, [1, 2, 3], {})["goals"]["1:0"] == "met", said
 
 
+def speak(message, *players, engine="tts.speech"):
+    """A call log's tts.speak: words on media players, through a speech engine."""
+    return {"action": "tts.speak", "data": {"entity_id": [engine], "media_player_entity_id": list(players),
+                                            "message": message}}
+
+
 def test_a_step_or_a_filing_under_an_action_reads_whether_it_was_spoken_before_its_turn():
     """DETAILS P6.4 for actions: a step asking again for an announcement is met once something was spoken on its
     devices before the step's turn, so a replay with the change doesn't say it; a filing under it is met once it was
     spoken and nothing else of its request is open, an action asked beside it included."""
     speaker, porch = "media_player.speaker", "media_player.porch"
-    said_on = lambda *reached: {"service": "tts.speak", "message": "dinner is ready", "targets": list(reached)}  # noqa
     home = view({speaker: "idle", porch: "idle"})
-    home.calls, home.scripts_seen = {1: [], 2: [said_on(speaker)], 3: []}, True
+    home.calls, home.actions = {1: [], 2: [], 3: []}, {1: [], 2: [speak("dinner is ready", speaker)], 3: []}
     action = {"turn": 1, "summary": "Dinner", "kind": "action", "outcome": "announce", "entity_ids": [speaker]}
     again = {"turn": 2, "summary": "Again", "kind": "step", "serves": 1}
     filed = {"turn": 3, "summary": "Filed it", "kind": "wrap-up", "serves": 1}
@@ -349,31 +354,32 @@ def test_a_step_or_a_filing_under_an_action_reads_whether_it_was_spoken_before_i
     replay = measures.judge(goals, home, [1, 2, 3], {})
     assert replay["goals"]["1:0"] == "met" and replay["goals"]["2:1"] == "unmet"  # Not spoken before turn 2.
     assert replay["goals"]["3:2"] == "met" and not measures.needed(goals, home, 3, conduct={})
-    home.calls = {1: [said_on(speaker)]}
+    home.actions = {1: [speak("dinner is ready", speaker)]}
     assert not measures.needed(goals, home, 2, conduct={})  # Spoken at once: no need to ask again.
     part = {**action, "summary": "And the porch", "entity_ids": [porch], "serves": 1}
     goals = measures.goals_of({"turns": 3, "goals": [action, part, again, filed]})
     assert measures.judge(goals, home, [1, 3], {})["goals"]["3:3"] == "unmet"  # The porch part is still open.
-    home.calls = {1: [said_on(speaker, porch)]}
+    home.actions = {1: [speak("dinner is ready", speaker, porch)]}
     assert measures.judge(goals, home, [1, 3], {})["goals"]["3:3"] == "met"
 
 
-def test_a_replays_view_hears_what_a_script_spoke_so_a_script_that_spoke_nothing_is_unmet_not_untold():
-    """DETAILS P9.10.5: a replay's sandbox logs what scripts speak, so a script Assist ran in a replay is told by
-    what it spoke: any words meet the action, and nothing spoken leaves it unmet, where a recording couldn't tell."""
+def test_a_replays_call_log_tells_what_a_script_spoke_so_a_script_that_spoke_nothing_is_unmet_not_untold():
+    """DETAILS P9.10.5: a replay keeps the turn's call log, a script's own calls in it, so a script Assist ran in a
+    replay is told by what it spoke: any words meet the action, and nothing spoken leaves it unmet, where a recording
+    without a call log couldn't tell."""
     speaker = "media_player.speaker"
     turns = recorded_turns({speaker: "idle"})
     recorded = view({speaker: "idle"})
     recorded.recording = {"state_changes": []}
     ran = [{"role": "assistant", "tool_calls": [{"id": "c1", "tool_name": "script__dinner_call", "tool_args": {}}]},
            {"role": "tool_result", "tool_call_id": "c1", "tool_name": "script__dinner_call", "tool_result": {}}]
-    said = lambda *words: [{"turn": 1, "transitions": [], "output": ran, "spoken": [  # noqa: E731
-        {"service": "tts.speak", "message": w, "targets": [speaker]} for w in words]}]
+    said = lambda *words: [{"turn": 1, "changes": [], "output": ran, "actions": [  # noqa: E731
+        {"action": "script.dinner_call", "data": {}}, *({**speak(w, speaker), "under": 0} for w in words)]}]
     action = {"turn": 1, "summary": "Dinner", "kind": "action", "outcome": "announce", "entity_ids": [speaker]}
     goals = measures.goals_of({"turns": 1, "goals": [action]})
     for words, judged in ((("Dinner's on",), "met"), ((), "unmet"), (("",), "unmet")):  # Blank: nothing heard.
         home = measures.replay_view(turns, recorded, said(*words))
-        assert home.scripts_seen and home.calls[1][0]["tool"] == "script__dinner_call"
+        assert home.calls[1][0]["tool"] == "script__dinner_call"
         assert measures.judge(goals, home, [1], {})["goals"]["1:0"] == judged
 
 
@@ -388,30 +394,32 @@ def test_a_chime_or_a_legacy_engines_say_announces_whatever_it_carries():
     recorded.recording = {"state_changes": []}
     action = {"turn": 1, "summary": "Dinner", "kind": "action", "outcome": "announce", "entity_ids": [speaker]}
     goals = measures.goals_of({"turns": 1, "goals": [action]})
-    for spoke, judged in (({"service": "media_player.play_media", "message": "", "media": chime}, "met"),
-                          ({"service": "tts.cloud_say", "message": "Dinner's on"}, "met"),
-                          ({"service": "tts.cloud_say", "message": ""}, "unmet")):
-        home = measures.replay_view(turns, recorded, [{"turn": 1, "transitions": [], "output": [], "spoken": [
-            {**spoke, "targets": [speaker]}]}])
-        assert measures.judge(goals, home, [1], {})["goals"]["1:0"] == judged, spoke
+    for call, judged in (
+            (("media_player.play_media", {"media_content_id": chime, "media_content_type": "music", "announce": True}),
+             "met"), (("tts.cloud_say", {"message": "Dinner's on"}), "met"), (("tts.cloud_say", {"message": ""}),
+                                                                             "unmet")):
+        home = measures.replay_view(turns, recorded, [{"turn": 1, "changes": [], "output": [], "actions": [
+            {"action": call[0], "data": {**call[1], "entity_id": speaker}}]}])
+        assert measures.judge(goals, home, [1], {})["goals"]["1:0"] == judged, call
     assert analyzer.carries(action, {"message": "", "media": chime}) is True
 
 
 def test_what_hangs_on_an_action_a_recording_cant_tell_is_left_out_with_it():
-    """Assist ran a script at turn 1, which a recording doesn't see into, and the user asked again at turn 2, then
-    filed it: the action can't be told in the conversation, so neither can the step towards it nor the filing under
-    it, and a replay that tells them doesn't count as going otherwise."""
+    """Assist ran a script at turn 1, which a recording without a call log doesn't see into, and the user asked again
+    at turn 2, then filed it: the action can't be told in the conversation, so neither can the step towards it nor
+    the filing under it, and a replay that tells them (its call log) doesn't count as going otherwise."""
     speaker = "media_player.speaker"
     ran = {"tool": "script__dinner_call", "args": {}, "result": {"data": {}}}
-    spoke = {"service": "tts.speak", "message": "dinner is ready", "targets": [speaker]}
+    logged = [{"action": "script.dinner_call", "data": {}}, {**speak("dinner is ready", speaker), "under": 0}]
     conversation, replay = view({speaker: "idle"}), view({speaker: "idle"})
-    conversation.calls, conversation.scripts_seen = {1: [ran], 2: [ran], 3: []}, False
-    replay.calls, replay.scripts_seen = {1: [ran, spoke], 2: [ran, spoke], 3: []}, True
+    conversation.calls, conversation.actions = {1: [ran], 2: [ran], 3: []}, {1: None, 2: None, 3: None}
+    replay.calls, replay.actions = {1: [ran], 2: [ran], 3: []}, {1: logged, 2: logged, 3: []}
     goals = measures.goals_of({"turns": 3, "goals": [
         {"turn": 1, "summary": "Dinner", "kind": "action", "outcome": "announce", "entity_ids": [speaker]}, step(2, 1),
         {"turn": 3, "summary": "Filed it", "kind": "wrap-up", "serves": 1}]})
     went = measures.judge(goals, conversation, [1, 2, 3], measures.CONVERSATION)
     replayed = measures.judge(goals, replay, [1, 2, 3], {})
+    assert went["goals"]["1:0"] == "indeterminate" and replayed["goals"]["1:0"] == "met"
     assert measures.told_by(goals, {"1:0"}) == {"1:0", "2:1", "3:2"}
     assert measures.went_as_it_went(replayed, went, leave_out={"1:0"})  # The step and filing differ...
     assert measures.went_as_it_went(replayed, went, leave_out=measures.told_by(goals, {"1:0"})) is None  # ...aside.
