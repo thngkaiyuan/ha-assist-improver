@@ -60,6 +60,14 @@ wait_for() {  # wait_for SECONDS WHAT COMMAND...: until COMMAND succeeds.
   done
 }
 installed() { [ "$(on "ha $1 info --raw-json" | jq -r .data.version)" = "$2" ]; }
+core() {  # core ARGS...: `ha core ARGS`. While the Supervisor runs a job on Home Assistant (its install, which ends by
+  # starting it, or an update), it refuses another: tried again every 5 s, for up to 15 minutes.
+  local deadline=$((SECONDS + 900)) out
+  until out=$(on "ha core $*" 2>&1); do
+    [[ $out == *"Another job is running"* && $SECONDS -lt $deadline ]] || { echo "$out" >&2; return 1; }
+    sleep 5
+  done
+}
 wait_for 600 "SSH" on true
 wait_for 900 "the Supervisor" on "ha supervisor info"
 
@@ -69,12 +77,12 @@ installed supervisor "$supervisor" || on "ha supervisor update --version $superv
 wait_for 900 "Supervisor $supervisor" installed supervisor "$supervisor"
 wait_for 1800 "Home Assistant to be installed" sh -c \
   "ssh -F '$BENCH_HAOS' haos 'ha core info --raw-json' | jq -e '.data.version != \"landingpage\"'"
-installed core "$core" || on "ha core update --version $core" > /dev/null || true
+installed core "$core" || core update --version "$core" || true
 wait_for 1800 "Home Assistant $core" installed core "$core"
 booted=$((SECONDS - start))
 echo "== HA OS $(on "ha os info --raw-json" | jq -r .data.version) (Linux $(on "uname -r")), Supervisor" \
   "$(on "ha supervisor info --raw-json" | jq -r .data.version), Home Assistant $core ($channel; ready in $booted s)"
-on "ha core stop" > /dev/null  # Each journey starts it on a config of its own (tools/e2e/conftest.py).
+core stop  # Each journey starts it on a config of its own (tools/e2e/conftest.py).
 
 # The journeys, one Home Assistant at a time, at phone size (the screen's sizes are the image runs' to cover); then
 # what Home Assistant logged: the replay guard's Landlock line, and no error of Assist Improver's.

@@ -89,6 +89,7 @@ MODEL_HOST = os.environ.get("BENCH_HOST") or "127.0.0.1"  # Where Home Assistant
 HAOS = os.environ.get("BENCH_HAOS")  # HA OS in a VM instead: ssh's config for it (tools/bench/haos.sh).
 HAOS_CONFIG = "/mnt/data/supervisor/homeassistant"  # Home Assistant's /config there.
 HAOS_HOST = "10.0.2.2"  # This machine, from the VM (QEMU's user network).
+HAOS_BUSY = 300  # Seconds an `ha core` command waits for the Supervisor's job on Home Assistant to end (_ha_core).
 BROWSERS = os.environ.get("PLAYWRIGHT_BROWSERS_PATH") or str(_find("tools/ui/browsers") or "")
 if BROWSERS:
     os.environ["PLAYWRIGHT_BROWSERS_PATH"] = BROWSERS
@@ -336,8 +337,8 @@ def _start_process(folder, model_url, port):
     if HAOS:
         _haos_push(folder)
         command = ["ssh", "-F", HAOS, "haos",
-                   "since=$(date +%s); ha core start > /dev/null && exec docker logs -f --since $since homeassistant"]
-        stop = ["ssh", "-F", HAOS, "haos", "ha core stop"]
+                   f"since=$(date +%s); {_ha_core('start')}; exec docker logs -f --since $since homeassistant"]
+        stop = ["ssh", "-F", HAOS, "haos", _ha_core("stop")]
     elif IMAGE:
         name = f"assist-improver-e2e-{os.getpid()}-{port}"
         command = [str(ROOT / "tools/bench/ha.sh"), "run", name, "--config", str(folder), "--port", str(port),
@@ -354,13 +355,21 @@ def _start_process(folder, model_url, port):
     return process
 
 
+def _ha_core(command):
+    """`ha core <command>` on HA OS's host, as a shell command. While its Supervisor runs a job on Home Assistant (a
+    start goes on until it sees Home Assistant running, which it checks every 5 s), it refuses another: tried again
+    every 5 s, for up to HAOS_BUSY seconds."""
+    return (f'i=0; until out=$(ha core {command} 2>&1); do case $out in *"Another job is running"*) '
+            f'[ $((i += 5)) -le {HAOS_BUSY} ] && sleep 5 && continue;; esac; echo "$out" >&2; exit 1; done')
+
+
 def _stop_process(process, timeout=45):
     """Stop Home Assistant gently, then anything left in its process group by force. Its replay workers, each in a
     session of its own, end with it: their input closes. On the bench, its container is stopped (s6 stops Home
     Assistant gently); on HA OS, its Supervisor stops it, and its /config is copied back into the folder."""
     if process.stop and (HAOS or process.poll() is None):  # HA OS's Home Assistant may outlive its log's ssh.
-        subprocess.run(process.stop, timeout=timeout + 15, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                       check=False)
+        subprocess.run(process.stop, timeout=timeout + 15 + (HAOS_BUSY if HAOS else 0), stdout=subprocess.DEVNULL,
+                       stderr=subprocess.DEVNULL, check=False)
     if process.poll() is None:
         try:
             process.send_signal(signal.SIGTERM)
