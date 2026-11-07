@@ -122,13 +122,26 @@ def _stop_all():
         _stop_process(process)
 
 
+_WORKER = int(os.environ.get("PYTEST_XDIST_WORKER", "gw0").removeprefix("gw"))  # With -n: gw0, gw1, ...
+_PORTS = itertools.cycle(range(20000 + 100 * _WORKER, 20100 + 100 * _WORKER))  # This worker's own (free_port).
+
+
 def free_port():
-    """A port for a Home Assistant: a free one, or on HA OS its own, 8123."""
+    """A port for a Home Assistant: on HA OS its own, 8123; else a free one of this worker's own, below the range the
+    system hands out to bind(0) and outgoing connections (from 32768 on Linux, 49152 on macOS). One from that range
+    could go to another process (another suite's server: the bench's suites share the machine's network) before Home
+    Assistant binds it, and that process would get Home Assistant's requests."""
     if HAOS:
         return 8123
-    with socket.socket() as sock:
-        sock.bind(("127.0.0.1", 0))
-        return sock.getsockname()[1]
+    for _ in range(100):
+        port = next(_PORTS)
+        with socket.socket() as sock:
+            try:
+                sock.bind(("127.0.0.1", port))
+            except OSError:  # Taken.
+                continue
+        return port
+    raise RuntimeError("No free port for a Home Assistant")
 
 
 def haos(command, **kwargs):
