@@ -1,6 +1,6 @@
 # Install and manage Assist Improver
 
-Assist Improver works with Home Assistant Core 2026.11 or later (it is tested on 2026.11.0). It records conversations and replays them in a sandboxed Home Assistant instance, so device actions in replays are always simulated. Installation and recording make no model requests.
+Assist Improver works with Home Assistant Core 2026.11 or later. It records conversations and replays them in a sandboxed Home Assistant instance, so device actions in replays are always simulated. Installation and recording make no model requests.
 
 ## Install
 

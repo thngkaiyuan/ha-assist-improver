@@ -1,7 +1,8 @@
 #!/bin/bash
 # The journeys against HA OS: its current release for the channel, booted in QEMU/KVM as HA OS's own CI does, set up
-# by its Supervisor with the channel's Home Assistant, then each journey's Home Assistant is HA OS's own (README.md).
-# Usage: tools/bench/haos.sh [stable|beta|dev]
+# by its Supervisor with the given Home Assistant (the channel's by default), then each journey's Home Assistant is
+# HA OS's own (README.md).
+# Usage: tools/bench/haos.sh [stable|beta|dev] [VERSION]
 # Needs an x64 Linux machine with KVM, qemu-system-x86, OVMF, curl, jq and e2fsprogs (a GitHub runner), and
 # tools/e2e/.venv with Playwright's Chromium in tools/ui/browsers. BENCH_WORK: where the VM and logs go (a temp folder).
 set -euo pipefail
@@ -15,7 +16,7 @@ start=$SECONDS
 versions=$(curl -fsSL -A assist-improver-bench "https://version.home-assistant.io/$channel.json")
 os=$(jq -r .hassos.ova <<< "$versions")
 supervisor=$(jq -r .supervisor <<< "$versions")
-core=$(jq -r '.homeassistant["qemux86-64"]' <<< "$versions")
+core=${2:-$(jq -r '.homeassistant["qemux86-64"]' <<< "$versions")}
 curl -fsSL "https://os-artifacts.home-assistant.io/$os/haos_ova-$os.qcow2.xz" | xz -dc > "$work/haos.qcow2"
 
 # HA OS's debug access: at boot it imports authorized_keys from a drive labeled CONFIG and starts SSH on 22222.
@@ -75,7 +76,8 @@ wait_for 600 "SSH" on true
 wait_for 900 "the Supervisor" on "ha supervisor info"
 
 # The channel's Supervisor, once the Supervisor has read the channel's versions (it updates to the latest it knows,
-# whatever version is asked for), then its Home Assistant (the landing page first, while the Supervisor installs one).
+# whatever version is asked for), then the Home Assistant asked for (the landing page first, while the Supervisor
+# installs the channel's; an older release replaces it).
 on "ha supervisor options --channel $channel" > /dev/null
 wait_for 300 "the $channel channel's versions" known
 installed supervisor "$supervisor" || on "ha supervisor update" > /dev/null || true

@@ -1,6 +1,6 @@
 """The CI bench's own logic (tools/bench), with stand-ins for what it reads: the watcher starts a channel's tests once
-for each new set of Home Assistant versions, and the HA OS job's log check finds the guard's Landlock line and any
-error of the improver's."""
+for each new set of Home Assistant versions, stable's tests cover every supported release, the HA OS job's log check
+finds the guard's Landlock line and any error of the improver's."""
 
 import importlib.util
 from pathlib import Path
@@ -34,6 +34,17 @@ def test_a_channel_runs_once_for_each_new_set_of_versions():
     assert list(watch.due(found, ran)) == ["dev"]
     found["stable"] = answer("2026.11.0", "2026.11.0", "18.4")  # A new Supervisor alone is new too.
     assert list(watch.due(found, ran)) == ["stable", "dev"]
+
+
+def test_stable_means_the_minimum_and_each_months_newest_patch_since_up_to_the_newest_stable():
+    tags = ["2026.10.4", "2026.11", "2026.11.0", "2026.11.1", "2026.11.2", "2026.12.0b0", "2026.12.0", "2026.12.1",
+            "2026.12.2", "2027.1.0b1", "2027.1.0.dev202612090215", "stable", "beta", "dev", "latest"]
+    # The minimum itself too, once its month has patches; 2026.12.2 is tagged, but the newest stable is 2026.12.1.
+    assert watch.supported("2026.11.0", "2026.12.1", tags) == ["2026.11.0", "2026.11.2", "2026.12.1"]
+    assert watch.supported("2026.11.0", "2026.11.0", ["2026.11.0"]) == ["2026.11.0"]
+    assert watch.supported("2026.9.0", "2027.1.1", ["2026.9.4", "2026.10.4", "2026.12.3", "2027.1.0"]) == [
+        "2026.9.0", "2026.9.4", "2026.10.4", "2026.12.3", "2027.1.1"]  # By number; the newest stable before its tag.
+    assert watch.supported("2026.12.0", "2026.11.2", tags) == []  # A minimum not out yet: nothing, and the job fails.
 
 
 GUARD = ("2026-11-06 08:20:39.759 DEBUG (MainThread) [custom_components.assist_improver.worker] Replay worker: "
@@ -92,3 +103,4 @@ def test_each_workflows_job_ids_differ_without_regard_to_case():
     for path in sorted((ROOT / ".github/workflows").glob("*.yml")):
         jobs = list(yaml.safe_load(path.read_text())["jobs"])
         assert len({job.lower() for job in jobs}) == len(jobs), (path.name, jobs)
+
