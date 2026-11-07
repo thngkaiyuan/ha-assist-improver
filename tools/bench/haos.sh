@@ -92,7 +92,7 @@ echo "== HA OS $(on "ha os info --raw-json" | jq -r .data.version) (Linux $(on "
 core stop  # Each journey starts it on a config of its own (tools/e2e/conftest.py).
 
 # The journeys, one Home Assistant at a time, at phone size (the screen's sizes are the image runs' to cover); then
-# what Home Assistant logged: the replay guard's Landlock line, and no error of Assist Improver's.
+# what Home Assistant logged: the replay guard's Landlock line, and no error or blocking call of Assist Improver's.
 runs=$work/e2e-runs
 mkdir -p "$runs"
 runner=

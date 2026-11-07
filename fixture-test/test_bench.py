@@ -1,6 +1,7 @@
 """The CI bench's own logic (tools/bench), with stand-ins for what it reads: the watcher starts a channel's tests once
-for each new set of Home Assistant versions, stable's tests cover every supported release, the HA OS job's log check
-finds the guard's Landlock line and any error of the improver's, and the badges say what a run tested."""
+for each new set of Home Assistant versions, stable's tests cover every supported release, the journeys' log check
+finds the guard's Landlock line and anything of the improver's (an error, or a blocking call on Home Assistant's event
+loop), and the badges say what a run tested."""
 
 import importlib.util
 from pathlib import Path
@@ -64,6 +65,27 @@ def test_the_logs_show_the_guards_landlock_and_no_error_of_the_improvers():
     assert logcheck.problems([GUARD.replace("skipped: Function not implemented", "applied (ABI 7)")], expected) == [
         GUARD.replace("skipped: Function not implemented", "applied (ABI 7)").strip()]
     assert logcheck.problems([GUARD + TRACEBACK + "\n" + THEIRS], expected) == [TRACEBACK.strip()]  # Its traceback too.
+
+
+BLOCKING = ("2026-11-06 20:08:17.738 WARNING (MainThread) [homeassistant.util.loop] Detected blocking call to open "
+            "with args ('/usr/src/homeassistant/homeassistant/components/fan/services.yaml',) inside the event loop by "
+            "custom integration 'assist_improver' at custom_components/assist_improver/targets.py, line 43: found = "
+            "load_yaml_dict(path) (offender: /usr/local/lib/python3.14/site-packages/annotatedyaml/loader.py, line "
+            "166: with open(fname, encoding=\"utf-8\") as conf_file:), please create a bug report at "
+            "https://github.com/thngkaiyuan/ha-assist-improver/issues\n"
+            "Traceback (most recent call last):\n"
+            '  File "/config/custom_components/assist_improver/targets.py", line 43, in _described\n')
+BLOCKING_THEIRS = ("2026-11-06 20:08:18.000 WARNING (MainThread) [homeassistant.util.loop] Detected blocking call to "
+                   "open with args ('/config/x',) inside the event loop by custom integration 'other' at "
+                   "custom_components/other/__init__.py, line 9: open(path), please create a bug report\n")
+
+
+def test_a_blocking_call_home_assistant_caught_in_the_improvers_code_is_the_improvers_to_fix():
+    """Home Assistant's warning of blocking I/O on its event loop, pointing into custom_components/assist_improver,
+    fails a journey (its own log) and the HA OS run, as an error does; another integration's doesn't."""
+    assert logcheck.improvers(GUARD + BLOCKING + BLOCKING_THEIRS + THEIRS) == [BLOCKING.strip()]
+    assert logcheck.improvers(GUARD + TRACEBACK) == [TRACEBACK.strip()]
+    assert logcheck.problems([GUARD + BLOCKING], "Landlock skipped: Function not implemented") == [BLOCKING.strip()]
 
 
 def test_ci_runs_nothing_in_a_private_repository():

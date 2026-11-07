@@ -24,7 +24,8 @@ runner; never on a Mac):
 
 It boots the channel's HA OS release in QEMU, lets its Supervisor install the channel's Home Assistant (or VERSION),
 runs the journeys at phone size against it one at a time, and checks the logs (`logcheck.py`): every replay's guard
-skipped Landlock, and no error is the improver's.
+skipped Landlock, and nothing is the improver's: no error, and no blocking call Home Assistant caught in its code
+(each journey checks its own log for those, on every bench).
 
 CI (`.github/workflows`): `tests.yml` runs both on every push and pull request, for all three channels, where stable
 means every supported release: `hacs.json`'s minimum, and each month's newest patch since (`watch.py versions`);

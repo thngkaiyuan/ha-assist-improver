@@ -11,9 +11,10 @@ Fixtures (see each one's docstring):
   and Assist Improver added through its own config flow (its AI roles on the anthropic AI Tasks it sets up). Then
   it's stopped, and its config folder is where every test's Home Assistant starts from.
 - ha (function): a fresh Home Assistant from the golden copy, on its own free port, logged in; stopped, with every
-  process it started, when the test ends. One per test, so no journey sees another's conversations or improvements;
-  it starts in a few seconds. Its helpers (HomeAssistant) read and change Home Assistant's state over REST and the
-  websocket API.
+  process it started, when the test ends, and its log checked: the test fails if Home Assistant logged an error of
+  Assist Improver's or caught a blocking call in its code on the event loop (tools/bench/logcheck.py). One per test,
+  so no journey sees another's conversations or improvements; it starts in a few seconds. Its helpers
+  (HomeAssistant) read and change Home Assistant's state over REST and the websocket API.
 - page (function, parametrized): a headless Chromium page logged in to that Home Assistant, at phone size (402x874,
   the design target) and desktop size (1280x800): every test that takes `page` runs at both
   (narrow one with @pytest.mark.parametrize("page", ["phone"], indirect=True)). Its helpers (Screen) do what the
@@ -74,8 +75,10 @@ HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent.parent  # The checkout under test.
 sys.path.insert(0, str(HERE))
 sys.path.append(str(ROOT / "tools/ui"))
+sys.path.append(str(ROOT / "tools/bench"))
 from fake_anthropic import FakeAnthropic  # noqa: E402
 import jscov  # noqa: E402
+import logcheck  # noqa: E402
 
 
 def _find(relative):
@@ -675,9 +678,10 @@ def golden(fake_model, runs_dir):
 @pytest.fixture
 def ha(golden, fake_model, runs_dir, request):
     """A fresh Home Assistant for this test, started from the golden household on a free port, logged in as the test
-    user (HomeAssistant: its helpers read state). Stopped when the test ends, with its replay workers. On failure, its
-    log and the fake model's requests for this test are kept beside its config folder; a test that passed leaves no
-    folder (E2E_KEEP=1 keeps them all)."""
+    user (HomeAssistant: its helpers read state). Stopped when the test ends, with its replay workers, and its log
+    checked (logcheck.improvers: an error of the improver's, or a blocking call in its code, fails the test). On
+    failure, its log and the fake model's requests for this test are kept beside its config folder; a test that passed
+    leaves no folder (E2E_KEEP=1 keeps them all)."""
     folder = runs_dir / f"t{next(_NUMBERS):02d}-{request.node.name}"[:80].replace("/", "_")
     shutil.copytree(golden["folder"], folder)
     port = free_port()
@@ -694,18 +698,20 @@ def ha(golden, fake_model, runs_dir, request):
         instance.since = since
         yield instance
     finally:
-        failed = getattr(request.node, "e2e_failed", False)
-        if failed:
-            fake_model.dump(folder / "e2e-model-requests.jsonl", since)
         try:
             if "instance" in locals():
                 instance.ws.close()
         finally:
             _stop_process(process)
+        log = folder / "e2e-hass.log"
+        logged = logcheck.improvers(log.read_text(errors="replace")) if log.exists() else []
+        failed = getattr(request.node, "e2e_failed", False) or bool(logged)
         if failed:
+            fake_model.dump(folder / "e2e-model-requests.jsonl", since)
             print(f"\nE2E artifacts for {request.node.name}: {folder}")
         elif not os.environ.get("E2E_KEEP"):
             shutil.rmtree(folder, ignore_errors=True)
+    assert not logged, "Home Assistant logged what's Assist Improver's to fix:\n\n" + "\n\n".join(logged)
 
 
 @pytest.hookimpl(hookwrapper=True)
