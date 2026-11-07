@@ -25,7 +25,7 @@ LAMP, FAN, HEATER = "light.living_room_lamp", "fan.living_room_fan", "switch.hea
 GARAGE, LEFT, RIGHT = "cover.garage_door", "cover.left_garage_door", "cover.right_garage_door"
 PORCH, FRIDGE, SPEAKER, SPEECH = ("light.porch_light", "switch.fridge_plug", "media_player.kitchen",
                                   "tts.speech")
-LOUNGE = "media_player.living_room_speaker"
+LOUNGE, CHIME = "media_player.living_room_speaker", "button.chime"
 AREAS = {"fixture_area": "Fixture room", "living_room": "Living room", "garage": "Garage", "porch": "Porch",
          "kitchen": "Kitchen"}
 # The household's devices beside the fixture relay: {entity_id: (state, friendly name, area)}. A kind may start one
@@ -42,6 +42,7 @@ HOUSE = {
     SPEAKER: ("idle", "Kitchen speaker", "kitchen"),
     LOUNGE: ("idle", "Living room speaker", "living_room"),
     SPEECH: ("unknown", "Speech", "kitchen"),  # A text-to-speech engine, which speaks on a media player.
+    CHIME: ("2026-01-01T07:00:00+00:00", "Chime", "kitchen"),  # A button, as it was last pressed.
 }
 # What each kind of device can do, as its state's attributes say (a fan turns on and off, a cover opens and closes, a
 # speaker plays and announces), so a replay's stand-ins take the same commands.
@@ -66,17 +67,19 @@ FRICTION_GOALS = {"goals": [
 
 
 def goal(turn, summary, entity=None, state=None, serves=None, fact=None, went=None, thanks=False, step=False,
-         wrap_up=False, quote=None, about=None):
-    """One goal in submit_goals' schema: a device state, a fact, a thanks, a step (a later turn asking again for what
-    the goal it serves wanted), a wrap-up (filing it), or, with quote, what the household objected to in Assist's turn
-    about; serves makes it a sub-goal. went: whether Assist reached it, by how the kind was made (only the stand-in's
-    "says each goal went the other way" reads it)."""
+         wrap_up=False, quote=None, about=None, settings=None):
+    """One goal in submit_goals' schema: a device state (with the settings asked for, by their actions' field names),
+    a fact, a thanks, a step (a later turn asking again for what the goal it serves wanted), a wrap-up (filing it), or,
+    with quote, what the household objected to in Assist's turn about; serves makes it a sub-goal. went: whether
+    Assist reached it, by how the kind was made (only the stand-in's "says each goal went the other way" reads it)."""
     out = {"turn": turn, "summary": summary}
     out.update({"kind": "thanks"} if thanks else {"kind": "step"} if step else {"kind": "wrap-up"} if wrap_up else
                {"kind": "conduct", "about": about, "quote": quote} if quote else {"kind": "fact", "fact": fact} if fact
                else {"kind": "state", "entity_id": entity, "state": state})
     if serves is not None:
         out["serves"] = serves
+    if settings:
+        out["attributes"] = settings
     if went:
         out["_went"] = went
     return out
@@ -92,13 +95,15 @@ class Say:
     HassTurnOff by the device's name), and its reply. wait: how long after the turn before it (a later time).
     broadcast: a message Assist broadcast (HassBroadcast), which reached no device: the household has no satellite.
     local: Home Assistant answered it itself, not the AI (nothing prepared for a model): with its built-in commands
-    (True), or as the agent named (an automation's sentence trigger)."""
+    (True), or as the agent named (an automation's sentence trigger). failed: the error each of its calls failed with
+    at home, changing nothing (the turn keeps its call log)."""
     text: str
     calls: tuple = ()
     reply: str = "Done."
     wait: timedelta = timedelta(seconds=20)
     broadcast: str | None = None
     local: bool | str = False
+    failed: str | None = None
 
 
 @dataclass(frozen=True)
@@ -128,6 +133,7 @@ class Kind:
     malformed: bool = False  # Its recording is broken: no stage can read it.
     talk: tuple | None = None  # Its own recording's turns; None: the fixture relay's.
     start: dict = field(default_factory=dict)  # Devices that start in another state than HOUSE's.
+    able: dict = field(default_factory=dict)  # {entity: what it can do beyond its kind's ABLE}: a lamp that dims.
     note: str | None = None  # The note it was sent in with.
     note_about: int = 1  # The turn of the root goal a note sent with it is about.
     thanks: int | None = None  # The turn of its "thanks".
@@ -477,6 +483,43 @@ KINDS = {kind.name: kind for kind in (
                  fields=({"key": "message", "name": "Message", "description": "The words to say"},),
                  asks={"message": "Come inside, it's time"}),
          fix_works=True, fixed={1: "fix"}),
+    # The lamp asked for at half brightness; Assist turns it on at the brightness it had. A script that turns it on at
+    # half, given as 0 to 255 where the user's was a percentage, meets it.
+    Kind("dimmed", "Turn the lamp on at half brightness.", able={LAMP: {"supported_color_modes": ["brightness"]}},
+         talk=(Say("Turn the lamp on at half brightness.", ((LAMP, "on"),), "The lamp is on."),),
+         analysis=goals(goal(1, "Lamp on at half brightness", LAMP, "on", settings={"brightness_pct": 50},
+                             went="unmet")),
+         fix=Fix("Dim the lamp to half", "Assist turns the lamp on without dimming it", "Lamp at half",
+                 (("light.turn_on", LAMP, {"brightness": 128}),), "Turns on the living room lamp at half brightness.",
+                 "The lamp comes on at half brightness"),
+         fix_works=True, fixed={1: "fix"}),
+    # The chime asked for; Assist can't press it. A script that presses it meets it: a button keeps no state to reach,
+    # so the call reaching it does it.
+    Kind("unpressed", "Ring the chime.",
+         talk=(Say("Ring the chime.", reply="Sorry, I can't do that right now."),),
+         analysis=goals({"turn": 1, "summary": "The chime rung", "kind": "action", "outcome": "command",
+                         "entity_ids": [CHIME], "_went": "unmet"}),
+         fix=Fix("A script for the chime", "Assist can't press the chime", "Ring the chime",
+                 (("button.press", CHIME),), "Presses the chime.", "The chime rings when asked"),
+         fix_works=True, fixed={1: "fix"}),
+    # The porch light asked for; Assist misses it. The fix's script turns it on and presses the chime, unasked.
+    Kind("chimed unasked", "Light the porch.",
+         talk=(Say("Light the porch.", reply="Sorry, I can't do that right now."),),
+         analysis=goals(goal(1, "Porch light on", PORCH, "on", went="unmet")),
+         fix=Fix("Porch light and chime", "Assist doesn't reach the porch light", "Welcome home",
+                 (on(PORCH), ("button.press", CHIME)), "Turns on the porch light and rings the chime.",
+                 "The porch light comes on when asked"),
+         fix_works=True, fixed={1: "fix"}),
+    # The heater asked for, then again; its command failed at home both times, so the home couldn't do it whatever
+    # Assist did.
+    Kind("heater failed", "Turn the heater on.", start={HEATER: "off"},
+         talk=(Say("Turn the heater on.", ((HEATER, "on"),), failed="The heater didn't respond"),
+               Say("It's still off, try again.", ((HEATER, "on"),), "The heater didn't respond.",
+                   failed="The heater didn't respond")),
+         analysis=goals(goal(1, "Heater on", HEATER, "on", went="unmet"), goal(2, "Asked again", serves=1, step=True)),
+         fix=Fix("Say when the heater doesn't respond", "Assist says Done when the heater fails", "Heater on, or say so",
+                 (on(HEATER),), "Turns on the heater.", "Assist says when the heater doesn't respond"),
+         fix_works=True, fixed={1: "fix"}),
 )}
 ORDER = list(KINDS)  # Each kind's conversations start on a day of their own.
 
@@ -541,9 +584,10 @@ def _shift(record, delta):
         change["at"] = moved(change["at"])
 
 
-def _state(entity, value):
-    able = ABLE.get(entity.split(".")[0], {})
-    return {"entity_id": entity, "state": value, "attributes": {"friendly_name": _name(entity), **able}}
+def _state(entity, value, able=None):
+    """A device's state, as it shows what it can do: its kind's ABLE, and anything more able gives it (Kind.able)."""
+    can = {**ABLE.get(entity.split(".")[0], {}), **(able or {}).get(entity, {})}
+    return {"entity_id": entity, "state": value, "attributes": {"friendly_name": _name(entity), **can}}
 
 
 def _name(entity):
@@ -604,7 +648,7 @@ def _built(kind, said, began):
         text = said if number == 1 else say.text
         user = {"role": "user", "content": text, "created": tick()}
         messages.append(user)
-        source = {"at": tick(), "states": {e: _state(e, s) for e, s in states.items()},
+        source = {"at": tick(), "states": {e: _state(e, s, kind.able) for e, s in states.items()},
                   "entities": {e: _entry(e) for e in states},
                   "exposure": {e: e != SCRIPT for e in states}, "devices": {},
                   "areas": {area: {"name": name} for area, name in AREAS.items()}}
@@ -625,10 +669,20 @@ def _built(kind, said, began):
                     "id": f"call-{number}-{index}", "external": False}
             messages.append({"role": "assistant", "agent_id": "conversation.fixture", "tool_calls": [call],
                              "created": tick()})
+            if say.failed:  # Its call log has the call, with Home Assistant's error; the tool's result, the intent's.
+                service = f"{entity.split('.', 1)[0]}.turn_{direction.lower()}"
+                record["turns"][-1].setdefault("actions", []).append(
+                    {"action": service, "data": {"entity_id": entity}, "error": say.failed})
+                messages.append({"role": "tool_result", "agent_id": "conversation.fixture", "tool_call_id": call["id"],
+                                 "tool_name": call["tool_name"], "created": tick(), "result": {
+                                     "error": "IntentHandleError",
+                                     "error_text": f"Failed to call turn_{direction.lower()} for {_name(entity)}"}})
+                continue
             if states[entity] != new:
-                record["state_changes"].append({"entity_id": entity, "at": tick(), "old": _state(entity, states[entity]),
-                                                "new": {**_state(entity, new), "context": deepcopy(
-                                                    ITS_OWN if entity in kind.unmarked else context)}})
+                record["state_changes"].append({
+                    "entity_id": entity, "at": tick(), "old": _state(entity, states[entity], kind.able),
+                    "new": {**_state(entity, new, kind.able),
+                            "context": deepcopy(ITS_OWN if entity in kind.unmarked else context)}})
                 states[entity] = new
             result = {"data": {"speech": {}, "response_type": "action_done", "data": {
                 "success": [{"name": _name(entity), "type": "entity", "id": entity}], "failed": []}}, "error": False}
@@ -648,7 +702,8 @@ def _built(kind, said, began):
             else "conversation.fixture")})
     for entity, new, context in kind.put_back:  # Five minutes after its last reply, before its chat session ends.
         clock += timedelta(minutes=5)
-        record["state_changes"].append({"entity_id": entity, "at": tick(), "old": _state(entity, states[entity]),
-                                        "new": {**_state(entity, new), "context": dict(context)}})
+        record["state_changes"].append({"entity_id": entity, "at": tick(),
+                                        "old": _state(entity, states[entity], kind.able),
+                                        "new": {**_state(entity, new, kind.able), "context": dict(context)}})
         states[entity] = new
     return record

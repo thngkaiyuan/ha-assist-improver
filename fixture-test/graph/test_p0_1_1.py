@@ -6,7 +6,10 @@ an improvement only if it's strictly better: better on one measure and worse on 
 2026-10-27). A replay says only the conversation's own recorded turns, so a fix can't add one.
 """
 
-from household import (FRICTION, HEATER_UNREACHABLE, IN_BETWEEN, NO_GAIN, OBJECTED_AND_FILED,
+import json
+
+from household import (CHIMED_UNASKED, DIMMED, FRICTION, HEATER_FAILED, HEATER_UNREACHABLE, IN_BETWEEN, NO_GAIN,
+                       OBJECTED_AND_FILED, UNPRESSED,
                        SIDE_EFFECT_AND_REPEAT, SIDE_EFFECT_PUT_BACK, SIDE_EFFECT_PUT_BACK_BY_AUTOMATION,
                        SIDE_EFFECT_PUT_BACK_SIGNED_IN, SIDE_EFFECT_PUT_BACK_UNMARKED,
                        SIDE_EFFECT_UNDONE_ON_REQUEST, THANKS_AND_NOTE, THANKS_AND_OBJECTION,
@@ -91,6 +94,22 @@ def test_a_root_goal_the_home_couldnt_reach_either_way_still_counts_the_turns_a_
     assert test.before.goals[root] == test.after.goals[root] == "unmet"
     assert test.before.turns_per_root_goal == {root: 2} and test.after.turns_per_root_goal == {root: 1}
     assert test.gains == {"turns per root goal"} and test.validated
+
+
+@refines("test_a_root_goal_the_home_couldnt_reach_either_way_still_counts_the_turns_a_fix_saves")
+def test_a_command_that_failed_at_home_is_one_the_home_couldnt_do_and_the_proposer_is_told_it_failed():
+    """The home couldn't do a root goal when, in every turn its tree took, its command failed at home or its device was
+    unavailable, and the roles are told which (DETAILS P9.10.6). The heater's command failed at home both times it was
+    asked for: the proposer is told it failed, not that the heater was unavailable, and a replay's sandbox refuses it
+    again, the fix's script's call too, so the goal is unmet with the change as without it."""
+    home = Household()
+    talk = home.converse(HEATER_FAILED)
+    home.run()
+    [root] = home.analysis(talk).roots
+    given = json.dumps(home.received("Propose", talk)[-1].input)
+    assert "its command failed at home" in given and "was unavailable" not in given
+    tests = home.tests(talk)
+    assert tests and all(test.before.goals[root] == test.after.goals[root] == "unmet" for test in tests)
 
 
 @refines("P0.1.1")
@@ -295,6 +314,36 @@ def test_an_announcement_is_met_by_speech_on_every_speaker_whatever_its_words_so
 
 
 @refines("test_a_goal_assist_left_unmet_and_the_fix_meets_counts_as_one_more_goal_met")
+def test_a_setting_asked_for_is_part_of_the_goal_and_is_met_in_any_of_its_forms():
+    """A device's destination is a target State: its state plus any setting the user asked for, a setting met in any
+    of Home Assistant's forms of it, a number within 5% of its range (DETAILS P9.7.1). Asked for the lamp at half
+    brightness, Assist turned it on undimmed: on, but not at half, so unmet. The fix's script turns it on at brightness
+    128 of 255 where the goal asked for 50%: met."""
+    home = Household()
+    talk = home.converse(DIMMED)
+    home.run()
+    [missed] = goals_in(home.analysis(talk), "unmet")
+    test = improvement_for(home, talk).test
+    assert test.before.goals[missed] == "unmet" and test.after.goals[missed] == "met"
+    assert test.gains == {"goals met"}
+
+
+@refines("test_a_goal_assist_left_unmet_and_the_fix_meets_counts_as_one_more_goal_met")
+def test_a_button_asked_to_be_pressed_is_met_by_a_call_that_reaches_it_a_scripts_own_among_them():
+    """Something done that leaves no device in a new state is met by a call that reached it, read from what happened
+    on both sides alike: the tool calls with their results and the call log, a script's own calls in it (DETAILS P9.7.6,
+    P9.10.5). Asked to ring the chime, Assist couldn't: no call reached it, so unmet. The fix's script presses it: its
+    own call reached the chime, so met."""
+    home = Household()
+    talk = home.converse(UNPRESSED)
+    home.run()
+    [missed] = goals_in(home.analysis(talk), "unmet")
+    test = improvement_for(home, talk).test
+    assert test.before.goals[missed] == "unmet" and test.after.goals[missed] == "met"
+    assert test.gains == {"goals met"}
+
+
+@refines("test_a_goal_assist_left_unmet_and_the_fix_meets_counts_as_one_more_goal_met")
 def test_an_indeterminate_goal_is_neither_met_nor_unmet_in_either_replay_while_the_missed_goal_beside_it_is_met():
     """An indeterminate goal is neither met nor unmet (P0.3), so each replay judges it indeterminate, with the change
     as without it, and it's in neither replay's goals met. Reading: it's one the evidence can't show (DETAILS
@@ -359,6 +408,21 @@ def still_left_after_someone_else_puts_it_back(kind):
     test = improvement_for(home, talk).test
     assert len(test.before.side_effects_left) == 1 and not test.after.side_effects_left
     assert test.gains == {"side effects left"}
+
+
+@refines("test_a_side_effect_counts_only_while_it_is_left_so_avoiding_a_change_assist_undid_itself_gains_nothing")
+def test_a_buttons_last_press_is_never_a_side_effect_since_it_keeps_no_state_to_reach():
+    """A side effect left is a device's settable state not left as it started; a button's last press is never one
+    (DETAILS P9.12). The fix's script turns on the porch light Assist missed and presses the chime, which no goal asked
+    for: the chime's state is the time it was last pressed, now changed, yet no side effect is left, so the goal met is
+    the test's only gain and the fix is validated."""
+    home = Household()
+    talk = home.converse(CHIMED_UNASKED)
+    home.run()
+    [missed] = goals_in(home.analysis(talk), "unmet")
+    test = improvement_for(home, talk).test
+    assert test.after.goals[missed] == "met" and not test.after.side_effects_left
+    assert test.gains == {"goals met"} and test.validated
 
 
 @refines("test_a_side_effect_counts_only_while_it_is_left_so_avoiding_a_change_assist_undid_itself_gains_nothing")

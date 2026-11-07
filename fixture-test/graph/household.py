@@ -70,6 +70,10 @@ ANSWERED_BY_AN_AUTOMATION = "answered by an automation"  # a goal missed in a tu
 UNREACHABLE_AND_REPAIR = "unreachable and repair"  # the porch light is unavailable, so its goal is unmet whatever
                              # Assist does; Assist turns the fan on instead and is asked to turn it back off; a fix
                              # that leaves the fan alone saves that turn
+DIMMED = "dimmed"            # the lamp asked for at half brightness and turned on undimmed; a fix dims it to half
+UNPRESSED = "unpressed"      # a button (the chime) asked to be pressed, and Assist can't; a fix presses it
+CHIMED_UNASKED = "chimed unasked"  # UNMET, where the fix's script also presses the chime, unasked
+HEATER_FAILED = "heater failed"  # the heater asked for twice, its command failing at home both times
 
 
 class Missing(Exception):
