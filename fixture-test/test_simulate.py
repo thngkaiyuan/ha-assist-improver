@@ -723,7 +723,7 @@ async def test_the_before_compares_the_settings_assist_asked_for_not_what_a_devi
 @pytest.mark.asyncio
 async def test_a_command_that_failed_at_home_must_fail_in_the_before_too(hass, monkeypatch, effect_guards, asks,
                                                                          status):
-    """DETAILS P6.6.1 (#101): the recorded command to the light failed at home, leaving it off; a replay sending it
+    """DETAILS P6.6.1: the recorded command to the light failed at home, leaving it off; a replay sending it
     fails it again (the sandbox refuses it as the home did) and goes as it went; one that only asks which light sends
     nothing to fail, though the light stays off either way, and doesn't."""
     from test_openrouter_replay import bind_openrouter, call, reply

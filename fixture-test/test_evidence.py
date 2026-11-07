@@ -87,7 +87,7 @@ def with_lamp_and_bell():
 
 @pytest.mark.asyncio
 async def test_the_implementation_check_compares_a_goals_whole_target_and_an_action(hass, effect_guards):
-    """#118: each goal the check can compare, read as the analysis reads it: a state goal's settings (a colour asked
+    """Each goal the check can compare, read as the analysis reads it: a state goal's settings (a colour asked
     as rgb, met as the lamp shows it in hue and saturation; a brightness as a percentage) and a button press, met by a
     call that reached it."""
     record = with_lamp_and_bell()

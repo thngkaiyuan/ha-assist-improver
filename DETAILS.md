@@ -571,8 +571,8 @@ Citations in parentheses name the maintainer's earlier notes, which aren't in th
   2026-10-25; MILESTONE-6.md)
   - **P6.6.1** It reproduces when, on every turn, the devices the recorded Assist changed get the effects recorded
     (their states, the settings it set on them as its calls asked, and a command that failed at home failing again),
-    however the model words its tool calls, and every goal code decides ends as in the conversation, in the same turns, with side effects left on the
-    same devices. (Kai, 2026-10-24: "The former sounds good"; MILESTONE-6.md; ROADMAP.md)
+    however the model words its tool calls, and every goal code decides ends as in the conversation, in the same turns,
+    with side effects left on the same devices. (Kai, 2026-10-24: "The former sounds good"; MILESTONE-6.md; ROADMAP.md)
   - **P6.6.2** An objection (or a filing) the baseline doesn't show still open is set aside for that test: the
     friction didn't happen again, so it can't be told either way, and its turn is said (P6.4). So is a question the
     baseline answered otherwise at any reply of its run, with the steps and filing under it (a reply varies from run
@@ -1420,7 +1420,7 @@ Citations in parentheses name the maintainer's earlier notes, which aren't in th
 - **P9.12 Side effects left.** A side effect left is a device Assist changed that no goal asked for, and that Assist
   didn't leave as it started: its settable state, its state and each setting one of its actions sets (P9.7.1), not a
   reading. A button's last press or a script running is never one: it keeps no state to reach (P9.7.6). (Kai,
-  2026-10-26: "1. yes"; 2026-11-02; PRODUCT-SPEC.md, 2026-10-25; S5)
+  2026-10-26: "1. yes"; 2026-11-02; PRODUCT-SPEC.md, 2026-10-25)
   - **P9.12.1** Code derives it, not the model. (PRODUCT-SPEC.md, 2026-10-25; LABELS.md)
   - **P9.12.2** Only Assist's own change counts. A device's own follow-on isn't one. A signed-in person's later change
     to a device Assist acted on is theirs: never counted or labelled as Assist's. (SPEC-CORE.md S2, 2026-10-26;
@@ -1652,8 +1652,9 @@ Citations in parentheses name the maintainer's earlier notes, which aren't in th
   - **P12.1.5** The editor is told what each test showed, and asked to say so, e.g. "no longer changes {device} (it
     stays {state})", "no longer does what you pointed out: “{their words}”"; and what it didn't, never to be written as
     fixed: "still does what you pointed out: “{their words}”", "the home couldn't do it: {device} was unavailable when
-    asked" (or "{device} failed", P9.10.6), "still not done: {goal}". What's fixed and what's open come only from these, never from the replies.
-    (TEXT-REVIEW.md, 2026-10-25; Kai, 2026-10-29: words on judgement; the household's broadcast revision, 2026-10-30)
+    asked" (or "{device} failed", P9.10.6), "still not done: {goal}". What's fixed and what's open come only from these,
+    never from the replies. (TEXT-REVIEW.md, 2026-10-25; Kai, 2026-10-29: words on judgement; the household's broadcast
+    revision, 2026-10-30)
   - **P12.1.6** The editor is told when an improvement's tests made Assist's replies longer (P6), and never calls it
     briefer. (TEXT-REVIEW.md, 2026-10-25; fixture-test/SPEC.md)
   - **P12.1.7** No model writes why an improvement is safe: code states it (P12.3). (DESIGN.md)
@@ -2802,11 +2803,11 @@ words, those words are the requirement; elsewhere the behaviour lives in its own
     judgement; Kai, 2026-10-30: the order, and the sections that repeated what you get gone)
   - **P17.21.3** A Before & after row's result chip: "goal now met" · "{a} → {b} turns" · "improved" · "side effect
     gone" / "side effects gone" · "follows your feedback"; several joined by " · ", e.g. "3 → 1 turns · follows your
-    feedback". After it, an amber "{n} still open" chip (how many Still open lines close its After), bubble "Something you
-    pointed out still happened in a reply with this change.", or the set-aside bubble when none did. A goal the home
+    feedback". After it, an amber "{n} still open" chip (how many Still open lines close its After), bubble "Something
+    you pointed out still happened in a reply with this change.", or the set-aside bubble when none did. A goal the home
     couldn't do either way (P9.10.6) reads "{goal}: the home couldn't do it ({device} was unavailable)", or "({device}
-    failed)" where its command failed at home. (TEXT-REVIEW.md, Kai approved 2026-10-25; Kai, 2026-10-26: "Approved"; Kai,
-    2026-10-29: words on judgement)
+    failed)" where its command failed at home. (TEXT-REVIEW.md, Kai approved 2026-10-25; Kai, 2026-10-26: "Approved";
+    Kai, 2026-10-29: words on judgement)
   - **P17.21.4** A test that made Assist wordier gets an amber "Says more" chip after its result, bubble "Assist's
     replies: about {after} words each, {before} before."; under the tests, "With this change, Assist's replies got
     longer in {n} of these." (TEXT-REVIEW.md, Kai approved 2026-10-25; Kai, 2026-10-26)

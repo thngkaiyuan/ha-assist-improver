@@ -651,7 +651,7 @@ async def test_the_judge_at_analysis_hears_what_the_recorded_broadcast_reached_a
 
 
 def test_the_judge_hears_every_setting_a_change_moved_whole_and_long_call_data_cut_saying_so():
-    """#114: a change lists each setting one of its device's actions sets, all of them (none cut after the first
+    """A change lists each setting one of its device's actions sets, all of them (none cut after the first
     few), the attributes nothing sets (a colour mode) aside; a call's data and a failed call's error are cut to
     CALL_CHARS, saying how much was left out."""
     from custom_components.assist_improver import simulate
