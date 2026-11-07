@@ -24,7 +24,7 @@ from .trace import journal, span, timed
 
 PENDING = ("awaiting_review", "needs_attention")  # Waiting on the user: in the notification.
 # What moves something physical whose motion a replay takes as done once its command succeeds (DETAILS P11.5): by
-# domain, and a cover by its device class. The review notes it (panel.py).
+# domain, and a cover by its device class. The review notes it (panel.py, moves).
 MOVERS = ("valve", "lock", "alarm_control_panel")
 DOORS = ("garage", "door", "gate")  # A cover's device classes that move a door.
 
@@ -53,6 +53,18 @@ def sentence(text):
 def stuck_text(stuck):
     """What couldn't be put back after a failure, each with why: "{what}: {why}." """
     return " ".join(f"{s['what']}: {sentence(s['why'])}" for s in stuck)
+
+
+def moves(hass, item):
+    """Whether an improvement involves motion a replay takes as done once its command succeeds (DETAILS P11.5): a
+    device it involves moves something physical (physical), or a goal it helped is a sequence goal (P9.7.5: presses
+    standing for a motion nobody can check, such as a relay-driven door's)."""
+    from .measures import helped
+    test = item.get("test") or {}
+    judged = test.get("judged") or {}
+    roots = set(helped(test["before"], test["after"], judged)) if judged else set()
+    return any(physical(hass, e) for e in item.get("devices") or []) or any(
+        g.get("kind") == "sequence" and g.get("root") in roots for g in judged.values())
 
 
 # Noticeably wordier: Assist's replies with the change at least this many times as long, and this many more words,

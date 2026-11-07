@@ -263,6 +263,18 @@ class Improvement:
         _, page = world.call(world.ws(panel.ws_get, type="assist_improver/improvement", improvement_id=self.id))
         return [choice["value"] for choice in page["choices"]]
 
+    def _review(self):
+        """Its review page, as the panel gives it."""
+        from custom_components.assist_improver import panel
+        world = self._drive._world
+        _, page = world.call(world.ws(panel.ws_get, type="assist_improver/improvement", improvement_id=self.id))
+        return page
+
+    @property
+    def notes_motion(self):
+        """Whether its review says motion isn't simulated."""
+        return bool(self._review()["physical"])
+
     @property
     def tested_on(self):
         if "conversation" not in self._item:

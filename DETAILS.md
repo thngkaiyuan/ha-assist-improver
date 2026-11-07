@@ -1597,8 +1597,9 @@ Citations in parentheses name the maintainer's earlier notes, which aren't in th
   (`integration_entities('<domain>')`) finds nothing. (fixture-test/SPEC.md; ROADMAP.md)
 - **P11.5** Physical positions aren't simulated: a door's motion counts as done when its command succeeds. Only where
   the improvement involves a garage, door or gate cover, a valve, a lock or an alarm panel (by its domain and a cover's
-  device class, never its name), the review says: "Motion isn't simulated: a door, valve, lock or alarm counts as done
-  once its command succeeds." (TEXT-REVIEW.md, 2026-10-25)
+  device class, never its name), or helps a sequence goal (P9.7.5: presses standing for a motion nobody can check), the
+  review says: "Motion isn't simulated: a door, valve, lock or alarm counts as done once its command succeeds."
+  (TEXT-REVIEW.md, 2026-10-25)
 - **P11.6** Links between devices aren't emulated (for example, one device going off switching a linked one off), so
   there's no link logic to maintain. (MILESTONE-7.md, 2026-10-23; ROADMAP.md)
   - **P11.6.1** If links are ever emulated, a household's own links never ship for everyone: they'd disclose its

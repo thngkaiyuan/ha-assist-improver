@@ -183,7 +183,8 @@ class Interface:
 #   said (the conversation's turns it said, in order), started_from (the home and time it started from), config (the
 #   configuration it ran on, comparable with config()), easier_than(other)
 # Improvement: conversation, tested_on, checked_on, changes_beyond(conversation), test, idea (the idea that reached
-#   Write up with its changes), changes, status, decisions
+#   Write up with its changes), changes, status, decisions, notes_motion (whether its review says motion isn't
+#   simulated)
 # Item: conversation, question (None for an improvement)
 # Outcome: run (the run it started, if any), asks (what it asks the household first, if anything; asks.about)
 # Run: started (comparable with a conversation's end)

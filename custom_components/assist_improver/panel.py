@@ -27,7 +27,7 @@ from .cases import CaseError
 from .changeset import BUSY, NoPanel, plan_steps
 from .const import DOMAIN, VERSION
 from .devview import COMMANDS as DEVELOPER_COMMANDS
-from .improvements import (DECISIONS, KINDS, PENDING, choices, display_title, gains, physical, reasons, reply_words,
+from .improvements import (DECISIONS, KINDS, PENDING, choices, display_title, gains, moves, reasons, reply_words,
                            row, sentence, stuck_text)
 from .runtime import loaded
 from .weeks import reviewed
@@ -289,7 +289,7 @@ def safety(steps):
 
 def review(item, planned=None, names=None, hass=None, revising=False, resolvable=False):
     """Everything the panel shows for one improvement, built by code. names: {user id: name} for household lines.
-    hass: Home Assistant now, for a cover's device class (improvements.physical) and the names an automation's review
+    hass: Home Assistant now, for a cover's device class (improvements.moves) and the names an automation's review
     says (weeks.reviewed). revising: its revision's round runs (improvements.choices). resolvable: its accept met a
     conflict, and the household is asked to send it back (flow.Flow.resolvable). One whose accept met a conflict shows
     what that accept met."""
@@ -327,9 +327,9 @@ def review(item, planned=None, names=None, hass=None, revising=False, resolvable
             # What it gets the household, counted (the line under its headline, as the list has it), and what the
             # household pointed out that it doesn't show fixed.
             **gains(item), "still_open": still,
-            # A door's, valve's, lock's or alarm's motion isn't simulated: said where the improvement involves one
-            # (the devices its changes touch and its goals want, by domain and device class).
-            "physical": any(physical(hass, e) for e in item.get("devices") or []),
+            # Motion isn't simulated: said where the improvement involves a door, valve, lock or alarm (the devices
+            # its changes touch and its goals want, by domain and device class) or helped a sequence goal.
+            "physical": moves(hass, item),
             # Each automation it changes: when it runs, and its simulated week (weeks.py).
             "automations": reviewed(hass, item),
             "tests": [{"summary": tested_on(shown, hass), "improved": shown["improved"], "result": test_result(shown),

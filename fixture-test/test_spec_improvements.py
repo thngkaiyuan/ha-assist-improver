@@ -911,7 +911,8 @@ async def test_why_its_safe_never_comes_from_the_written_copy(home):
 @pytest.mark.asyncio
 async def test_the_note_on_motion_shows_only_where_a_door_valve_lock_or_alarm_is_involved(home):
     """DETAILS P11.5: by the devices the improvement involves (its changes touch, its goals want), their domain and a
-    cover's device class; never by a name, its cause's words, or what its replays merely ran with."""
+    cover's device class, or where a goal it helped is a sequence goal (presses standing for a motion, P9.7.5); never
+    by a name, its cause's words, or what its replays merely ran with."""
     hass = home.hass
     lights = {**improvement(home), "changes": [{"kind": "registry", "entity_id": "light.desk", "aliases": ["the lamp"]}],
               "cause": "Assist didn't know cover.garage_door_left is the left garage door.", "devices": ["light.desk"]}
@@ -922,6 +923,14 @@ async def test_the_note_on_motion_shows_only_where_a_door_valve_lock_or_alarm_is
     hass.states.async_set("switch.relay_1", "off", {"friendly_name": "Garage door"})  # A relay: no door of its own.
     assert panel.review({**lights, "devices": ["cover.side_gate"]}, ([], [], []), hass=hass)["physical"] is True
     assert panel.review({**lights, "devices": ["switch.relay_1"]}, ([], [], []), hass=hass)["physical"] is False
+    for kind, noted in (("sequence", True), ("state", False)):  # The relay's presses, helped from 3 turns to 1.
+        test = tested(judged={"1:0": {"summary": "Open the garage", "turn": 1, "root": "1:0", "kind": kind,
+                                      "devices": ["switch.relay_1"]}})
+        relay = {**lights, "devices": ["switch.relay_1"], "test": test}
+        assert panel.review(relay, ([], [], []), hass=hass)["physical"] is noted
+    unhelped = tested(met_before=True, after=("Which?", "Which?", "Done."), judged={"1:0": {
+        "summary": "Open the garage", "turn": 1, "root": "1:0", "kind": "sequence", "devices": ["switch.relay_1"]}})
+    assert panel.review({**lights, "test": unhelped}, ([], [], []), hass=hass)["physical"] is False
 
 
 @pytest.mark.asyncio

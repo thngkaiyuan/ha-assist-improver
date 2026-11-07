@@ -6,7 +6,7 @@ given to decide with, and that the round's tests are one fixed allowance. How a 
 the code (Kai: implementation detail, not spec).
 """
 
-from household import FRICTION, NO_FIX, NO_GAIN, OBJECTED_AND_FILED, Household
+from household import FRICTION, NO_FIX, NO_GAIN, OBJECTED_AND_FILED, UNMET, Household
 from spec_graph import refines
 
 TRIES_BETTER = "after a validated idea, tries a better one while tests are left"
@@ -123,6 +123,20 @@ def test_a_test_tells_the_proposer_what_is_still_open_with_the_change_and_why():
 # parent's reading slip: bettering an idea under its own title, sending on re-typed changes, tests asked for at once,
 # and a round picked up after a cut-off. The other layer-2 tests need none: what "validated" means has one setup per
 # kind (what makes a replay easier is P0.1.1's subtree), and each of the others is one scenario on the driver.
+
+
+@refines("test_an_idea_is_validated_only_when_its_conversation_went_easier_with_it_whatever_the_proposer_claims")
+def test_where_a_goal_it_helped_is_a_press_standing_for_a_motion_the_review_says_motion_isnt_simulated():
+    """A replay counts a door's motion as done once its command succeeds, and a sequence goal's presses stand for a
+    motion nobody can check, a relay-driven garage door's (DETAILS P11.5, P9.7.5): where a goal an improvement helped is
+    one, its review says motion isn't simulated, though its device is a switch. FRICTION's fix saves a turn on the
+    relay's press; UNMET's turns on the porch light, a state goal on a light: no note."""
+    for kind, noted in [(FRICTION, True), (UNMET, False)]:
+        home = Household()
+        talk = home.converse(kind)
+        home.run()
+        [improvement] = home.improvements(talk)
+        assert improvement.notes_motion is noted
 
 
 @refines("test_trying_to_better_a_validated_idea_sends_on_the_better_one_if_it_validates_and_the_first_one_if_not")
