@@ -309,11 +309,14 @@ def _home_did(items, actions, source, changes):
         if actions is None]}
 
 
-def _replayed_turn(step):
-    """A replay's turn as the judge reads it (_turn), with what the home did in it (_home_did): its call log, and each
-    change its sandbox logged."""
+def _replayed_turn(step, turns):
+    """A replay's turn as the judge reads it (_turn), with what the home did in it (_home_did): its call log, read
+    against the recorded turn's home as it began, as a recorded turn's and measures' are (an announcement to an area
+    reaches its satellites; one unavailable reaches nothing), and each change its sandbox logged. turns: the
+    recording's (cases.recording_turns)."""
     return _turn(step["turn"], step["input"], step.get("output") or [], _home_did(
-        step.get("output") or [], step.get("actions") or [], {}, step.get("changes") or []))
+        step.get("output") or [], step.get("actions") or [], turns[step["turn"] - 1]["source"],
+        step.get("changes") or []))
 
 
 def _recorded_turn(recording, recorded, number):
@@ -448,7 +451,7 @@ async def judged_facts(hass, model, recording, view, steps, questions, goals, ve
         user = lambda n: recorded[n - 1]["messages"][0]["content"]
         heard = await check_facts(hass, model, [{"goal": str(n), **question_of(g, view, t, user(g["label"]), world)}
                                                 for n, (g, t) in enumerate(missing, 1)],
-                                  [_replayed_turn(said[t]) for t in sorted({t for _, t in missing})])
+                                  [_replayed_turn(said[t], recorded) for t in sorted({t for _, t in missing})])
         if heard["status"] != "completed":
             raise Unjudged("The replies couldn't be checked against what the user asked to know.")
         found = {}
@@ -467,15 +470,16 @@ def _judged_turns(steps, goal):
     return [s["turn"] for s in steps if not isinstance(goal.get("label"), int) or s["turn"] < goal["label"]]
 
 
-async def check_conduct(hass, entity_id, objections, steps):
+async def check_conduct(hass, entity_id, objections, steps, turns):
     """The small model's answers on whether replay turns show what the household objected to: {status, answers,
     error, usage}, completed only with an answer for each turn every objection lists. Without a model it can't say
-    (status not_run). objections: [{goal, quote, objected_to, judge: [turns]}]; steps: the replay's."""
+    (status not_run). objections: [{goal, quote, objected_to, judge: [turns]}]; steps: the replay's; turns: the
+    recording's."""
     from .reflective import run_role
     if not entity_id:
         return {"status": "not_run", "answers": [], "error": {"message": "No model to check with"}}
     record = await run_role(hass, role=CONDUCT_ROLE, entity_id=entity_id, instructions=CONDUCT_INSTRUCTIONS,
-                            payload={"objections": objections, "replay": [_replayed_turn(s) for s in steps]},
+                            payload={"objections": objections, "replay": [_replayed_turn(s, turns) for s in steps]},
                             structure=CONDUCT_STRUCTURE, allow_paid_inference=True)
     given = {(a.get("goal"), a.get("turn")): a for a in _well_formed(CONDUCT_STRUCTURE, record.get("output"))}
     asked = sorted((o["goal"], t) for o in objections for t in o["judge"])
@@ -510,7 +514,7 @@ async def judged(hass, model, recording, steps, goals, verdicts):
                   "objected_to": _recorded_turn(recording, recorded, g["about"])
                   if isinstance(g.get("about"), int) else "Assist in general"}
                  for n, (g, turns) in enumerate(missing, 1)]
-        heard = await check_conduct(hass, model, asked, steps)
+        heard = await check_conduct(hass, model, asked, steps, recorded)
         if heard["status"] != "completed":
             raise Unjudged("The replies couldn't be checked against what the household objected to.")
         found = {named[g["key"]]: [{k: a[k] for k in ("turn", "shows", "why")} for a in heard["answers"]

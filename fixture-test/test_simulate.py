@@ -367,7 +367,7 @@ def judging(*shows):
     it couldn't answer); what it was asked: (quotes, {turn: reply}) per call."""
     asked, answers = [], list(shows)
 
-    async def check(hass, entity_id, objections, steps):
+    async def check(hass, entity_id, objections, steps, turns):
         asked.append(([o["quote"] for o in objections], [s["reply"] for s in steps]))
         shown = answers.pop(0)
         if shown is None:
@@ -1339,7 +1339,7 @@ def judging_by(shows):
     """A stand-in judge answering by a rule: shows(turn, reply); what it was asked: each call's {goal: turns}."""
     asked = []
 
-    async def check(hass, entity_id, objections, steps):
+    async def check(hass, entity_id, objections, steps, turns):
         replies = {s["turn"]: s["reply"] for s in steps}
         asked.append({o["quote"]: o["judge"] for o in objections})
         return {"status": "completed", "usage": {}, "answers": [
@@ -1627,17 +1627,43 @@ def test_the_judge_hears_what_a_replays_sandbox_spoke_where_the_scripts_result_s
                     {"action": "tts.speak", "data": {"media_player_entity_id": players, "entity_id": ["tts.speech"],
                                                      "message": "Jordan and Riley, please come in."}, "under": 0}],
         "transitions": [], "changes": []}
-    turn = simulate._replayed_turn(step)
+    turn = simulate._replayed_turn(step, [{"source": {}}])
     assert turn[3] == {"assistant_replied": "Sent to the speakers."} and turn[4] == {"home_did": {"spoke": [
         {"message": "Jordan and Riley, please come in.", "on": sorted([*players, "tts.speech"])}], "called": [
         'script.announce_on_speakers {"message": "Jordan and Riley, please come in."}']}}  # It names no device.
     assert "what the home did" in simulate.CONDUCT_INSTRUCTIONS and "what the home did" in simulate.FACT_INSTRUCTIONS
-    assert simulate._replayed_turn({**step, "actions": []})[4:] == []  # Nothing done: no home_did to read.
+    assert simulate._replayed_turn({**step, "actions": []}, [{"source": {}}])[4:] == []  # Nothing done: none.
     home = SimpleNamespace(source={"states": {}, "entities": {}}, sources=[{"states": {}}], changes={},
                            calls={1: []}, actions={1: step["actions"]})
     come_in = {"turn": 1, "summary": "Come in", "kind": "action", "outcome": "announce", "entity_ids": players}
     assert measures.judge(measures.goals_of({"turns": 1, "goals": [come_in]}), home, [1], {})["goals"]["1:0"] == (
         "met")  # Spoken on both speakers, whatever the words.
+
+
+@pytest.mark.parametrize("satellite", ["idle", "unavailable"])
+def test_one_call_log_reads_the_same_recorded_and_replayed(satellite):
+    """DETAILS P9.10.5: a script announced dinner to the kitchen area. Read against the recorded turn's home, as
+    measures read it, the replay's call log says what the recorded one does: spoken on the kitchen's satellite, or,
+    with it unavailable as the turn began, on none, so the judge isn't shown what measures say didn't happen."""
+    sat = "assist_satellite.kitchen"
+    source = {"states": {sat: {"state": satellite, "attributes": {}}},
+              "entities": {sat: {"area_id": "kitchen", "device_id": "d1"}}, "devices": {"d1": {}},
+              "areas": {"kitchen": {}}}
+    actions = [{"action": "script.say_dinner", "data": {}},
+               {"action": "assist_satellite.announce", "data": {"area_id": "kitchen", "message": "Dinner"}, "under": 0}]
+    items = [{"role": "assistant", "tool_calls": [{"id": "s", "tool_name": "script__say_dinner", "tool_args": {}}]},
+             {"role": "tool_result", "tool_call_id": "s", "tool_name": "script__say_dinner", "result": {}},
+             {"role": "assistant", "content": "Done."}]
+    recorded = simulate._home_did(items, actions, source, [])
+    replayed = simulate._replayed_turn({"turn": 1, "input": "Say dinner", "output": items, "actions": actions,
+                                        "changes": []}, [{"source": source}])[4]["home_did"]
+    assert replayed == {k: v for k, v in recorded.items() if v}
+    assert recorded["spoke"] == ([{"message": "Dinner", "on": [sat]}] if satellite == "idle" else [
+        {"message": "Dinner", "on": []}])
+    view = SimpleNamespace(source=source, sources=[source], calls={1: []}, actions={1: actions}, changes={})
+    goal = {"turn": 1, "summary": "Dinner", "kind": "action", "outcome": "announce", "entity_ids": [sat]}
+    assert measures.judge(measures.goals_of({"turns": 1, "goals": [goal]}), view, [1], {})["goals"]["1:0"] == (
+        "met" if satellite == "idle" else "unmet")
 
 
 @pytest.mark.asyncio

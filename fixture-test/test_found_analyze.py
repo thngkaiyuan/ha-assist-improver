@@ -384,7 +384,7 @@ async def test_an_answer_the_judge_didnt_give_in_the_shape_asked_counts_as_none(
     async def conduct_role(hass, **kwargs):
         return {"status": "completed", "output": conduct, "usage": {}, "error": None}
     monkeypatch.setattr(reflective, "run_role", conduct_role)
-    assert (await simulate.check_conduct(None, "ai_task.judge", [objection], []))["status"] == "failed"
+    assert (await simulate.check_conduct(None, "ai_task.judge", [objection], [], []))["status"] == "failed"
 
 
 @pytest.mark.asyncio
