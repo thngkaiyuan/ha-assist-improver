@@ -86,23 +86,28 @@ class Actions:
 
 
 def _tool_error(content):
-    """The error an Assist tool call ended in, as Home Assistant's chat log keeps its result ({data, error}); None
-    for none."""
+    """The error an Assist tool call ended in, as Home Assistant's chat log keeps its result ({data, error}): its words
+    and the type of what was raised (None where the result doesn't name one); None for none."""
     result = content.get("result") if content.get("role") == "tool_result" else None
     if not isinstance(result, dict) or not result.get("error"):
         return None
     data = result.get("data") or {}
-    return data.get("error_text") or data.get("error") or "error"
+    raised = data.get("error") if isinstance(data.get("error"), str) else None
+    return data.get("error_text") or raised or "error", raised
 
 
 def acted(actions, content, since):
     """A turn's call log as Assist calls tools and one ends in an error: the action that failed is the last called
-    since its tools were called (inside a script, the script's own failing step; DETAILS P8.2.10). since: the log's
-    length when they were (None: none called yet); its new value."""
+    since its tools were called (inside a script, the script's own failing step; DETAILS P8.2.10), kept with the
+    error's words and type (error_type); none did when Home Assistant raised it before announcing any call
+    (happened.uncalled: data its schema refused, an unknown action). since: the log's length when they were (None:
+    none called yet); its new value."""
+    from .happened import uncalled
     if content.get("role") == "assistant" and content.get("tool_calls"):
         return len(actions)
     if (error := _tool_error(content)) and since is not None and len(actions) > since:
-        actions[-1] = {**actions[-1], "error": error}  # A new entry: a save may be copying the old one.
+        if not uncalled(error[1]):  # A new entry: a save may be copying the old one.
+            actions[-1] = {**actions[-1], "error": error[0], **({"error_type": error[1]} if error[1] else {})}
         return len(actions)
     return since
 

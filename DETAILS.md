@@ -974,11 +974,11 @@ Citations in parentheses name the maintainer's earlier notes, which aren't in th
     and listed after everything else, one line per entity. No state changes are recorded outside an open
     conversation. (INSTALL.md; fixture-test/SPEC.md; Kai, 2026-11-05: "give them a way to sift through the readings")
   - **P8.2.10** the action calls under the request: each call Home Assistant announces in the request's context chain
-    (an automation it set off included), inside the call it was made in, with a tool's error on the call that failed
-    (inside a script, the last call before the error). Not attributed to its call: a refusal inside a parallel or
-    continue_on_error step, and a call Home Assistant refuses before announcing it (an unknown action, invalid data),
-    whose error goes on the call before it. A call a device makes in the task handling a call (a light group's calls
-    to its lights) is kept as the request's own, not inside that call. (Kai, 2026-11-05)
+    (an automation it set off included), inside the call it was made in, with a tool's error and its type on the call
+    that failed (inside a script, the last call before the error). An error Home Assistant raised before announcing
+    any call (an unknown action, data its schema refused) goes on none. Not attributed to its call: a refusal inside a
+    parallel or continue_on_error step. A call a device makes in the task handling a call (a light group's calls to its
+    lights) is kept as the request's own, not inside that call. (Kai, 2026-11-05)
 - **P8.3** Gaps are explicit.
   - **P8.3.1** A recording that started mid-conversation says so. (fixture-test/SPEC.md)
   - **P8.3.2** A reply that relied on the provider's own history, which Home Assistant doesn't record, is marked for

@@ -219,6 +219,48 @@ async def test_a_scripts_failing_step_is_the_call_its_error_goes_on(listening, e
 
 
 @pytest.mark.asyncio
+async def test_an_error_home_assistant_raised_before_announcing_a_call_goes_on_no_call(listening, effect_guards):
+    """A script's second step whose data Home Assistant's schema refuses is never announced, so it's not in the call
+    log: its error goes on no call, not on the step before it, which ran (DETAILS P8.2.10). An error on a call keeps
+    its type, as the chat log names it."""
+    import probatio
+    from homeassistant.helpers.llm import ToolInput, ToolResult
+    from homeassistant.setup import async_setup_component
+    from custom_components.assist_improver.recorder import acted
+    hass = listening.hass
+    rang = []
+    hass.services.async_register("fixture", "press", lambda call: rang.append(call))
+    hass.services.async_register("fixture", "set_minutes", lambda call: None,
+                                 schema=probatio.Schema({"value": float}, extra=probatio.ALLOW_EXTRA))
+    assert await async_setup_component(hass, "script", {"script": {"dryer_done": {"sequence": [
+        {"action": "fixture.press", "data": {"entity_id": "button.chime"}},
+        {"action": "fixture.set_minutes", "data": {"value": "half an hour"}}]}}})
+    context = Context(user_id="alex")
+    said = ConversationInput(text="Ring the chime.", context=context, conversation_id="dryer", device_id="fixture-phone",
+                             satellite_id=None, language="en", agent_id="conversation.fixture")
+    with (async_get_chat_session(hass, "dryer", context=context) as session,
+          ha_chat_log.async_get_chat_log(hass, session, said) as log):
+        await log.async_provide_llm_data(said.as_llm_context("fixture"), "assist")
+        log.async_add_assistant_content_without_tools(AssistantContent(
+            agent_id="conversation.fixture", tool_calls=[ToolInput("script_dryer_done", {}, id="call-1", external=True)]))
+        with patch.object(ServiceRegistry, "async_call", _original_async_call()), pytest.raises(probatio.Invalid) as err:
+            await hass.services.async_call("script", "dryer_done", blocking=True, context=context)
+        log.async_add_assistant_content_without_tools(ToolResultContent(
+            agent_id="conversation.fixture", tool_call_id="call-1", tool_name="script_dryer_done",
+            result=ToolResult(data={"error": type(err.value).__name__, "error_text": str(err.value)}, error=True)))
+        log.async_add_assistant_content_without_tools(AssistantContent(agent_id="conversation.fixture",
+                                                                       content="It didn't work."))
+    await hass.async_block_till_done()
+    actions = (await listening.export(only_key(listening)))["turns"][0]["actions"]
+    assert rang and [(a["action"], a.get("error")) for a in actions] == [("script.dryer_done", None),
+                                                                        ("fixture.press", None)]
+    jammed = [{"action": "fixture.open", "data": {}}]
+    acted(jammed, {"role": "tool_result", "result": {"error": True, "data": {
+        "error": "HomeAssistantError", "error_text": "Jammed"}}}, 0)
+    assert jammed == [{"action": "fixture.open", "data": {}, "error": "Jammed", "error_type": "HomeAssistantError"}]
+
+
+@pytest.mark.asyncio
 async def test_a_turn_like_the_last_keeps_the_calls_its_tools_make_before_its_answer(listening, effect_guards):
     """Home Assistant gives a turn like the last one the same prompt and tools without telling the recorder, and an
     AI's tools run while its answer is still coming: a call made then is kept with its turn all the same, found by the

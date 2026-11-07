@@ -1,7 +1,7 @@
 """What happened in a turn, read the same way on both sides of a test (DETAILS P9.10.5): Assist's tool calls, each with
 Home Assistant's result (cases.calls_in), and the turn's call log, every action call under its request, a script's
-own included, each {action, data, error?} (recorder.Actions: kept in recordings since P8.2.10; a replay's sandbox
-keeps one too). A recording from before has none (None): what a script it ran did can't be told from it."""
+own included, each {action, data, error?, error_type?} (recorder.Actions: kept in recordings since P8.2.10; a replay's
+sandbox keeps one too). A recording from before has none (None): what a script it ran did can't be told from it."""
 
 import re
 
@@ -26,6 +26,23 @@ def carried(data):
     words = words or tts_message(media)
     media = media if isinstance(media, str) and media.strip() and tts_message(media) is None else None
     return {"message": words or "", "media": media} if words or media else None
+
+
+def _raised(name):
+    """The exception class Home Assistant raises by this name: its own (homeassistant.exceptions) or its schemas'
+    (probatio); None for another's (an integration's own) or none."""
+    import probatio
+    from homeassistant import exceptions
+    found = getattr(exceptions, name, None) or getattr(probatio, name, None) if name else None
+    return found if isinstance(found, type) and issubclass(found, Exception) else None
+
+
+def uncalled(error_type):
+    """Whether Home Assistant raised an error before announcing any call, so it's no logged call's: its schema refused
+    the data (probatio.Invalid), or it has no such action (ServiceNotFound)."""
+    import probatio
+    from homeassistant.exceptions import ServiceNotFound
+    return issubclass(_raised(error_type) or Exception, (probatio.Invalid, ServiceNotFound))
 
 
 def _ids(value):
