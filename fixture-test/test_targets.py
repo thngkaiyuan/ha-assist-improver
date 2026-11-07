@@ -220,6 +220,31 @@ def test_a_setting_is_the_attribute_its_device_reports_whatever_its_field_or_pro
     assert analyzer.reached(view, goal(remote, "on", activity="Watch TV")) is True
 
 
+def test_the_before_compares_a_setting_as_its_device_shows_it_whatever_the_field_that_set_it_is_called():
+    """DETAILS P6.6.1: the settings the recorded Assist's calls set are compared with a replay's devices by the
+    attribute each shows them as: a cover's position as current_position, a remote's activity as current_activity. A
+    replay that leaves them as the calls asked goes as it went; one that leaves them otherwise doesn't."""
+    from homeassistant.components.cover import CoverEntityFeature
+    from homeassistant.components.remote import RemoteEntityFeature
+    from custom_components.assist_improver.simulation import assist_settings, same_settings
+    blind, remote = "cover.garden_blind", "remote.living_room"
+    source = {"states": {
+        blind: {"state": "open", "attributes": {"current_position": 100,
+                                                "supported_features": CoverEntityFeature.SET_POSITION}},
+        remote: {"state": "on", "attributes": {"current_activity": "Music", "activity_list": ["Music", "Watch TV"],
+                                               "supported_features": RemoteEntityFeature.ACTIVITY}}}}
+    turn = {"number": 1, "source": source, "actions": [
+        {"action": "cover.set_cover_position", "data": {"entity_id": blind, "position": 50}},
+        {"action": "remote.turn_on", "data": {"entity_id": remote, "activity": "Watch TV"}}]}
+    asked = assist_settings({"turns": [turn]}, turn)
+    assert asked == {blind: {"current_position": 50}, remote: {"current_activity": "Watch TV"}}
+    for entity, name, as_asked, otherwise in ((blind, "current_position", 50, 20),
+                                              (remote, "current_activity", "Watch TV", "Music")):
+        domain, shows = entity.split(".", 1)[0], source["states"][entity]["attributes"]
+        for left, same in ((as_asked, True), (otherwise, False)):
+            assert same_settings(domain, asked[entity], {**shows, name: left}, targets.shown(source, entity)) is same
+
+
 def test_valid_states_and_settings_come_from_home_assistant_not_a_copy_of_its_lists():
     for name in ("STATES", "OPTION_ATTRIBUTES", "allowed_states", "BRIGHTNESS_TOLERANCE"):
         assert not hasattr(analyzer, name), name

@@ -11,7 +11,7 @@ from . import touchpoints
 from .cases import CaseError, calls_in
 from .digest import kept, machinery
 from .happened import at_home
-from .standin import MOVERS, UNDERWAY
+from .standin import MOVERS, UNDERWAY, attribute_of
 
 
 class UnsupportedSimulation(CaseError):
@@ -154,10 +154,11 @@ def follow_ons(turn):
 
 def assist_settings(recording, turn):
     """What the recorded Assist set on devices' settings in one turn, as a replay's are compared with it (DETAILS
-    P6.6.1): {entity: {setting: value}}, as the turn's call log asked it (each call that didn't fail, on the entities it
-    names but a device's own follow-ons, its fields that name a setting: targets.known), else, in a recording from
-    before one was kept, each setting the request's own changes moved, as they left it. What a device reports beyond
-    what it was asked (the track a playlist it was asked to play is on) isn't Assist's doing."""
+    P6.6.1): {entity: {setting: value}}, each setting named as its device shows it (targets.target: a cover's position
+    as current_position), as the turn's call log asked it (each call that didn't fail, on the entities it names but a
+    device's own follow-ons, its fields that name a setting: targets.known), else, in a recording from before one was
+    kept, each setting the request's own changes moved, as they left it. What a device reports beyond what it was
+    asked (the track a playlist it was asked to play is on) isn't Assist's doing."""
     from . import happened, targets
     follow, out = follow_ons(turn), {}
     if "actions" in ((recording.get("turns") or [])[turn["number"] - 1:turn["number"]] or [{}])[0]:
@@ -166,7 +167,8 @@ def assist_settings(recording, turn):
             for entity in set() if action.get("error") else happened.named(action["action"], data, turn["source"]):
                 domain = entity.split(".", 1)[0]
                 if entity not in follow:
-                    out.setdefault(entity, {}).update({k: v for k, v in data.items() if targets.known(domain, k)})
+                    out.setdefault(entity, {}).update({attribute_of(domain, k): v for k, v in data.items()
+                                                       if targets.known(domain, k)})
     else:
         for change in _request_changes(recording, turn):
             entity, old = change["entity_id"], change["old"].get("attributes") or {}
