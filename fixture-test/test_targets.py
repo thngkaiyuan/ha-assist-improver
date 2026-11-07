@@ -10,7 +10,8 @@ LAMP_SHOWS = {"friendly_name": "Desk lamp", "supported_color_modes": ["hs", "col
               "color_temp_kelvin": 2700, "brightness": 77, "min_color_temp_kelvin": 2000,
               "max_color_temp_kelvin": 6500}
 THERMOSTAT_SHOWS = {"friendly_name": "Hallway", "hvac_modes": ["off", "heat"], "min_temp": 7, "max_temp": 35,
-                    "temperature": 18, "fan_modes": ["auto", "low"], "fan_mode": "auto"}
+                    "temperature": 18, "fan_modes": ["auto", "low"], "fan_mode": "auto",
+                    "supported_features": 9}  # ClimateEntityFeature: a target temperature, a fan mode.
 
 
 def home(*changes, lamp="on"):
@@ -104,6 +105,34 @@ def test_a_state_or_setting_the_device_cant_have_is_refused_with_the_ones_it_can
     assert asking(goal(LAMP, "on", brightness_pct=150))[0].endswith("brightness_pct can't be 150; it takes 0 to 100.")
     assert "has no setting 'transition'" in asking(goal(LAMP, "on", transition=2))[0]  # A field, but no attribute.
     assert asking(goal(LAMP, "on", rgb_color=[255, 0, 0], brightness_pct=40)) == []
+
+
+def test_a_setting_the_device_cant_take_is_refused_as_its_services_describe_it():
+    """A setting is one the entity takes: a field of its domain's services whose filters it passes, as Home Assistant's
+    services.yaml gives them (its supported features, a light's colour modes). A light that only switches takes no
+    brightness, which Home Assistant itself drops for it; a radiator with a target temperature alone takes no fan mode
+    or range."""
+    porch, blind, radiator = "light.porch", "cover.study_blind", "climate.radiator"
+    states = {porch: {"state": "off", "attributes": {"supported_color_modes": ["onoff"]}},
+              "light.hall": {"state": "off", "attributes": {"supported_color_modes": ["brightness"]}},
+              "light.bulb": {"state": "on", "attributes": {"supported_color_modes": ["color_temp", "white"],
+                                                           "color_mode": "white", "brightness": 200}},
+              blind: {"state": "open", "attributes": {"supported_features": 3}},  # Open and close, no position.
+              radiator: {"state": "heat", "attributes": {"hvac_modes": ["off", "heat"], "supported_features": 1}}}
+    view = SimpleNamespace(source={"states": states}, changes={}, digest={"turns": [{"turn": 1, "user_says": "x"}]},
+                           _entities=lambda: list(states))
+    asking = lambda g: analyzer.problems(view, {"goals": [g], "not_requests": [], "question_for_user": ""})  # noqa: E731
+    assert asking(goal(porch, "on", brightness_pct=50)) == [
+        "Goal 1 (turn 1): light.porch has no setting 'brightness_pct'; its settings are none."]
+    assert "has no setting 'rgb_color'" in asking(goal("light.hall", "on", rgb_color=[255, 0, 0]))[0]
+    assert asking(goal("light.hall", "on", brightness_pct=50)) == []
+    assert "has no setting 'position'" in asking(goal(blind, "open", position=50))[0]
+    assert "has no setting 'fan_mode'" in asking(goal(radiator, "heat", fan_mode="high"))[0]
+    assert "has no setting 'target_temp_low'" in asking(goal(radiator, "heat", target_temp_low=18))[0]
+    assert asking(goal(radiator, "heat", temperature=21)) == []
+    assert asking(goal("light.bulb", "on", white=True)) == []  # Its white channel: white, as it shows.
+    assert analyzer.reached(view, goal("light.bulb", "on", white=True)) is True
+    assert analyzer.reached(view, goal("light.bulb", "on", color_name="white")) is True
 
 
 def test_valid_states_and_settings_come_from_home_assistant_not_a_copy_of_its_lists():

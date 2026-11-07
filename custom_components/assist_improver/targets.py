@@ -1,14 +1,15 @@
 """A state goal's target State (DETAILS P9.7.1): a state plus any settable attribute, and whether a device holds it.
 
 A settable attribute is one a field of one of its domain's services sets, as Home Assistant describes them (the
-domain's services.yaml), mapped to the attribute through the stand-in's table (standin.attribute_of). Valid values are
-Home Assistant's: for the state, the entity's own options where it lists them (a thermostat's modes, a select's
-options), else its domain's enum (CoverState and the like; on and off for a toggle); for an attribute, its options and
-range as the entity shows them (its capability attributes), else as the field's selector gives them. One setting may
-be given in any of its representations, compared by Home Assistant's own conversions (homeassistant.util.color): a
-colour as hs, rgb, xy, rgbw, rgbww, a name or a colour temperature; a brightness as brightness or brightness_pct.
-Numbers match within TOLERANCE of the setting's range (as the entity shows it, else as the field's selector gives it),
-else of the value asked for, or within the step the entity shows for it where that's coarser (a three-speed fan's). A
+domain's services.yaml), mapped to the attribute through the stand-in's table (standin.attribute_of); an entity takes it
+when it passes that field's filters (its supported features, a light's colour modes). Valid values are Home
+Assistant's: for the state, the entity's own options where it lists them (a thermostat's modes, a select's options),
+else its domain's enum (CoverState and the like; on and off for a toggle); for an attribute, its options and range as
+the entity shows them (its capability attributes), else as the field's selector gives them. One setting may be given
+in any of its representations, compared by Home Assistant's own conversions (homeassistant.util.color): a colour as
+hs, rgb, xy, rgbw, rgbww, a name, a colour temperature or white; a brightness as brightness or brightness_pct. Numbers
+match within TOLERANCE of the setting's range (as the entity shows it, else as the field's selector gives it), else of
+the value asked for, or within the step the entity shows for it where that's coarser (a three-speed fan's). A
 temperature is the entity's own unit, as it shows it.
 """
 
@@ -29,9 +30,9 @@ BRIGHTNESS = ("brightness", "brightness_pct")  # One setting: 0 to 255, or a per
 
 
 @functools.cache
-def _services(domain):
-    """{service: {field: spec}} as Home Assistant describes a domain's services (its services.yaml), a section's fields
-    listed with the others; {} for a domain it doesn't describe."""
+def _described(domain):
+    """{service: (its target's entity filter, {field: spec})} as Home Assistant describes a domain's services (its
+    services.yaml), a section's fields listed with the others; {} for a domain it doesn't describe."""
     try:
         from homeassistant.util.yaml import load_yaml_dict
         module = importlib.import_module(f"homeassistant.components.{domain}")
@@ -45,8 +46,49 @@ def _services(domain):
         fields = {}
         for name, spec in (described.get("fields") or {}).items():
             fields.update((spec.get("fields") or {}) if "fields" in (spec or {}) else {name: spec or {}})
-        out[service] = fields
+        entity = ((described.get("target") or {}).get("entity") or {})
+        entity = entity[0] if isinstance(entity, list) and entity else entity
+        out[service] = ({"supported_features": entity["supported_features"]} if isinstance(entity, dict)
+                        and entity.get("supported_features") else {}, fields)
     return out
+
+
+def _services(domain):
+    """{service: {field: spec}} (_described)."""
+    return {service: fields for service, (_, fields) in _described(domain).items()}
+
+
+def _flag(text):
+    """A filter's value as Home Assistant's services.yaml names it, <domain>.<enum>.<member>: the member's value."""
+    domain, enum, member = text.split(".", 2)
+    return getattr(getattr(importlib.import_module(f"homeassistant.components.{domain}"), enum), member).value
+
+
+def _passes(given, found):
+    """Whether an entity, as it shows itself (shown), passes a services.yaml filter, as Home Assistant's selectors read
+    one: one of its supported_features (a list among them: all of those), and for each attribute it names (a light's
+    supported_color_modes), one of the values it lists."""
+    have = found.get("supported_features") or 0
+    if (features := given.get("supported_features")) and not any(
+            all(have & _flag(f) for f in (one if isinstance(one, list) else [one])) for one in features):
+        return False
+    for attribute, values in (given.get("attribute") or {}).items():
+        shows = found.get(attribute)
+        if not {_flag(v) for v in values} & set(shows if isinstance(shows, list) else [shows]):
+            return False
+    return True
+
+
+def takes(found, domain, name):
+    """Whether an entity, as it shows itself (shown), takes a setting: a field of one of its domain's services that
+    sets it (one of its name, else one setting the attribute it names), whose service's target and own filter the
+    entity passes (_passes: a position only for a cover that can be set to one, a brightness only for a light that
+    dims)."""
+    named = [(target, spec) for target, fields in _described(domain).values() for field, spec in fields.items()
+             if field == name]
+    named = named or [(target, spec) for target, fields in _described(domain).values()
+                      for field, spec in fields.items() if attribute_of(domain, field) == attribute_of(domain, name)]
+    return any(_passes(target, found) and _passes(spec.get("filter") or {}, found) for target, spec in named)
 
 
 def _sets_state(spec):
@@ -199,6 +241,8 @@ def _hs(name, value, found):
             return color_util.color_RGB_to_hs(*color_util.color_name_to_rgb(value))
         if name == "color_temp_kelvin":
             return color_util.color_temperature_to_hs(value)
+        if name == "white":  # A light's white channel (its colour mode white): white.
+            return 0.0, 0.0
     except (TypeError, ValueError):
         return None
     return None
@@ -219,6 +263,8 @@ def _colour(attributes):
     """The colour a light shows: (attribute, value) of its colour mode, else the first colour it shows."""
     modes = {mode: name for name, mode in colour_modes().items()}
     name = modes.get(attributes.get("color_mode"))
+    if name == "white":  # White, which it shows no colour attribute for.
+        return name, True
     if name is None or attributes.get(name) is None:
         name = next((n for n in colour_modes() if attributes.get(n) is not None), None)
     return (name, attributes[name]) if name else (None, None)
@@ -271,16 +317,17 @@ def moved(domain, was, left, now, found=None):
 
 def problems(source, entity_id, state, asked):
     """What's wrong with a target for this entity (asked: its settings as a goal names them): a state it can't be in,
-    a setting its domain's services don't set, a value outside the options or range it shows. Empty when it can hold
-    it."""
+    a setting none of its domain's services sets on it (takes: a brightness on a light that doesn't dim), a value
+    outside the options or range it shows. Empty when it can hold it."""
     domain, found, out = entity_id.split(".", 1)[0], shown(source, entity_id), []
     allowed = states(source, entity_id)
     if state is not None and allowed is not None and state not in allowed:
         out.append(f"{entity_id} has no state {state!r}; its states are {', '.join(sorted(allowed))}.")
     known = settable(domain)
     for name, value in asked.items():
-        if not _known(domain, name):
-            out.append(f"{entity_id} has no setting {name!r}; its settings are {', '.join(sorted(known)) or 'none'}.")
+        if not (_known(domain, name) and takes(found, domain, name)):
+            can = sorted(a for a in known if takes(found, domain, a))
+            out.append(f"{entity_id} has no setting {name!r}; its settings are {', '.join(can) or 'none'}.")
             continue
         held_as = attribute_of(domain, name)
         listed = _options(held_as, found) or next((s.get("options") for s in ((known.get(held_as) or {}).get(
