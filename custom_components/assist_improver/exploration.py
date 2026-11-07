@@ -17,6 +17,7 @@ from homeassistant.helpers import llm
 from homeassistant.loader import IntegrationNotLoaded, async_get_loaded_integration
 from homeassistant.util import dt as dt_util
 
+from . import happened
 from .actions import catalogue, controls, find_actions, operations
 from .cases import calls_in, recording_turns
 from .digest import (_clip, _naming, _text, async_time_zone, build_digest, device_of, entity_card, filled, labelled,
@@ -306,44 +307,22 @@ class SessionView:
         return sorted({n for n in names if n})
 
     def conversation(self):
-        """What the user and the assistant said in each turn, and what Assist's calls acted on (as HA's responses
-        say), without the full tool calls, results or state changes."""
-        acted = self.acted_on()
+        """What the user and the assistant said in each turn, and each of Assist's tool calls with Home Assistant's
+        result, clipped (read_turn has them whole, with the turn's call log and state changes)."""
         return [{"turn": t["turn"], "at": t["at"], "user_says": t["user_says"],
                  "assistant_says": " ".join(s["assistant_says"] for s in t["assistant"] if s.get("assistant_says")),
-                 **({"assist_acted_on": acted[t["turn"]]} if acted.get(t["turn"]) else {})}
+                 **({"assist_called": [{"call": c["tool"], "args": c["args"], "result": _clip(_text(c["result"]), 200)}
+                                       for c in calls]} if (calls := self.calls.get(t["turn"])) else {})}
                 for t in self.digest["turns"]]
 
     def devices_touched(self):
-        """The devices this session touched: those Assist acted on or failed on, and those that changed."""
-        found = {a.rsplit("(", 1)[1].rstrip(")") for calls in self.acted_on().values() for call in calls
-                 for a in call.get("acted_on", []) + call.get("failed_on", []) if "(" in a}
+        """The devices this session touched: those its calls were at (happened.touched: its tool calls' results and
+        its call log), and those that changed."""
+        homes = self.sources or [self.source]
+        found = set().union(*(happened.touched(calls, self.actions.get(n), homes[min(n, len(homes)) - 1])
+                              for n, calls in self.calls.items()))
         return found | {c["entity_id"] for t in self.digest["turns"]
                         for c in self.read_turn(t["turn"])["state_changes_during_turn"]}
-
-    def acted_on(self):
-        """{turn: [each of Assist's calls that acted on something: the call, and the devices HA's response says
-        it acted on or failed on, or the error it returned]}. Calls that only read (live context) are left out."""
-        out = {}
-        for turn in self.turns:
-            calls = {c["id"]: c for m in turn["messages"] if m["role"] == "assistant" for c in m.get("tool_calls") or []}
-            for message in turn["messages"]:
-                if message["role"] != "tool_result" or not isinstance(message.get("result"), dict):
-                    continue
-                result, name = message["result"], message.get("tool_name")
-                data = result.get("data") if isinstance(result.get("data"), dict) else {}
-                inner = data.get("data") if isinstance(data.get("data"), dict) else {}
-                entry = {"call": name, "args": (calls.get(message.get("tool_call_id")) or {}).get("tool_args", {})}
-                if inner.get("success") or inner.get("failed"):
-                    for key, label in (("success", "acted_on"), ("failed", "failed_on")):
-                        if inner.get(key):
-                            entry[label] = [f"{t.get('name')} ({t.get('id')})" for t in inner[key]]
-                elif result.get("error") or data.get("error"):
-                    entry["error"] = _clip(_text(data.get("error") or data.get("error_text") or result.get("error")), 200)
-                else:
-                    continue
-                out.setdefault(turn["number"], []).append(entry)
-        return out
 
     def read_turn(self, turn):
         found = next((t for t in self.digest["turns"] if t["turn"] == turn), None)

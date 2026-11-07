@@ -10,6 +10,8 @@ reviewer: code records it as a session without friction, with no goals extracted
 
 import probatio
 
+from . import happened
+
 ROLE = "triage"
 INSTRUCTIONS = """You check one recorded conversation between a household and its Home Assistant voice assistant ("Assist"), to decide whether it needs a closer look. Answer smooth only if every request was fulfilled smoothly: in each turn, Assist did what the user asked, in the turn they asked it, on the devices they meant, with the settings they asked for. A later turn is often the sign: the user repeating, correcting or answering a question. A later turn is smooth only when it's a new request, made after the earlier ones were done as asked. It is not smooth when the user corrects, repeats, rephrases or clarifies a request; when Assist asks the user anything they then have to answer (even a fair question: answering it is an extra turn), refuses, fails, or says it can't; when Assist acts on a device the user didn't mean, or sets settings the user left open (guessing a level, mode or colour); when someone changes the same device soon after Assist did; when the user complains or comments on how Assist behaved (it was careless, too wordy, its tone, "next time do X"), even after it did what they asked; or when you can't tell. You get what Assist had: its instructions (which say who is speaking and list the household's devices, with their names and areas; given in full once, then only the lines that changed in a later turn), each of its tool calls with Home Assistant's result, then what changed in the home and the devices involved: their names, areas, aliases, states and registry entries. Judge which device the user meant from the household's own names, areas and aliases, as the speaker would (their own room or device is the one named for them). Say sure only when the conversation leaves no doubt. A wrong "smooth" hides a problem, so when in doubt answer not smooth. Give a one-sentence reason."""
 STRUCTURE = probatio.Schema({probatio.Required("smooth"): bool, probatio.Required("sure"): bool,
@@ -42,8 +44,9 @@ def payload(view):
                             **({"attributes_changed": c["attributes_changed"]} if c.get("attributes_changed") else {}),
                             **({"seconds_after_assistant_reply": c["seconds_after_assistant_reply"]}
                                if c.get("seconds_after_assistant_reply") else {})})
-        involved |= {a.rsplit("(", 1)[1].rstrip(")") for call in line.get("assist_acted_on", [])
-                     for a in call.get("acted_on", []) + call.get("failed_on", []) if "(" in a}
+        homes = view.sources or [view.source]
+        involved |= happened.touched(view.calls.get(line["turn"]) or [], view.actions.get(line["turn"]),
+                                     homes[min(line["turn"], len(homes)) - 1])
         system = next((m["content"] for m in turn.get("history") or [] if m["role"] == "system"), None)
         turns.append({"turn": line["turn"], "at": line["at"], **_instructions(previous, system),
                       "user_says": line["user_says"], "steps": steps, "home_changes": changes})

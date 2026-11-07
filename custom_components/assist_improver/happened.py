@@ -36,11 +36,13 @@ def _ids(value):
 
 
 def named(action, data, source):
-    """The entities a call is for (source: the home as recorded): those its data names (entity_id, or a field ending
-    in _entity_id: tts.speak's media players), and its domain's entities on the devices, areas, floors and labels it
-    names, as Home Assistant resolves a call's target."""
+    """The entities a call is for (source: the home as recorded): the one its action is named after (a script's own
+    action), those its data names (entity_id, or a field ending in _entity_id: tts.speak's media players), and its
+    domain's entities on the devices, areas, floors and labels it names, as Home Assistant resolves a call's target."""
     domain, entities = action.split(".", 1)[0], source.get("entities") or {}
     out = {e for k, v in data.items() if k == "entity_id" or k.endswith("_entity_id") for e in _ids(v)}
+    if action in entities or action in (source.get("states") or {}):
+        out.add(action)
     if "all" in out:
         out |= {e for e in source.get("states") or {} if e.split(".", 1)[0] == domain}
     devices, labels = set(_ids(data.get("device_id"))), set(_ids(data.get("label_id")))
@@ -57,14 +59,17 @@ def named(action, data, source):
     return out - {"all"}
 
 
-def succeeded(call):
-    """The entities a tool call's result says it acted on (an intent's success targets); none for a failed call."""
+def _results(call, *keys):
+    """The entities a tool call's result names under these keys (an intent's success or failed targets)."""
     result = call.get("result") if isinstance(call.get("result"), dict) else {}
     data = result.get("data") if isinstance(result.get("data"), dict) else {}
     inner = data.get("data") if isinstance(data.get("data"), dict) else {}
-    if result.get("error"):
-        return set()
-    return {t.get("id") for t in inner.get("success") or [] if isinstance(t, dict) and t.get("id")}
+    return {t.get("id") for k in keys for t in inner.get(k) or [] if isinstance(t, dict) and t.get("id")}
+
+
+def succeeded(call):
+    """The entities a tool call's result says it acted on (an intent's success targets); none for a failed call."""
+    return set() if (call.get("result") or {}).get("error") else _results(call, "success")
 
 
 def announcements(calls, actions, source):
@@ -81,6 +86,13 @@ def reached(calls, actions, source):
     that didn't fail is for."""
     out = set().union(*(succeeded(c) for c in calls))
     return out.union(*(named(a["action"], a.get("data") or {}, source) for a in actions or [] if not a.get("error")))
+
+
+def touched(calls, actions, source):
+    """The entities a turn's calls were at, done or not: those its tool calls' results name (acted on or failed on),
+    and those each call of its call log is for."""
+    out = set().union(*(_results(c, "success", "failed") for c in calls))
+    return out.union(*(named(a["action"], a.get("data") or {}, source) for a in actions or []))
 
 
 def ran_scripts(calls):

@@ -27,6 +27,27 @@ def test_overview_starts_with_turn_one_rooms_and_tools():
     assert "capabilities" not in json.dumps(overview)  # The big device list is fetched on demand, not sent.
 
 
+def test_the_overview_lists_each_tool_call_with_its_result_and_the_devices_touched_come_from_one_record():
+    """DETAILS P9.10.5: what happened is one record, read the same way everywhere: the overview gives each of
+    Assist's tool calls with Home Assistant's result, clipped, never a reading of its own of what an intent's response
+    acted on; the devices a session touched are those its calls were at (their results, acted on or failed on, and
+    the turn's call log, a script's own calls in it) and those that changed."""
+    record = make_recording()
+    view = SessionView(record)
+    first = view.overview()["conversation"][0]
+    [call] = first["assist_called"]
+    assert call["call"] == view.calls[1][0]["tool"] and call["args"] == view.calls[1][0]["args"]
+    assert call["result"] == json.dumps(view.calls[1][0]["result"], ensure_ascii=False, default=str)[:200] + (
+        call["result"][200:])  # Clipped, past 200 characters, with how much it left out.
+    assert "assist_acted_on" not in json.dumps(view.overview())
+    assert not hasattr(view, "acted_on")
+    assert view.devices_touched() == {TARGET}
+    record["turns"][0]["actions"] = [{"action": SCRIPT, "data": {}}, {  # The script's own action, and its call.
+        "action": "tts.speak", "data": {"entity_id": ["tts.fixture_engine"], "media_player_entity_id": "media_player.x",
+                                        "message": "Dinner"}, "under": 0}]
+    assert SessionView(record).devices_touched() == {TARGET, SCRIPT, "tts.fixture_engine", "media_player.x"}
+
+
 def test_turns_carry_their_own_state_changes():
     view = SessionView(make_recording())
     changes = [c for t in view.digest["turns"] for c in view.read_turn(t["turn"])["state_changes_during_turn"]]

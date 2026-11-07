@@ -129,8 +129,8 @@ def scenario(analysis, view):
         device = (view.source.get("devices", {}).get(heard or "") or {}) if heard else {}
         if device:
             turn["heard_by"] = device.get("name_by_user") or device.get("name")
-        if line.get("assist_acted_on"):
-            turn["assist_acted_on"] = line["assist_acted_on"]
+        if line.get("assist_called"):
+            turn["assist_called"] = line["assist_called"]
         # Every field the goal has; its turn is the line's, and what the home couldn't do and why it's unmet in words.
         started = [{**{k: v for k, v in g.items() if k not in ("turn", "answered", "home_couldnt")},
                     **({"home_couldnt": HOME_COULDNT[couldnt(g["home_couldnt"])]} if g.get("home_couldnt") else {}),
