@@ -491,7 +491,8 @@ def problems(view, answer, note=None, existing=(), revisions=()):
             found.append(f"{where}: a {kind} goal needs entity_id.")
         elif entity not in known:
             found.append(f"{where}: there is no device {entity!r} in this household; find_devices finds every entity ID.")
-        elif standin.trigger_only(entity.split(".", 1)[0]):
+        elif standin.trigger_only(entity.split(".", 1)[0]) and (
+                kind == "state" or targets.states(view.source, entity) is None):  # A script's run: on, then off.
             found.append(f"{where}: {entity} keeps no state to reach: pressing or running it is an action goal with "
                          "outcome command; a scene asked for is its devices' states.")
         else:

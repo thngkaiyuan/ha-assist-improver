@@ -1329,9 +1329,10 @@ Citations in parentheses name the maintainer's earlier notes, which aren't in th
     what it does and the devices it's for, whatever the words. An announcement is speech or audio on devices; a command
     is a device told to do something it keeps no state of (a button pressed, an integration's own action). A button, a
     scene or a script keeps no state to reach, only when it was last used: a scene asked for is its devices' target
-    States (P9.7.1). Any call that does it reaches it. (Kai, 2026-10-29; Kai, 2026-10-30: "the outcome to measure here
-    is whether or not the assistant was able to trigger a broadcast with words/audio of its choice ... not the content
-    of those which really depends on the intelligence of the assistant model")
+    States (P9.7.1), and a script's run (on, then off) may be a sequence (P9.7.5). Any call that does it reaches it.
+    (Kai, 2026-10-29; Kai, 2026-10-30: "the outcome to measure here is whether or not the assistant was able to trigger
+    a broadcast with words/audio of its choice ... not the content of those which really depends on the intelligence of
+    the assistant model")
 - **P9.8 Not requests.** A turn that isn't a request to Assist (a speech test, a misfire such as silence heard as a
   request, small talk) is never trouble: it's no extra turn, and no device or preference fix is invented for it.
   (Kai, 2026-10-22: "a speech test, not a real request"; PRODUCT-SPEC.md; LABELS.md)

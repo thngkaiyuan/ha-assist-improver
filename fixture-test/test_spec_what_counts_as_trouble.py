@@ -27,7 +27,7 @@ from ha_task import use
 from recordings import PROFILE, before
 from test_conversations import ask
 from kit import GOALS, improver  # noqa: F401 - improver is a fixture.
-from custom_components.assist_improver import analyzer, panel
+from custom_components.assist_improver import analyzer, measures, panel
 from custom_components.assist_improver.hypotheses import friction_by_goal, scenario
 from custom_components.assist_improver.improvements import row
 
@@ -751,6 +751,27 @@ def test_a_button_press_is_an_action_met_when_the_call_reached_it_and_never_a_st
     assert analyzer.problems(view_of(record), {"goals": [as_state], "not_requests": [], "question_for_user": ""}) == [
         f"Goal 1 (turn 1): {GATE} keeps no state to reach: pressing or running it is an action goal with outcome "
         "command; a scene asked for is its devices' states."]
+
+
+def test_a_scripts_run_may_be_a_sequence_goal_as_presses_standing_for_a_motion():
+    """DETAILS P9.7.5, P9.7.6: a script that presses a door's relay runs on, then off; a sequence goal on it (the
+    presses standing for a motion nobody can check) is accepted and met by that run, as the analysis judges it. A state
+    goal on it, or a sequence on a button, whose state is only when it was last pressed, is refused."""
+    script, button = "script.door_press", "button.chime"
+    source = {"states": {script: {"state": "off", "attributes": {}}, button: {"state": "unknown", "attributes": {}}},
+              "entities": {script: {}, button: {}}}
+    changes = {script: [
+        {"at": "2026-01-01T00:00:01+00:00", "during_turn": 1, "old": "off", "new": "on", "by": "assistant"},
+        {"at": "2026-01-01T00:00:02+00:00", "during_turn": 1, "old": "on", "new": "off", "by": "assistant"}]}
+    view = SimpleNamespace(source=source, sources=[source], calls={1: []}, actions={1: None}, changes=changes,
+                           digest={"turns": [{"turn": 1, "user_says": "Open the door"}]}, notes={},
+                           _entities=lambda: [script, button])
+    run = {"turn": 1, "summary": "Open the door", "kind": "sequence", "entity_id": script, "states": ["on", "off"]}
+    asking = lambda g: analyzer.problems(view, {"goals": [g], "not_requests": [], "question_for_user": ""})  # noqa: E731
+    assert asking(run) == [] and measures.judge(measures.goals_of({"turns": 1, "goals": [run]}), view, [1])[
+        "goals"]["1:0"] == "met"
+    for refused in ({**run, "kind": "state", "state": "on"}, {**run, "entity_id": button}):
+        assert [p for p in asking(refused) if "keeps no state to reach" in p], refused
 
 
 def test_asking_again_for_a_message_already_spoken_isnt_a_step_towards_it():
