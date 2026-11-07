@@ -31,8 +31,8 @@ from homeassistant.core import Context
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import llm
 
-from . import happened
-from .analyzer import top_level
+from . import happened, targets
+from .analyzer import done, reached, top_level
 from .cases import CaseError, recording_turns, replayable_turns
 from .changes import RESOLVING, changed, setup_from_changes
 from .failures import contained
@@ -59,19 +59,30 @@ SIGNALS_NOTE = ("Each is a recorded tool call that Home Assistant resolves diffe
 
 
 def goal_targets(analysis, turn):
-    """The device states a goal wants: its state and sequence goals, and what the user chose for settings they
-    left open."""
-    targets = []
+    """What the goals asked for at a turn want, each as the implementation check compares it (run_scripts) by the
+    analysis's own readers (analyzer.reached and done): a state goal's target State (targets.target: its state and
+    each setting asked for), a sequence goal's states, an action's outcome and devices, and what the user chose for
+    settings they left open."""
+    out = []
     for g in top_level(analysis.get("goals", [])):
         if g["turn"] != turn:
             continue
         if g["kind"] == "state":
-            targets.append({"entity_id": g["entity_id"], "state": g["state"]})
+            out.append(_target(g))
         elif g["kind"] == "sequence":
-            targets.append({"entity_id": g["entity_id"], "states": g["states"]})
+            out.append({"kind": "sequence", "entity_id": g["entity_id"], "states": g["states"]})
+        elif g["kind"] == "action":
+            out.append({"kind": "action", "outcome": g.get("outcome"), "entity_ids": g.get("entity_ids") or []})
         elif g["kind"] == "ask":
-            targets += [{"entity_id": c["entity_id"], "state": c["state"]} for c in g.get("user_chose", [])]
-    return targets
+            out += [_target(c) for c in g.get("user_chose", [])]
+    return out
+
+
+def _target(goal):
+    """A device's target State, as a state goal names it (targets.target)."""
+    state, settings = targets.target(goal)
+    return {"kind": "state", "entity_id": goal["entity_id"], "state": state,
+            **({"attributes": settings} if settings else {})}
 
 
 def _context(turn):
@@ -303,7 +314,7 @@ class Evidence:
 
     async def _run_scripts(self, recording, turn, setup, scripts, targets):
         return await job("run_scripts", recording=recording, turn=turn, today=self.today, setup=setup,
-                         scripts=scripts, targets=targets)
+                         scripts=scripts, goals=targets)
 
     async def _try_scripts(self, recording, turn, setup, scripts, targets, goal):
         """Each script alone from the goal's starting state; if none reaches the goal alone, all of them together
@@ -318,7 +329,7 @@ class Evidence:
         alone = [await self._run_scripts(recording, turn, setup, [s], targets) for s in scripts]
         out = {"goal": goal, "goal_devices_wanted": targets, "each_script_alone": alone, **left}
         if not targets:
-            out.update(reaches_goal=None, note="This goal has no device states to check.")
+            out.update(reaches_goal=None, note="This goal has nothing to check here.")
             return out
         reached_by = [r["scripts"][0] for r in alone if r.get("reaches_goal")]
         if reached_by:
@@ -377,8 +388,9 @@ class Evidence:
                 "sessions_checked": len(results) - len(skipped), "skipped": skipped, "how_to_read": SIGNALS_NOTE}
 
 
-async def run_scripts(recording, turn, today, setup, scripts, targets):
-    """In the worker: each script run in a sandbox at the goal's starting state, and the goal's devices after."""
+async def run_scripts(recording, turn, today, setup, scripts, goals):
+    """In the worker: each script run in a sandbox at the goal's starting state, and each goal (goal_targets) checked
+    against what they did."""
     names = [f"script.{s}" for s in scripts]
     try:
         sandbox = await _start(recording, turn, today, setup)
@@ -404,22 +416,44 @@ async def run_scripts(recording, turn, today, setup, scripts, targets):
                                    f"{', '.join(sorted(s['targets'])) or 'no device'}" for s in said]} if said else {})})
             except Exception as err:  # noqa: BLE001
                 runs.append({"script": f"script.{object_id}", "error": str(err)[:300]})
-        final = await sandbox.run(lambda hass: _states(hass, [t["entity_id"] for t in targets]))
-        checks = []
-        for target in targets:
-            entity = target["entity_id"]
-            if "state" in target:
-                checks.append({"entity_id": entity, "wanted": target["state"], "now": final.get(entity),
-                               "reached": final.get(entity) == target["state"]})
-            else:
-                seen = [t["new"] for t in sandbox.transitions if t["entity_id"] == entity]
-                checks.append({"entity_id": entity, "wanted": target["states"], "went_through": seen,
-                               "reached": seen == target["states"]})
+        final = await sandbox.run(lambda hass: _states(hass, [g["entity_id"] for g in goals if g["kind"] == "state"]))
+        view = _ran(sandbox)
+        checks = [_checked(view, goal, final) for goal in goals]
         return {"scripts": names, "loads": True, "runs": runs, "goal_devices": checks,
                 "reaches_goal": bool(checks) and all(c["reached"] for c in checks),
                 "unmodelled_commands": list(sandbox.unsimulated)}
     finally:
         await sandbox.stop()
+
+
+def _ran(sandbox):
+    """What the scripts did in a sandbox, as the analysis reads a turn (turn 1 of a view: analyzer.reached and done):
+    the home as it was seeded, each change since, by Assist, and every call since as the turn's call log."""
+    from datetime import datetime, timedelta
+    from types import SimpleNamespace
+    start, changes = datetime.fromisoformat(sandbox.home.get("at") or "2000-01-01T00:00:00+00:00"), {}
+    for n, change in enumerate(sandbox.changes, 1):
+        changes.setdefault(change["entity_id"], []).append({
+            **change, "at": (start + timedelta(milliseconds=n)).isoformat(), "during_turn": 1, "by": "assistant"})
+    return SimpleNamespace(source=sandbox.home, sources=[sandbox.home], calls={1: []}, changes=changes,
+                           actions={1: [{"action": f"{d}.{s}", "data": data} for d, s, data in sandbox.calls]})
+
+
+def _checked(view, goal, final):
+    """A goal (goal_targets') checked against what the scripts did (_ran), as the analysis judges one: it, with what
+    its device shows now (a state goal's state and the settings it asks for, as its device shows them; a sequence's
+    states gone through), and whether it's reached. final: the state goals' devices now (_states)."""
+    found = {**goal, "turn": 1}
+    if goal["kind"] == "action":
+        return {**goal, "reached": done(view, found, [1])}
+    if goal["kind"] == "sequence":
+        return {**goal, "went_through": [c["new"] for c in view.changes.get(goal["entity_id"], [])
+                                         if c["old"] != c["new"]], "reached": reached(view, found)}
+    domain, now = goal["entity_id"].split(".", 1)[0], final.get(goal["entity_id"]) or {}
+    shows = {a for name in goal.get("attributes") or {} for a in targets.representing(domain, name)}
+    return {**goal, "now": now.get("state"), **({"settings_now": {a: v for a, v in (now.get("attributes") or {}).items()
+                                                                  if a in shows}} if shows else {}),
+            "reached": reached(view, found)}
 
 
 async def match_aliases(recording, today, setup, aliases):
@@ -485,8 +519,11 @@ def _render_error(err):
 
 
 async def _states(hass, entity_ids):
+    """Each entity's state and attributes now, in plain form; none for one with no state."""
+    from .serialization import plain
     await hass.async_block_till_done()
-    return {e: getattr(hass.states.get(e), "state", None) for e in entity_ids}
+    return {e: {"state": found.state, "attributes": plain(dict(found.attributes))} for e in entity_ids
+            if (found := hass.states.get(e)) is not None}
 
 
 def _difference(was, now):

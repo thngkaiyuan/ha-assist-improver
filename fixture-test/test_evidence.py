@@ -64,7 +64,56 @@ async def test_a_goals_device_whose_entity_id_changed_since_is_checked_under_its
     evidence = Evidence(found, today)
     facts = await evidence.implementation(hypothesis(press), evidence.setup(hypothesis(press)))
     assert facts[0]["reaches_goal"] and facts[0]["goal_devices_wanted"] == [
-        {"entity_id": workshop, "states": ["off", "on"]}] and effect_guards == []
+        {"kind": "sequence", "entity_id": workshop, "states": ["off", "on"]}] and effect_guards == []
+
+
+LAMP, BELL = "light.fixture_lamp", "button.fixture_bell"
+
+
+def with_lamp_and_bell():
+    """make_recording with a colour lamp (off) and a button in every turn's home."""
+    record = make_recording()
+    for turn in record["turns"]:
+        source = turn["source"]
+        source["states"] |= {
+            LAMP: {"entity_id": LAMP, "state": "off", "attributes": {
+                "friendly_name": "Fixture lamp", "supported_color_modes": ["hs"], "color_mode": None}},
+            BELL: {"entity_id": BELL, "state": "unknown", "attributes": {"friendly_name": "Fixture bell"}}}
+        source["entities"] |= {LAMP: {"name": "Fixture lamp", "aliases": [None], "area_id": "fixture_area"},
+                               BELL: {"name": "Fixture bell", "aliases": [None], "area_id": "fixture_area"}}
+        source["exposure"] |= {LAMP: True, BELL: True}
+    return record
+
+
+@pytest.mark.asyncio
+async def test_the_implementation_check_compares_a_goals_whole_target_and_an_action(hass, effect_guards):
+    """#118: each goal the check can compare, read as the analysis reads it: a state goal's settings (a colour asked
+    as rgb, met as the lamp shows it in hue and saturation; a brightness as a percentage) and a button press, met by a
+    call that reached it."""
+    record = with_lamp_and_bell()
+    today = recorded_today(record, scripts={}, automations=[])
+    analysis = {"recording_id": record["id"], "extra_turns": [], "goals": [
+        {"turn": 1, "summary": "Lamp red at half", "kind": "state", "entity_id": LAMP, "state": "on",
+         "attributes": {"rgb_color": [255, 0, 0], "brightness_pct": 50}},
+        {"turn": 1, "summary": "Ring the bell", "kind": "action", "outcome": "command", "entity_ids": [BELL]}]}
+    found = Sessions([analysis], [SessionView(record)])
+    red = {"action": "light.turn_on", "target": {"entity_id": LAMP}, "data": {"hs_color": [0, 100], "brightness": 128}}
+    ring = act("button.press", BELL)
+    evidence = Evidence(found, today)
+    right = hypothesis(script("lamp_and_bell", red, ring))
+    facts = await evidence.implementation(right, evidence.setup(right))
+    lamp, bell = facts[0]["goal_devices_wanted"]
+    assert lamp == {"kind": "state", "entity_id": LAMP, "state": "on",
+                    "attributes": {"rgb_color": [255, 0, 0], "brightness_pct": 50}}
+    assert bell == {"kind": "action", "outcome": "command", "entity_ids": [BELL]}
+    checked = facts[0]["each_script_alone"][0]["goal_devices"]
+    assert facts[0]["reaches_goal"] and [c["reached"] for c in checked] == [True, True]
+    assert checked[0]["now"] == "on" and checked[0]["settings_now"]["brightness"] == 128
+    plain = {"action": "light.turn_on", "target": {"entity_id": LAMP}}  # On, but not red; and the bell not rung.
+    wrong = hypothesis(script("lamp_and_bell", plain))
+    facts = await evidence.implementation(wrong, evidence.setup(wrong))
+    assert [c["reached"] for c in facts[0]["each_script_alone"][0]["goal_devices"]] == [False, False]
+    assert facts[0]["reaches_goal"] is False and effect_guards == []
 
 
 @pytest.mark.asyncio
