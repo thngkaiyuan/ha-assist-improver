@@ -93,6 +93,20 @@ def test_brightness_tolerance_and_state():
     assert failed(score_recording(predicted, LIGHTS)) == ["turn 1: light.bedside on"]
 
 
+@pytest.mark.parametrize("label, said, same", [
+    ({"brightness_pct": 50}, {"attributes": {"brightness": 128}}, True),
+    ({"brightness_pct": 50}, {"attributes": {"brightness": 200}}, False),
+    ({"attributes": {"rgb_color": [255, 0, 0]}}, {"attributes": {"color_name": "red"}}, True),
+    ({"attributes": {"rgb_color": [255, 0, 0]}}, {"attributes": {"color_name": "blue"}}, False),
+])
+def test_a_setting_scores_in_any_of_its_forms_as_targets_reads_it(label, said, same):
+    """A predicted goal's settings are the label's as targets compares them (DETAILS P9.7.1): a brightness as a
+    percentage or 0 to 255, a colour by name or as rgb."""
+    goal = {"turn": 1, "summary": "Lamp", "kind": "state", "entity_id": "light.lamp", "state": "on"}
+    labelled = {"recording_id": "lamp", "not_requests": [], "goals": [{**goal, **label}]}
+    assert score_recording({**labelled, "goals": [{**goal, **said}]}, labelled)["passed"] is same
+
+
 def test_a_state_goal_may_accept_another_end_state_where_a_household_fact_isnt_known():
     label = {"recording_id": "tv", "not_requests": [], "goals": [
         {"turn": 1, "summary": "TV off", "kind": "state", "entity_id": "media_player.tv", "state": "off",

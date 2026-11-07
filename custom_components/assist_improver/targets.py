@@ -336,6 +336,22 @@ def holds(domain, wanted, attributes, found=None):
     return True
 
 
+def same(domain, wanted, given):
+    """Whether one goal's settings (given, as target names them) are another's (wanted), as holds reads a device
+    holding them: a brightness as 0 to 255, a colour in its colour mode (a colour's name as hue and saturation)."""
+    shows = {}
+    for name, value in given.items():
+        if name in BRIGHTNESS:
+            shows["brightness"] = round(value * 255 / 100) if name == "brightness_pct" and _number(value) else value
+        elif name in colour_modes():
+            shows.update({"color_mode": colour_modes()[name], name: value})
+        elif name == "color_name":
+            shows.update({"color_mode": "hs", "hs_color": _hs(name, value, {})})
+        else:
+            shows[name] = value
+    return holds(domain, wanted, shows)
+
+
 def moved(domain, was, left, now, found=None):
     """The settings a device wasn't left at as they started ({attribute: [as it was, as it was left]}): each settable
     attribute (settable) in was and left, read against now (all its attributes as left) as holds reads it, in any form

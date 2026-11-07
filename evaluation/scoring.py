@@ -23,7 +23,7 @@ import re
 
 from custom_components.assist_improver.analyzer import CUT, REACTIONS, extra_turns, root_turn, top_level
 from custom_components.assist_improver.cases import CaseError
-from custom_components.assist_improver.targets import TOLERANCE, target
+from custom_components.assist_improver import targets
 
 
 def _same_value(expected, actual):
@@ -36,10 +36,9 @@ def _same_value(expected, actual):
     if expected["kind"] == "state":
         if actual.get("state") not in [expected["state"], *expected.get("or_state", [])]:
             return False
-        # Its settings, as targets reads a goal's (a label's brightness_pct among them): a brightness within tolerance.
-        wanted, got = target(expected)[1], target(actual)[1]
-        return all(isinstance(got.get(k), (int, float)) and abs(got[k] - v) <= TOLERANCE * 100
-                   if k == "brightness_pct" else got.get(k) == v for k, v in wanted.items())
+        # Its settings, as targets reads a goal's (a label's brightness_pct among them): in any form, within tolerance.
+        domain = (actual.get("entity_id") or expected.get("entity_id") or "").split(".", 1)[0]
+        return targets.same(domain, targets.target(expected)[1], targets.target(actual)[1])
     return True  # Facts: only the turn is checked.
 
 
