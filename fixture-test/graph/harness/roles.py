@@ -86,6 +86,8 @@ GOES_UNLIKE = "replays it without the change leaving its goal unmet, though the 
 EXTRA_TURN_GONE = ("replays it without the change meeting its goal in the first turn, though the conversation took an "
                    "extra turn")
 SIDE_EFFECT_GONE = "replays it without the change leaving no side effect, though the conversation left one"
+FAILED_UNSENT = ("replays it without the change sending nothing to a device whose command failed at home, though "
+                 "the conversation sent it")
 ASKS_NEW = ("replays it with the change asking the user, before it acts, something the conversation never "
             "answered")
 NOT_VALIDATING = ("refuses every idea", "validates nothing", CUT_AFTER_TEST)
@@ -105,8 +107,8 @@ BEHAVIOURS = {
                CUT_AFTER_REVIEW, TWO_WAITS, WAITS_AFTER_FINISHED, FIRST_VERSION_ONLY},
     "Simulate": {"refuses every idea", "validates nothing", "crashes every time", CUT_AFTER_TEST, CUT_AFTER_ONE_TEST,
                  CUT_IN_SECOND_TEST, CUT_ON_FIRST_IDEA, "doesn't validate the first idea it tests",
-                 "validates only the first idea", GOES_UNLIKE, EXTRA_TURN_GONE, SIDE_EFFECT_GONE, ASKS_NEW,
-                 CUT_WHILE_TWO_RUN},
+                 "validates only the first idea", GOES_UNLIKE, EXTRA_TURN_GONE, SIDE_EFFECT_GONE, FAILED_UNSENT,
+                 ASKS_NEW, CUT_WHILE_TWO_RUN},
 }
 ROLE_STAGES = {"triage": "Triage", "journey_analyzer": "Analyze", "hypothesis_generator": "Propose",
                "hypothesis_reviewer": "Review", "editor": "Write up"}
@@ -819,6 +821,10 @@ class Assistant:
         turns = recording_turns(talk.record)
         if behaviour == EXTRA_TURN_GONE and turn == 1:  # Everything its goal took, in its first turn.
             calls = [c for t in turns for c in t["calls"]]
+        elif behaviour == FAILED_UNSENT:  # Sends nothing to a device whose command failed at home in this turn.
+            failed = {(a.get("data") or {}).get("entity_id") for a in turns[turn - 1]["actions"] if a.get("error")}
+            calls = [c for c in turns[turn - 1]["calls"] if not set(self._targets(c)) & failed]
+            return None if calls == turns[turn - 1]["calls"] else self._calls(calls, turn, answering)
         elif behaviour == SIDE_EFFECT_GONE:  # Leaves the devices it changed unasked alone.
             calls = [c for c in turns[turn - 1]["calls"]
                      if not any(e in talk.kind.side_effects for e in self._targets(c))]

@@ -988,8 +988,8 @@ async def snapshot(hass, attributes=(), until=None):
     """The sandbox's home once what's running has finished, its waits (a script's delay) passing at once, or once
     nothing more can happen before until (a recorded time, ISO; None: none), which the clock never passes, the
     replay's conversations held meanwhile (_held): states, the replay's state changes (each with the attributes it
-    changed), its device commands and its calls beyond the home; the attributes of the entities named (a light's
-    brightness a goal asks for)."""
+    changed), its device commands and its calls beyond the home; the attributes of the entities named (the settings
+    a turn is judged on)."""
     from copy import deepcopy
     from .serialization import plain
     sandbox = hass.data[SANDBOX_KEY]

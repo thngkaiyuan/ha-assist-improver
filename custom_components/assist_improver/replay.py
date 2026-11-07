@@ -36,10 +36,10 @@ GONE = "The assistant this conversation used is no longer set up, so it can't be
 class SandboxHome:
     """One replay's sandbox, started on first use: today's setup (today: replay.today's) at the recording's first turn
     (snapshot.at_moment), with a change on top (change: changes.setup_from_changes's, the home it makes seeded as
-    changes.changed makes it, its household knowledge, instructions and LLM APIs); for a test that branches from its baseline, set to the baseline's home after
-    the turn before the branch (start: how it differed from that moment then, sandbox.moved), at the branch turn's
-    time (at: the first turn it says). watch: the entities whose attributes a turn is judged on (a light's
-    brightness)."""
+    changes.changed makes it, its household knowledge, instructions and LLM APIs); for a test that branches from its
+    baseline, set to the baseline's home after the turn before the branch (start: how it differed from that moment
+    then, sandbox.moved), at the branch turn's time (at: the first turn it says). watch: the entities whose attributes
+    a turn is judged on (the devices the recorded Assist changed, for their settings: DETAILS P6.6.1)."""
 
     def __init__(self, hass, recording, turn, run_id, today, *, change=None, watch=(), start=None, at=None):
         self.hass, self.id, self.recording, self.first_turn, self.today = hass, run_id, recording, turn, today

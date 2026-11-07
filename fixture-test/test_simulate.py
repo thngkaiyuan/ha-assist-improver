@@ -606,24 +606,25 @@ def test_only_others_moves_carry_over_between_turns_not_assists_own_once_home_as
 KITCHEN = "light.kitchen"
 
 
-def kitchen(brightness):
+def kitchen(brightness=None, **lit):
     """"Turn on the kitchen light." through the household's OpenRouter assistant: off before; the real light came on
-    at `brightness` (the level it remembered, or the one Assist named)."""
+    at `brightness` (the level it remembered, or the one Assist named), or showing lit (a colour)."""
     from test_openrouter_replay import openrouter_recording
+    lit = lit or {"color_mode": "brightness", "brightness": brightness}
+    modes = ["hs"] if "hs_color" in lit else ["brightness"]
     record = json.loads(json.dumps(openrouter_recording()).replace(TARGET, KITCHEN).replace(
         "Fixture relay", "Kitchen light").replace('"domain": ["switch"]', '"domain": ["light"]').replace(
         "Toggle the fixture relay.", "Turn on the kitchen light."))
     for n, turn in enumerate(record["turns"]):
         turn["source"].update(scripts={}, automations=[])
         turn["source"]["states"][KITCHEN].update(state="on" if n else "off", attributes={
-            "friendly_name": "Kitchen light", "supported_color_modes": ["brightness"], "color_mode": "brightness",
-            **({"brightness": brightness} if n else {})})
+            "friendly_name": "Kitchen light", "supported_color_modes": modes, **(lit if n else {})})
         turn["prepared"]["tools"].append({"name": "light__HassLightSet", "description": "Set a light",
                                           "integration": "light", "parameters": {"type": "object"}})
     first = recording_turns(record)[0]
     was = deepcopy(first["source"]["states"][KITCHEN])
     record["state_changes"] = [{"entity_id": KITCHEN, "at": "2026-01-01T00:00:04+00:00", "old": was, "new": {
-        **was, "state": "on", "attributes": {**was["attributes"], "brightness": brightness},
+        **was, "state": "on", "attributes": {**was["attributes"], **lit},
         "context": deepcopy(first["prepared"]["context"]["context"])}}]
     return record
 
@@ -643,6 +644,47 @@ async def test_the_before_compares_a_lights_brightness_where_the_replay_knows_it
     assert found["status"] == status, found["steps"]
     assert found["steps"][0]["transitions"] == [{"entity_id": KITCHEN, "old": "off", "new": "on"}]
     assert effect_guards == []
+
+
+@pytest.mark.parametrize("colour, status", [("red", "reproduced"), ("blue", "not_reproducible")])
+@pytest.mark.asyncio
+async def test_the_before_compares_every_setting_the_recorded_request_left_in_any_form(hass, monkeypatch, effect_guards,
+                                                                                     colour, status):
+    """DETAILS P6.6.1: a device's effects are its settings too, compared as a goal's are (targets.moved): the real
+    light came on red, shown in hue and saturation; a replay that sets it red by name goes as it went, one that sets
+    it blue doesn't."""
+    from test_openrouter_replay import bind_openrouter, call, reply
+    record = kitchen(color_mode="hs", hs_color=[0.0, 100.0], brightness=255)
+    await bind_openrouter(hass, record, [call("light__HassLightSet", {"name": "Kitchen light", "color": colour}, "c1"),
+                                         reply("Done.")] + [reply("Ok.")] * 3)
+    found = await (await replay(hass, monkeypatch, record)).run()
+    assert found["status"] == status, found["steps"]
+    assert found["steps"][0]["transitions"] == [{"entity_id": KITCHEN, "old": "off", "new": "on"}]
+    assert effect_guards == []
+
+
+@pytest.mark.parametrize("asks, status", [(False, "reproduced"), (True, "not_reproducible")])
+@pytest.mark.asyncio
+async def test_a_command_that_failed_at_home_must_fail_in_the_before_too(hass, monkeypatch, effect_guards, asks,
+                                                                         status):
+    """DETAILS P6.6.1 (#101): the recorded command to the light failed at home, leaving it off; a replay sending it
+    fails it again (the sandbox refuses it as the home did) and goes as it went; one that only asks which light sends
+    nothing to fail, though the light stays off either way, and doesn't."""
+    from test_openrouter_replay import bind_openrouter, call, reply
+    record = kitchen(200)
+    record["state_changes"] = []
+    for turn in record["turns"]:
+        turn["source"]["states"][KITCHEN].update(state="off", attributes={
+            "friendly_name": "Kitchen light", "supported_color_modes": ["brightness"]})
+    record["turns"][0]["actions"] = [{"action": "light.turn_on", "data": {"entity_id": KITCHEN},
+                                      "error": "The light didn't respond"}]
+    first = [reply("Which light?")] if asks else [
+        call("intent__HassTurnOn", {"name": "Kitchen light", "domain": ["light"]}, "c1"), reply("It didn't respond.")]
+    await bind_openrouter(hass, record, first + [reply("Ok.")] * 3)
+    found = await (await replay(hass, monkeypatch, record)).run()
+    assert found["status"] == status, found["steps"]
+    assert found["steps"][0]["transitions"] == []
+    assert any(a.get("error") for a in found["steps"][0]["actions"]) is not asks and effect_guards == []
 
 
 @pytest.mark.asyncio

@@ -7,12 +7,14 @@ conversation with only the change, on their Assist as accepting the improvement 
 those. What counts as easier (the measures) is P0.1.1's; how Simulate uses its tests is P0.9's.
 """
 
-from household import (FRICTION, GOAL_STATES, PARTLY, SIDE_EFFECT_AND_REPEAT, THANKS_AND_NOTE, UNMET,
+from household import (FRICTION, GOAL_STATES, HEATER_FAILED_OBJECTED, PARTLY, SIDE_EFFECT_AND_REPEAT, THANKS_AND_NOTE, UNMET,
                        UNMET_BESIDE_INDETERMINATE, Household)
 from spec_graph import refines
 
 BREAKS_THE_ONE_THAT_WENT_FINE = "for the goal in trouble, proposes only fixes that break the goal that went fine"
 GOES_UNLIKE_IT_WENT = "replays it without the change leaving its goal unmet, though the conversation met it"
+FAILED_UNSENT = ("replays it without the change sending nothing to a device whose command failed at home, though the "
+                 "conversation sent it")
 
 
 def improvement_for(home, talk):
@@ -80,6 +82,25 @@ def test_without_the_change_the_test_goes_as_the_conversation_went_or_no_improve
     home = Household()
     home.stand_in("Simulate", GOES_UNLIKE_IT_WENT)
     talk = home.converse(FRICTION)
+    home.run()
+    assert home.improvements(talk) == []
+
+
+@refines("test_without_the_change_the_test_goes_as_the_conversation_went_or_no_improvement_comes_out")
+def test_a_command_that_failed_at_home_must_fail_again_without_the_change_for_it_to_go_as_it_went():
+    """Going as it went, the devices the recorded Assist acted on get the effects recorded, a command that failed at
+    home failing again (DETAILS P6.6.1). The heater's command failed at home both times it was asked for. Replayed
+    without the change, sent again as recorded, the sandbox refuses it as the home did, and an improvement comes out.
+    Replayed sending the heater nothing, with the same replies, it stays off just the same, yet no command failed:
+    that's not how it went, so no improvement comes out."""
+    home = Household()
+    talk = home.converse(HEATER_FAILED_OBJECTED)
+    home.run()
+    assert improvement_for(home, talk)
+
+    home = Household()
+    home.stand_in("Simulate", FAILED_UNSENT)
+    talk = home.converse(HEATER_FAILED_OBJECTED)
     home.run()
     assert home.improvements(talk) == []
 

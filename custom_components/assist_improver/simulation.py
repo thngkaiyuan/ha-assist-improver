@@ -197,16 +197,6 @@ def same_effects(replay, recorded):
     return replay[0][0] == recorded[0][0] and replay[-1][1] == recorded[-1][1] and all(new in then for _, new in replay)
 
 
-def same_brightness(attributes, recorded):
-    """Whether a light's brightness is the recorded one, as the analyzer tells brightnesses apart (none for both: off
-    both times)."""
-    from .targets import holds
-    replay, then = (attributes or {}).get("brightness"), (recorded or {}).get("brightness")
-    if replay is None or then is None:
-        return replay is None and then is None
-    return holds("light", {"brightness": then}, attributes)
-
-
 def per_entity(transitions):
     return {e: [(t["old"], t["new"]) for t in transitions if t["entity_id"] == e]
             for e in {t["entity_id"] for t in transitions}}

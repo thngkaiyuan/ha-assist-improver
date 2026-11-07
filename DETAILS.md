@@ -569,9 +569,10 @@ Citations in parentheses name the maintainer's earlier notes, which aren't in th
   - **P6.5.3** A fix that still needs a follow-up counts that turn. (MILESTONE-6.md; fixture-test/SPEC.md)
 - **P6.6 The baseline.** Before any change is tested, the conversation is replayed without it. (DESIGN.md,
   2026-10-25; MILESTONE-6.md)
-  - **P6.6.1** It reproduces when, on every turn, the devices the recorded Assist changed get the effects recorded,
-    however the model words its tool calls, and every goal code decides ends as in the conversation, in the same
-    turns, with side effects left on the same devices. (Kai, 2026-10-24: "The former sounds good"; MILESTONE-6.md; ROADMAP.md)
+  - **P6.6.1** It reproduces when, on every turn, the devices the recorded Assist changed get the effects recorded
+    (their states and settings, and a command that failed at home failing again), however the model words its tool
+    calls, and every goal code decides ends as in the conversation, in the same turns, with side effects left on the
+    same devices. (Kai, 2026-10-24: "The former sounds good"; MILESTONE-6.md; ROADMAP.md)
   - **P6.6.2** An objection (or a filing) the baseline doesn't show still open is set aside for that test: the
     friction didn't happen again, so it can't be told either way, and its turn is said (P6.4). So is a question the
     baseline answered otherwise at any reply of its run, with the steps and filing under it (a reply varies from run
