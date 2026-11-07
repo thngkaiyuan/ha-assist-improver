@@ -36,7 +36,7 @@ The starting preset for the AI roles is Opus 5.5 with effort chosen per role, ov
 
 ## We are here
 
-**Updated 2026-11-06: 0.40.33.** Every stage runs end to end from the panel, every day in the maintainer's household. Since 0.33 each turn keeps its whole record (every action and what it changed); replays run the household's own setup in a sandboxed Home Assistant, with one stand-in integration for every device and every call beyond the home; proposals cover scripts, automations, scenes, names, aliases, areas, exposure and assistant settings, applied through Home Assistant's own editors and undone the same way; and every suite runs against Home Assistant's official image and HA OS. Next: judging each goal by everything it asked for (a colour, a temperature) and by actions such as an announcement or a button press; then a made-up household with its own Home Assistant for tests anyone can run.
+**Updated 2026-11-06: 0.40.34.** Every stage runs end to end from the panel, every day in the maintainer's household. Since 0.33 each turn keeps its whole record (every action and what it changed); replays run the household's own setup in a sandboxed Home Assistant, with one stand-in integration for every device and every call beyond the home; proposals cover scripts, automations, scenes, names, aliases, areas, exposure and assistant settings, applied through Home Assistant's own editors and undone the same way; each goal is judged by everything it asked for and by actions; and every suite runs against Home Assistant's official image and HA OS. Next: a made-up household with its own Home Assistant for tests anyone can run.
 
 ## Milestones
 
