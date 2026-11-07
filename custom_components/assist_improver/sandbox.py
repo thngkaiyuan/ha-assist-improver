@@ -165,6 +165,7 @@ class Sandbox:
         self.setup = setup or {}  # Today's setup beyond the home (replay.setup_now): config entries, helpers, services.
         self.hass = self.loop = self.thread = None
         self.commands, self.unsimulated, self.transitions = [], [], []
+        self.changes = []  # Each change of a state or its attributes: {entity_id, old, new, attributes_changed}.
         self.spoken = []  # Each message spoken on devices, by whatever called it (_speak).
         self.outside = []  # Each call beyond the home, as answered (outside): an outside receipt (DETAILS P11.7).
         # Each conversation's id here, by the id it has outside: Home Assistant starts a conversation it doesn't know
@@ -305,6 +306,12 @@ class Sandbox:
             return
         if old.state != new.state:
             self.transitions.append({"entity_id": new.entity_id, "old": old.state, "new": new.state})
+        moved = {k: [old.attributes.get(k), new.attributes.get(k)] for k in {*old.attributes, *new.attributes}
+                 if old.attributes.get(k) != new.attributes.get(k) and k != "friendly_name"}
+        if old.state != new.state or moved:  # Its settings too, as a recording keeps them (exploration.SessionView).
+            from .serialization import plain
+            self.changes.append({"entity_id": new.entity_id, "old": old.state, "new": new.state,
+                                 **({"attributes_changed": plain(dict(sorted(moved.items())))} if moved else {})})
 
 
 def _units(config):
@@ -831,7 +838,7 @@ async def system_prompt(hass, llm_context, api_id, prompt):
     return chat_log.content[0].content, chat_log.llm_api
 
 
-MARKED = ("transitions", "commands", "spoken", "outside", "unsimulated")  # A turn's own lists (run_turn).
+MARKED = ("transitions", "changes", "commands", "spoken", "outside", "unsimulated")  # A turn's own lists (run_turn).
 
 
 async def run_turn(hass, text, conversation_id, context, language, agent_id, device_id=None, watch=(), until=None):
@@ -1025,6 +1032,7 @@ async def snapshot(hass, attributes=(), until=None):
     return {"states": {s.entity_id: s.state for s in hass.states.async_all()},
             "attributes": plain({e: dict(state.attributes) for e in attributes
                                  if (state := hass.states.get(e)) is not None}),
-            "transitions": deepcopy(sandbox.transitions), "commands": deepcopy(sandbox.commands),
+            "transitions": deepcopy(sandbox.transitions), "changes": deepcopy(sandbox.changes),
+            "commands": deepcopy(sandbox.commands),
             "unsimulated": list(sandbox.unsimulated), "spoken": deepcopy(sandbox.spoken),
             "outside": deepcopy(sandbox.outside)}

@@ -23,6 +23,7 @@ from .digest import (_clip, _naming, _text, async_time_zone, build_digest, devic
                      readings, time_zone)
 from .ha_tools import tools as ha_tools
 from .simulation import follow_ons
+from .targets import TOLERANCE
 from .trace import traced_tool
 
 _LOGGER = logging.getLogger(__name__)
@@ -44,7 +45,6 @@ FOLLOW_ON = 10  # Seconds within which a same-device change counts as a follow-o
 SETTLES = {("opening", "open"), ("closing", "closed"), ("locking", "locked"), ("unlocking", "unlocked")}
 TARGETS = {"entity_id", "device_id", "area_id", "floor_id", "label_id"}  # Whom an action call is for.
 NOBODY = "not the assistant (a person at the device or app, an automation, or the device itself)"
-BRIGHTNESS_TOLERANCE = 5  # Percent: the brightness a goal asked for, or Assist set, as a light reports it.
 
 
 def _brightness(change):
@@ -81,7 +81,7 @@ def _carries(assists, later, named=lambda turn: None):
         return False
     set_to = next((b for b in map(_brightness, reversed(assists)) if b is not None), None)
     now = _brightness(later)
-    if not (set_to is None or now is None or abs(now - set_to) <= BRIGHTNESS_TOLERANCE):
+    if not (set_to is None or now is None or abs(now - set_to) <= TOLERANCE * 100):  # Points of its percentage.
         return False
     was, left = {}, {}  # Each attribute Assist set: as it was before, and as Assist last left it.
     for change in assists:
@@ -172,9 +172,7 @@ class SessionView:
             entry = {"at": change["at"], "during_turn": turn, "old": old.get("state"), "new": new.get("state"),
                      "by": by, **({"reading": True} if label == "reading" else {})}
             if attributes:
-                if entity_id.startswith("light.") and "brightness" in attributes:
-                    attributes["brightness_pct"] = [_pct(v) for v in attributes["brightness"]]
-                entry["attributes_changed"] = attributes
+                entry["attributes_changed"] = with_percent(entity_id, attributes)
             reply = self.replies[turn - 1] if 0 < turn <= len(self.replies) else None
             if reply and (late := (datetime.fromisoformat(change["at"]) - datetime.fromisoformat(reply)).total_seconds()) > LATE:
                 entry["seconds_after_assistant_reply"] = round(late)
@@ -532,6 +530,13 @@ def _strings(record):
 
 def _pct(brightness):
     return None if brightness is None else round(int(brightness) * 100 / 255)
+
+
+def with_percent(entity_id, attributes):
+    """A change's attributes ({attribute: [old, new]}), a light's brightness as a percentage too (brightness_pct)."""
+    if entity_id.startswith("light.") and "brightness" in attributes:
+        return {**attributes, "brightness_pct": [_pct(v) for v in attributes["brightness"]]}
+    return attributes
 
 
 def _match(texts, query):

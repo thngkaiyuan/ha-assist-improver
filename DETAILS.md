@@ -97,8 +97,8 @@ Citations in parentheses name the maintainer's earlier notes, which aren't in th
   - **P2.3.11** A goal may name several devices when the user would accept any of them; it's met when one of them
     reaches the state (a smart plug or the lamp itself can each turn a lamp off). (LABELS.md; Kai, 2026-10-23: "either
     is fine")
-  - **P2.3.12** A goal states only what the user wanted: a light's brightness only if they asked for one.
-    (LABELS.md)
+  - **P2.3.12** A goal states only what the user wanted: a setting, such as a light's brightness, only if they asked
+    for one (P9.7.1). (LABELS.md)
   - **P2.3.13** A sub-goal is any step taken only to reach its parent: asking what Assist can do (which controls it
     has, in order to set the fan to fan-only), telling it how, finishing a half-done step, undoing something it did.
     (LABELS.md, 2026-10-22; Kai, 2026-10-23)
@@ -1304,8 +1304,12 @@ Citations in parentheses name the maintainer's earlier notes, which aren't in th
 - **P9.7 Destinations.** A goal's destination is stated technically: the end states of the devices that changed from
   the home's start state, not loose labels. For fan-only, 'fan on' isn't enough; fan on with heat off is.
   (Kai, 2026-10-23: "the end states of the states that had a diff from the start state of the house?")
-  - **P9.7.1** A goal's state must be one the device actually has, not the user's word: 'cool' is wrong for a climate
-    device whose modes are off, fan_only and heat. (MILESTONE-4.md)
+  - **P9.7.1** A device's destination is a target State: its state, plus any setting the user asked for (an attribute
+    a field of one of its domain's actions sets: a light's brightness or colour, a thermostat's temperature). Both must
+    be ones the device actually has, as Home Assistant has them, not the user's word: the device's own options and
+    ranges where it shows them, else its domain's ('cool' is wrong for a climate device whose modes are off, fan_only
+    and heat). A setting is one in any of Home Assistant's forms of it (a colour as rgb or hue and saturation, a
+    brightness as a percentage or 0 to 255), and a number is reached within 5% of its range. (MILESTONE-4.md; S5)
   - **P9.7.2** The start state matters: a device already off changes what a request means. (PRODUCT-SPEC.md)
   - **P9.7.3** When either of two devices gets the home to the same end state, either is fine: a smart plug or the
     lamp itself both turn a lamp off. (Kai, 2026-10-23)

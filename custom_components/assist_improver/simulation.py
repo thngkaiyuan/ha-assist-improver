@@ -200,18 +200,11 @@ def same_effects(replay, recorded):
 def same_brightness(attributes, recorded):
     """Whether a light's brightness is the recorded one, as the analyzer tells brightnesses apart (none for both: off
     both times)."""
+    from .targets import holds
     replay, then = (attributes or {}).get("brightness"), (recorded or {}).get("brightness")
     if replay is None or then is None:
         return replay is None and then is None
-    return _brightness_near(attributes, round(int(then) * 100 / 255))
-
-
-def _brightness_near(attributes, pct):
-    """Whether a light's brightness (0-255, as HA holds it) is the percentage asked for, as the analyzer judges a goal
-    reached."""
-    from .analyzer import BRIGHTNESS_TOLERANCE
-    brightness = attributes.get("brightness")
-    return brightness is not None and abs(round(int(brightness) * 100 / 255) - pct) <= BRIGHTNESS_TOLERANCE
+    return holds("light", {"brightness": then}, attributes)
 
 
 def per_entity(transitions):

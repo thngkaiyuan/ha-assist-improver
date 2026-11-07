@@ -24,7 +24,8 @@ import re
 
 import probatio
 
-from .exploration import BRIGHTNESS_TOLERANCE, RoleTool
+from . import targets
+from .exploration import RoleTool
 
 ROLE = "journey_analyzer"
 ASSISTANT = ("assistant", "follow-on of an assistant change on the same physical device")
@@ -32,7 +33,7 @@ ASSISTANT = ("assistant", "follow-on of an assistant change on the same physical
 INSTRUCTIONS = """You analyse one recorded session between a household and its Home Assistant voice assistant ("Assist"). Your job is to work out what the user wanted. You start with an overview: the whole conversation (what the user and the assistant said in each turn, and what each of the assistant's calls acted on, as Home Assistant's responses name the devices), the household's areas and the assistant's tools. Read the whole conversation before deciding anything, since later turns often explain what earlier ones meant. Entity IDs, tool results and state changes appear only in read_turn, so read every turn with it before answering (several turns at once if you like). Explore the household with the other tools whenever you need to understand what the user meant: which device, which room, what a device can do. Before deciding what a request means for a device, find out how the household operates it: scripts or automations that drive it, and other entities on the same device. The tools answer from the recording, never the live home, but for a device's actions, which are today's. Request several turns or lookups in one round when you can.
 
 List the user's goals. A goal is one thing the user wanted:
-- state: a device ending in a state (entity_id and state; add brightness_pct only if the user asked for a brightness);
+- state: a device ending in a state (entity_id and state; attributes: only the settings the user asked for, by the names the device's actions give them, such as brightness_pct, rgb_color, temperature or fan_mode);
 - sequence: a device passing through states in order (entity_id and states), such as a relay pressed off then on;
 - fact: something the user needed to know. fact: what the answer needs (the facts, distinctions or limits it must give, never the answer itself); entity_ids: the devices the answer is about, when it's about the home; quote: the form they asked for the answer in ("in a single brief sentence"), in their own words, only when they asked for one;
 - action: something done that leaves no device in a new state. outcome announce: something spoken or played on devices, whatever its content; entity_ids: every device it's for, in one action (each speaker the household has, when they say all of them). Asked together with a device request, it's a part at that turn;
@@ -53,7 +54,7 @@ Every turn needs at least one goal or sub-goal. Turns that are neither requests 
 
 If you cannot even tell which devices the user meant, write one short question for the user in question_for_user instead of guessing. Otherwise leave it empty.
 
-Answer only by calling submit_goals, with sub-goals in the same goals list. It checks your answer against the recording, including that every state is one the device has (device_details shows a device's modes and options). If it reports problems, fix them and submit again. When it accepts your answer, finish with one short sentence."""
+Answer only by calling submit_goals, with sub-goals in the same goals list. It checks your answer against the recording, including that every state and setting is one the device has (device_details shows a device's modes, options and ranges). If it reports problems, fix them and submit again. When it accepts your answer, finish with one short sentence."""
 
 # Added when the user sent the conversation in with a clear sign it needs a closer look (analysis.deliberate): a note,
 # filing it from Assist, or sending it in again after an earlier round looked at it.
@@ -85,7 +86,8 @@ STRUCTURE = probatio.Schema({
         probatio.Optional("entity_ids"): [str],
         probatio.Optional("state"): str,
         probatio.Optional("states"): [str],
-        probatio.Optional("brightness_pct"): int,
+        # State: the settings asked for, by their actions' field names (targets.py).
+        probatio.Optional("attributes"): {str: probatio.Any(str, int, float, bool, [probatio.Any(int, float)])},
         probatio.Optional("fact"): str,
         probatio.Optional("outcome"): probatio.In(list(OUTCOMES)),  # Action: what it does.
         probatio.Optional("serves"): int,
@@ -106,7 +108,7 @@ CUT = re.compile(r"…|\.\.\.")  # Where a quote leaves words out.
 
 def clean_goal(goal):
     """A goal with only the fields its kind uses (some providers send every optional field, as null)."""
-    keep = {"state": ("entity_id", "state", "brightness_pct"), "sequence": ("entity_id", "states"),
+    keep = {"state": ("entity_id", "state", "attributes"), "sequence": ("entity_id", "states"),
             "fact": ("fact", "entity_ids", "quote"), "action": ("outcome", "entity_ids"),
             "ask": ("entity_ids",), "step": (),
             "conduct": ("about", "quote", "improvement"), "wrap-up": (), "thanks": ()}[goal["kind"]] + ("serves",)
@@ -235,30 +237,31 @@ def extra_turns(turn_count, goals, not_requests, question=None):
     return [t for t in range(1, turn_count + 1) if t not in used]
 
 
-def _brightness_ok(goal, value):
-    return "brightness_pct" not in goal or (
-        isinstance(value, (int, float)) and abs(value - goal["brightness_pct"]) <= BRIGHTNESS_TOLERANCE)
+def _moved(attributes, change):
+    """The attributes after a change: its attributes_changed applied."""
+    return {**attributes, **{k: new for k, (_, new) in (change.get("attributes_changed") or {}).items()}}
 
 
 def reached(view, goal, until_turn=None):
     """Whether Assist's own changes reached a state or sequence goal; None for facts.
 
-    Only changes from the goal's turn up to (not including) until_turn count. A state goal is reached when
-    the device ends there because of Assist, or was already there and nobody moved it; a sequence goal when
+    Only changes from the goal's turn up to (not including) until_turn count. A state goal is reached when the device
+    ends in its target State (targets.py: its state, and each setting it asks for, in any of its representations,
+    numbers within tolerance) because of Assist, or was already there and nobody moved it; a sequence goal when
     Assist's changes pass through its states in order.
     """
     if goal["kind"] in ("fact", "ask", "action") or not goal.get("entity_id"):
         return None
     entity = goal["entity_id"]
+    domain, (wanted_state, wanted) = entity.split(".", 1)[0], targets.target(goal)
+    watched = {a for name in wanted for a in targets.representing(domain, name)}
     changes = sorted(view.changes.get(entity, []), key=lambda c: datetime.fromisoformat(c["at"]))
     start = view.source.get("states", {}).get(entity) or {}
-    state, brightness = start.get("state"), (start.get("attributes") or {}).get("brightness")
-    brightness = None if brightness is None else round(brightness * 100 / 255)
+    state, attributes = start.get("state"), dict(start.get("attributes") or {})
     window = []
     for change in changes:
         if change["during_turn"] < goal["turn"]:
-            state = change["new"]
-            brightness = (change.get("attributes_changed", {}).get("brightness_pct") or [None, brightness])[1]
+            state, attributes = change["new"], _moved(attributes, change)
         elif until_turn is None or change["during_turn"] < until_turn:
             window.append(change)
     if goal["kind"] == "sequence":
@@ -269,13 +272,12 @@ def reached(view, goal, until_turn=None):
         return bool(states) and all(any(s == v for v in visited) for s in states)
     by_assistant = None  # None: unchanged in the window.
     for change in window:
-        new_brightness = change.get("attributes_changed", {}).get("brightness_pct")
-        moved = change["new"] != state or ("brightness_pct" in goal and new_brightness is not None)
-        if new_brightness is not None:
-            brightness = new_brightness[1]
-        if moved:  # Attribute-only updates (readings, colour) neither reach nor undo a state.
+        moved = change["new"] != state or bool(watched & set(change.get("attributes_changed") or {}))
+        attributes = _moved(attributes, change)
+        if moved:  # Updates to what the goal doesn't ask for (readings, another setting) neither reach nor undo it.
             state, by_assistant = change["new"], change["by"] in ASSISTANT
-    return state == goal.get("state") and _brightness_ok(goal, brightness) and by_assistant is not False
+    return (state == wanted_state and targets.holds(domain, wanted, attributes, targets.shown(view.source, entity))
+            and by_assistant is not False)
 
 
 def home_couldnt(view, goal, goals):
@@ -358,32 +360,6 @@ def to_analysis(recording_id, output, view, notes=()):
         if goal["reached"] is False and goal.get("serves") is None and home_couldnt(view, goal, goals):
             goal["home_couldnt"] = True
     return analysis
-
-
-# States a device can be in, by domain, where its attributes don't list them (climate, select and friends do).
-STATES = {
-    **dict.fromkeys(("light", "switch", "fan", "input_boolean", "humidifier", "siren", "remote", "automation",
-                     "script"), {"on", "off"}),
-    "cover": {"open", "closed", "opening", "closing", "stopped"},
-    "valve": {"open", "closed", "opening", "closing"},
-    "lock": {"locked", "unlocked", "open", "opening", "locking", "unlocking", "jammed"},
-    "media_player": {"on", "off", "idle", "playing", "paused", "standby", "buffering"},
-    "vacuum": {"cleaning", "docked", "idle", "paused", "returning", "error"},
-    "alarm_control_panel": {"disarmed", "armed_home", "armed_away", "armed_night", "armed_vacation",
-                            "armed_custom_bypass", "triggered"},
-}
-OPTION_ATTRIBUTES = {"climate": "hvac_modes", "select": "options", "input_select": "options",
-                     "water_heater": "operation_list"}
-
-
-def allowed_states(view, entity_id):
-    """The states a device can be in, or None when they can't be told from the recording."""
-    domain = entity_id.split(".", 1)[0]
-    attributes = (view.source.get("states", {}).get(entity_id) or {}).get("attributes") or {}
-    listed = attributes.get(OPTION_ATTRIBUTES.get(domain, ""))
-    if listed:
-        return set(listed)
-    return STATES.get(domain)
 
 
 def quoted(quote, said):
@@ -508,14 +484,9 @@ def problems(view, answer, note=None, existing=(), revisions=()):
             states = [goal.get("state")] if kind == "state" else list(goal.get("states") or [])
             if not states or None in states:
                 found.append(f"{where}: a {kind} goal needs {'state' if kind == 'state' else 'states'}.")
-            allowed = allowed_states(view, entity)
-            wrong = [s for s in states if s is not None and allowed is not None and s not in allowed]
-            if wrong:
-                found.append(f"{where}: {entity} has no state {', '.join(map(repr, wrong))}; "
-                             f"its states are {', '.join(sorted(allowed))}.")
-            if goal.get("brightness_pct") is not None and (
-                    not entity.startswith("light.") or not 0 <= goal["brightness_pct"] <= 100):
-                found.append(f"{where}: brightness_pct is for lights, from 0 to 100.")
+            for n, state in enumerate(s for s in states if s is not None):  # Valid as Home Assistant has them.
+                found += [f"{where}: {p}" for p in targets.problems(
+                    view.source, entity, state, (goal.get("attributes") or {}) if n == 0 else {})]
         if kind in ("state", "sequence") and serves is not None and serves != goal["turn"]:
             wants = destination(answer["goals"], goal)  # Nor does a question about it, or speaking on it.
             if entity in {e for g in wants for e in [g.get("entity_id"), *(g.get("entity_ids") or [])]

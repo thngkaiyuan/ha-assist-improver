@@ -21,9 +21,9 @@ they give soft findings for a person to read, never a pass or fail.
 
 import re
 
-from custom_components.assist_improver.analyzer import (BRIGHTNESS_TOLERANCE, CUT, REACTIONS, extra_turns,
-                                                        root_turn, top_level)
+from custom_components.assist_improver.analyzer import CUT, REACTIONS, extra_turns, root_turn, top_level
 from custom_components.assist_improver.cases import CaseError
+from custom_components.assist_improver.targets import TOLERANCE, target
 
 
 def _same_value(expected, actual):
@@ -36,10 +36,10 @@ def _same_value(expected, actual):
     if expected["kind"] == "state":
         if actual.get("state") not in [expected["state"], *expected.get("or_state", [])]:
             return False
-        if "brightness_pct" in expected:
-            got = actual.get("brightness_pct")
-            return isinstance(got, (int, float)) and abs(got - expected["brightness_pct"]) <= BRIGHTNESS_TOLERANCE
-        return True
+        # Its settings, as targets reads a goal's (a label's brightness_pct among them): a brightness within tolerance.
+        wanted, got = target(expected)[1], target(actual)[1]
+        return all(isinstance(got.get(k), (int, float)) and abs(got[k] - v) <= TOLERANCE * 100
+                   if k == "brightness_pct" else got.get(k) == v for k, v in wanted.items())
     return True  # Facts: only the turn is checked.
 
 

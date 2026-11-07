@@ -13,6 +13,7 @@ from types import SimpleNamespace
 
 from .analyzer import ASSISTANT, announced, destination, question_run, reached, root_turn, side_effects_left
 from .cases import calls_in
+from .exploration import with_percent
 
 CONVERSATION = None  # As conduct: the conversation as it went, where every reaction is open (the user reacted).
 MEASURES = ("goals met", "turns per root goal", "side effects left")
@@ -281,12 +282,12 @@ def answered_otherwise(goals, facts):
 
 def replay_view(turns, session_view, steps):
     """What the home did in a replay, as judge() reads it: from the first recorded turn's home, each step's changes
-    (by Assist, in the step's turn) and its lights' brightness, with what people did to devices neither the recorded
+    (by Assist, in the step's turn: states and attributes), with what people did to devices neither the recorded
     Assist nor the replay had touched by then, and, on the devices the recorded Assist changed, what others moved
     between the turns it said, as the replay's sandbox applies it (simulation.moved_by_others); what each step called
     and spoke (calls); and each recorded turn's home as it began (sources), as the conversation's view has it. turns:
     the recording's turns; steps: the replay's, each {turn, output (Assist's messages), spoken (the sandbox's log),
-    transitions: [{entity_id, old, new}], brightness: {light: [old, new] on 0-255}}."""
+    changes: [{entity_id, old, new, attributes_changed: {attribute: [old, new]}}]}."""
     from .simulation import moved_by_others
     assistant = {e for e, cs in session_view.changes.items() if any(c["by"] in ASSISTANT for c in cs)}
     changes, touched, said = {}, {}, 1
@@ -302,24 +303,13 @@ def replay_view(turns, session_view, steps):
                         "at": turn["source"]["at"], "during_turn": turn["number"] - 1, "old": was,
                         "new": move["state"], "by": "someone else, between turns"})
         said = max(said, number)
-        last = {}
-        for n, move in enumerate(step.get("transitions") or [], 1):
-            change = {"at": (at + timedelta(milliseconds=n)).isoformat(), "during_turn": number, "old": move["old"],
-                      "new": move["new"], "by": "assistant"}
-            changes.setdefault(move["entity_id"], []).append(change)
-            last[move["entity_id"]] = change
-            touched.setdefault(move["entity_id"], number)
-        for light, (old, new) in (step.get("brightness") or {}).items():
-            pct = [None if v is None else round(v * 100 / 255) for v in (old, new)]
-            if light in last:
-                last[light].setdefault("attributes_changed", {})["brightness_pct"] = pct
-            else:
-                state = (changes.get(light) or [{}])[-1].get("new") or \
-                    ((turns[0]["source"].get("states") or {}).get(light) or {}).get("state")
-                changes.setdefault(light, []).append({
-                    "at": (at + timedelta(milliseconds=999)).isoformat(), "during_turn": number, "old": state,
-                    "new": state, "by": "assistant", "attributes_changed": {"brightness_pct": pct}})
-                touched.setdefault(light, number)
+        for n, move in enumerate(step.get("changes") or [], 1):
+            entity = move["entity_id"]
+            changes.setdefault(entity, []).append({
+                "at": (at + timedelta(milliseconds=n)).isoformat(), "during_turn": number, "old": move["old"],
+                "new": move["new"], "by": "assistant", **({"attributes_changed": with_percent(
+                    entity, move["attributes_changed"])} if move.get("attributes_changed") else {})})
+            touched.setdefault(entity, number)
     for entity, recorded in session_view.changes.items():
         if entity in assistant:
             continue

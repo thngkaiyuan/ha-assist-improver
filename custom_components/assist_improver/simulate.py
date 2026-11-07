@@ -65,8 +65,8 @@ FACT_STRUCTURE = probatio.Schema({probatio.Required("answers"): [{
     probatio.Required("goal"): str, probatio.Required("turn"): int, probatio.Required("gives"): bool,
     probatio.Required("why"): str}]})
 # What of a goal decides which turns a replay with the change may skip.
-GOAL_FIELDS = ("key", "label", "kind", "entity_id", "entity_ids", "state", "states", "brightness_pct", "serves",
-               "about", "quote", "fact", "outcome")
+GOAL_FIELDS = ("key", "label", "kind", "entity_id", "entity_ids", "state", "states", "attributes", "brightness_pct",
+               "serves", "about", "quote", "fact", "outcome")
 
 
 class Untestable(CaseError):
@@ -716,10 +716,8 @@ class Trial:
             raise CaseError("The assistant didn't finish this turn")
         self.unheard = self.unheard or not found["usage"]
         transitions, attributes = found["transitions"], found["attributes"]
-        brightness = {e: [(found["before"].get(e) or {}).get("brightness"), (attributes.get(e) or {}).get("brightness")]
-                      for e in home.watch}
         step = {"turn": number, "input": turn["messages"][0]["content"], "reply": new[-1]["content"], "output": new,
-                "transitions": transitions, "brightness": {e: v for e, v in brightness.items() if v[0] != v[1]},
+                "transitions": transitions, "changes": found["changes"],
                 "external_calls": external, "spoken": found["spoken"], "commands": found["commands"],
                 "outside": found["outside"], "not_simulated": found["unemulated"]}
         self.entry["said"].append(number)

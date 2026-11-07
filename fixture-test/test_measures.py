@@ -230,10 +230,11 @@ def test_a_replays_view_holds_its_own_changes_and_brightness_and_what_people_did
     turns = recorded_turns({LAMP: "on", PORCH: "off"}, {LAMP: "on", PORCH: "on"})
     recorded = view({}, (PORCH, "off", "on", 1, "person"), (LAMP, "on", "on", 1))
     recorded.recording = {"state_changes": []}
-    steps = [{"turn": 1, "transitions": [], "brightness": {LAMP: [0, 255]}},
-             {"turn": 2, "transitions": [{"entity_id": FAN, "old": "off", "new": "on"}]}]
+    steps = [{"turn": 1, "changes": [{"entity_id": LAMP, "old": "on", "new": "on",
+                                      "attributes_changed": {"brightness": [0, 255]}}]},
+             {"turn": 2, "changes": [{"entity_id": FAN, "old": "off", "new": "on"}]}]
     home = measures.replay_view(turns, recorded, steps)
-    assert home.changes[LAMP][0]["attributes_changed"]["brightness_pct"] == [0, 100]
+    assert home.changes[LAMP][0]["attributes_changed"] == {"brightness": [0, 255], "brightness_pct": [0, 100]}
     assert home.changes[FAN][0]["during_turn"] == 2 and home.changes[PORCH][0]["by"] == "person"
 
 
@@ -248,8 +249,8 @@ def test_a_replays_view_holds_what_others_moved_between_turns_on_a_device_assist
          "new": {"state": "on", "context": {"id": "turn-1"}}},
         {"entity_id": LAMP, "at": "2026-01-01T09:00:30+00:00", "old": {"state": "on"},
          "new": {"state": "off", "context": {"id": "someone"}}}]}
-    steps = [{"turn": 1, "transitions": [{"entity_id": LAMP, "old": "off", "new": "on"}]},
-             {"turn": 2, "transitions": [{"entity_id": LAMP, "old": "off", "new": "on"}]}]
+    steps = [{"turn": 1, "changes": [{"entity_id": LAMP, "old": "off", "new": "on"}]},
+             {"turn": 2, "changes": [{"entity_id": LAMP, "old": "off", "new": "on"}]}]
     home = measures.replay_view(turns, recorded, steps)
     assert [(c["during_turn"], c["new"], c["by"] == "assistant") for c in home.changes[LAMP]] == [
         (1, "on", True), (1, "off", False), (2, "on", True)]

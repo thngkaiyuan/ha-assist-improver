@@ -67,7 +67,8 @@ class Goal(TypedDict, total=False):
     entity_ids: list[str]  # Ask: the controls left open; fact: the devices it's about; action: the devices it's for.
     state: str
     states: list[str]
-    brightness_pct: int
+    attributes: dict[str, Any]  # State: the settings asked for, by their actions' field names (targets.py).
+    brightness_pct: int  # State, as stored before attributes: read as one of them.
     fact: str  # Fact: what the answer needs, never the answer.
     outcome: str  # Action: what it does (analyzer.OUTCOMES), whatever service does it.
     serves: int | None  # A sub-goal: the turn of the goal it serves.

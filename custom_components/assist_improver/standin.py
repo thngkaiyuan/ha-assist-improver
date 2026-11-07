@@ -200,17 +200,14 @@ def _table():
     no more)}}, in Home Assistant's own enums; its fields go to the attributes of the same name (FIELDS renames)."""
     from homeassistant.components.alarm_control_panel import AlarmControlPanelState as Alarm
     from homeassistant.components.lawn_mower import LawnMowerActivity as Mower
-    from homeassistant.components.light import ColorMode, LightEntityStateAttribute
+    from homeassistant.components.light import LightEntityStateAttribute
     from homeassistant.components.media_player import MediaPlayerEntityStateAttribute, MediaPlayerState as Media
     from homeassistant.components.vacuum import VacuumActivity as Vacuum
     on_off = {"turn_on": (STATE_ON, {}), "turn_off": (STATE_OFF, {})}
     kept = (None, {})
-    colours = {"color_temp_kelvin": ColorMode.COLOR_TEMP, "hs_color": ColorMode.HS, "rgb_color": ColorMode.RGB,
-               "rgbw_color": ColorMode.RGBW, "rgbww_color": ColorMode.RGBWW, "xy_color": ColorMode.XY,
-               "white": ColorMode.WHITE}
 
     def light_on(fields, held):  # Its colour mode: the colour asked for's, else the one it had, else its first.
-        mode = next((m for f, m in colours.items() if f in fields), None) or held.get("color_mode")
+        mode = next((m for f, m in colour_modes().items() if f in fields), None) or held.get("color_mode")
         return {"color_mode": mode or next(iter(held.get("supported_color_modes") or []), None)}
     return {
         "light": {"turn_on": (STATE_ON, light_on),  # Off, it shows none of a light's state attributes.
@@ -258,6 +255,28 @@ def _table():
         # Home Assistant sets their state itself (when last pressed, activated or sent) before the command.
         **{d: {c: (_NOW, {})} for d, c in (("button", "press"), ("scene", "activate"), ("notify", "send_message"))},
     }
+
+
+@functools.cache
+def colour_modes():
+    """A light's colour fields (each the attribute it shows that colour in) by the colour mode each sets."""
+    from homeassistant.components.light import ColorMode
+    return {"color_temp_kelvin": ColorMode.COLOR_TEMP, "hs_color": ColorMode.HS, "rgb_color": ColorMode.RGB,
+            "rgbw_color": ColorMode.RGBW, "rgbww_color": ColorMode.RGBWW, "xy_color": ColorMode.XY,
+            "white": ColorMode.WHITE}
+
+
+def attribute_of(domain, field):
+    """The attribute a command's field sets: FIELDS's name for it (a cover's position: current_position), else its own."""
+    name = FIELDS.get(field, field)
+    return name.get(domain, field) if isinstance(name, dict) else name
+
+
+def held(domain, attribute):
+    """Whether a domain's entities can hold an attribute a field sets: one its entity class has a property for
+    (PROPERTIES renames), not one following from the state (FROM_STATE: a thermostat's mode is its state)."""
+    known, base = PROPERTIES.get(domain, {}).get(attribute, attribute), entity_class(domain)
+    return known not in FROM_STATE and hasattr(base, known) and not callable(getattr(base, known))
 
 
 _NOW = object()  # A state Home Assistant's entity class sets itself: the time it was last used.
@@ -425,10 +444,8 @@ class StandIn:
         sets = sets(fields, self._attributes) if callable(sets) else sets
         attributes = {}
         for field, value in fields.items():
-            name = FIELDS.get(field, field)
-            name = name.get(self._domain, field) if isinstance(name, dict) else name
-            known = PROPERTIES.get(self._domain, {}).get(name, name)  # One the state shows (a mode) is no attribute.
-            if name in self._attributes or (known not in FROM_STATE and self._has(known)):
+            name = attribute_of(self._domain, field)
+            if name in self._attributes or held(self._domain, name):  # One the state shows (a mode) is no attribute.
                 attributes[name] = plain(value)
         attributes |= {k: v for k, v in sets.items() if k in self._attributes}
         if state is _NOW:
