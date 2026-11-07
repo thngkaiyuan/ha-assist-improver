@@ -8,8 +8,8 @@ an improvement only if it's strictly better: better on one measure and worse on 
 
 import json
 
-from household import (CHIMED_UNASKED, DIMMED, FRICTION, HEATER_FAILED, HEATER_UNREACHABLE, IN_BETWEEN, NO_GAIN,
-                       OBJECTED_AND_FILED, UNPRESSED,
+from household import (CHIMED_UNASKED, DIMMED, FRICTION, HEATER_FAILED, HEATER_FAILED_OBJECTED, HEATER_UNREACHABLE,
+                       IN_BETWEEN, NO_GAIN, OBJECTED_AND_FILED, UNPRESSED,
                        SIDE_EFFECT_AND_REPEAT, SIDE_EFFECT_PUT_BACK, SIDE_EFFECT_PUT_BACK_BY_AUTOMATION,
                        SIDE_EFFECT_PUT_BACK_SIGNED_IN, SIDE_EFFECT_PUT_BACK_UNMARKED,
                        SIDE_EFFECT_UNDONE_ON_REQUEST, THANKS_AND_NOTE, THANKS_AND_OBJECTION,
@@ -110,6 +110,20 @@ def test_a_command_that_failed_at_home_is_one_the_home_couldnt_do_and_the_propos
     assert "its command failed at home" in given and "was unavailable" not in given
     tests = home.tests(talk)
     assert tests and all(test.before.goals[root] == test.after.goals[root] == "unmet" for test in tests)
+
+
+@refines("test_a_command_that_failed_at_home_is_one_the_home_couldnt_do_and_the_proposer_is_told_it_failed")
+def test_the_write_up_and_the_review_say_the_home_couldnt_do_it_because_its_command_failed():
+    """Why the home couldn't do a goal reaches the household too (DETAILS P12.1.5, P17.21.3). The heater's command
+    failed at home both times, and the fix closes the objection to Assist's promise: the editor is told the heater
+    failed when asked, and the review's Before & after row says so, never that it was unavailable."""
+    home = Household()
+    talk = home.converse(HEATER_FAILED_OBJECTED)
+    home.run()
+    improvement = improvement_for(home, talk)
+    told = json.dumps(home.received("Write up", talk)[-1].input, ensure_ascii=False)
+    assert "the home couldn't do it: Heater failed when asked" in told and "unavailable" not in told
+    assert improvement.tested == ["Heater on: the home couldn't do it (Heater failed)"]
 
 
 @refines("P0.1.1")

@@ -276,6 +276,11 @@ class Improvement:
         return bool(self._review()["physical"])
 
     @property
+    def tested(self):
+        """What each of its review's Before & after rows says it tested."""
+        return [row["summary"] for row in self._review()["tests"]]
+
+    @property
     def tested_on(self):
         if "conversation" not in self._item:
             raise Missing("Improvement.tested_on: this improvement belongs to no one conversation")
@@ -762,6 +767,8 @@ class Drive:
             return (given.get("conversation") or [{}])[0].get("user_says") == conversation.said
         if stage == "Propose":
             return any(s.get("session") == conversation.id[:8] for s in given.get("friction_scenarios") or [])
+        if stage == "Write up":  # The improvement written up: its idea's title, the conversation's fix's.
+            return conversation.fix is not None and given.get("idea") == conversation.fix.title
         if stage == "Review":  # A draft: the goals it's for.
             return any(str(g.get("session"))[:8] == conversation.id[:8] for g in given.get("goals") or [])
         if stage == "Simulate":  # A replay request: the words it starts from.
