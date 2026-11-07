@@ -11,6 +11,8 @@ from spec_graph import refines
 
 TRIES_BETTER = "after a validated idea, tries a better one while tests are left"
 SENDS_FIRST = "sends on its first validated idea"
+GOES_UNLIKE_IT_WENT = "replays it without the change leaving its goal unmet, though the conversation met it"
+ASKS = "asks the household one question before it sends its idea on"
 
 
 def went_on(home, talk):
@@ -119,6 +121,21 @@ def test_a_test_tells_the_proposer_what_is_still_open_with_the_change_and_why():
         "conduct"]
 
 
+@refines("P0.9")
+def test_a_conversation_no_idea_can_be_tested_on_gets_no_proposal_and_ends_no_fix_found_saying_why():
+    """Simulate is the proposer's way to validate: on a conversation no idea can be tested on there's none, so neither
+    the proposer nor its reviewer is asked. Its replay without a change runs first, as Propose takes it up (DETAILS
+    P6.6.7): here none of its tries goes as the conversation went (P6.6.5), so the round ends No fix found with none of
+    its tests spent, and its record says why."""
+    home = Household()
+    home.stand_in("Simulate", GOES_UNLIKE_IT_WENT)
+    talk = home.converse(FRICTION)
+    home.run()
+    assert home.place(talk).outcome == "no fix found"
+    assert home.received("Propose", talk) == [] and home.reviews(talk) == [] and home.tests(talk) == []
+    assert "Tried 3 times without the change" in home.records(talk, 1)["Propose"].untestable["why"]
+
+
 # Layer 3: children where a real proposer (several tool calls in one message, its own wording) or a cut-off can make a
 # parent's reading slip: bettering an idea under its own title, sending on re-typed changes, tests asked for at once,
 # and a round picked up after a cut-off. The other layer-2 tests need none: what "validated" means has one setup per
@@ -209,3 +226,49 @@ def test_a_proposer_picking_up_a_cut_off_round_is_given_the_tests_that_round_alr
     tests = home.tests(talk)
     assert len(tests) > len(earlier)
     assert [test for test in tests if test in tests[len(earlier)].idea.given] == earlier
+
+
+@refines("test_a_round_has_the_same_number_of_tests_whatever_the_proposer_does_with_them")
+def test_the_same_changes_tested_again_once_the_household_changed_its_home_are_a_new_test_of_the_allowance():
+    """The same changes are one test on one setup, and a new one on another (DETAILS P6.3.4, P6.7.1). Both proposers
+    ask the household a question before sending their validated idea on; meanwhile the household accepts the other
+    conversation's improvement, which changes its home, then answers. Testing its validated changes again, the
+    proposer gets a new test of them on the home as it is now, which spends one more of the allowance, and its
+    improvement carries that one."""
+    home = Household()
+    home.stand_in("Propose", ASKS)
+    talk, other = home.converse(FRICTION), home.converse(UNMET)
+    home.run()
+    left = home.tests_left(talk)
+    home.answer(other, "The left one.")
+    [accepted] = home.improvements(other)
+    home.decide(accepted, "accept")
+    home.answer(talk, "The left one.")
+    first, second = home.tests(talk)
+    assert first.changes == second.changes and first.before.config != second.before.config
+    assert home.tests_left(talk) == left - 1
+    [improvement] = home.improvements(talk)
+    assert improvement.test == second
+
+
+@refines("test_a_conversation_no_idea_can_be_tested_on_gets_no_proposal_and_ends_no_fix_found_saying_why")
+def test_a_revisions_or_conflicts_round_no_idea_can_be_tested_in_keeps_the_earlier_version_up_without_a_proposal():
+    """The replay without a change runs each time Propose takes the conversation up (DETAILS P6.6.7): here as a
+    revision's or a conflict's round starts, after the household changed its home by hand, so its tries run again on
+    the new setup (P6.7.1), and none goes as the conversation went. No proposer is asked, and the version the round was
+    sent back for stays up for review, as when a proposer brings no new version."""
+    for way in ("revision", "conflict"):
+        home = Household()
+        talk = home.converse(FRICTION)
+        home.run()
+        [earlier] = home.improvements(talk)
+        asked = len(home.received("Propose", talk))
+        home.edit_home(earlier)
+        home.stand_in("Simulate", GOES_UNLIKE_IT_WENT)
+        if way == "revision":
+            home.decide(earlier, "revise", "only the left door")
+        else:
+            home.agree(home.decide(earlier, "accept"))
+        assert home.place(talk).stage == "Your review" and home.place(talk).round == 2
+        assert [item for item in home.review_queue() if item.conversation == talk] == [earlier]
+        assert len(home.received("Propose", talk)) == asked and home.records(talk, 2)["Propose"].untestable

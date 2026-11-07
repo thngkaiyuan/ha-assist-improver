@@ -304,7 +304,8 @@ function marked(text, query) {
 function badge(row) {
   // Where it stands; one up for review is its own button beside the row (reviewLink), so it can open that review.
   // Its tooltip says what comes next, or, held, why (flow.py's words).
-  const C = TEXT.conversations, tips = {smooth: C.smoothTip, nofix: C.nofixTip, fine: C.fineTip, duplicate: C.duplicateTip};
+  const C = TEXT.conversations, tips = {smooth: C.smoothTip, nofix: row.untestable ? C.untestableTip : C.nofixTip,
+    fine: C.fineTip, duplicate: C.duplicateTip};
   const text = row.held ? fill(C.heldTip, {why: row.held.why}) : tips[row.status];
   const tip = text ? ` title="${esc(text)}"` : "";
   return row.status === "review" && row.review || cannot(row) ? ""

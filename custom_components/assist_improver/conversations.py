@@ -117,19 +117,22 @@ def row(runtime, rid):
     picked run can take it (new and waiting, or held anywhere, P0.7; or in Your household, sent in first when picked
     by hand: the panel never picks those with Select all); archivable: it can be archived (not while an improvement of
     it waits for the household, flow.Flow.waits); and its stage, hold, and the improvement a duplicate points to; and,
-    when Home Assistant answered a turn itself, what the household is told of it (cant_improve)."""
+    when Home Assistant answered a turn itself, what the household is told of it (cant_improve); untestable: No fix
+    found because no idea could be tested on it (its round's Propose record says why, DETAILS P6.6.7)."""
     flow = runtime.flow
     place = flow.place(rid)
     status, stage = standing(runtime, rid, place), place["stage"]
     off = place["archived"] or stage == "Your household" or status in ("review", "unclear")
     held = place["held"]
+    proposed = (flow.round_of(rid) or {}).get("records", {}).get("Propose") or {}
     return {"status": status, "hidden": bool(off) and not flow.unarchived(rid),
             "sendable": stage == "Your household" or (stage == "Your Assist" and not held),
             "runnable": flow.waiting(rid) or bool(held) or stage == "Your household",
             "archivable": not flow.waits(rid),
             "stage": stage, "held": {"cause": held["cause"], "why": held["why"]} if held else None,
             "covered_by": place["covered_by"],
-            **({"cant_improve": cant_improve(flow.hass, flow.question(rid))} if status == "cannot" else {})}
+            **({"cant_improve": cant_improve(flow.hass, flow.question(rid))} if status == "cannot" else {}),
+            **({"untestable": True} if status == "nofix" and proposed.get("untestable") else {})}
 
 
 async def questions(runtime):

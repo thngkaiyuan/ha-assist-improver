@@ -550,20 +550,15 @@ class Flow:
 
     async def test(self, rid, hypothesis, cap):
         """Simulate's stamp: one test of an idea on the conversation it's proposed for (simulate.test), judged on
-        every goal the conversation carries, from its round's tests. The same changes are tested once a round (P6.3.4).
-        When the proposer acts again after a test, that test sent it back to Propose, paid for by the round's tests.
+        every goal the conversation carries, from its round's tests. The same changes on the same plan are one test
+        (P6.3.4): the round's, given back as it is, not counted again; on another setup, a new one. When the proposer
+        acts again after a test, that test sent it back to Propose, paid for by the round's tests.
         simulate.Untestable: why it can't be tested (a conversation no idea can be tested on is marked so for its
         round); Failed: the machinery cut it off, and it can run again."""
         from . import contracts, records, simulate
-        from .cases import digest
         conv = self.record(rid)
         record = conv["rounds"][str(conv["round"])]["records"]["Propose"]
-        changes = digest(hypothesis.get("changes"))
-        if (same := [t for t in record.get("tests") or [] if t["changes"] == changes]):
-            return same[-1]
-        if untestable := record.get("untestable"):
-            raise simulate.Untestable(untestable["why"], conversation=True)
-        try:
+        try:  # Decided from today's plan each time: a repeat on the same plan replays nothing (its replays are kept).
             test = await simulate.test(self.hass, self.entry, self.runtime, rid, self._judged(conv), hypothesis)
         except simulate.Untestable as err:
             if err.conversation:
@@ -572,6 +567,9 @@ class Flow:
             raise
         except simulate.Transient as err:
             raise Failed(str(err)) from err
+        if same := [t for t in record.get("tests") or []
+                    if (t["changes"], t["after"]["plan"]) == (test["changes"], test["after"]["plan"])]:
+            return same[-1]
         earlier = [t["after"]["plan"] for n, r in conv["rounds"].items() if n != str(conv["round"])
                    for t in (r["records"].get("Propose") or {}).get("tests") or []]
         if test["after"]["plan"] in earlier:  # Its replay an earlier round ran on the same setup, kept: reused, not paid.
@@ -583,14 +581,15 @@ class Flow:
         return test
 
     async def _propose(self, rid, conv):
-        """The proposer, on this conversation, with the household in view: it collects the reviewer's approval
+        """The conversation's baseline first (simulate.baseline): on one no idea can be tested on, no proposer runs,
+        and the round ends as when it sends nothing on, its record saying why (DETAILS P6.6.7). Otherwise the
+        proposer, on this conversation, with the household in view: it collects the reviewer's approval
         (ask_reviewer) and Simulate's validation (test_idea) for each idea, spending the round's tests as it sees fit,
         and sends on one idea that has both (P0.4, P0.9): a round brings its conversation one improvement (P0.6,
         P0.10). With none, the round ends no fix found."""
-        from . import contracts, records
+        from . import contracts, records, simulate
         from .cases import digest
         from .hypotheses import REVIEWS_PER_ROUND
-        from .improvements import PENDING
         kept = conv["rounds"][str(conv["round"])]["records"]
         if (kept.get("Propose") or {}).get("revision") and not (kept.get("Analyze") or {}).get("analysis"):
             # A revision's round reads the conversation afresh first, its note a turn with its goals (P12.8.1).
@@ -603,6 +602,18 @@ class Flow:
         # analysis gives, P12.8.1) or an accept's conflict, with the improvement in full.
         revision, conflict = current.get("revision") or {}, current.get("conflict") or {}
         back = revision or conflict
+        try:  # Decided afresh each time, from today's plan: free while that's unchanged (DETAILS P6.6.7, P6.7.1).
+            await simulate.baseline(self.hass, self.entry, self.runtime, rid, self._judged(conv))
+        except simulate.Untestable as err:
+            current["untestable"] = {"why": str(err), "at": utcnow().isoformat()}
+        except simulate.Transient as err:  # The machinery cut it off: tried again, then held (P0.8).
+            raise Failed(str(err)) from err
+        else:
+            current.pop("untestable", None)
+        await self._meanwhile(conv, back)
+        if "untestable" in current:
+            await self._unbuilt(conv, back, revision)
+            return
         sent_back = ({**deepcopy(back), "why": "revision" if revision else "conflict",
                       "improvement": improvements.described(improvements.items[back["improvement"]], detailed=True)}
                      if back.get("improvement") in improvements.items else None)
@@ -635,10 +646,7 @@ class Flow:
                                       existing=improvements.catalog(asking=rid, detailed=True))
         except Exception as err:
             raise Failed(f"{type(err).__name__}: {err}") from err
-        if back.get("improvement"):  # A decision on the version this round revises, under way as the proposer
-            await improvements.settled(back["improvement"])  # returns, goes first, with its move (P0.11, decided).
-        if self._taken_out(conv):  # Taken out while the proposer worked, or just now: nothing is built for it.
-            raise TakenOut()
+        await self._meanwhile(conv, back)
         if generator.get("status") == "failed" and not generator.get("output"):
             raise Failed(str((generator.get("error") or {}).get("message") or "The proposal couldn't finish."))
         self._record(conv, "Propose", given={**given, "conversations": list(generator.get("sessions") or [])})
@@ -686,19 +694,38 @@ class Flow:
             raise Failed("The reviewer stopped." if stopped else f"Simulate couldn't test: {crashed}")
         seen = list(generator.get("sessions") or [])  # The household it had in view, archived ones included.
         built = [await improvements.build_for(
-            h, [t for t in tests if t["validated"] and t["changes"] == key][-1], rid, conv["round"], checked_on=seen,
+            h, [t for t in tests if t["changes"] == key][-1], rid, conv["round"], checked_on=seen,
             revises=back.get("improvement")) for key, h in sent.items()]
-        earlier = improvements.items.get(back.get("improvement")) or {}
         if built:
             self._enter(conv, "Write up", improvements=built)
-        elif earlier.get("status") in (*PENDING, "conflict"):  # No new version: the earlier one stays up for review,
-            if earlier["status"] == "conflict":  # one that met a conflict back up for the household to decide (P0.6).
+        else:
+            await self._unbuilt(conv, back, revision, self._unrevised_why(rid, answer, held_back) if revision else "",
+                                self._addressed(rid, analysis, answer))
+
+    async def _meanwhile(self, conv, back):
+        """After a step that takes a while (the baseline, the proposer): a decision on the version the round revises,
+        under way as it returns, goes first, with its move (P0.11, decided); TakenOut when the household took the
+        conversation out meanwhile, or just now: nothing more is done for it."""
+        if back.get("improvement"):
+            await self.runtime.improvements.settled(back["improvement"])
+        if self._taken_out(conv):
+            raise TakenOut()
+
+    async def _unbuilt(self, conv, back, revision, why="", addressed=None):
+        """A round that built nothing: the version it was sent back for, still up, stays up for review (P0.6), one that
+        met a conflict back up for the household to decide, and a revision's saying so, with why (unrevised; why:
+        "" for none); otherwise the conversation ends a duplicate (addressed: the improvement that covers it) or no fix
+        found."""
+        from .improvements import PENDING
+        improvements = self.runtime.improvements
+        earlier = improvements.items.get(back.get("improvement")) or {}
+        if earlier.get("status") in (*PENDING, "conflict"):
+            if earlier["status"] == "conflict":
                 await improvements.up_again(earlier["id"])
-            if revision:  # Saying so, with why (unrevised).
-                await improvements.unrevised(earlier["id"], (revision.get("note") or "").strip(),
-                                             self._unrevised_why(rid, answer, held_back))
+            if revision:
+                await improvements.unrevised(earlier["id"], (revision.get("note") or "").strip(), why)
             self._enter(conv, "Write up", waiting=earlier["id"])
-        elif (addressed := self._addressed(rid, analysis, answer)):  # Another conversation's improvement covers it.
+        elif addressed:  # Another conversation's improvement covers it.
             self._end(conv, "duplicate", covered_by=addressed)
         else:
             self._end(conv, "no fix found")

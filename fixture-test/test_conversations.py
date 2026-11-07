@@ -514,6 +514,21 @@ async def test_each_place_on_the_flow_record_has_its_chip_and_says_whether_it_is
 
 
 @pytest.mark.asyncio
+async def test_no_fix_found_on_one_no_idea_could_be_tested_on_keeps_its_chip_and_says_so(improver):
+    """DETAILS P14.3.14: the same chip, and the row says which No fix found it is, for its bubble: one whose round's
+    Propose record says no idea could be tested on it (P6.6.7), not one whose tests found no fix."""
+    hass = improver.hass
+    seat(improver, "nofix001", "Your household", outcome="no fix found")
+    untested = seat(improver, "nofix002", "Your household", outcome="no fix found")
+    untested["rounds"]["1"]["records"]["Propose"] = {"attempts": [], "untestable": {
+        "why": "Tried 3 times without the change: turn 1 didn't do what it did in the conversation.", "at": "now"}}
+    _, page = await ask(hass, panel.ws_conversations, archived=True)
+    rows = {row["id"]: row for row in page["conversations"]}
+    assert rows["nofix001"]["status"] == rows["nofix002"]["status"] == "nofix"
+    assert rows["nofix002"]["untestable"] is True and "untestable" not in rows["nofix001"]
+
+
+@pytest.mark.asyncio
 async def test_unarchived_one_stays_listed_while_it_stands_where_it_did(improver):
     """DETAILS P14.4.3: unarchiving keeps a conversation listed for as long as it stands where it did. Archived by hand,
     one is out of the pipeline, in Your household (P0.12); unarchived mid-round, it's back in the pipeline, new, for a

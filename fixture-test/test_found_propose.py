@@ -21,8 +21,9 @@ SECOND = "Please toggle the fixture relay."  # Reads as the friction conversatio
 
 
 def replayed(runtime, rid):
-    """Whether Simulate replayed the conversation, to test an idea on it."""
-    return any(item["recording_id"] == rid for item in runtime.replays.items.values())
+    """Whether Simulate replayed the conversation with a change, to test an idea on it (its baseline runs first, as
+    Propose takes it up: DETAILS P6.6.7)."""
+    return any(r["recording_id"] == rid and r["plan"]["kind"] == "after" for r in runtime.replays.items.values())
 
 
 def generators(runtime):
@@ -55,7 +56,9 @@ async def test_an_already_addressed_claim_the_code_rejected_isnt_a_duplicate(imp
     assert (await improvements.decide(item["id"], "accept", user_id="alex", editors=saves))["status"] == "applied"
     # Applied before the next conversation took place, so it didn't stop that one's friction.
     improvements.items[item["id"]]["application"]["at"] = "2025-12-01T00:00:00+00:00"
-    await improver.arrives(variant(improver.friction, "second001", SECOND))
+    second = variant(improver.friction, "second001", SECOND)
+    await improver.arrives(second)
+    improver.client.blocks = before(second)  # Its baseline, as Propose takes it up (DETAILS P6.6.7).
     verdicts = []
 
     async def claims_and_gives_up(hass, payload, tools):
@@ -77,8 +80,9 @@ async def test_an_already_addressed_claim_the_code_rejected_isnt_a_duplicate(imp
 async def test_an_impossible_idea_is_never_tested_or_sent_on(improver):
     """docs/DESIGN.md (Models judge; code derives): the roles' tools "validate their answer against the household
     and reject it with reasons until it is valid, so a malformed or impossible answer never moves on". An idea naming a
-    device the household doesn't have, rejected by submit_hypotheses, is never tested (nothing is replayed, none of the
-    round's tests is spent) nor built into an improvement: Propose failed, so the conversation is held there (P0.8)."""
+    device the household doesn't have, rejected by submit_hypotheses, is never tested (nothing is replayed with it,
+    none of the round's tests is spent) nor built into an improvement: Propose failed, so the conversation is held
+    there (P0.8)."""
     runtime, model, client = improver.runtime, improver.model, improver.client
     await improver.arrives(improver.friction)
     verdicts = []

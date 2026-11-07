@@ -5483,6 +5483,15 @@ def test_one_with_no_fix_found_says_so_quietly_and_is_sent_in_again_only_opened_
     expect(panel.find(".cs-done")).to_have_text("Sent in. The improver is looking at it now.")
 
 
+def test_one_no_idea_could_be_tested_on_has_the_same_chip_with_its_own_bubble(open_panel):
+    """DETAILS P14.3.14, P17.20.6: No fix found because no idea could be tested on it (the row says so)."""
+    untested = {**CHATS[3], "status": "nofix", "untestable": True}  # “Warm up the car.”
+    panel = open_panel(replies(conversations=listing([CHATS[0], untested])))
+    chip = panel.find(".cs-row").nth(1).locator(".chip")
+    expect(chip).to_have_text("No fix found")
+    expect(chip).to_have_attribute("title", "No fix could be tested on this conversation.")
+
+
 def test_already_covered_and_held_say_why_in_their_tooltips(open_panel):
     """Already covered: another conversation's improvement covers it (P0.12), and it can be sent in again. Held, a
     chip names its stage and its tooltip says why (flow.py's words), and it can be picked for a run (P0.7)."""

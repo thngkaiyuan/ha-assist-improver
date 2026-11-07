@@ -250,7 +250,7 @@ async def test_simulate_is_blamed_only_for_its_own_failures(improver):
         out["test"] = await use(hass, tools["test_idea"], kindless, slip=True)
         await model.use(hass, tools["submit_hypotheses"], NOT_FIXED)
         return "Submitted."
-    await round_with(improver, proposer, blocks=[])
+    await round_with(improver, proposer, blocks=before(improver.friction))  # Its baseline only.
     assert "Invalid" in out["test"].get("error", "") and out["tester"].crashed is None
     assert improver.runtime.flow.place(improver.friction["id"])["outcome"] == "no fix found"
     assert [attempt["status"] for attempt in propose_record(improver)["attempts"]] == ["done"]
@@ -344,6 +344,7 @@ async def test_a_cut_off_proposal_leaves_no_review_asked_after_the_cut(improver,
         await asyncio.Event().wait()
     model.hypothesis_generator, model.hypothesis_reviewer = proposer, reviewer
     await improver.arrives(improver.friction)
+    improver.client.blocks = before(improver.friction)  # Its baseline, as Propose takes it up (DETAILS P6.6.7).
     pipeline.start(trigger="manual")
     with pytest.raises(asyncio.CancelledError):
         await pipeline._task

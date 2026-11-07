@@ -13,12 +13,12 @@ from .hypotheses.tools import StampTool
 
 def of(reviews, tests, hypothesis):
     """The stamps an idea holds, one rule wherever they're read: Review, when the reviewer's latest review of exactly
-    its changes approved them; Simulate, when a test of exactly its changes validated. Its title only threads its
-    discussion with the reviewer."""
+    its changes approved them; Simulate, when the latest test of exactly its changes validated (another setup's test
+    of them may follow an earlier one, P6.3.4). Its title only threads its discussion with the reviewer."""
     changes = digest(hypothesis.get("changes"))
     verdicts = [r.get("verdict") for r in reviews if digest(r["hypothesis"].get("changes")) == changes]
-    return {"Review": bool(verdicts) and verdicts[-1] == "approve",
-            "Simulate": any(t["validated"] for t in tests if t["changes"] == changes)}
+    validated = [t["validated"] for t in tests if t["changes"] == changes]
+    return {"Review": bool(verdicts) and verdicts[-1] == "approve", "Simulate": bool(validated) and validated[-1]}
 
 
 def result(test):

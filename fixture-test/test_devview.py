@@ -93,6 +93,9 @@ async def test_any_id_or_the_start_of_one_shows_its_lifecycle_and_log(improver):
     kinds = [e["kind"] for e in found["timeline"]]
     assert {"recorded", "closed", "analysis", "proposal", "replay", "improvement", "stage", "held"} <= set(kinds)
     assert all(e["ids"].get("run") == run["id"] for e in found["timeline"] if e["kind"] == "analysis")
+    # A replay without the change that reproduced: its devices did as recorded, all its status says.
+    assert "Replay without the change (try 1) of friction: its devices did as recorded" in [
+        e["what"] for e in found["timeline"] if e["kind"] == "replay"]
     # Its flow record, round by round: each stage it moved to, and where it's held, with why.
     assert [e["what"] for e in found["timeline"] if e["kind"] == "stage"] == [
         f"Round 1: {stage}" for stage in ("Your Assist", "Triage", "Analyze", "Propose", "Write up")]

@@ -3,7 +3,7 @@
 import pytest
 
 from recordings import SCRIPT, TARGET, make_recording, recorded_today, relay_renamed
-from custom_components.assist_improver.evidence import Evidence, capabilities, replay_calls
+from custom_components.assist_improver.evidence import Evidence, capabilities, goal_targets, replay_calls
 from custom_components.assist_improver.exploration import SessionView
 from custom_components.assist_improver.hypotheses import Sessions
 
@@ -114,6 +114,25 @@ async def test_the_implementation_check_compares_a_goals_whole_target_and_an_act
     facts = await evidence.implementation(wrong, evidence.setup(wrong))
     assert [c["reached"] for c in facts[0]["each_script_alone"][0]["goal_devices"]] == [False, False]
     assert facts[0]["reaches_goal"] is False and effect_guards == []
+
+
+def test_the_implementation_check_compares_the_whole_goal_its_parts_and_a_repair_too():
+    """A script is checked for reaching the goal (DETAILS P6.9): every world-state goal at the goal's turn, its parts
+    too (a car's cabin warmed, with its defrost on as part of it), and at a turn that repairs an earlier one's side
+    effect, the repair; never what only reacts to a goal (asking again, an objection)."""
+    analysis = {"goals": [
+        {"turn": 1, "summary": "Warm the car", "kind": "state", "entity_id": "climate.car_cabin", "state": "heat"},
+        {"turn": 1, "summary": "Defrost on", "kind": "state", "entity_id": "switch.car_defrost", "state": "on",
+         "serves": 1},
+        {"turn": 2, "summary": "Asked again", "kind": "step", "serves": 1},
+        {"turn": 3, "summary": "Seat heater back off", "kind": "state", "entity_id": "switch.car_seat_heater",
+         "state": "off", "serves": 1},
+        {"turn": 3, "summary": "Don't touch the seats", "kind": "conduct", "about": 1, "quote": "Not the seats.",
+         "serves": 1}]}
+    assert [(g["entity_id"], g["state"]) for g in goal_targets(analysis, 1)] == [
+        ("climate.car_cabin", "heat"), ("switch.car_defrost", "on")]
+    assert goal_targets(analysis, 2) == []
+    assert [(g["entity_id"], g["state"]) for g in goal_targets(analysis, 3)] == [("switch.car_seat_heater", "off")]
 
 
 @pytest.mark.asyncio

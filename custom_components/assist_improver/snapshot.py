@@ -51,13 +51,16 @@ def taken(hass, moment=True):
     read = {"at": utcnow().isoformat(), "states": hass.states.async_all()}
     if not moment:
         return read
-    entries, devices = list(er.async_get(hass).entities.values()), dr.async_get(hass)
+    registry, devices = er.async_get(hass), dr.async_get(hass)
     exposure = {}
-    for entity_id in {s.entity_id for s in read["states"]} | {e.entity_id for e in entries}:
+    for entity_id in {s.entity_id for s in read["states"]} | set(registry.entities):
         try:
             exposure[entity_id] = async_should_expose(hass, "conversation", entity_id)
         except KeyError:
             exposure[entity_id] = None
+    # Read after: asked the first time, Home Assistant keeps an entity's default exposure in its options, so a
+    # snapshot taken again reads the same.
+    entries = list(registry.entities.values())
     scripts, automations = _definitions(hass)
     household, ahead = hass.data.get(HOUSEHOLD), hass.data.get(AHEAD) or {}
     return {**read, "time_zone": hass.config.time_zone, "home_name": hass.config.location_name,

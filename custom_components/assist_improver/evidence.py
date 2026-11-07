@@ -32,7 +32,7 @@ from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import llm
 
 from . import happened, targets
-from .analyzer import done, reached, top_level
+from .analyzer import done, reached
 from .cases import CaseError, recording_turns, replayable_turns
 from .changes import RESOLVING, changed, setup_from_changes
 from .failures import contained
@@ -60,11 +60,12 @@ SIGNALS_NOTE = ("Each is a recorded tool call that Home Assistant resolves diffe
 
 def goal_targets(analysis, turn):
     """What the goals asked for at a turn want, each as the implementation check compares it (run_scripts) by the
-    analysis's own readers (analyzer.reached and done): a state goal's target State (targets.target: its state and
+    analysis's own readers (analyzer.reached and done), for every world-state goal there: the goal and its parts, or a
+    repair of an earlier turn's (DETAILS P6.9's whole goal). A state goal's target State (targets.target: its state and
     each setting asked for), a sequence goal's states, an action's outcome and devices, and what the user chose for
     settings they left open."""
     out = []
-    for g in top_level(analysis.get("goals", [])):
+    for g in analysis.get("goals", []):
         if g["turn"] != turn:
             continue
         if g["kind"] == "state":

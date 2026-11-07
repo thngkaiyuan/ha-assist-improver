@@ -37,6 +37,8 @@ export const TEXT = {
                   smoothTip: "Nothing to improve, at a quick look. Send it in for a full analysis.",
                   // A chip's tooltip, where it says what comes next; held, why (flow.py's words).
                   nofixTip: "No fix worked. Send it in again with a note for one more look.",
+                  // No fix found because no idea could be tested on it (DETAILS P6.6.7).
+                  untestableTip: "No fix could be tested on this conversation.",
                   fineTip: "Nothing went wrong, as far as it could tell. Send it in again with a note if something did.",
                   // A conversation Home Assistant answered itself, not the AI (DETAILS P9.9.9): the chip's bubble.
                   cannotTip: "Home Assistant's built-in commands answered “{quote}”, not your AI assistant, and " +

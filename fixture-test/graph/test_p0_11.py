@@ -244,7 +244,8 @@ def test_only_home_assistants_own_commands_make_a_conversation_cant_improve_what
     """Trouble an existing improvement covers is still Can't improve when Home Assistant's commands answered the turn:
     that improvement can't reach it while Home Assistant answers first, and the household should hear of the setting.
     A turn an automation's sentence trigger answered is no such turn: no setting gives it to the AI, so it goes on as
-    any other."""
+    any other, to Propose (where its replay without a change decides whether an idea can be tested on it, DETAILS
+    P6.6.7)."""
     home = Household()
     home.converse(UNMET)
     covered, automation = home.converse(ANSWERED_LOCALLY_COVERED), home.converse(ANSWERED_BY_AN_AUTOMATION)
@@ -252,7 +253,7 @@ def test_only_home_assistants_own_commands_make_a_conversation_cant_improve_what
     assert [item for item in home.review_queue() if item.conversation == covered and item.question]
     assert home.place(covered).outcome is None and home.place(covered).stage == "Your review"
     assert not [item for item in home.review_queue() if item.conversation == automation]
-    assert home.received("Propose", automation)
+    assert "Propose" in home.path(automation)
 
 
 @refines("test_a_decline_leaves_every_other_conversation_where_it_was_even_a_duplicate_its_improvement_covered")

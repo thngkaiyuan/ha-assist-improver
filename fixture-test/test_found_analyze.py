@@ -8,7 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from recordings import TARGET, make_recording
+from recordings import TARGET, before, make_recording
 from test_conversations import ask
 from kit import FIRST, improver, variant  # noqa: F401 - improver is a fixture.
 from custom_components.assist_improver import analysis, analyzer, panel
@@ -473,7 +473,9 @@ async def test_a_note_survives_sending_the_conversation_in_again_without_one(imp
     note, and the fresh analysis hears it, as the conversation's last turn too (P8.9.1)."""
     hass, model, flow = improver.hass, improver.model, improver.runtime.flow
     improver.entry.options = {**improver.entry.options, "paused_stages": ["write"]}
-    await improver.arrives(variant(make_recording(), "fine0001", FINE, turns=2))
+    record = variant(make_recording(), "fine0001", FINE, turns=2)
+    await improver.arrives(record)
+    improver.client.blocks = before(record)  # Its baseline, as Propose takes it up (DETAILS P6.6.7).
     heard, run_role = [], analysis.run_role
 
     async def listening(hass_, **kwargs):

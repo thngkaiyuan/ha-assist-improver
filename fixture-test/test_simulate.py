@@ -1552,13 +1552,17 @@ async def test_a_change_the_replay_cant_run_is_the_ideas_untestable_not_the_conv
 
 
 @pytest.mark.asyncio
-async def test_an_idea_that_only_edits_another_assistants_instructions_replays_nothing(hass, monkeypatch):
+async def test_an_idea_that_only_edits_another_assistants_instructions_is_never_replayed(hass, monkeypatch):
+    """DETAILS P6.8.5: the conversation's baseline stands (Propose established it first, P6.6.7), and nothing is
+    replayed with the change."""
     record = recording()
     _, client, runtime = await setup(hass, monkeypatch, record)
+    client.blocks = before(record)
     other = {"title": "Other", "changes": [{"kind": "assistant", "target": "other-entry/other", "text": "Be brief."}]}
     with pytest.raises(simulate.Untestable, match=simulate.NOT_REACHED) as raised:
         await run(hass, runtime, hypothesis=other)
-    assert not raised.value.conversation and not client.requests and not runtime.replays.items
+    assert not raised.value.conversation and not client.blocks
+    assert [r["plan"]["kind"] for r in runtime.replays.items.values()] == ["before"]
 
 
 def test_a_recording_made_in_sandbox_mode_cant_be_replayed():

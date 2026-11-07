@@ -864,20 +864,22 @@ def _replay(replay, judged, heard, told, aside, source, seeded, setup):
                           **({"set_aside": True} if k in aside else {})} for k in told}}
 
 
-async def test(hass, entry, runtime, rid, goals, hypothesis):
-    """One test of an idea on its conversation (P0.1, P0.9): the replays without and with the change, each judged by
-    P0.1.1's measures, and whether the change made the goals strictly easier (validated). goals: the conversation's,
-    as measures.goals_of gives them. Untestable: why it can't be tested (conversation: no idea can be, on this
-    conversation); Transient: the machinery's doing, and it can run again."""
+async def baseline(hass, entry, runtime, rid, goals):
+    """The conversation's baseline under today's plan (DETAILS P6.6): up to TRIES whole replays without a change, each
+    kept under a plan of its own, until one goes as the conversation went; a try the machinery cut off isn't one, and
+    runs again. A kept try is reused with what the judge said of it, so on an unchanged plan nothing is replayed or
+    asked. goals: the conversation's, as measures.goals_of gives them. The try that went as it went (before: its plan;
+    without: its replay; judged as _baseline gives it), with what a test compared with it reads: today's setup (today),
+    the recording and goals under today's entity IDs, its turns, the recording as the analysis read it (session) and
+    the judge's model. Untestable (conversation) when no idea can be tested on it (P6.6.7); Transient: the machinery's
+    doing."""
     from .exploration import session_view
     replays = runtime.replays
     try:
         recording = await runtime.recorder.export(rid)
     except CaseError as err:
         raise Untestable(str(err), conversation=True) from err
-    if not reaches(hypothesis, recording):
-        raise Untestable(NOT_REACHED)
-    # One setup for the baseline and the test compared with it: once it has changed, the baseline runs again. A device
+    # One setup for the baseline and the tests compared with it: once it has changed, the baseline runs again. A device
     # whose entity ID changed since is the same device under its new one, in the conversation and its goals alike.
     before, today = await planned(hass, recording)
     renames = renamed(recording, today["home"])
@@ -885,26 +887,38 @@ async def test(hass, entry, runtime, rid, goals, hypothesis):
     turns, session = recording_turns(recording), await session_view(hass, recording, setup=False)
     went = measures.judge(goals, session, range(1, len(turns) + 1), measures.CONVERSATION)
     model = judge_model(entry)
-    # The baseline: up to TRIES whole replays without the change, each under a plan of its own and kept, until one goes
-    # as the conversation went; a try the machinery cut off isn't one, and runs again (Transient).
     whys = []
     while True:
         without = await _settled(hass, replays, before, recording, today)
         try:
-            baseline = await _baseline(hass, model, replays, without, recording, goals, session, went)
+            judged = await _baseline(hass, model, replays, without, recording, goals, session, went)
             break
         except Unlike as err:
             whys.append(str(err))
         if before["try"] == TRIES:
             raise Untestable(unlike(whys), conversation=True)
         before = tried_again(before)
-    b, heard_before, told_before, aside = (baseline[k] for k in ("judged", "conduct", "facts", "aside"))
+    return {**judged, "before": before, "without": without, "today": today, "recording": recording, "goals": goals,
+            "turns": turns, "session": session, "model": model}
+
+
+async def test(hass, entry, runtime, rid, goals, hypothesis):
+    """One test of an idea on its conversation (P0.1, P0.9): the replays without and with the change, each judged by
+    P0.1.1's measures, and whether the change made the goals strictly easier (validated). goals: the conversation's,
+    as measures.goals_of gives them. Untestable: why it can't be tested (conversation: no idea can be, on this
+    conversation); Transient: the machinery's doing, and it can run again."""
+    base = await baseline(hass, entry, runtime, rid, goals)
+    recording, goals, turns, session, today = (base[k] for k in ("recording", "goals", "turns", "session", "today"))
+    if not reaches(hypothesis, recording):
+        raise Untestable(NOT_REACHED)
+    replays, before, without, model = runtime.replays, base["before"], base["without"], base["model"]
+    b, heard_before, told_before, aside = (base[k] for k in ("judged", "conduct", "facts", "aside"))
     try:
         setup, tested, provider = setup_for(hypothesis, recording, today, hass)
     except CaseError as err:
         raise Untestable(str(err)) from err
     # The test branches from the baseline where the change has to make the difference (DETAILS P6.2).
-    branch = measures.branch(goals, b, baseline["home"], aside, {
+    branch = measures.branch(goals, b, base["home"], aside, {
         k: [a["turn"] for a in v["answers"] if a["shows"]] for k, v in heard_before.items()})
     with_change = await _settled(hass, replays, after_plan(before, setup, goals, aside, model, branch), recording,
                                  today, goals=goals, setup=setup, aside=aside, judge=model, session=session,
@@ -916,7 +930,7 @@ async def test(hass, entry, runtime, rid, goals, hypothesis):
                                      [g for g in goals if g["key"] not in aside]))
     told_after = {k: {} for k in told_before if k in aside}
     told_after.update(await questions(hass, model, replays, with_change, recording,
-                                      [q for q in baseline["asking"] if q["key"] not in aside], goals, session))
+                                      [q for q in base["asking"] if q["key"] not in aside], goals, session))
     a = measures.judge(goals, measures.replay_view(turns, session, with_change["steps"]), with_change["said"],
                        {k: v["state"] for k, v in heard_after.items() if v}, aside,
                        {k: v["answers"] for k, v in told_after.items() if v})

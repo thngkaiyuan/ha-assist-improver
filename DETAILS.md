@@ -589,6 +589,9 @@ Citations in parentheses name the maintainer's earlier notes, which aren't in th
     superseding PRODUCT-SPEC.md, 2026-10-21)
   - **P6.6.6** A conversation gets up to three baseline tries per setup (P6.7.1), a fixed number, on top of its
     counterfactuals; a try the machinery cut off isn't one (P6.3.5). (PRODUCT-SPEC.md; Kai, 2026-11-05)
+  - **P6.6.7** The baseline runs as Propose takes the conversation up, before the proposer. One no idea can be tested
+    on (it can't be replayed, or P6.6.5) gets no proposal: the round ends No fix found (P6.3.6), or a revision's or
+    conflict's earlier version stays up. (P0.9)
 - **P6.7 No resampling.** A test is never repeated in the hope of a better result; only a baseline gets its tries
   (P6.6.5). A different plan (a change in how replays are judged, or the baseline it branches from) is a different
   test. (DESIGN.md; INSTALL.md; MILESTONE-6.md; Kai, 2026-11-05)
@@ -2114,8 +2117,9 @@ Citations in parentheses name the maintainer's earlier notes, which aren't in th
   - **P14.3.13** Declined: its improvement was declined, and it's archived (P12.4.12). (TEXT-REVIEW.md: 2026-10-25; Kai,
     2026-10-26)
   - **P14.3.14** No fix found: none of its goals with trouble has a fix, because the conversation's counterfactuals
-    are used up or the proposer said why it's outside the assistant's control. Tooltip: 'No fix worked. Send it in
-    again with a note for one more look.' (TEXT-REVIEW.md "No fix found": Kai approved 2026-10-25)
+    are used up, the proposer said why it's outside the assistant's control, or no idea can be tested on it (P6.6.7).
+    Tooltip: 'No fix worked. Send it in again with a note for one more look.', or for one no idea could be tested on,
+    'No fix could be tested on this conversation.' (TEXT-REVIEW.md "No fix found": Kai approved 2026-10-25)
   - **P14.3.15** Marked as a test: the household said it was a test. Decisions made with the earlier menu still hold.
     (TEXT-REVIEW.md: 2026-10-25; fixture-test/SPEC.md)
   - **P14.3.16** Couldn't be read: no stage can read it. One that couldn't be read after being sent in again shows
@@ -2788,8 +2792,9 @@ words, those words are the requirement; elsewhere the behaviour lives in its own
     if something did." (TEXT-REVIEW.md, Kai approved 2026-10-25; Kai, 2026-10-26: "Approved")
   - **P17.20.5** "No fix yet"'s bubble: "The next proposal looks for another fix." (Kai, 2026-10-26: approving "No fix
     yet · The next proposal looks for another fix")
-  - **P17.20.6** "No fix found"'s bubble: "No fix worked. Send it in again with a note for one more look."
-    (TEXT-REVIEW.md, Kai approved 2026-10-25)
+  - **P17.20.6** "No fix found"'s bubble: "No fix worked. Send it in again with a note for one more look.", or for
+    one no idea could be tested on (P6.6.7): "No fix could be tested on this conversation." (TEXT-REVIEW.md, Kai
+    approved 2026-10-25)
 
 - **P17.21** The review's words:
   - **P17.21.1** What an improvement gets, on the home list and the review's header: "{n} new thing(s) Assist can do"
