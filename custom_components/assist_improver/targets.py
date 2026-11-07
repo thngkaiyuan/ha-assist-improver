@@ -408,7 +408,8 @@ def moved(domain, was, left, now, found=None):
 def problems(source, entity_id, state, asked):
     """What's wrong with a target for this entity (asked: its settings as a goal names them): a state it can't be in,
     a setting none of its domain's services sets on it (takes: a brightness on a light that doesn't dim), a value
-    outside the options or range it shows. Empty when it can hold it."""
+    outside the options or range it shows (under any name of the setting: a remote's activity_list, for its activity
+    or its current_activity). Empty when it can hold it."""
     domain, found, out = entity_id.split(".", 1)[0], shown(source, entity_id), []
     allowed = states(source, entity_id)
     if state is not None and allowed is not None and state not in allowed:
@@ -425,7 +426,9 @@ def problems(source, entity_id, state, asked):
             out.append(f"{entity_id} has no setting {name!r}; its settings are {', '.join(can) or 'none'}.")
             continue
         held_as = attribute_of(domain, name)
-        listed = _options(held_as, found) or _options(name, found) or next((
+        setting = [held_as, name, *sorted({f for fields in _services(domain).values() for f in fields
+                                           if attribute_of(domain, f) == held_as})]
+        listed = next(filter(None, (_options(n, found) for n in setting)), None) or next((
             s.get("options") for s in ((sets.get(held_as) or {}).get("selector") or {}).values()
             if isinstance(s, dict) and isinstance(s.get("options"), list)), None)
         bounds = (0, 100) if name == "brightness_pct" else _range(domain, held_as, found)

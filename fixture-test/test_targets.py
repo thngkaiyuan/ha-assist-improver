@@ -215,6 +215,8 @@ def test_a_setting_is_the_attribute_its_device_reports_whatever_its_field_or_pro
     assert targets.problems(view.source, remote, "on", {"activity": "Watch TV"}) == []
     assert targets.problems(view.source, remote, "on", {"activity": "Gaming"}) == [
         f"{remote}'s activity can't be 'Gaming'; it takes Music, Watch TV."]
+    assert targets.problems(view.source, remote, "on", {"current_activity": "Gaming"}) == [
+        f"{remote}'s current_activity can't be 'Gaming'; it takes Music, Watch TV."]  # As its settings name it.
     assert analyzer.reached(view, goal(remote, "on", activity="Watch TV")) is True
 
 
