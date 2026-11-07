@@ -152,12 +152,13 @@ def breakable(text, locations):
 
 def covered(functions, places):
     """The lines of `places` ([(offset, line)] in order) whose place V8 counted as run: the innermost of its ranges
-    holding the place decides (they nest). A function's own range counts from one past its start: its first character
-    belongs to the code around it (a declaration's place is on the function it declares)."""
+    holding the place decides (they nest). A declared function's own range counts from one past its start: its first
+    character belongs to the code around it (a declaration's place is on the function it declares). The script's own
+    range, the first, starts at its start."""
     offsets = [offset for offset, _ in places]
     counts = [0] * len(places)
-    ranges = [(r["startOffset"] + (i == 0), r["endOffset"], r["count"])
-              for function in functions for i, r in enumerate(function["ranges"])]
+    ranges = [(r["startOffset"] + (i == 0 and n > 0), r["endOffset"], r["count"])
+              for n, function in enumerate(functions) for i, r in enumerate(function["ranges"])]
     for start, end, count in sorted(ranges, key=lambda r: (r[0], -r[1])):
         first, last = bisect_left(offsets, start), bisect_left(offsets, end)
         counts[first:last] = [count] * (last - first)

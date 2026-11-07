@@ -69,6 +69,8 @@ def test_a_line_is_covered_when_v8_counted_its_place_as_run():
     # Line 2 declares `unused`, which never ran: its place sits on the function's first character, which belongs to
     # the module around it. Line 6 is inside `used`, which ran, but in the `if` that didn't.
     assert jscov.covered(FUNCTIONS, jscov.breakable(SOURCE, LOCATIONS)) == {2, 5, 8, 10}
+    # The script's own range isn't shifted: a statement at its very start counts.
+    assert jscov.covered([{"ranges": [{"startOffset": 0, "endOffset": 6, "count": 1}]}], [(0, 1)]) == {1}
 
 
 class Fake:
