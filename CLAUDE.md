@@ -2,7 +2,8 @@
 
 A Home Assistant custom integration (domain `assist_improver`) that records a household's Assist conversations and
 proposes changes that get the same result in fewer turns. `SPEC.md` is the one spec (what the product does): the
-maintainer's model. A change to it comes by pull request, its exact words shown, and the maintainer approves it.
+maintainer's model. Where it doesn't settle a choice, its Principles do. A change to it comes by pull request,
+its exact words shown, and the maintainer approves it.
 Work flows from it to the tests that hold it (fixture-test/graph, run with `--graph`), then the code; `DETAILS.md` is
 detail for code and tests to settle. `ROADMAP.md` says where we are. Keep process lean.
 

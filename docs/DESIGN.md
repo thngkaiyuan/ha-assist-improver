@@ -1,6 +1,7 @@
 # Design principles
 
-How Assist Improver is built, and why. The code follows these; when a principle changes, this page changes with it.
+How Assist Improver is built, and why: SPEC.md's principles, delightful and simple, applied. The code follows these;
+when a principle changes, this page changes with it.
 
 ## The pipeline
 

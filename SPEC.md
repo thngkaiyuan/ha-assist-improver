@@ -4,6 +4,15 @@ The one source of what the product does: Kai's decisions. Each clause has an id 
 fixture-test/graph). Anything not here isn't a requirement. The detail that used to be here is in DETAILS.md, for code
 and its tests to settle.
 
+## Principles
+
+What everything here comes down to, and the compass for any choice this spec doesn't settle. (Kai, 2026-11-06)
+
+- **Delightful.** Beautiful, effortless and safe: it just works, and leaves people glad they have it.
+- **Simple.** Simple by default: complexity has to earn its place. Sometimes it's necessary and valuable, but its
+  worth is proven or justified, never assumed because it's the easy move at the moment, at the level one is working
+  at. A quick hack, a private Home Assistant API, a hand-kept list, or a check added here and there is complexity too.
+
 ## P0. The model
 
 Between two of Kai's own words, the later wins.
