@@ -40,6 +40,9 @@ def test_the_overview_lists_each_tool_call_with_its_result_and_the_devices_touch
     assert call["result"] == json.dumps(view.calls[1][0]["result"], ensure_ascii=False, default=str)[:200] + (
         call["result"][200:])  # Clipped, past 200 characters, with how much it left out.
     assert "assist_acted_on" not in json.dumps(view.overview())
+    long = view.read_turn(1)["assistant"]  # read_turn: the results past the overview's clip, and the state changes.
+    assert [s["result"] for s in long if "result_of" in s] == [view.calls[1][0]["result"]]
+    assert "tool results past the overview's clip, appear only in read_turn" in analyzer.INSTRUCTIONS
     assert not hasattr(view, "acted_on")
     assert view.devices_touched() == {TARGET}
     record["turns"][0]["actions"] = [{"action": SCRIPT, "data": {}}, {  # The script's own action, and its call.

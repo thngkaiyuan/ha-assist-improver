@@ -308,7 +308,7 @@ class SessionView:
 
     def conversation(self):
         """What the user and the assistant said in each turn, and each of Assist's tool calls with Home Assistant's
-        result, clipped (read_turn has them whole, with the turn's call log and state changes)."""
+        result, clipped (read_turn has them at length, with the turn's state changes)."""
         return [{"turn": t["turn"], "at": t["at"], "user_says": t["user_says"],
                  "assistant_says": " ".join(s["assistant_says"] for s in t["assistant"] if s.get("assistant_says")),
                  **({"assist_called": [{"call": c["tool"], "args": c["args"], "result": _clip(_text(c["result"]), 200)}
