@@ -20,14 +20,21 @@ after `container system start`):
 The journeys against HA OS itself, its kernel and Supervisor included, on an x64 Linux machine with KVM (a GitHub
 runner; never on a Mac):
 
-    tools/bench/haos.sh [stable|beta|dev]
+    tools/bench/haos.sh [stable|beta|dev] [VERSION]
 
-It boots the channel's HA OS release in QEMU, lets its Supervisor install the channel's Home Assistant, runs the
-journeys at phone size against it one at a time, and checks the logs (`logcheck.py`): every replay's guard skipped
-Landlock, and no error is the improver's.
+It boots the channel's HA OS release in QEMU, lets its Supervisor install the channel's Home Assistant (or VERSION),
+runs the journeys at phone size against it one at a time, and checks the logs (`logcheck.py`): every replay's guard
+skipped Landlock, and no error is the improver's.
 
-CI (`.github/workflows`): `tests.yml` runs both on every push and pull request, for all three channels;
+CI (`.github/workflows`): `tests.yml` runs both on every push and pull request, for all three channels, where stable
+means every supported release: `hacs.json`'s minimum, and each month's newest patch since (`watch.py versions`);
 `home-assistant.yml` runs a channel's again for each new Home Assistant version (`watch.py`). Stable gates: a
 commit's newest Stable check is its pass (`tools/passed.py`), which `tools/deploy.sh` asks for. Beta and dev are smoke
 tests. GitHub bills a private repository's runs, so there the tests skip, and the watcher polls only once the
 repository variable `WATCH_HOME_ASSISTANT` is `on` (a scheduled run can't tell).
+
+The README's badges are shields.io endpoint files on the `badges` branch: each run's `verdict` job writes them
+(`badges.py`), and `badges.yml` publishes a run's on main. The branch is made once, by hand, with an empty commit:
+
+    empty=$(git hash-object -t tree /dev/null)
+    git push origin "$(git commit-tree -m "The README's badges" "$empty"):refs/heads/badges"

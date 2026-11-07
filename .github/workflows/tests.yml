@@ -1,8 +1,10 @@
-# Every suite on everything new: each push and pull request of ours, against Home Assistant's stable, beta and dev
-# builds on x64 and arm64 and on HA OS (bench.yml); and each new Home Assistant version, for its channel only
-# (home-assistant.yml starts this with the channel and its versions). The Stable check, stable's results with
-# hassfest, gates what ships, releases included (tools/passed.py); beta and dev are smoke tests: a failure fails the
-# run, never a release.
+# Every suite on everything new: each push and pull request of ours, against every supported Home Assistant stable
+# release (hacs.json's minimum, and each month's newest patch since: tools/bench/watch.py versions) and beta's and
+# dev's builds, on x64 and arm64 and on HA OS (bench.yml); and each new Home Assistant version, for its channel only
+# (home-assistant.yml starts this with the channel and its versions). The Stable check, every stable release's results
+# with hassfest, gates what ships, releases included (tools/passed.py); beta and dev are smoke tests: a failure fails
+# the run, never a release. The coverage job measures the share of the integration's code the suites run. The
+# verdict job leaves the README's badges as an artifact, which badges.yml publishes for runs on main.
 # Pull requests from forks run it too: no job needs a secret, and its token only reads. In a private repository,
 # where GitHub bills each run, every job skips.
 name: Tests
@@ -26,29 +28,59 @@ permissions:
   contents: read
 
 jobs:
+  versions:  # Exact versions, so each channel's image jobs and HA OS job test one build, and the badges can say which.
+    if: ${{ !github.event.repository.private }}
+    runs-on: ubuntu-26.04
+    timeout-minutes: 5
+    outputs:
+      stable: ${{ steps.versions.outputs.stable }}
+      beta: ${{ steps.versions.outputs.beta }}
+      dev: ${{ steps.versions.outputs.dev }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          sparse-checkout: |
+            hacs.json
+            tools/bench/watch.py
+          sparse-checkout-cone-mode: false
+      - id: versions
+        run: |
+          set -o pipefail
+          python3 tools/bench/watch.py versions | tee -a "$GITHUB_OUTPUT"
+
   stable:
+    needs: versions
     if: >-
       ${{ !github.event.repository.private
       && (github.event_name != 'workflow_dispatch' || inputs.channel == 'stable') }}
+    strategy:
+      fail-fast: false
+      matrix:
+        version: ${{ fromJSON(needs.versions.outputs.stable) }}
     uses: ./.github/workflows/bench.yml
     with:
       channel: stable
+      version: ${{ matrix.version }}
 
   beta:
+    needs: versions
     if: >-
       ${{ !github.event.repository.private
       && (github.event_name != 'workflow_dispatch' || inputs.channel == 'beta') }}
     uses: ./.github/workflows/bench.yml
     with:
       channel: beta
+      version: ${{ needs.versions.outputs.beta }}
 
   dev:
+    needs: versions
     if: >-
       ${{ !github.event.repository.private
       && (github.event_name != 'workflow_dispatch' || inputs.channel == 'dev') }}
     uses: ./.github/workflows/bench.yml
     with:
       channel: dev
+      version: ${{ needs.versions.outputs.dev }}
 
   hassfest:  # Home Assistant's own checks of an integration, for the gate (HACS's catalog asks for validate.yml's).
     if: ${{ !github.event.repository.private }}
@@ -60,13 +92,70 @@ jobs:
 
   gate:  # Its check is named Stable (tools/passed.py). GitHub reads job IDs without regard to case: not "stable".
     name: Stable
-    needs: [stable, hassfest]
+    needs: [versions, stable, hassfest]
     if: >-  # Not once cancelled: a cancelled run is no verdict.
       ${{ !cancelled() && !github.event.repository.private
       && (github.event_name != 'workflow_dispatch' || inputs.channel == 'stable') }}
     runs-on: ubuntu-26.04
     steps:
-      - name: Every stable job and hassfest passed
+      - name: The supported releases were found, and every stable job and hassfest passed
         env:
-          RESULTS: ${{ needs.stable.result }} ${{ needs.hassfest.result }}
-        run: test "$RESULTS" = "success success"
+          RESULTS: ${{ needs.versions.result }} ${{ needs.stable.result }} ${{ needs.hassfest.result }}
+        run: test "$RESULTS" = "success success success"
+
+  # The share of the integration's code the four suites run: its Python in every process, and the panel's JavaScript
+  # (tools/check.sh --coverage). Outside the image, which has no coverage.py; not a gate. Code alone decides it, so
+  # not for a new Home Assistant's run.
+  coverage:
+    if: ${{ !github.event.repository.private && github.event_name != 'workflow_dispatch' }}
+    runs-on: ubuntu-26.04
+    timeout-minutes: 90  # The bench's image jobs take 20 to 30 minutes; measuring adds to that.
+    outputs:
+      totals: ${{ steps.coverage.outputs.totals }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2  # v10.3.3; a tag can move.
+        with:
+          enable-cache: false
+      - name: Both venvs and Playwright's Chromium (CONTRIBUTING.md)
+        run: |
+          uv venv .venv --python 3.14 --managed-python
+          uv pip install --python .venv/bin/python -r fixture-test/requirements-lock.txt
+          uv venv tools/e2e/.venv --python 3.14 --managed-python
+          uv pip install --python tools/e2e/.venv/bin/python -r tools/e2e/requirements.txt
+          PLAYWRIGHT_BROWSERS_PATH=tools/ui/browsers tools/e2e/.venv/bin/python -m playwright install --with-deps chromium
+      - id: coverage
+        name: Tests, measured
+        env:
+          BENCH_LANDLOCK: applied
+          CHECK_LOGS: ${{ runner.temp }}/logs
+        run: |
+          set -o pipefail
+          tools/check.sh --coverage "$RUNNER_TEMP/coverage" | tee "$RUNNER_TEMP/check.txt"
+          grep '^== coverage:' "$RUNNER_TEMP/check.txt" >> "$GITHUB_STEP_SUMMARY"
+          echo "totals=$(jq -c . "$RUNNER_TEMP/coverage/totals.json")" >> "$GITHUB_OUTPUT"
+      - if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: logs-coverage
+          path: ${{ runner.temp }}/logs
+
+  verdict:  # The badges of what this run tested, as shields.io endpoint files (tools/bench/badges.py).
+    needs: [versions, gate, beta, dev, coverage]
+    if: ${{ !cancelled() && !github.event.repository.private }}
+    runs-on: ubuntu-26.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          sparse-checkout: tools/bench/badges.py
+          sparse-checkout-cone-mode: false
+      - env:
+          NEEDS: ${{ toJSON(needs) }}
+          RUN: ${{ github.run_id }}
+        run: python3 tools/bench/badges.py verdict "$RUNNER_TEMP/badges"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: badges
+          path: ${{ runner.temp }}/badges
+          overwrite: true  # A run tried again: its new verdict.

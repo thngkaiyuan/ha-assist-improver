@@ -1,5 +1,5 @@
-# One Home Assistant channel's tests (tools/bench): every suite against its official image on x64 and arm64, with
-# Landlock applied and missing, and the journeys against HA OS's release for the channel.
+# One Home Assistant version's tests (tools/bench): every suite against its official image on x64 and arm64, with
+# Landlock applied and missing, and the journeys against HA OS's release for its channel, running that version.
 name: Bench
 
 on:
@@ -8,13 +8,16 @@ on:
       channel:
         type: string
         required: true
+      version:  # Exact, as tests.yml's versions job gives it: the image jobs and HA OS test one build.
+        type: string
+        required: true
 
 permissions:
   contents: read
 
 jobs:
   image:
-    name: ${{ inputs.channel }} image, ${{ matrix.runner }}, Landlock ${{ matrix.landlock }}
+    name: ${{ inputs.version }} image, ${{ matrix.runner }}, Landlock ${{ matrix.landlock }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
     strategy:
@@ -36,9 +39,10 @@ jobs:
       - name: Tests
         env:
           CHECK_LOGS: ${{ runner.temp }}/logs
+          VERSION: ${{ inputs.version }}
         run: |
           sudo git config --system --add safe.directory "$PWD"
-          sudo --preserve-env=CHECK_LOGS tools/bench/run.sh ${{ inputs.channel }} --landlock ${{ matrix.landlock }}
+          sudo --preserve-env=CHECK_LOGS tools/bench/run.sh "$VERSION" --landlock ${{ matrix.landlock }}
       - name: Logs readable by the runner (root wrote them)
         if: failure()
         run: |
@@ -46,11 +50,11 @@ jobs:
       - if: failure()
         uses: actions/upload-artifact@v7
         with:
-          name: logs-${{ inputs.channel }}-${{ matrix.runner }}-${{ matrix.landlock }}
+          name: logs-${{ inputs.channel }}-${{ inputs.version }}-${{ matrix.runner }}-${{ matrix.landlock }}
           path: ${{ runner.temp }}/logs
 
   haos:
-    name: ${{ inputs.channel }} HA OS
+    name: ${{ inputs.version }} HA OS
     runs-on: ubuntu-26.04
     timeout-minutes: 120
     steps:
@@ -74,11 +78,13 @@ jobs:
       - name: Journeys on HA OS
         env:
           BENCH_WORK: ${{ runner.temp }}/haos
-        run: tools/bench/haos.sh ${{ inputs.channel }}
+          CHANNEL: ${{ inputs.channel }}
+          VERSION: ${{ inputs.version }}
+        run: tools/bench/haos.sh "$CHANNEL" "$VERSION"
       - if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: haos-${{ inputs.channel }}
+          name: haos-${{ inputs.channel }}-${{ inputs.version }}
           path: |
             ${{ runner.temp }}/haos/serial.log
             ${{ runner.temp }}/haos/e2e-runs

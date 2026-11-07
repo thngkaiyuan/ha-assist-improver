@@ -1,6 +1,6 @@
 """The CI bench's own logic (tools/bench), with stand-ins for what it reads: the watcher starts a channel's tests once
-for each new set of Home Assistant versions, and the HA OS job's log check finds the guard's Landlock line and any
-error of the improver's."""
+for each new set of Home Assistant versions, stable's tests cover every supported release, the HA OS job's log check
+finds the guard's Landlock line and any error of the improver's, and the badges say what a run tested."""
 
 import importlib.util
 from pathlib import Path
@@ -15,7 +15,7 @@ def tool(name):
     return module
 
 
-watch, logcheck = tool("watch"), tool("logcheck")
+watch, logcheck, badges = tool("watch"), tool("logcheck"), tool("badges")
 
 
 def answer(core, supervisor, os):  # A stand-in for version.home-assistant.io's answer, in the parts read.
@@ -34,6 +34,17 @@ def test_a_channel_runs_once_for_each_new_set_of_versions():
     assert list(watch.due(found, ran)) == ["dev"]
     found["stable"] = answer("2026.11.0", "2026.11.0", "18.4")  # A new Supervisor alone is new too.
     assert list(watch.due(found, ran)) == ["stable", "dev"]
+
+
+def test_stable_means_the_minimum_and_each_months_newest_patch_since_up_to_the_newest_stable():
+    tags = ["2026.10.4", "2026.11", "2026.11.0", "2026.11.1", "2026.11.2", "2026.12.0b0", "2026.12.0", "2026.12.1",
+            "2026.12.2", "2027.1.0b1", "2027.1.0.dev202612090215", "stable", "beta", "dev", "latest"]
+    # The minimum itself too, once its month has patches; 2026.12.2 is tagged, but the newest stable is 2026.12.1.
+    assert watch.supported("2026.11.0", "2026.12.1", tags) == ["2026.11.0", "2026.11.2", "2026.12.1"]
+    assert watch.supported("2026.11.0", "2026.11.0", ["2026.11.0"]) == ["2026.11.0"]
+    assert watch.supported("2026.9.0", "2027.1.1", ["2026.9.4", "2026.10.4", "2026.12.3", "2027.1.0"]) == [
+        "2026.9.0", "2026.9.4", "2026.10.4", "2026.12.3", "2027.1.1"]  # By number; the newest stable before its tag.
+    assert watch.supported("2026.12.0", "2026.11.2", tags) == []  # A minimum not out yet: nothing, and the job fails.
 
 
 GUARD = ("2026-11-06 08:20:39.759 DEBUG (MainThread) [custom_components.assist_improver.worker] Replay worker: "
@@ -62,7 +73,7 @@ def test_ci_runs_nothing_in_a_private_repository():
     too."""
     import yaml
     workflows = ROOT / ".github/workflows"
-    for name in ("tests.yml", "validate.yml", "leak-guard.yml"):
+    for name in ("tests.yml", "badges.yml", "validate.yml", "leak-guard.yml"):
         jobs = yaml.safe_load((workflows / name).read_text())["jobs"]
         assert all("!github.event.repository.private" in job["if"] for job in jobs.values()), name
     validate = yaml.safe_load((workflows / "validate.yml").read_text())["jobs"]
@@ -92,3 +103,50 @@ def test_each_workflows_job_ids_differ_without_regard_to_case():
     for path in sorted((ROOT / ".github/workflows").glob("*.yml")):
         jobs = list(yaml.safe_load(path.read_text())["jobs"])
         assert len({job.lower() for job in jobs}) == len(jobs), (path.name, jobs)
+
+
+def needs(**results):
+    """A stand-in for toJSON(needs) in tests.yml's verdict job: a push's run where everything passed, but the results
+    given."""
+    found = {"versions": {"result": "success", "outputs": {"stable": '["2026.11.0","2026.11.2","2026.12.1"]',
+                                                           "beta": "2027.1.0b1", "dev": "2027.1.0.dev202612090215"}},
+             "gate": {"result": "success", "outputs": {}}, "beta": {"result": "success", "outputs": {}},
+             "dev": {"result": "success", "outputs": {}},
+             "coverage": {"result": "success",
+                          "outputs": {"totals": '{"python": [9999, 12421], "js": [1000, 1579]}'}}}
+    for job, result in results.items():
+        found[job] = {"result": result, "outputs": {} if result != "success" else found[job]["outputs"]}
+    return found
+
+
+def test_the_badges_say_what_a_run_tested_and_how_it_went():
+    def said(files):
+        return {name: (file["label"], file["message"], file["color"]) for name, file in files.items()}
+    assert said(badges.verdict(needs(), 42)) == {
+        "stable.json": ("Home Assistant", "2026.11 – 2026.12 passing", "brightgreen"),
+        "beta.json": ("Home Assistant beta", "2027.1.0b1 passing", "brightgreen"),
+        "dev.json": ("Home Assistant dev", "2027.1.0.dev202612090215 passing", "brightgreen"),
+        "coverage.json": ("coverage", "78%", "yellow")}  # 10999 of 14000 lines: 78.6%, rounded down.
+    assert all(file["schemaVersion"] == 1 and file["run"] == 42 for file in badges.verdict(needs(), 42).values())
+    assert said(badges.verdict(needs(gate="failure", dev="failure", coverage="failure"), 42)) == {
+        "stable.json": ("Home Assistant", "2026.11 – 2026.12 failing", "red"),
+        "beta.json": ("Home Assistant beta", "2027.1.0b1 passing", "brightgreen"),
+        "dev.json": ("Home Assistant dev", "2027.1.0.dev202612090215 failing", "red")}  # No coverage: no number.
+    one = needs()
+    one["versions"]["outputs"]["stable"] = '["2026.11.0"]'
+    assert said(badges.verdict(one, 42))["stable.json"] == ("Home Assistant", "2026.11 passing", "brightgreen")
+    # No versions found: the Stable check fails, and the channels that need them don't run.
+    assert said(badges.verdict(needs(versions="failure", gate="failure", beta="skipped", dev="skipped"), 42)) == {
+        "stable.json": ("Home Assistant", "failing", "red"), "coverage.json": ("coverage", "78%", "yellow")}
+    # The watcher's run for a new beta: only beta's badge changes.
+    assert said(badges.verdict(needs(gate="skipped", beta="failure", dev="skipped", coverage="skipped"), 42)) == {
+        "beta.json": ("Home Assistant beta", "2027.1.0b1 failing", "red")}
+
+
+def test_a_badge_never_goes_back_to_an_older_runs():
+    ours = badges.endpoint("Home Assistant beta", "2027.1.0b1 passing", "brightgreen", 42)
+    assert not badges.kept(None, ours)  # None yet.
+    assert not badges.kept({**ours, "run": 41}, ours)
+    assert badges.kept({**ours, "run": 43}, ours)  # A newer run's, written before this one finished.
+    assert badges.kept(ours, ours)  # Written already.
+    assert not badges.kept({**ours, "message": "2027.1.0b1 failing", "color": "red"}, ours)  # The run tried again.
