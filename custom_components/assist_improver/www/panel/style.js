@@ -135,28 +135,29 @@ export const STYLE = `
     background: color-mix(in srgb, var(--warn-fg) 10%, transparent); }
   .tests .mark { width: 16px; font-weight: 700; } .tests .ok .mark { color: var(--add-fg); }
   .tests .no .mark { color: var(--secondary-text-color); }
+  .tests .results { display: flex; flex-wrap: wrap; gap: 4px; }
   .tests .result { font-size: 12px; padding: 0 8px; border-radius: 10px; white-space: nowrap; }
-  /* Narrow (a phone): what a test showed goes on its own line, under what it tested, so a longer result ("3 → 1 turns ·
-     follows your feedback") never squeezes it; the longest wraps within the row. */
+  /* Narrow (a phone): what a test showed goes on its own line, under what it tested, so its chips never squeeze it. */
   @container (max-width: 479px) { .tests .row { flex-wrap: wrap; row-gap: 2px; }
     .tests .row > span:nth-child(2) { flex: 1 1 calc(100% - 48px); }
-    .tests .result { margin-left: 44px; white-space: normal; } }
+    .tests .results { margin-left: 44px; } }
   .tests .ok .result { color: var(--add-fg); background: var(--add-bg); }
   .tests .no .result { color: var(--secondary-text-color); background: var(--secondary-background-color); }
   .tests .result.more-words, .tests .result.still-open { color: var(--warn-fg);
     background: color-mix(in srgb, var(--warn-fg) 12%, transparent); }
-  /* Each automation it changes: its name and when it runs, its week in a few words beside them; opened, each run. */
+  /* Each automation it changes: its name, when it runs and its week in a few words under it, a line each (a week that
+     couldn't run, a chip beside them); opened, each run. */
   .autos { list-style: none; margin: 0 0 14px; padding: 0; container-type: inline-size; }
   .autos .row { display: flex; align-items: baseline; gap: 8px; padding: 3px 0; }
   .autos div.row::before { content: ""; width: 12px; flex: none; }
   .autos details { border-top: none; }
   .autos .what { flex: 1; min-width: 0; } .autos .what .name { font-weight: 500; }
-  .autos .when { display: block; font-size: 13px; color: var(--secondary-text-color); overflow-wrap: anywhere; }
+  .autos .when, .autos .week { display: block; font-size: 13px; color: var(--secondary-text-color);
+    overflow-wrap: anywhere; }
   .autos .result { font-size: 12px; padding: 0 8px; border-radius: 10px; white-space: nowrap;
-    color: var(--secondary-text-color); background: var(--secondary-background-color); }
-  .autos .result.failed { color: var(--warn-fg); background: color-mix(in srgb, var(--warn-fg) 12%, transparent); }
+    color: var(--warn-fg); background: color-mix(in srgb, var(--warn-fg) 12%, transparent); }
   @container (max-width: 479px) { .autos .row { flex-wrap: wrap; row-gap: 2px; }
-    .autos .what { flex: 1 1 calc(100% - 24px); } .autos .result { margin-left: 20px; white-space: normal; } }
+    .autos .what { flex: 1 1 calc(100% - 24px); } .autos .result { margin-left: 20px; } }
   .week-runs { margin: 4px 0 8px 20px; border: 1px solid var(--divider-color); border-radius: 8px; overflow: hidden;
     font-size: 13px; max-height: 320px; overflow-y: auto; }
   .week-run { display: flex; gap: 8px; padding: 3px 12px; } .week-run.add { background: var(--add-bg); }

@@ -164,10 +164,10 @@ def change_file(step, names=None):
 
 
 def test_result(test):
-    """A test's outcome in a few words, from its row (improvements.row): the goal now met, fewer turns, a side effect
-    gone, your feedback followed (as many as it showed), or just improved."""
+    """A test's outcome in a few words, one chip each, from its row (improvements.row): the goal now met, fewer turns, a
+    side effect gone, your feedback followed (as many as it showed), or just improved."""
     if not test["improved"]:
-        return "not improved"
+        return ["not improved"]
     shown = []
     if test["newly_met"]:
         shown.append("goal now met")
@@ -178,7 +178,7 @@ def test_result(test):
         shown.append("side effect gone" if len(gone) == 1 else "side effects gone")
     if test["feedback"]:
         shown.append("follows your feedback")
-    return " \u00b7 ".join(shown) or "improved"
+    return shown or ["improved"]
 
 
 def couldnt_reach(names, because):

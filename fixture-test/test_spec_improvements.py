@@ -1013,6 +1013,19 @@ def test_an_edit_that_changes_only_what_each_run_sets_shows_its_runs_added_and_d
     assert shown["result"].startswith("1 run added at ") and ", 1 dropped at " in shown["result"]
 
 
+@pytest.mark.parametrize("times, result", [
+    (["21:00"], "1 run at 21:00"), (["07:00", "21:00"], "2 runs at 07:00 and 21:00"),
+    (["21:00", "06:30", "07:00"], "3 runs at 06:30, 07:00 and 21:00"),
+    (["06:00", "06:30", "07:00", "21:00"], "4 runs at 4 different times")])
+def test_a_weeks_runs_read_by_their_times_of_day_as_a_list_is_said(times, result):
+    from homeassistant.util import dt as dt_util
+    from custom_components.assist_improver.weeks import week
+    at = lambda time: dt_util.now().replace(hour=int(time[:2]), minute=int(time[3:]), second=0,  # noqa: E731
+                                            microsecond=0).isoformat()
+    runs = [{"automation": "automation.evening", "id": "evening", "at": at(t), "changed": []} for t in times]
+    assert week({"with": {"days": 7, "runs": runs}, "without": None}, {"id": "evening"})["result"] == result
+
+
 @pytest.mark.asyncio
 async def test_an_automation_turned_on_or_off_is_named_as_home_assistant_names_it(home):
     home.hass.states.async_set("automation.porch_at_night", "on",
@@ -1061,13 +1074,16 @@ ROW = {"improved": True, "newly_met": [], "turns_before": 2, "turns_after": 2, "
 
 
 @pytest.mark.parametrize("test, result", [
-    ({"improved": False, "newly_met": ["Garage open"]}, "not improved"),
-    ({"newly_met": ["Garage open"], "turns_before": 3, "turns_after": 1}, "goal now met"),
-    ({"turns_before": 3, "turns_after": 1}, "3 → 1 turns"),
-    ({"side_effects_gone": ["light.porch"]}, "side effect gone"),
-    ({"feedback": ["Keep it short."]}, "follows your feedback"),
-    ({}, "improved")])
-def test_each_test_says_what_it_showed_in_a_few_words(test, result):
+    ({"improved": False, "newly_met": ["Garage open"]}, ["not improved"]),
+    ({"newly_met": ["Garage open"], "turns_before": 3, "turns_after": 1}, ["goal now met"]),
+    ({"turns_before": 3, "turns_after": 1}, ["3 → 1 turns"]),
+    ({"side_effects_gone": ["light.porch"]}, ["side effect gone"]),
+    ({"feedback": ["Keep it short."]}, ["follows your feedback"]),
+    ({"turns_before": 3, "turns_after": 1, "side_effects_gone": ["light.porch", "light.hall"],
+      "feedback": ["Keep it short."]}, ["3 → 1 turns", "side effects gone", "follows your feedback"]),
+    ({}, ["improved"])])
+def test_each_test_says_what_it_showed_in_a_few_words_one_chip_each(test, result):
+    """DETAILS P17.21.3: each result its own chip."""
     assert panel.test_result({**ROW, **test}) == result
 
 

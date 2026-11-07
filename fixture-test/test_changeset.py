@@ -1253,7 +1253,7 @@ async def test_written_copy_names_the_improvement_and_safety_is_stated_by_code(h
     assert shown["safety"][0].startswith("Tested on your own conversations, replayed in a sandboxed copy")
     assert "Only settings change: 1 name added, 1 new script, 1 script updated" in shown["safety"][1]
     assert shown["safety"][-1].startswith("Checked against your Home Assistant first")
-    assert shown["tests"][0]["result"] == "3 → 1 turns" and shown["tests"][0]["summary"] == "Open the garage"
+    assert shown["tests"][0]["result"] == ["3 → 1 turns"] and shown["tests"][0]["summary"] == "Open the garage"
 
 
 @pytest.mark.asyncio

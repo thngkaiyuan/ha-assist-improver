@@ -1705,8 +1705,8 @@ Citations in parentheses name the maintainer's earlier notes, which aren't in th
     predict. (PRODUCT-SPEC.md, 2026-10-21; MILESTONE-7.md)
   - **P12.2.13** "Before & after" shows its conversation's test. (DESIGN.md; MILESTONE-7.md, 2026-10-23; Kai,
     2026-10-26; Kai, 2026-10-30)
-  - **P12.2.14** Each Before & after row has a result chip: "goal now met · {a} → {b} turns · improved · side effect(s)
-    gone · follows your feedback", joined with " · ", and an amber "{n} still open" chip where something the
+  - **P12.2.14** Each Before & after row has a chip per result: "goal now met" · "{a} → {b} turns" · "improved" ·
+    "side effect(s) gone" · "follows your feedback", and an amber "{n} still open" chip where something the
     household pointed out isn't shown fixed (P17.21.3). On a phone the chips go on their own line under what was
     tested and wrap within the row. (TEXT-REVIEW.md, 2026-10-25)
   - **P12.2.15** A test whose replay made Assist's replies longer (P6) gets an amber "Says more" chip on its row,
@@ -2335,8 +2335,8 @@ Citations in parentheses name the maintainer's earlier notes, which aren't in th
     2026-10-24; fixture-test/SPEC.md; DESIGN.md)
   - **P14.12.6** Each change type label (script, exposure, instructions…) has its own distinct, tasteful colour. (Kai:
     2026-10-24)
-  - **P14.12.7** Each conversation under Before & after has a result chip: 'goal now met · {a} → {b} turns · improved ·
-    side effect(s) gone · follows your feedback', joined with ' · ', and an amber '{n} still open' chip where
+  - **P14.12.7** Each conversation under Before & after has a chip per result: 'goal now met' · '{a} → {b} turns' ·
+    'improved' · 'side effect(s) gone' · 'follows your feedback', and an amber '{n} still open' chip where
     something the household pointed out isn't shown fixed. On a phone the chips go on their own line under what was
     tested and wrap within the row. (TEXT-REVIEW.md: 2026-10-25; Kai approved 2026-10-26; P17.21.3)
   - **P14.12.8** After a decision, the page stays put: the feedback and the next button appear below, and expanded
@@ -2807,13 +2807,12 @@ words, those words are the requirement; elsewhere the behaviour lives in its own
     replay with the change), or for one set aside (P6.6.2) "It didn't happen without the change either, so this test
     couldn't show it." (TEXT-REVIEW.md, Kai 2026-10-25; Kai, 2026-10-26: "Approved"; Kai, 2026-10-29: words on
     judgement; Kai, 2026-10-30: the order, and the sections that repeated what you get gone)
-  - **P17.21.3** A Before & after row's result chip: "goal now met" · "{a} → {b} turns" · "improved" · "side effect
-    gone" / "side effects gone" · "follows your feedback"; several joined by " · ", e.g. "3 → 1 turns · follows your
-    feedback". After it, an amber "{n} still open" chip (how many Still open lines close its After), bubble "Something
-    you pointed out still happened in a reply with this change.", or the set-aside bubble when none did. A goal the home
-    couldn't do either way (P9.10.6) reads "{goal}: the home couldn't do it ({device} was unavailable)", or "({device}
-    failed)" where its command failed at home. (TEXT-REVIEW.md, Kai approved 2026-10-25; Kai, 2026-10-26: "Approved";
-    Kai, 2026-10-29: words on judgement)
+  - **P17.21.3** A Before & after row's result chips: "goal now met" · "{a} → {b} turns" · "improved" · "side effect
+    gone" / "side effects gone" · "follows your feedback", one chip each. After them, an amber "{n} still open" chip
+    (how many Still open lines close its After), bubble "Something you pointed out still happened in a reply with this
+    change.", or the set-aside bubble when none did. A goal the home couldn't do either way (P9.10.6) reads "{goal}: the
+    home couldn't do it ({device} was unavailable)", or "({device} failed)" where its command failed at home.
+    (TEXT-REVIEW.md, Kai approved 2026-10-25; Kai, 2026-10-26: "Approved"; Kai, 2026-10-29: words on judgement)
   - **P17.21.4** A test that made Assist wordier gets an amber "Says more" chip after its result, bubble "Assist's
     replies: about {after} words each, {before} before."; under the tests, "With this change, Assist's replies got
     longer in {n} of these." (TEXT-REVIEW.md, Kai approved 2026-10-25; Kai, 2026-10-26)

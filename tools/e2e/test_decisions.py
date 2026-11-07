@@ -297,7 +297,7 @@ def test_accept_then_undo_a_scene_and_an_automation(page, ha):
     expect(week.locator(".what .name")).to_have_text("Reading lamp at 21:00")
     expect(week.locator(".kind")).to_have_text("new")
     expect(week.locator(".when")).to_have_text("At 21:00")
-    expect(week.locator(".result")).to_have_text("7 runs at 21:00")
+    expect(week.locator(".week")).to_have_text("7 runs at 21:00")
     week.locator("summary").click()
     expect(week.locator(".week-run")).to_have_count(7)
     expect(week.locator(".week-run").first).to_contain_text("Desk lamp: off → on")

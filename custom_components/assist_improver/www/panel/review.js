@@ -63,13 +63,13 @@ function replay(t, open) {
 }
 
 function test(p, t, n, open) {
-  // A test's row: what it tested and what it showed; opened (at first), its before and after.
+  // A test's row: what it tested and what it showed, a chip per result; opened (at first), its before and after.
   const R = TEXT.review, more = t.more_words;
   const row = `<span class="mark">${t.improved ? "&#10003;" : "&#8211;"}</span><span>${esc(t.summary)}</span>
-    <span class="result">${esc(t.result || (t.improved ? "improved" : "not improved"))}</span>${more
+    <span class="results">${t.result.map((said) => `<span class="result">${esc(said)}</span>`).join("")}${more
       ? `<span class="result more-words" title="${esc(fill(R.moreWordsTip, more))}">${esc(R.moreWords)}</span>` : ""}${t.open
       ? `<span class="result still-open" title="${esc(t.happened ? R.open.chipTip : R.open.setAside)}">${
-        esc(fill(R.open.chip, {n: t.open}))}</span>` : ""}`;
+        esc(fill(R.open.chip, {n: t.open}))}</span>` : ""}</span>`;
   const key = `test${n}`;
   return `<li class="${t.improved ? "ok" : "no"}">${t.before?.length || t.after?.length
     ? `<details data-key="${key}" ${p.open.has(key) ? "open" : ""}><summary class="row">${row}</summary>${replay(t, open)}</details>`
@@ -78,13 +78,14 @@ function test(p, t, n, open) {
 
 function automation(p, a, n) {
   // An automation it changes: its name, when it runs and on what condition (stated by code from Home Assistant's own
-  // configuration), and its simulated week in a few words; opened, each run (for a change to one you have, each run
-  // the change adds or drops) and what it changed.
+  // configuration), and under that, its simulated week in a few words (a chip when it couldn't run); opened, each run
+  // (for a change to one you have, each run the change adds or drops) and what it changed.
   const W = TEXT.review.week, w = a.week, key = `auto${n}`;
-  const result = a.failed ? `<span class="result failed">${esc(W.failed)}</span>`
-    : w ? `<span class="result" title="${esc(W.tip)}">${esc(w.result)}${w.days < 7 ? esc(fill(W.days, w)) : ""}</span>` : "";
+  const week = w ? `<span class="week" title="${esc(W.tip)}">${esc(w.result)}${
+    w.days < 7 ? esc(fill(W.days, w)) : ""}</span>` : "";
   const row = `<span class="what"><span class="name">${esc(a.name)}</span> <span class="kind automation">${
-    esc(W.change[a.change])}</span><span class="when">${esc([a.when, a.if].filter(Boolean).join(" · "))}</span></span>${result}`;
+    esc(W.change[a.change])}</span><span class="when">${esc([a.when, a.if].filter(Boolean).join(" · "))}</span>${
+    week}</span>${a.failed ? `<span class="result">${esc(W.failed)}</span>` : ""}`;
   const runs = w?.runs.length ? `<div class="week-runs">${w.runs.map((r) =>
     `<div class="week-run ${{"+": "add", "-": "del"}[r.sign] || ""}"><span class="sign">${r.sign === "-" ? "&#8722;" : r.sign === "+" ? "+" : ""}</span>
      <span class="at">${esc(r.at)}</span><span>${esc(r.changed)}</span></div>`).join("")}${

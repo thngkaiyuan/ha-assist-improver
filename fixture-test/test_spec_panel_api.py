@@ -452,7 +452,7 @@ async def test_a_review_is_checked_against_home_assistant_now_and_offers_accept_
     assert change["kind"] == "aliases" and change["name"] == "Front light" and change["added"] == 1
     assert {"sign": "+", "old": None, "new": None, "text": "lamp imp-a"} in change["rows"]
     # Each test with its conversation as it went and its replay, to read turn by turn.
-    assert review["tests"] == [{"summary": "Turn on the lamp", "improved": True, "result": "3 → 1 turns",
+    assert review["tests"] == [{"summary": "Turn on the lamp", "improved": True, "result": ["3 → 1 turns"],
                                 "before": [{"you": "Turn on the lamp.", "assist": ""},
                                            {"you": "The front light.", "assist": ""},
                                            {"you": "Yes, that one.", "assist": ""}],
@@ -1182,7 +1182,7 @@ def test_a_scripts_diff_keeps_each_value_on_one_line_as_long_as_it_is():
 def test_each_test_result_reads_in_a_few_words():
     shown = [panel.review(improvement("imp-a", test=test), ([], [], []))["tests"][0]
              for test in (lamp_test(after=("", "", "")), lamp_test(met_before=False), lamp_test())]
-    assert [t["result"] for t in shown] == ["not improved", "goal now met", "3 → 1 turns"]
+    assert [t["result"] for t in shown] == [["not improved"], ["goal now met"], ["3 → 1 turns"]]
     assert [t["improved"] for t in shown] == [False, True, True]
 
 

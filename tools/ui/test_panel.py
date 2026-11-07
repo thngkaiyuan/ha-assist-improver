@@ -182,8 +182,9 @@ def review(**over):
                          "removed": 1}],
             "cause": "Assist couldn't press both garage relays at once, so it asked which door.", "physical": True,
             "automations": [],
-            "tests": [{"summary": "Open the garage", "improved": True, "result": "3 → 1 turns", **OPENED},
-                      {"summary": "Close the garage at night", "improved": False, "result": "not improved", **CLOSED}],
+            "tests": [{"summary": "Open the garage", "improved": True, "result": ["3 → 1 turns"], **OPENED},
+                      {"summary": "Close the garage at night", "improved": False, "result": ["not improved"],
+                       **CLOSED}],
             "choices": CHOICES}
     return {**base, **over}
 
@@ -1858,8 +1859,9 @@ def test_nothing_shows_under_a_phones_status_bar(open_panel):
 
 
 def test_a_bubble_near_the_top_opens_below_what_it_explains_clear_of_the_status_bar(open_panel):
-    tests = [{"summary": "Close the garage", "improved": True, "result": "3 → 1 turns", "open": 1, "happened": 1, **OPENED},
-             *[{"summary": f"Open the garage, take {n}", "improved": True, "result": "3 → 1 turns", **OPENED}
+    tests = [{"summary": "Close the garage", "improved": True, "result": ["3 → 1 turns"], "open": 1, "happened": 1,
+              **OPENED},
+             *[{"summary": f"Open the garage, take {n}", "improved": True, "result": ["3 → 1 turns"], **OPENED}
                for n in range(3)]]  # Room under it to scroll it up.
     panel = open_review(open_panel, still_open=STILL_OPEN, tests=tests)
     panel.page.evaluate(SAFE, INSETS["portrait"])
@@ -2258,7 +2260,7 @@ def test_an_opened_replay_stays_open_when_the_panel_is_made_again(open_panel):
 
 
 def test_a_test_whose_conversation_is_gone_shows_its_replay_alone(open_panel):
-    panel = open_review(open_panel, tests=[{"summary": "Open the garage", "improved": True, "result": "3 → 1 turns",
+    panel = open_review(open_panel, tests=[{"summary": "Open the garage", "improved": True, "result": ["3 → 1 turns"],
                                             "before": [], "after": OPENED["after"]}])
     expect(panel.find(".rp-head")).to_have_text(["After"])
     expect(panel.find(".rp-after .cs-turn")).to_have_count(1)
@@ -2270,9 +2272,9 @@ def test_a_test_whose_replay_made_assist_wordier_says_so(open_panel, size, dark)
     """Counted by code: its row says Assist says more (the words a reply in its tooltip), and a line under the tests
     says how many did; a test without it shows neither."""
     panel = open_review(open_panel, size=size, dark=dark, wordier=1, tests=[
-        {"summary": "Open the garage", "improved": True, "result": "3 → 1 turns", **OPENED,
+        {"summary": "Open the garage", "improved": True, "result": ["3 → 1 turns"], **OPENED,
          "more_words": {"before": 4, "after": 19}},
-        {"summary": "Close the garage at night", "improved": False, "result": "not improved", **CLOSED}])
+        {"summary": "Close the garage at night", "improved": False, "result": ["not improved"], **CLOSED}])
     chip = panel.find(".tests > li").nth(0).locator(".result.more-words")
     expect(chip).to_have_text("Says more")
     expect(chip).to_have_attribute("title", "Assist's replies: about 19 words each, 4 before.")
@@ -2335,8 +2337,8 @@ MIXED_SAFETY = [TESTED, "Changes: 1 new automation, 1 new scene, 1 device settin
 @pytest.mark.parametrize("dark", [True, False], ids=["dark", "light"])
 def test_an_automations_review_says_when_it_runs_and_what_its_week_did_each_run_on_demand(open_panel, size, dark):
     """Kai's words: "An automation's review says when it would run and what it would have done over a simulated week;
-    for a change to one you have, the runs it adds and drops." Counts and times first, each run opened; one whose week
-    couldn't run says so."""
+    for a change to one you have, the runs it adds and drops." Counts and times first, a line of text under when it
+    runs, in its style; each run opened; one whose week couldn't run says so, in a chip."""
     panel = open_review(open_panel, size=size, dark=dark, automations=[DUSK_WEEK, HALL_WEEK, NIGHT_OFF],
                         changes=WEEK_CHANGES, safety=WEEK_SAFETY)
     expect(panel.find(".summary .label")).to_have_text(["What you get", "Before & after", "When it runs", "Why it's safe"])
@@ -2344,9 +2346,14 @@ def test_an_automations_review_says_when_it_runs_and_what_its_week_did_each_run_
     expect(rows.locator(".what .name")).to_have_text(["Porch at dusk", "Hall at night", "Night lights"])
     expect(rows.locator(".kind")).to_have_text(["new", "edited", "turned off"])
     expect(rows.nth(0).locator(".when")).to_have_text("At 18:00 · If Porch light is off")
-    expect(rows.locator(".result")).to_have_text(["7 runs at 18:00", "2 runs added at 23:00, 1 dropped at 22:00",
-                                                  "week not simulated"])
-    expect(rows.nth(0).locator(".result")).to_have_attribute("title", "Over a simulated week after your conversation")
+    expect(rows.locator(".week")).to_have_text(["7 runs at 18:00", "2 runs added at 23:00, 1 dropped at 22:00"])
+    expect(rows.nth(0).locator(".week")).to_have_attribute("title", "Over a simulated week after your conversation")
+    expect(rows.locator(".result")).to_have_text(["week not simulated"])
+    look = "(el) => { const s = getComputedStyle(el); return [s.fontSize, s.color, s.backgroundColor]; }"
+    when, week = (rows.nth(0).locator(css) for css in (".when", ".week"))
+    assert week.evaluate(look) == when.evaluate(look)
+    assert abs(week.bounding_box()["x"] - when.bounding_box()["x"]) < 1
+    assert week.bounding_box()["y"] >= when.bounding_box()["y"] + when.bounding_box()["height"] - 1
     expect(rows.nth(0).locator(".week-runs")).to_be_hidden()  # Each run on demand.
     panel.click(".autos > li:nth-child(2) summary")
     expect(rows.nth(1).locator(".week-run")).to_have_text([re.compile(r"\+\s*Fri 23:00\s*Hall light: on → off"),
@@ -2363,7 +2370,7 @@ def test_an_automations_review_says_when_it_runs_and_what_its_week_did_each_run_
 def test_a_week_that_stopped_early_says_how_many_days_ran_and_a_long_one_how_many_runs_are_past_those_shown(open_panel):
     looping = {**DUSK_WEEK, "week": {**DUSK_WEEK["week"], "days": 2, "more": 1180}}
     panel = open_review(open_panel, automations=[looping])
-    expect(panel.find(".autos .result")).to_have_text("7 runs at 18:00 · 2 of 7 days simulated")
+    expect(panel.find(".autos .week")).to_have_text("7 runs at 18:00 · 2 of 7 days simulated")
     panel.click(".autos summary")
     expect(panel.find(".week-run.more")).to_have_text("and 1180 more")
 
@@ -2416,19 +2423,19 @@ def test_a_review_without_a_wordier_test_has_no_line_about_it(open_panel):
 
 def test_a_replay_that_stopped_before_assist_replied_says_so(open_panel):
     panel = open_review(open_panel, tests=[{"summary": "Open the garage", "improved": False,
-                                            "result": "not improved", "before": OPENED["before"], "after": []}])
+                                            "result": ["not improved"], "before": OPENED["before"], "after": []}])
     expect(panel.find(".rp-after .rp-empty")).to_have_text("The replay stopped before Assist replied.")
     expect(panel.find(".rp-before .cs-turn")).to_have_count(3)
 
 
 def test_a_test_without_a_conversation_to_read_doesnt_open(open_panel):
-    panel = open_review(open_panel, tests=[{"summary": "Open the garage", "improved": True, "result": "3 → 1 turns",
+    panel = open_review(open_panel, tests=[{"summary": "Open the garage", "improved": True, "result": ["3 → 1 turns"],
                                             "before": [], "after": []}])
     expect(panel.find(".tests summary")).to_have_count(0)
     expect(panel.find(".tests .row > span")).to_have_text(["✓", "Open the garage", "3 → 1 turns"])
     # In line with tests that open.
     panel = open_review(open_panel, tests=[*review()["tests"], {"summary": "Open the gate", "improved": True,
-                                                                "result": "improved"}])
+                                                                "result": ["improved"]}])
     marks = [panel.find(f".tests > li:nth-child({n}) .mark").bounding_box()["x"] for n in (1, 3)]
     assert abs(marks[0] - marks[1]) < 1
 
@@ -2442,7 +2449,7 @@ def test_a_replay_reads_clearly_in_light_and_dark(open_panel, dark):
 
 def test_a_replay_is_escaped(open_panel):
     turn = {"you": XSS, "assist": XSS, "failed": [{"step": XSS, "error": XSS}]}
-    panel = open_review(open_panel, tests=[{"summary": XSS, "improved": True, "result": XSS, "before": [turn],
+    panel = open_review(open_panel, tests=[{"summary": XSS, "improved": True, "result": [XSS], "before": [turn],
                                             "after": [turn]}])
     expect(panel.find(".rp-after .cs-says")).to_have_text([XSS, XSS])
     expect(panel.find(".rp-before .cs-step-error")).to_have_text(XSS)
@@ -3390,7 +3397,7 @@ def test_every_dynamic_string_on_a_review_is_escaped(open_panel):
     change = {"name": XSS, "kind": XSS, "rows": [{"sign": "+", "old": None, "new": 1, "text": XSS}], "added": 1,
               "removed": 0}
     panel = open_review(open_panel, title=XSS, status=XSS, benefit=XSS, safety=[XSS],
-                        changes=[change], cause=XSS, tests=[{"summary": XSS, "improved": True, "result": XSS}],
+                        changes=[change], cause=XSS, tests=[{"summary": XSS, "improved": True, "result": [XSS]}],
                         conflicts=[{"what": XSS, "why": XSS}], revises={"title": XSS, "note": XSS},
                         choices=[{"value": XSS, "label": XSS}, CHOICES[0]])
     open_all(panel)
@@ -5796,14 +5803,15 @@ def test_home_says_an_improvement_avoids_unwanted_changes_and_follows_your_feedb
         "1 new thing Assist can do · 2 fewer turns · 1 unwanted change avoided")
 
 
-LONGEST = "3 → 1 turns · side effects gone · follows your feedback"  # All three kinds of trouble removed.
+LONGEST = ["3 → 1 turns", "side effects gone", "follows your feedback"]  # All three kinds of trouble removed.
 
 
 def spared_review(open_panel, size=PHONE, dark=True, longest=False, **over):
-    tests = [{"summary": "Switch off the lights", "improved": True, "result": "side effect gone", **CLOSED},
-             {"summary": "Close the garage", "improved": True, "result": "3 → 1 turns · follows your feedback",
-              **OPENED}] + ([{"summary": "Open the garage doors", "improved": True, "result": LONGEST, **CLOSED}]
-                            if longest else [])
+    # longest: a row with every chip a test can have, each result's, Says more and what's still open.
+    tests = [{"summary": "Switch off the lights", "improved": True, "result": ["side effect gone"], **CLOSED},
+             {"summary": "Close the garage", "improved": True, "result": ["3 → 1 turns", "follows your feedback"],
+              **OPENED}] + ([{"summary": "Open the garage doors", "improved": True, "result": LONGEST, "open": 1,
+                              "happened": 1, "more_words": {"before": 4, "after": 19}, **CLOSED}] if longest else [])
     return open_review(open_panel, size=size, dark=dark, **{"enabled": 0, "removed": 0, "spared": 1, "followed": 1,
                                                             "tests": tests, **over})
 
@@ -5815,7 +5823,7 @@ def test_a_review_counts_what_it_no_longer_changes_and_what_it_fixed_under_its_h
     expect(panel.find(".outcome")).to_have_text("1 unwanted change avoided · follows your feedback")
     expect(panel.find(".page > .card:not(.summary) > details > summary")).to_have_text(
         ["What went wrong", "What changes (2)"])
-    expect(panel.find(".tests li .result")).to_have_text(["side effect gone", "3 → 1 turns · follows your feedback"])
+    expect(panel.find(".tests li .result")).to_have_text(["side effect gone", "3 → 1 turns", "follows your feedback"])
 
 
 def test_a_review_with_nothing_still_open_has_no_still_open_lines(open_panel):
@@ -5834,14 +5842,30 @@ def test_what_is_still_open_is_escaped(open_panel):
 @pytest.mark.parametrize("size", [PHONE, DESKTOP], ids=["phone", "desktop"])
 @pytest.mark.parametrize("dark", [False, True], ids=["light", "dark"])
 def test_the_chips_read_and_fit_in_all_four_views(open_panel, size, dark):
-    panel = spared_review(open_panel, size=size, dark=dark, longest=True)
-    expect(panel.find(".tests li .result").last).to_have_text(LONGEST)
+    """A chip per result, then Says more and what's still open, in one row a small gap apart that wraps between chips,
+    never within one; on a phone, under what was tested, indented once."""
+    panel = spared_review(open_panel, size=size, dark=dark, longest=True, still_open=STILL_OPEN[:1])
+    chips = panel.find(".tests > li").last.locator(".result")
+    expect(chips).to_have_text([*LONGEST, "Says more", "1 still open"])
     assert not low_contrast(panel, [".outcome"], 4.5)
     assert not low_contrast(panel, [".tests li .result"], 3)  # A small chip, as each test's result always was.
     assert_no_horizontal_scroll(panel)
-    for row in panel.find(".tests li .row").all():  # A longer result still fits its row, beside what was tested.
-        line, result = (row.locator(css).first.bounding_box() for css in (":scope", ".result"))
-        assert result["x"] + result["width"] <= line["x"] + line["width"] + 0.5, (row.inner_text(), result, line)
+    heights = [c.bounding_box()["height"] for c in panel.find(".tests li .result").all()]
+    assert max(heights) - min(heights) < 2, heights  # Each chip one line.
+    for row in panel.find(".tests li .row").all():
+        line, said = (row.locator(css).bounding_box() for css in (":scope", ":scope > span:nth-child(2)"))
+        boxes = [c.bounding_box() for c in row.locator(".result").all()]
+        assert all(b["x"] + b["width"] <= line["x"] + line["width"] + 0.5 for b in boxes), (row.inner_text(), line)
+        starts = [b for n, b in enumerate(boxes) if not n or b["y"] > boxes[n - 1]["y"] + 1]  # Each line's first.
+        if size == PHONE:
+            assert boxes[0]["y"] >= said["y"] + said["height"] - 1, (said, boxes)
+            assert all(abs(b["x"] - said["x"]) < 1 for b in starts), (said, boxes)
+        else:
+            assert boxes[0]["x"] > said["x"] + said["width"] and len(starts) == 1, (said, boxes)
+        for a, b in zip(boxes, boxes[1:]):  # A small gap between chips on a line.
+            assert abs(a["y"] - b["y"]) > 1 or 0 < b["x"] - a["x"] - a["width"] < 8, (row.inner_text(), a, b)
+    if size == PHONE:
+        assert len({round(c.bounding_box()["y"]) for c in chips.all()}) == 2  # It wraps, once.
 
 
 @pytest.mark.parametrize("size", [PHONE, DESKTOP], ids=["phone", "desktop"])
@@ -5875,8 +5899,8 @@ def test_what_a_change_leaves_open_is_in_their_words_with_each_reply_and_reason_
 
 
 def test_a_chip_for_what_only_couldnt_be_told_says_so_and_none_shows_when_nothing_is_open(open_panel):
-    tests = [{"summary": "Close the garage", "improved": True, "result": "3 → 1 turns", "open": 1, "happened": 0,
-              **OPENED}, {"summary": "Open the garage", "improved": True, "result": "3 → 1 turns", **CLOSED}]
+    tests = [{"summary": "Close the garage", "improved": True, "result": ["3 → 1 turns"], "open": 1, "happened": 0,
+              **OPENED}, {"summary": "Open the garage", "improved": True, "result": ["3 → 1 turns"], **CLOSED}]
     panel = spared_review(open_panel, still_open=STILL_OPEN[1:], tests=tests)
     expect(panel.find(".tests > li").nth(0).locator(".rp-open .line")).to_have_count(1)  # With the test that counts it.
     expect(panel.find(".tests > li").nth(1).locator(".rp-open")).to_have_count(0)

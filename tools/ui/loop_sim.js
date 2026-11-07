@@ -247,7 +247,7 @@ window.loopSim = (seed) => {
             safety: [S.template.safety[0], f.kind === "script" ? "Only settings change: 1 new script. Nothing runs when you accept."
               : "Only settings change: 1 instruction change. Nothing runs when you accept.", S.template.safety[2]],
             tests: c ? [{summary: `“${quote(said(c))}”, replayed`, improved: true,
-                         result: later ? `${c.turns} → ${c.turns - later} turns` : "improved"}] : [],
+                         result: [later ? `${c.turns} → ${c.turns - later} turns` : "improved"]}] : [],
             revises: item.revises || null, next_pending: next ? {id: next.id, title: next.title} : null,
             choices: pending ? S.template.choices : item.status === "applied" ? [{value: "undo", label: "Undo changes"}]
               : item.status === "undone" ? [{value: "accept", label: "Accept changes"}] : []};

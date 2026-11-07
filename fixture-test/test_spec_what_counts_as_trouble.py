@@ -258,7 +258,7 @@ async def test_a_side_effect_left_is_trouble_from_the_analysis_to_the_review(imp
     from custom_components.assist_improver.editor import payload as editor_payload
     assert "no longer changes Fixture fridge (it stays on)" in editor_payload(item)["tested"][0]["result"]
     # The review page: the Tested on row's chip, and what it gets you.
-    assert review["tests"][0]["result"] == "side effect gone"
+    assert review["tests"][0]["result"] == ["side effect gone"]
     assert (review["spared"], review["followed"]) == (1, 0)
     _, listed = await ask(improver.hass, panel.ws_list)
     assert (listed["improvements"][0]["spared"], listed["improvements"][0]["followed"]) == (1, 0)
@@ -285,7 +285,7 @@ async def test_a_side_effect_made_after_the_goal_is_replayed_so_only_a_real_fix_
     assert [f["kind"] for f in friction_by_goal(analysis)[1]] == ["side effect"]
     if fixed:
         item, review = await the_review(improver)
-        assert review["tests"][0]["result"] == "side effect gone" and review["removed"] == 0
+        assert review["tests"][0]["result"] == ["side effect gone"] and review["removed"] == 0
     else:  # As the conversation went: the fridge is switched off again, so nothing is better.
         assert runtime.improvements.pending() == [] and runtime.improvements.unwritten() == []
 
@@ -312,7 +312,7 @@ async def test_a_note_sent_in_with_a_conversation_is_an_objection_carried_to_the
     # Simulate, write-up, review: judged by the small model, it follows the note (the baseline's replies didn't).
     assert [feedback for feedback, _ in model.feedback_checks] == [[NOTE], [NOTE]]
     item, review = await the_review(improver)
-    assert row(item["test"])["feedback"] == [NOTE] and review["tests"][0]["result"] == "follows your feedback"
+    assert row(item["test"])["feedback"] == [NOTE] and review["tests"][0]["result"] == ["follows your feedback"]
     assert review["followed"] == 1 and await chip(improver, "noted001") == "review"
 
 

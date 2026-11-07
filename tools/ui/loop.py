@@ -37,7 +37,7 @@ REVIEW = {  # The review page's shape (panel.review), filled per improvement by 
     "changes": [{"name": "Household knowledge", "kind": "instructions", "added": 1, "removed": 0,
                  "rows": [{"sign": " ", "old": 1, "new": 1, "text": "Keep answers short."},
                           {"sign": "+", "old": None, "new": 2, "text": "When a name matches one device, act on it."}]}],
-    "tests": [{"summary": "The same request, replayed", "improved": True, "result": "2 → 1 turns"}],
+    "tests": [{"summary": "The same request, replayed", "improved": True, "result": ["2 → 1 turns"]}],
     "choices": [{"value": "accept", "label": "Accept changes"}, {"value": "revise", "label": "Ask for a revision"},
                 {"value": "decline", "label": "Decline", "reasons": ["not_an_issue"]}]}
 DECIDED = {"result": "Applied. Assist uses it from your next request; no script was run.", "status": "applied", "ok": True}

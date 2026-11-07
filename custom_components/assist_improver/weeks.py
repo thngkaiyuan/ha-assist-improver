@@ -21,6 +21,11 @@ UNITS = ("hours", "minutes", "seconds")  # A time pattern's, largest first.
 LARGER = {"hours": "day", "minutes": "hour", "seconds": "minute"}  # The unit a time pattern's fixed value repeats in.
 
 
+def _listed(words):
+    """Words as a list is said: "A and B", "A, B and C"."""
+    return " and ".join(words) if len(words) < 3 else ", ".join(words[:-1]) + " and " + words[-1]
+
+
 def _names(hass, value):
     """Entity IDs as Home Assistant names them now, joined: "Desk lamp and Porch light"."""
     ids = value if isinstance(value, list) else [value]
@@ -28,8 +33,7 @@ def _names(hass, value):
     def name(entity_id):
         state = hass.states.get(entity_id) if hass is not None and isinstance(entity_id, str) else None
         return (state.attributes.get("friendly_name") if state is not None else None) or str(entity_id)
-    names = [name(e) for e in ids]
-    return " and ".join(names) if len(names) < 3 else ", ".join(names[:-1]) + " and " + names[-1]
+    return _listed([name(e) for e in ids])
 
 
 def _time(value):
@@ -189,13 +193,14 @@ def _run(run, sign=" "):
 
 
 def _times(runs):
-    """When runs ran, by time of day: "at 21:00", "at 07:00 and 21:00", or "at 9 different times"."""
+    """When runs ran, by time of day: "at 21:00", "at 07:00 and 21:00", "at 06:30, 07:00 and 21:00", or "at 9
+    different times"."""
     times = sorted({r["at"].split(" ", 1)[-1] for r in runs if r["at"]})
     if not times:
         return ""
     if len(times) > TIMES_SHOWN:
         return f" at {len(times)} different times"
-    return " at " + " and ".join(times)
+    return " at " + _listed(times)
 
 
 def week(found, automation):
