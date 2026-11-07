@@ -1,8 +1,8 @@
 """tools/check.sh --coverage. A replay worker (tools/coverage/site/sitecustomize.py), killed once its job is done, its
-folder deleted, writing nowhere else, still leaves the improver's lines it ran, those after its guard was installed too,
-and its guard refuses nothing. The report (tools/coverage/report.py) maps every copy's paths to the checkout's, takes
-what each process ran, a worker's cut-off last snapshot aside, and counts every file. Skipped where coverage.py isn't
-installed, as in Home Assistant's image."""
+folder deleted, writing nowhere else (Landlock too, where the run has it), still leaves the improver's lines it ran,
+those after its guard was installed too, and its guard refuses nothing. The report (tools/coverage/report.py) maps
+every copy's paths to the checkout's, takes what each process ran, a worker's cut-off last snapshot aside, and counts
+every file. Skipped where coverage.py isn't installed, as in Home Assistant's image."""
 
 import importlib.util
 import inspect
@@ -15,6 +15,7 @@ import pytest
 coverage = pytest.importorskip("coverage")
 
 from recordings import make_recording  # noqa: E402
+from test_guard import expected_landlock  # noqa: E402
 from test_worker import real_worker, today  # noqa: E402, F401 - a fixture.
 from custom_components.assist_improver import guard  # noqa: E402
 from custom_components.assist_improver import worker as worker_module  # noqa: E402
@@ -50,7 +51,9 @@ async def test_a_replay_worker_leaves_the_lines_it_ran_and_its_guard_refuses_not
             ran.setdefault(os.path.realpath(path), set()).update(found)
     assert ran[os.path.realpath(guard.__file__)] & lines_of(guard.install)  # Before the guard...
     assert ran[os.path.realpath(worker_module.__file__)] & lines_of(worker_module.Server.op_home_tool)  # ...and after.
-    assert not [line for line in real_worker[-1].stderr if "may not" in line], real_worker[-1].stderr
+    stderr = real_worker[-1].stderr
+    assert any(line.startswith(f"Replay guard: {expected_landlock()}") for line in stderr), stderr  # Linux: Landlock.
+    assert not [line for line in stderr if "may not" in line], stderr
 
 
 def test_the_report_maps_every_copy_to_the_checkout_and_counts_every_file(tmp_path, monkeypatch, capsys):
