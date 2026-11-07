@@ -45,6 +45,16 @@ def uncalled(error_type):
     return issubclass(_raised(error_type) or Exception, (probatio.Invalid, ServiceNotFound))
 
 
+def at_home(action):
+    """Whether a call of the call log failed at home: it ended in an error that isn't Home Assistant refusing the call
+    as invalid (a ServiceValidationError: a value out of the device's range, a feature it lacks), which is the
+    caller's, not the home's."""
+    import probatio
+    from homeassistant.exceptions import ServiceValidationError
+    return bool(action.get("error")) and not issubclass(
+        _raised(action.get("error_type")) or Exception, (probatio.Invalid, ServiceValidationError))
+
+
 def _ids(value):
     """IDs as a call names them: one, a comma-separated string, or a list."""
     if isinstance(value, str):

@@ -688,6 +688,45 @@ async def test_a_command_that_failed_at_home_must_fail_in_the_before_too(hass, m
 
 
 @pytest.mark.asyncio
+async def test_a_value_home_assistant_refused_as_invalid_is_assists_slip_not_the_home_failing(hass, monkeypatch,
+                                                                                             effect_guards):
+    """DETAILS P9.10.6: Assist asked the hallway for 50 degrees and Home Assistant refused it as out of the
+    thermostat's range (a ServiceValidationError): Assist's slip, not the home's. The home could do it, and a replay
+    asking for 21 isn't refused for what was refused at home: Home Assistant checks its range itself."""
+    from test_openrouter_replay import bind_openrouter, call, openrouter_recording, reply
+    from custom_components.assist_improver import analyzer
+    from custom_components.assist_improver.simulation import recorded
+    hall = "climate.hallway"
+    record = json.loads(json.dumps(openrouter_recording()).replace(TARGET, hall).replace(
+        "Fixture relay", "Hallway").replace('"domain": ["switch"]', '"domain": ["climate"]'))
+    for turn in record["turns"]:
+        turn["source"].update(scripts={}, automations=[])
+        turn["source"]["states"][hall].update(state="heat", attributes={
+            "friendly_name": "Hallway", "hvac_modes": ["off", "heat"], "min_temp": 7, "max_temp": 35,
+            "temperature": 18, "supported_features": 1})
+        turn["prepared"]["tools"].append({"name": "climate__HassClimateSetTemperature", "description": "Set it",
+                                          "integration": "climate", "parameters": {"type": "object"}})
+    record["state_changes"] = []
+    record["turns"][0]["actions"] = [{"action": "climate.set_temperature",
+                                      "data": {"entity_id": [hall], "temperature": 50.0},
+                                      "error": "Provided temperature 50.0 is not valid. Accepted range is 7 to 35.",
+                                      "error_type": "ServiceValidationError"}]
+    turns = recording_turns(record, replay=False)
+    view = SimpleNamespace(source=turns[0]["source"], sources=[t["source"] for t in turns],
+                           actions={1: record["turns"][0]["actions"]}, changes={})
+    heat = {"turn": 1, "summary": "Hallway to 21", "kind": "state", "entity_id": hall, "state": "heat",
+            "attributes": {"temperature": 21}}
+    assert analyzer.home_couldnt(view, heat, [heat]) is None and recorded(record)["failed"] == []
+    await bind_openrouter(hass, record, [call("climate__HassClimateSetTemperature", {"name": "Hallway",
+                                                                                     "temperature": 21}, "c1"),
+                                         reply("Done.")] + [reply("Ok.")] * 3)
+    step = (await (await replay(hass, monkeypatch, record)).run())["steps"][0]
+    assert step["commands"][0]["data"]["temperature"] == 21 and not any(
+        (m.get("result") or {}).get("error") for m in step["output"] if m.get("role") == "tool_result")
+    assert effect_guards == []
+
+
+@pytest.mark.asyncio
 async def test_a_tool_the_provider_runs_itself_runs_there_in_a_replay_labelled_as_an_outside_receipt(
         hass, monkeypatch, effect_guards):
     """The provider's own web search runs at the provider, as at home: the replay goes on, the call kept as the

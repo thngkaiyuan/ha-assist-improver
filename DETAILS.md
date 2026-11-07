@@ -1398,8 +1398,9 @@ Citations in parentheses name the maintainer's earlier notes, which aren't in th
     just stub them out (passthru) for now, because it's undecided whether parsing the contents to match user intent is
     a worthy cost or not.")
   - **P9.10.6** The home couldn't do a root goal when, in every turn its tree took, its command failed at home (a call
-    of the turn's call log on its device ended in an error, which a replay's sandbox gives again, P11.4) or its device
-    was unavailable. That's context for an unmet goal, not a state of its own: the analysis, a test's record, the
+    of the turn's call log on its device ended in an error, which a replay's sandbox gives again, P11.4; not Home
+    Assistant refusing it as invalid, such as a value out of the device's range, which is Assist's) or its device was
+    unavailable. That's context for an unmet goal, not a state of its own: the analysis, a test's record, the
     editor's input and the review say which.
 - **P9.11 Trouble.** Trouble is any of four: extra turns, unmet goals, side effects left, and the household's feedback
   on how Assist behaved. Each kind flows through every stage, from the analysis to Your review. (Kai, 2026-10-26:

@@ -10,6 +10,7 @@ from homeassistant.core import async_get_hass_or_none
 from . import touchpoints
 from .cases import CaseError, calls_in
 from .digest import kept, machinery
+from .happened import at_home
 from .standin import MOVERS, UNDERWAY
 
 
@@ -109,9 +110,10 @@ def _targets(action):
 
 def recorded(recording, tools=()):
     """What a replay's sandbox answers as the recording did (sandbox.seed): the tools the assistant had beyond Home
-    Assistant's Assist today (tools: today's names), as recorded; each tool call's result; each action that failed,
-    with its error, by the entities it named and the turn's moment (its at); and what each media search played, by the
-    media players it played on."""
+    Assistant's Assist today (tools: today's names), as recorded; each tool call's result; each action that failed at
+    home (happened.at_home: one Home Assistant refused as invalid, it refuses again itself), with its error, by the
+    entities it named and the turn's moment (its at); and what each media search played, by the media players it
+    played on."""
     turns, specs = recording.get("turns") or [], {}
     for turn in turns:
         for spec in (turn.get("prepared") or {}).get("tools") or []:
@@ -121,7 +123,7 @@ def recorded(recording, tools=()):
     actions = [a for turn in turns for a in turn.get("actions") or []]
     failed = [{"action": a["action"], "entity_ids": sorted(_targets(a)), "error": a["error"],
                "at": (turn.get("source") or {}).get("at")} for turn in turns for a in turn.get("actions") or []
-              if a.get("error")]
+              if at_home(a)]
     played = [a for a in actions if a["action"] == "media_player.play_media"]
     media = [found for c in calls if isinstance(c["result"], dict) and isinstance(
         found := ((c["result"].get("data") or {}).get("speech_slots") or {}).get("media"), dict)]

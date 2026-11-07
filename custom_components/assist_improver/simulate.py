@@ -752,7 +752,7 @@ class Trial:
         actual_by, expected_by = per_entity(setting_off(transitions)), per_entity(setting_off(expected))
         then = recorded_attributes(self.recording, turn, mine)
         source = turn["source"]
-        failed = lambda actions: {e for a in actions or [] if a.get("error")  # noqa: E731
+        failed = lambda actions: {e for a in actions or [] if happened.at_home(a)  # noqa: E731
                                   for e in happened.named(a["action"], a.get("data") or {}, source)}
         step.update(home=found["home"], recorded_transitions=expected,  # Its home: where a test may branch from.
                     matched=all(same_effects(actual_by.get(e, []), expected_by.get(e, [])) for e in mine)

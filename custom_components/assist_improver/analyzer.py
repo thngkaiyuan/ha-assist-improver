@@ -265,7 +265,8 @@ def reached(view, goal, until_turn=None):
 def home_couldnt(view, goal, goals):
     """Why the home couldn't have reached a root goal whatever Assist did, in every turn its tree took (its own, as
     the user asked for it, and each of its sub-goals'): "failed", its command failed at home there (a call of the
-    turn's call log on it ended in an error, as a replay's sandbox refuses it again: simulation.recorded), or
+    turn's call log on it ended in an error Home Assistant didn't refuse as invalid, happened.at_home, as a replay's
+    sandbox refuses it again: simulation.recorded), or
     "unavailable", its device was unavailable; None when it could. Context for an unmet root goal, not a state of its
     own. For an action, every device it's for, none of whose entities with a state was available (a satellite and its
     speaker are one device). An unknown device is a sleeping one a command wakes (its stand-in takes the command), so
@@ -279,9 +280,9 @@ def home_couldnt(view, goal, goals):
     known, actions = view.source.get("entities") or {}, getattr(view, "actions", None) or {}
     device = lambda e: (known.get(e) or {}).get("device_id") or e  # noqa: E731
 
-    def failed(asked, t):  # A call on it, or on its device's other entities for an action, that failed there.
+    def failed(asked, t):  # A call on it, or on its device's other entities for an action, that failed at home there.
         return any(device(e) == device(asked) if goal.get("kind") == "action" else e == asked
-                   for a in actions.get(t) or [] if a.get("error")
+                   for a in actions.get(t) or [] if happened.at_home(a)
                    for e in happened.named(a["action"], a.get("data") or {}, source_at(view, t)))
 
     def down(asked, t):  # Its device's entities with a state then (a disabled one has none), else the one asked for.
