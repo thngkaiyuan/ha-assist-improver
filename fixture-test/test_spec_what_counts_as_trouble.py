@@ -421,12 +421,15 @@ def test_an_unmet_goal_whose_device_was_unavailable_as_asked_carries_that_the_ho
     record = home("down0001", turns, start={RELAY: "unavailable"})
     analysis = analyzer.to_analysis("down0001", answer, view_of(record))
     [goal] = analysis["goals"]
-    assert goal["reached"] is False and goal["home_couldnt"] is True
+    assert goal["reached"] is False and goal["home_couldnt"] == "unavailable"
     assert friction_by_goal(analysis)[1] == [{"turn": 1, "kind": "unmet", "summary": "Relay off",
-                                              "home_couldnt": HOME_COULDNT}]
-    assert scenario(analysis, view_of(record))["turns"][0]["goals_started"][0]["home_couldnt"] == HOME_COULDNT
+                                              "home_couldnt": HOME_COULDNT["unavailable"]}]
+    assert scenario(analysis, view_of(record))["turns"][0]["goals_started"][0]["home_couldnt"] == HOME_COULDNT[
+        "unavailable"]
     judged = measures.judged_of(measures.goals_of(analysis), lambda g: {g["entity_id"]})
-    assert judged["1:0"]["home_couldnt"] is True
+    assert judged["1:0"]["home_couldnt"] == "unavailable"
+    kept = {**analysis, "goals": [{**goal, "home_couldnt": True}]}  # An analysis from before says True: unavailable.
+    assert friction_by_goal(kept)[1][0]["home_couldnt"] == HOME_COULDNT["unavailable"]
     for start in ({}, {RELAY: "unknown"}):
         missed = analyzer.to_analysis("missed01", answer, view_of(home("missed01", turns, start=start)))
         assert missed["goals"][0]["reached"] is False and "home_couldnt" not in missed["goals"][0]
@@ -444,13 +447,45 @@ def test_the_home_couldnt_do_it_only_when_the_device_was_unavailable_in_every_tu
         for n in down:
             record["turns"][n - 1]["source"]["states"][RELAY]["state"] = "unavailable"
         [root, _] = analyzer.to_analysis("retry001", answer, view_of(record))["goals"]
-        assert root["reached"] is False and root.get("home_couldnt", False) is (down == [1, 2]), down
+        assert root["reached"] is False and root.get("home_couldnt") == ("unavailable" if down == [1, 2] else None)
     fridge = {"turn": 1, "summary": "Fridge off too", "kind": "state", "entity_id": FRIDGE, "state": "off",
               "serves": 1}
     record = home("parts001", [(CARELESS, [("Off", "Fixture relay", [RELAY])], "Done.")], start={FRIDGE: "unavailable"})
     goals = analyzer.to_analysis("parts001", {"goals": [RELAY_OFF, fridge], "not_requests": [],
                                               "question_for_user": ""}, view_of(record))["goals"]
     assert goals[1]["reached"] is False and "home_couldnt" not in goals[1]
+
+
+def test_a_command_that_failed_at_home_in_every_turn_its_goal_took_is_one_the_home_couldnt_do():
+    """DETAILS P9.10: the home couldn't do a goal when its command failed at home (a call of the turn's call log on
+    its device ended in an error, as a replay refuses it again), or its device was unavailable, in every turn its tree
+    took; the analysis, the proposer and a test's record carry which. A retry that wasn't refused was Assist's to
+    reach; a failure on another device says nothing of this one."""
+    from custom_components.assist_improver import measures
+    from custom_components.assist_improver.hypotheses.goals import HOME_COULDNT
+    retried = [(CARELESS, [("Off", "Fixture relay", [])], "Done."), ("The relay, off.", [], "Done.")]
+    again = {"turn": 2, "summary": "Relay off, again", "kind": "step", "serves": 1}
+    answer = {"goals": [RELAY_OFF, again], "not_requests": [], "question_for_user": ""}
+    refused = lambda entity: [{"action": "switch.turn_off", "data": {"entity_id": [entity]},  # noqa: E731
+                               "error": "The device didn't answer"}]
+    for failed, down, why in (([1, 2], [], "failed"), ([1], [2], "failed"), ([1], [], None), ([], [], None)):
+        record = home("refused1", retried)
+        for n, turn in enumerate(record["turns"], 1):
+            turn["actions"] = refused(RELAY) if n in failed else refused(FRIDGE)
+            if n in down:
+                turn["source"]["states"][RELAY]["state"] = "unavailable"
+        analysis = analyzer.to_analysis("refused1", answer, view_of(record))
+        [root, _] = analysis["goals"]
+        assert root["reached"] is False and root.get("home_couldnt") == why, (failed, down)
+    record = home("refused1", retried)
+    for turn in record["turns"]:
+        turn["actions"] = refused(RELAY)
+    analysis = analyzer.to_analysis("refused1", answer, view_of(record))
+    assert friction_by_goal(analysis)[1][0]["home_couldnt"] == HOME_COULDNT["failed"]
+    judged = measures.judged_of(measures.goals_of(analysis), lambda g: {g.get("entity_id")})
+    assert judged["1:0"]["home_couldnt"] == "failed"
+    went = measures.judge(measures.goals_of(analysis), view_of(record), [1, 2], measures.CONVERSATION)
+    assert went["home_couldnt"] == {"1:0": "failed"}
 
 
 SPEAKER, VOICE = "media_player.fixture_speaker", "assist_satellite.fixture_voice"  # One device: what reaches one

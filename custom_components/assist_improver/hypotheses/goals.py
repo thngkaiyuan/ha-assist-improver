@@ -1,7 +1,7 @@
 """What a session's analysis says, read the ways the roles need it: its friction by goal, the devices a goal names,
 the session as a script, and what Assist can do with a device."""
 
-from ..analyzer import root_turn, top_level
+from ..analyzer import couldnt, root_turn, top_level
 from ..measures import note_labels
 
 def short(recording_id):
@@ -14,8 +14,9 @@ UNANALYSED_NOTE = ("Not analysed, so its goals and friction weren't extracted; r
                    "what Assist did.")
 
 
-# What an unmet goal's home_couldnt says, wherever a role reads it.
-HOME_COULDNT = "its device was unavailable as it was asked for, so the home couldn't do it"
+# What an unmet goal's home_couldnt says, by why (analyzer.home_couldnt), wherever a role reads it.
+HOME_COULDNT = {"failed": "its command failed at home as it was asked for, so the home couldn't do it",
+                "unavailable": "its device was unavailable as it was asked for, so the home couldn't do it"}
 FRICTION_KINDS = {  # What each kind of friction means, for the roles that read it.
     "extra turn": "a turn the user spent getting a goal done (served: what for)",
     "unmet": "a goal that wasn't met: Assist guessed or missed what the user wanted, or its reply didn't give what "
@@ -36,7 +37,8 @@ def friction(analysis):
     for goal in top_level(goals):  # Assist guessed or missed what the user wanted (DETAILS P9.11.4).
         if goal.get("reached") is False and goal["kind"] != "ask":
             out.append({"turn": goal["turn"], "kind": "unmet", "summary": goal["summary"],
-                        **({"home_couldnt": HOME_COULDNT} if goal.get("home_couldnt") else {}),
+                        **({"home_couldnt": HOME_COULDNT[couldnt(goal["home_couldnt"])]}
+                           if goal.get("home_couldnt") else {}),
                         **({"why": goal["answered"]["why"]} if goal.get("answered") else {})})
     said = analysis.get("turns")
     note = [t for t in (note_labels(analysis) if said else {})
@@ -131,7 +133,7 @@ def scenario(analysis, view):
             turn["assist_acted_on"] = line["assist_acted_on"]
         # Every field the goal has; its turn is the line's, and what the home couldn't do and why it's unmet in words.
         started = [{**{k: v for k, v in g.items() if k not in ("turn", "answered", "home_couldnt")},
-                    **({"home_couldnt": HOME_COULDNT} if g.get("home_couldnt") else {}),
+                    **({"home_couldnt": HOME_COULDNT[couldnt(g["home_couldnt"])]} if g.get("home_couldnt") else {}),
                     **({"why": g["answered"]["why"]} if g.get("answered") and g.get("reached") is False else {})}
                    for g in top_level(goals) if g["turn"] == n and g["kind"] != "ask"]
         if started:

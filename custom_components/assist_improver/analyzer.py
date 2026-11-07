@@ -263,26 +263,40 @@ def reached(view, goal, until_turn=None):
 
 
 def home_couldnt(view, goal, goals):
-    """Whether a root goal's device was unavailable in every turn its tree took (its own, as the user asked for it,
-    and each of its sub-goals'), so the home couldn't have reached it whatever Assist did then: context for an unmet
-    root goal, not a state of its own; for an action, every device it's for, none of whose entities with a state was
-    available (a satellite and its speaker are one device). An unknown device is a sleeping one a command wakes
-    (its stand-in takes the command), so it isn't one."""
+    """Why the home couldn't have reached a root goal whatever Assist did, in every turn its tree took (its own, as
+    the user asked for it, and each of its sub-goals'): "failed", its command failed at home there (a call of the
+    turn's call log on it ended in an error, as a replay's sandbox refuses it again: simulation.recorded), or
+    "unavailable", its device was unavailable; None when it could. Context for an unmet root goal, not a state of its
+    own. For an action, every device it's for, none of whose entities with a state was available (a satellite and its
+    speaker are one device). An unknown device is a sleeping one a command wakes (its stand-in takes the command), so
+    it isn't one."""
     turn = goal.get("turn")
     entities = [goal["entity_id"]] if goal.get("entity_id") else goal.get("entity_ids") or []
     took = {turn} | {g["turn"] for g in goals if g.get("serves") is not None and root_turn(goals, g["serves"]) == turn}
     if not entities or not isinstance(turn, int) or not 1 <= turn <= len(view.sources):
-        return False
+        return None
     turns = [t for t in took if isinstance(t, int) and 1 <= t <= len(view.sources)]
-    if goal.get("kind") != "action":
-        return all(state_at(view, entities[0], t) == "unavailable" for t in turns)
-    known = view.source.get("entities") or {}
+    known, actions = view.source.get("entities") or {}, getattr(view, "actions", None) or {}
     device = lambda e: (known.get(e) or {}).get("device_id") or e  # noqa: E731
 
+    def failed(asked, t):  # A call on it, or on its device's other entities for an action, that failed there.
+        return any(device(e) == device(asked) if goal.get("kind") == "action" else e == asked
+                   for a in actions.get(t) or [] if a.get("error")
+                   for e in happened.named(a["action"], a.get("data") or {}, source_at(view, t)))
+
     def down(asked, t):  # Its device's entities with a state then (a disabled one has none), else the one asked for.
-        held = [e for e in known if device(e) == device(asked) and state_at(view, e, t) is not None] or [asked]
-        return all(state_at(view, e, t) == "unavailable" for e in held)
-    return all(down(asked, t) for asked in entities for t in turns)
+        held = [e for e in known if device(e) == device(asked) and state_at(view, e, t) is not None
+                ] if goal.get("kind") == "action" else []
+        return all(state_at(view, e, t) == "unavailable" for e in held or [asked])
+    if not all(failed(asked, t) or down(asked, t) for asked in entities for t in turns):
+        return None
+    return "failed" if any(failed(asked, t) for asked in entities for t in turns) else "unavailable"
+
+
+def couldnt(why):
+    """Why the home couldn't reach a goal, as home_couldnt says it: failed or unavailable (an analysis from before
+    says True, which meant unavailable)."""
+    return "unavailable" if why is True else why
 
 
 def side_effects_left(view, goals):
@@ -336,8 +350,8 @@ def side_effects_left(view, goals):
 def to_analysis(recording_id, output, view, notes=()):
     """The model's goals, plus what code derives from the recording. Every goal, root or sub-goal (P0.3), is reached
     (met), not (unmet) or None (indeterminate) as measures.judge finds it in the conversation as it went; an unmet
-    root goal whose device was unavailable as it was asked for is marked home_couldnt. notes: the turns after those
-    said, in order (records.AnalysisResult.notes)."""
+    root goal the home couldn't reach is marked home_couldnt, with why (failed or unavailable). notes: the turns after
+    those said, in order (records.AnalysisResult.notes)."""
     from .measures import goals_of, judge
     goals = [clean_goal(g) for g in output.get("goals", [])]
     count = len(view.digest["turns"])
@@ -353,8 +367,8 @@ def to_analysis(recording_id, output, view, notes=()):
     states = judge(goals_of(analysis), view, range(1, count + 1))["goals"]
     for i, goal in enumerate(goals):
         goal["reached"] = {"met": True, "unmet": False}.get(states[f"{goal['turn']}:{i}"])
-        if goal["reached"] is False and goal.get("serves") is None and home_couldnt(view, goal, goals):
-            goal["home_couldnt"] = True
+        if goal["reached"] is False and goal.get("serves") is None and (why := home_couldnt(view, goal, goals)):
+            goal["home_couldnt"] = why
     return analysis
 
 

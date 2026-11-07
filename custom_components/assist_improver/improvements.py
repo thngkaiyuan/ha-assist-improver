@@ -518,9 +518,10 @@ def row(test):
     those gone with it, what the household objected to that the change fixed (feedback: their words), what it still does
     (open: their words, the first reply that does it, by its place among the replies with the change, and the judge's
     reason) and what couldn't be told (set_aside), each goal it helped (goals; with home_couldnt, its devices when the
-    home couldn't do it either way), those still unmet with it the home could do (unmet), the conversation as it went
+    home couldn't do it either way, and because: failed or unavailable), those still unmet with it the home could do
+    (unmet), the conversation as it went
     beside its replay with the change (with the steps that failed in each turn), and the turns no longer needed."""
-    from .analyzer import REACTIONS
+    from .analyzer import REACTIONS, couldnt
     from .measures import compared, helped
     before, after, judged = test["before"], test["after"], test["judged"]
     roots = set(before["turns_per_root_goal"])
@@ -538,8 +539,9 @@ def row(test):
     counted = {n for turns in before["counted"].values() for n in turns}
     still = {n for turns in after["counted"].values() for n in turns}
     return {"summary": "; ".join(judged[r]["summary"] or "" for r in roots_helped),
-            "goals": [{"goal": judged[r]["summary"] or "", **({"home_couldnt": judged[r]["devices"]} if judged[r].get(
-                "home_couldnt") and after["goals"].get(r) != "met" else {})} for r in roots_helped],
+            "goals": [{"goal": judged[r]["summary"] or "", **({"home_couldnt": judged[r]["devices"], "because": couldnt(
+                judged[r]["home_couldnt"])} if judged[r].get("home_couldnt") and after["goals"].get(r) != "met" else {})}
+                      for r in roots_helped],
             "unmet": [judged[r]["summary"] or "" for r in roots_helped
                       if after["goals"].get(r) == "unmet" and not judged[r].get("home_couldnt")],
             "improved": test["validated"],

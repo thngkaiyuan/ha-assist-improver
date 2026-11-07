@@ -1389,11 +1389,15 @@ Citations in parentheses name the maintainer's earlier notes, which aren't in th
     calls with their results (a broadcast's names the satellites it was sent to), and its call log, every action call
     under the turn's request, a script's own included (P8.2.10; a replay's sandbox keeps one the same way). A call that
     failed reaches nothing. One for a device none of whose entities was available in the turns it took is one the home
-    couldn't do (P9.10). Code decides it from the calls; where a recording ran a script and kept no call log, it can't
+    couldn't do (P9.10.6). Code decides it from the calls; where a recording ran a script and kept no call log, it can't
     be told. (Kai, 2026-10-30: "It's hard to judge the content of those audio. We can create an abstraction that
     decides based on the content of these announcements (eg audio/text that's going to be translated to speech), but
     just stub them out (passthru) for now, because it's undecided whether parsing the contents to match user intent is
     a worthy cost or not.")
+  - **P9.10.6** The home couldn't do a root goal when, in every turn its tree took, its command failed at home (a call
+    of the turn's call log on its device ended in an error, which a replay's sandbox gives again, P11.4) or its device
+    was unavailable. That's context for an unmet goal, not a state of its own: the analysis, a test's record, the
+    editor's input and the review say which.
 - **P9.11 Trouble.** Trouble is any of four: extra turns, unmet goals, side effects left, and the household's feedback
   on how Assist behaved. Each kind flows through every stage, from the analysis to Your review. (Kai, 2026-10-26:
   "let's make sure it plumbs/flows its way correctly down the pipeline all the way through"; PRODUCT-SPEC.md,
@@ -1641,7 +1645,7 @@ Citations in parentheses name the maintainer's earlier notes, which aren't in th
   - **P12.1.5** The editor is told what each test showed, and asked to say so, e.g. "no longer changes {device} (it
     stays {state})", "no longer does what you pointed out: “{their words}”"; and what it didn't, never to be written as
     fixed: "still does what you pointed out: “{their words}”", "the home couldn't do it: {device} was unavailable when
-    asked", "still not done: {goal}". What's fixed and what's open come only from these, never from the replies.
+    asked" (or "{device} failed", P9.10.6), "still not done: {goal}". What's fixed and what's open come only from these, never from the replies.
     (TEXT-REVIEW.md, 2026-10-25; Kai, 2026-10-29: words on judgement; the household's broadcast revision, 2026-10-30)
   - **P12.1.6** The editor is told when an improvement's tests made Assist's replies longer (P6), and never calls it
     briefer. (TEXT-REVIEW.md, 2026-10-25; fixture-test/SPEC.md)
@@ -2793,8 +2797,8 @@ words, those words are the requirement; elsewhere the behaviour lives in its own
     gone" / "side effects gone" · "follows your feedback"; several joined by " · ", e.g. "3 → 1 turns · follows your
     feedback". After it, an amber "{n} still open" chip (how many Still open lines close its After), bubble "Something you
     pointed out still happened in a reply with this change.", or the set-aside bubble when none did. A goal the home
-    couldn't do either way (its device unavailable as it was asked for) reads "{goal}: the home couldn't do it
-    ({device} was unavailable)". (TEXT-REVIEW.md, Kai approved 2026-10-25; Kai, 2026-10-26: "Approved"; Kai,
+    couldn't do either way (P9.10.6) reads "{goal}: the home couldn't do it ({device} was unavailable)", or "({device}
+    failed)" where its command failed at home. (TEXT-REVIEW.md, Kai approved 2026-10-25; Kai, 2026-10-26: "Approved"; Kai,
     2026-10-29: words on judgement)
   - **P17.21.4** A test that made Assist wordier gets an amber "Says more" chip after its result, bubble "Assist's
     replies: about {after} words each, {before} before."; under the tests, "With this change, Assist's replies got

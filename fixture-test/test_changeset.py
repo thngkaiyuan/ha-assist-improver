@@ -1112,7 +1112,8 @@ async def test_the_review_and_the_editor_say_what_was_fixed_what_is_still_open_a
                                 "3:2": guessed, "3:3": guessed,
                                 "4:4": {"state": "indeterminate", "answers": [], "set_aside": True}}
     shown = row(test)
-    assert shown["goals"] == [{"goal": "Heat the den", "home_couldnt": ["climate.den_heater"]}]
+    assert shown["goals"] == [{"goal": "Heat the den", "home_couldnt": ["climate.den_heater"],
+                               "because": "unavailable"}]  # As kept since it was added: True was unavailable.
     assert shown["open"][0]["reply"] == 2  # The second reply the replay with the change shows.
     item = {**proposal(home), "test": test, "cause": "C", "status": "awaiting_review", "created": "1",
             "decisions": [], "application": None, "history": []}
@@ -1126,6 +1127,11 @@ async def test_the_review_and_the_editor_say_what_was_fixed_what_is_still_open_a
     assert editor.payload(item, editor.entity_names(hass, item))["tested"][0]["result"] == (
         "2 turn(s) instead of 3; no longer does what you pointed out: \u201cSay which\u201d; still does what you "
         "pointed out: \u201cDon't guess\u201d; the home couldn't do it: Den heater was unavailable when asked")
+    test["judged"]["1:0"]["home_couldnt"] = "failed"  # Its command failed at home.
+    assert panel.review(item, ([], [], []), hass=hass)["tests"][0]["summary"] == (
+        "Heat the den: the home couldn't do it (Den heater failed)")
+    assert editor.payload(item, editor.entity_names(hass, item))["tested"][0]["result"].endswith(
+        "the home couldn't do it: Den heater failed when asked")
 
 
 def test_the_editor_takes_what_is_fixed_and_what_is_open_from_the_verdicts_never_the_replies():

@@ -77,7 +77,7 @@ class Goal(TypedDict, total=False):
     improvement: str | None  # Conduct: an applied improvement that makes Assist do what they objected to.
     reached: bool | None  # Code's verdict from the recording (a fact's: the judge's, answered).
     answered: dict  # Fact: the judge's verdict on the reply that ends its run of steps: turn, gives, why.
-    home_couldnt: bool  # An unmet root goal whose device was unavailable as it was asked for.
+    home_couldnt: str | bool  # An unmet root goal the home couldn't reach: failed, or unavailable (True before).
     user_chose: list[dict]
 
 
@@ -251,7 +251,7 @@ class Replay(TypedDict, total=False):
     goals: dict[str, str]  # {goal key: met, unmet or indeterminate}.
     goals_met: list[str]
     turns_per_root_goal: dict[str, int]
-    home_couldnt: list[str]  # Root goals the home couldn't reach: their device was unavailable as it was asked for.
+    home_couldnt: dict[str, str] | list[str]  # {root goal key: why the home couldn't reach it} (a list before).
     counted: dict[str, list[int]]  # {root goal key: the turns it took}.
     side_effects_left: list[dict]  # entity_id, name (as the household names it), start, end, turn, settings?
     started_from: dict  # The home and time it started from (cases.started_from).

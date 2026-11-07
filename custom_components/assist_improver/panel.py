@@ -181,8 +181,11 @@ def test_result(test):
     return " \u00b7 ".join(shown) or "improved"
 
 
-def unavailable(names):
-    """The devices the home couldn't reach, by name: "{device} was unavailable"."""
+def couldnt_reach(names, because):
+    """Why the home couldn't reach devices, by name: "{device} failed" (its command failed at home), else "{device}
+    was unavailable"."""
+    if because == "failed":
+        return f"{' and '.join(names)} failed"
     return f"{' and '.join(names)} {'was' if len(names) == 1 else 'were'} unavailable"
 
 
@@ -195,7 +198,7 @@ def device_name(hass, entity_id):
 def tested_on(test, hass=None):
     """What a test's row says it tested: each goal it helped, and of one the home couldn't do either way, why."""
     return "; ".join(f"{g['goal']}: the home couldn't do it "
-                     f"({unavailable([device_name(hass, e) for e in g['home_couldnt']])})"
+                     f"({couldnt_reach([device_name(hass, e) for e in g['home_couldnt']], g.get('because'))})"
                      if g.get("home_couldnt") else g["goal"] for g in test["goals"])
 
 

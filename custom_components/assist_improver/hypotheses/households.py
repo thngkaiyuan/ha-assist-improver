@@ -11,7 +11,7 @@ from ..failures import contained
 from ..sessions import SessionSet, footprint
 from ..snapshot import renamed
 from .assistants import Assistants
-from .goals import (FRICTION_KINDS, HOME_COULDNT, capabilities, friction, friction_by_goal, goal_devices, goal_summary,
+from .goals import (FRICTION_KINDS, capabilities, friction, friction_by_goal, goal_devices, goal_summary,
                     scenario, short)
 
 # The open friction the generator gets as full scripts upfront (newest first), in characters and sessions; the
@@ -116,7 +116,8 @@ class Sessions(Assistants, SessionSet):
         analysis = self.analyses[session]
         items = friction_by_goal(analysis).get(turn, [])
         return {"turn": turn, "summary": goal_summary(analysis, turn), "friction": sorted({f["kind"] for f in items}),
-                **({"home_couldnt": HOME_COULDNT} if any(f.get("home_couldnt") for f in items) else {})}
+                **({"home_couldnt": why} if (why := next((f["home_couldnt"] for f in items if f.get("home_couldnt")),
+                                                         None)) else {})}
 
     def overview(self):
         """Background; the newest open friction as scripts (within a budget) and the rest of it one line per goal;

@@ -11,7 +11,7 @@ conversation went (P0.1: easier than it was for the household).
 from datetime import datetime, timedelta
 from types import SimpleNamespace
 
-from .analyzer import ASSISTANT, destination, done, question_run, reached, root_turn, side_effects_left
+from .analyzer import ASSISTANT, couldnt, destination, done, question_run, reached, root_turn, side_effects_left
 from .cases import calls_in
 from .exploration import with_percent
 
@@ -237,7 +237,8 @@ def judge(goals, view, said, conduct=CONVERSATION, aside=(), facts=None):
                for root in goals if root.get("serves") is None}
     return {"goals": states, "goals_met": [k for k, s in states.items() if s == "met"], "counted": counted,
             "turns_per_root_goal": {k: len(v) for k, v in counted.items()},
-            "home_couldnt": sorted(g["key"] for g in goals if g.get("serves") is None and g.get("home_couldnt")),
+            "home_couldnt": {g["key"]: couldnt(g["home_couldnt"]) for g in goals
+                             if g.get("serves") is None and g.get("home_couldnt")},
             "side_effects_left": side_effects_left(view, goals)}
 
 
@@ -348,11 +349,11 @@ def branch(goals, before, view, aside=(), shown=None):
 
 
 def judged_of(goals, devices_of):
-    """What a test judged, for its record: {key: {summary, turn, root, devices, kind, home_couldnt?, and for a conduct
-    goal quote and about}}. devices_of(goal): the devices a goal wants something from."""
+    """What a test judged, for its record: {key: {summary, turn, root, devices, kind, home_couldnt? (why), and for a
+    conduct goal quote and about}}. devices_of(goal): the devices a goal wants something from."""
     return {g["key"]: {"summary": g.get("summary"), "turn": g["label"], "root": root_of(goals, g),
                        "devices": sorted(devices_of(g)), "kind": g.get("kind"),
-                       **({"home_couldnt": True} if g.get("home_couldnt") else {}),
+                       **({"home_couldnt": couldnt(g["home_couldnt"])} if g.get("home_couldnt") else {}),
                        **({"quote": g.get("quote"), "about": g.get("about")} if g.get("kind") == "conduct" else {})}
             for g in goals}
 
@@ -363,7 +364,8 @@ def _roots(replay):
 
 def compared(after, before):
     """The root goals whose turns compare (DETAILS P6.1.5, P6.1.6): those met in both replays, and those unmet in both
-    because the home couldn't reach them (home_couldnt: their device was unavailable as it was asked for). One the home
+    because the home couldn't reach them (home_couldnt: its command failed at home, or its device was unavailable,
+    as it was asked for; a replay from before lists them). One the home
     could reach, unmet both ways, isn't: a change that gives up on it saves turns by abandoning the request. One met
     before and not now is worse on goals met, whatever its turns."""
     couldnt = set(before.get("home_couldnt") or ())

@@ -93,7 +93,7 @@ def payload(item, names=None, assistant=None, hass=None):
 def outcome(test, names):
     """What a validated test showed, from its verdicts (its row, improvements.row), in plain words: (what the change
     fixed, what it left open)."""
-    from .panel import unavailable
+    from .panel import couldnt_reach
     fixed = (["goal now met (it went unmet before)"] if test["newly_met"]
              else [f"{test['turns_after']} turn(s) instead of {test['turns_before']}"]
              if test["turns_after"] < test["turns_before"] else [])  # A count only where it changed.
@@ -107,8 +107,8 @@ def outcome(test, names):
         fixed.append("no longer does what you pointed out: " + quoted(test["feedback"]))
     still = (["still does what you pointed out: " + quoted(dict.fromkeys(o["quote"] for o in test["open"]))]
              if test["open"] else [])
-    still += [f"the home couldn't do it: {unavailable([names.get(e, e) for e in g['home_couldnt']])} when asked"
-              for g in test["goals"] if g.get("home_couldnt")]
+    still += [f"the home couldn't do it: {couldnt_reach([names.get(e, e) for e in g['home_couldnt']], g.get('because'))}"
+              " when asked" for g in test["goals"] if g.get("home_couldnt")]
     still += [f"still not done: {goal}" for goal in test["unmet"]]
     return fixed, still
 
