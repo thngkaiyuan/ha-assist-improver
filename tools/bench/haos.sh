@@ -60,6 +60,9 @@ wait_for() {  # wait_for SECONDS WHAT COMMAND...: until COMMAND succeeds.
   done
 }
 installed() { [ "$(on "ha $1 info --raw-json" | jq -r .data.version)" = "$2" ]; }
+known() {  # Whether the Supervisor's latest is the channel's Supervisor, once it has read its channel's versions again.
+  on "ha supervisor reload" && [ "$(on "ha supervisor info --raw-json" | jq -r .data.version_latest)" = "$supervisor" ]
+}
 core() {  # core ARGS...: `ha core ARGS`. While the Supervisor runs a job on Home Assistant (its install, which ends by
   # starting it, or an update), it refuses another: tried again every 5 s, for up to 15 minutes.
   local deadline=$((SECONDS + 900)) out
@@ -71,9 +74,11 @@ core() {  # core ARGS...: `ha core ARGS`. While the Supervisor runs a job on Hom
 wait_for 600 "SSH" on true
 wait_for 900 "the Supervisor" on "ha supervisor info"
 
-# The channel's Supervisor, then its Home Assistant (the landing page first, while the Supervisor installs one).
+# The channel's Supervisor, once the Supervisor has read the channel's versions (it updates to the latest it knows,
+# whatever version is asked for), then its Home Assistant (the landing page first, while the Supervisor installs one).
 on "ha supervisor options --channel $channel" > /dev/null
-installed supervisor "$supervisor" || on "ha supervisor update --version $supervisor" > /dev/null || true
+wait_for 300 "the $channel channel's versions" known
+installed supervisor "$supervisor" || on "ha supervisor update" > /dev/null || true
 wait_for 900 "Supervisor $supervisor" installed supervisor "$supervisor"
 wait_for 1800 "Home Assistant to be installed" sh -c \
   "ssh -F '$BENCH_HAOS' haos 'ha core info --raw-json' | jq -e '.data.version != \"landingpage\"'"
