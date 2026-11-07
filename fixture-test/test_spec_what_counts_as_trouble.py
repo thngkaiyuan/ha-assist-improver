@@ -442,6 +442,23 @@ def test_an_unmet_goal_whose_device_was_unavailable_as_asked_carries_that_the_ho
         assert missed["goals"][0]["reached"] is False and "home_couldnt" not in missed["goals"][0]
 
 
+def test_the_proposer_and_the_reviewer_are_told_every_kind_of_friction_a_goal_left_unmet_among_them():
+    """The proposer hears as many kinds of friction as there are (FRICTION_KINDS), and both roles hear of a goal
+    left unmet as their input shows it: a goal started with reached false, why or home_couldnt; a kind unmet."""
+    from custom_components.assist_improver.hypotheses import prompts
+    from custom_components.assist_improver.hypotheses.goals import FRICTION_KINDS
+    count = ("one", "two", "three", "four", "five", "six", "seven")[len(FRICTION_KINDS) - 1]
+    assert f"Friction comes in {count} kinds" in prompts.GENERATOR_INSTRUCTIONS
+    assert "goals left unmet (reached: false, with why or home_couldnt)" in prompts.GENERATOR_INSTRUCTIONS
+    assert "by kind: extra turns, goals left unmet," in prompts.REVIEWER_INSTRUCTIONS
+    record = home("down0002", [(CARELESS, [("Off", "Fixture relay", [])], "Done.")], start={RELAY: "unavailable"})
+    analysis = analyzer.to_analysis("down0002", {"goals": [RELAY_OFF], "not_requests": [], "question_for_user": ""},
+                                    view_of(record))
+    [started] = scenario(analysis, view_of(record))["turns"][0]["goals_started"]
+    assert started["reached"] is False and "home_couldnt" in started
+    assert [f["kind"] for f in friction_by_goal(analysis)[1]] == ["unmet"] and "unmet" in FRICTION_KINDS
+
+
 def test_the_home_couldnt_do_it_only_when_the_device_was_unavailable_in_every_turn_its_goal_took():
     """The snapshot of each turn counts, as Assist saw the home then: a relay unavailable in the turn it was asked
     for but back by the retry Assist also missed was Assist's to reach; one unavailable only in a later turn was there
