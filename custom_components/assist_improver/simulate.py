@@ -25,7 +25,7 @@ from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.storage import Store
 from homeassistant.util.dt import utcnow
 
-from . import happened, measures, touchpoints
+from . import happened, measures, targets, touchpoints
 from .cases import (CaseError, calls_in, digest, recording_turns, replay_readiness, replayed, started_from,
                     transcript)
 from .changes import setup_from_changes
@@ -49,11 +49,14 @@ NOT_REACHED = "It only changes the instructions of an assistant this conversatio
 ASKED_IN_NOTE = "They asked again in the note they sent it in with."
 NOTHING_AGAIN = "nothing the household had trouble with happened again"
 TRIES = 3  # The baseline's tries on one setup (DETAILS P6.6.6).
+# The judge's input, cut for size where it's cut, saying how much (digest._clip): a tool call's result to
+# digest.RESULT_CHARS, a call's data and a failed call's error in what the home did to CALL_CHARS.
+CALL_CHARS = 200
 # Whether a replay's Assist turns show what the household objected to: a small model judges only that, one turn at a
 # time, with the turn they objected to as the example (DETAILS P6.1.9, P6.1.11). Its model is set where the feedback
 # check's was (settings' role key).
 CONDUCT_ROLE = "feedback_check"
-CONDUCT_INSTRUCTIONS = """A household objected to something their home assistant ("Assist") said or did in one turn of a conversation, or had to check on a result because Assist's reply there left them unsure (then what they objected to is a reply that leaves the result unclear). Each objection below has their own words (quote) and, as the example of what they objected to, that turn as it was recorded (objected_to: its turn number, then what the user said, what Assist did, each tool call with Home Assistant's result, what it replied, and what the home did: each message spoken and on which devices, each device it changed, and each script it ran); or "Assist in general" when they named no one turn. Then the same conversation replayed, turn by turn, in the same form, what the home did there being each message spoken or sound played and on which devices, each command its devices were sent, and each device whose state changed: a turn with none of these did nothing of the kind. The replay's turn with the same number is the same request asked again. For each objection, judge each replay turn it lists (judge): does that turn show what the household objected to? Answer for each with shows (true or false) and a short reason (why). Judge only what they objected to, from what the turn said and did: the tool calls, their results and what the home did are the facts of what Assist did. A turn that doesn't do it, or does something they didn't object to, doesn't show it."""
+CONDUCT_INSTRUCTIONS = """A household objected to something their home assistant ("Assist") said or did in one turn of a conversation, or had to check on a result because Assist's reply there left them unsure (then what they objected to is a reply that leaves the result unclear). Each objection below has their own words (quote) and, as the example of what they objected to, that turn as it was recorded (objected_to: its turn number, then what the user said, what Assist did, each tool call with Home Assistant's result, what it replied, and what the home did: each message spoken and on which devices, each device it changed, and each script it ran); or "Assist in general" when they named no one turn. Then the same conversation replayed, turn by turn, in the same form, what the home did there being each message spoken or sound played and on which devices, each command its devices were sent, and each device whose state or settings changed: a turn with none of these did nothing of the kind. The replay's turn with the same number is the same request asked again. For each objection, judge each replay turn it lists (judge): does that turn show what the household objected to? Answer for each with shows (true or false) and a short reason (why). Judge only what they objected to, from what the turn said and did: the tool calls, their results and what the home did are the facts of what Assist did. A turn that doesn't do it, or does something they didn't object to, doesn't show it."""
 CONDUCT_STRUCTURE = probatio.Schema({probatio.Required("answers"): [{
     probatio.Required("goal"): str, probatio.Required("turn"): int, probatio.Required("shows"): bool,
     probatio.Required("why"): str}]})
@@ -279,23 +282,28 @@ def _home_did(items, actions, source, changes):
     """What the home did in a turn, read the same way recorded or replayed (happened.py), by its call log, else (a
     recording from before one was kept) by Assist's tool calls' results: each message said or sound played on devices,
     and on which (one unavailable as the turn began, by source, reached nothing); each other call of its call log, its
-    data clipped, a failed one with its error; each change (entity_id, old, new, attributes_changed), its state, else
-    its settings; and, where the turn kept no call log, each script it ran, saying what that did isn't recorded beyond
-    any change listed. items: what Assist added to the conversation in the turn."""
+    data and a failed one's error clipped (CALL_CHARS); each change (entity_id, old, new, attributes_changed) of a
+    device's settable state, its state and every setting one of its actions sets (targets.settable), a reading aside;
+    and, where the turn kept no call log, each script it ran, saying what that did isn't recorded beyond any change
+    listed. items: what Assist added to the conversation in the turn."""
     states, calls = source.get("states") or {}, calls_in(items)
     spoke = [{"message": s["message"], **({"media": s["media"]} if s["media"] else {}),
               "on": sorted(e for e in s["targets"] if (states.get(e) or {}).get("state") != "unavailable")}
              for s in happened.announcements(calls if actions is None else [], actions, source) if s["targets"]]
-    called = [f"{a['action']}" + (f" {_clip(json.dumps(data, ensure_ascii=False, sort_keys=True, default=str), 200)}"
+    clip = lambda text: _clip(text, CALL_CHARS)  # noqa: E731
+    called = [f"{a['action']}" + (f" {clip(json.dumps(data, ensure_ascii=False, sort_keys=True, default=str))}"
                                   if (data := a.get("data")) else "")
-              + (f": failed, {_clip(str(a['error']), 200)}" if a.get("error") else "")
+              + (f": failed, {clip(str(a['error']))}" if a.get("error") else "")
               for a in actions or [] if a.get("error") or not (  # Said on devices: in spoke, once.
                   happened.carried(a.get("data") or {}) and happened.named(a["action"], a.get("data") or {}, source))]
     changed = []
     for change in changes:
-        settings = list((change.get("attributes_changed") or {}).items())[:3]
-        changed.append(f"{change['entity_id']}: " + (f"{change['old']} → {change['new']}" if change["old"] != change[
-            "new"] else ", ".join(f"{k} {old} → {new}" for k, (old, new) in settings)))
+        settable = targets.settable(change["entity_id"].split(".", 1)[0])
+        said = [f"{change['old']} → {change['new']}"] * (change["old"] != change["new"]) + [
+            f"{k} {old} → {new}" for k, (old, new) in (change.get("attributes_changed") or {}).items()
+            if k in settable]
+        if said:
+            changed.append(f"{change['entity_id']}: {', '.join(said)}")
     return {"spoke": spoke, "called": called, "changed": changed, "ran_scripts": [
         f"{s}: what it did isn't recorded, beyond any change listed" for s in happened.ran_scripts(calls)
         if actions is None]}

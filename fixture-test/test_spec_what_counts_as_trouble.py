@@ -642,6 +642,26 @@ async def test_the_judge_at_analysis_hears_what_the_recorded_broadcast_reached_a
     assert f"{SPEAKER}: volume_level 0.2 → 0.5" in turn[4]["home_did"]["changed"]  # Its settings, though not its state.
 
 
+
+def test_the_judge_hears_every_setting_a_change_moved_whole_and_long_call_data_cut_saying_so():
+    """#114: a change lists each setting one of its device's actions sets, all of them (none cut after the first
+    few), the attributes nothing sets (a colour mode) aside; a call's data and a failed call's error are cut to
+    CALL_CHARS, saying how much was left out."""
+    from custom_components.assist_improver import simulate
+    lamp = "light.fixture_lamp"
+    moved = {"brightness": [10, 200], "hs_color": [[0, 0], [30, 50]], "rgb_color": [[255, 255, 255], [255, 191, 128]],
+             "xy_color": [[0.32, 0.33], [0.45, 0.38]], "color_temp_kelvin": [2700, None], "color_mode": ["color_temp", "hs"]}
+    long = "word " * 100
+    did = simulate._home_did([], [{"action": "light.turn_on", "data": {"entity_id": lamp, "flash": long}},
+                                  {"action": "light.turn_off", "data": {}, "error": long}],
+                             {"states": {}}, [{"entity_id": lamp, "old": "off", "new": "on", "attributes_changed": moved}])
+    [change] = did["changed"]
+    assert change.startswith(f"{lamp}: off → on, ") and "color_mode" not in change
+    assert all(f"{k} {old} → {new}" in change for k, (old, new) in moved.items() if k != "color_mode")
+    data, failed = did["called"]
+    cut = "more characters omitted]"
+    assert cut in data and len(data) < len(long) and failed.startswith("light.turn_off: failed, word") and cut in failed
+
 def test_the_judge_at_analysis_hears_that_a_recorded_turn_ran_a_script_whose_doings_a_recording_doesnt_keep():
     """A recording keeps no more of what a script did than the changes Home Assistant puts down to the turn's request,
     so a recorded turn that ran one says so where the judge reads what the home did: nothing spoken there isn't nothing
