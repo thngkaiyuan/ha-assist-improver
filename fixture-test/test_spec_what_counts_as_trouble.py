@@ -753,6 +753,23 @@ def test_a_button_press_is_an_action_met_when_the_call_reached_it_and_never_a_st
         "command; a scene asked for is its devices' states."]
 
 
+def test_a_button_a_script_pressed_is_met_by_its_last_press_by_assist_where_no_call_log_was_kept():
+    """DETAILS P9.10.5: a script's run reaches what it presses; in a recording that kept no call log, Assist's own
+    change to the button (its last press, in the turn) shows the press was done, and without one it can't be told."""
+    chime, at = "button.chime", "2026-01-01T00:00:00+00:00"
+    source = {"states": {chime: {"state": at, "attributes": {}}}, "entities": {chime: {}}}
+    press = {"at": "2026-01-01T00:00:01+00:00", "during_turn": 1, "old": at, "new": "2026-01-01T00:00:01+00:00",
+             "by": "assistant"}
+    ring = {"turn": 1, "summary": "Ring the chime", "kind": "action", "outcome": "command", "entity_ids": [chime]}
+    judged = []
+    for changes in ({chime: [press]}, {}):
+        view = SimpleNamespace(source=source, sources=[source], calls={1: [{"tool": "script__ring", "args": {},
+                                                                            "result": {"data": {"result": {}}}}]},
+                               actions={1: None}, changes=changes)
+        judged.append(measures.judge(measures.goals_of({"turns": 1, "goals": [ring]}), view, [1])["goals"]["1:0"])
+    assert judged == ["met", "indeterminate"]
+
+
 @pytest.mark.asyncio
 async def test_home_assistants_own_turn_on_reaches_a_device_by_the_call_it_makes_in_its_domain(hass):
     """DETAILS P9.10.5: homeassistant.turn_on calls each entity's own domain's turn_on, logged under it; a button has
