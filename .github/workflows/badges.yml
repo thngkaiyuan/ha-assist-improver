@@ -1,0 +1,37 @@
+# The README's badges: after each Tests run on main from a push or the watcher, the files its verdict job left go to the
+# badges branch, each unless a newer run's is there (tools/bench/badges.py). The workflow_run event gives this run a
+# token that writes, whatever the tests' run had: it runs only the default branch's script, on runs of this repository.
+name: Badges
+
+on:
+  workflow_run:
+    workflows: [Tests]
+    types: [completed]
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    if: >-
+      ${{ !github.event.repository.private
+      && github.event.workflow_run.head_repository.full_name == github.repository
+      && contains(fromJSON('["push", "workflow_dispatch"]'), github.event.workflow_run.event)
+      && github.event.workflow_run.conclusion != 'cancelled' }}
+    runs-on: ubuntu-26.04
+    timeout-minutes: 10
+    permissions:
+      actions: read  # The run's badges artifact.
+      contents: write  # The badges branch.
+    steps:
+      - uses: actions/checkout@v7  # The default branch, never the run's head.
+        with:
+          sparse-checkout: tools/bench/badges.py
+          sparse-checkout-cone-mode: false
+          persist-credentials: false  # gh has the token.
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN: ${{ github.event.workflow_run.id }}
+        run: python3 tools/bench/badges.py publish "$RUN"

@@ -32,3 +32,9 @@ means every supported release: `hacs.json`'s minimum, and each month's newest pa
 commit's newest Stable check is its pass (`tools/passed.py`), which `tools/deploy.sh` asks for. Beta and dev are smoke
 tests. GitHub bills a private repository's runs, so there the tests skip, and the watcher polls only once the
 repository variable `WATCH_HOME_ASSISTANT` is `on` (a scheduled run can't tell).
+
+The README's badges are shields.io endpoint files on the `badges` branch: each run's `verdict` job writes them
+(`badges.py`), and `badges.yml` publishes a run's on main. The branch is made once, by hand, with an empty commit:
+
+    empty=$(git hash-object -t tree /dev/null)
+    git push origin "$(git commit-tree -m "The README's badges" "$empty"):refs/heads/badges"
