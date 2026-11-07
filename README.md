@@ -4,6 +4,11 @@
 
 **Your Home Assistant's AI, easier every week.**
 
+[![Tests on every supported Home Assistant release](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Fthngkaiyuan%2Fha-assist-improver%2Fbadges%2Fstable.json)](https://github.com/thngkaiyuan/ha-assist-improver/actions/workflows/tests.yml?query=branch%3Amain)
+[![Tests on Home Assistant's beta](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Fthngkaiyuan%2Fha-assist-improver%2Fbadges%2Fbeta.json)](https://github.com/thngkaiyuan/ha-assist-improver/actions/workflows/tests.yml?query=branch%3Amain)
+[![Tests on Home Assistant's dev build](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Fthngkaiyuan%2Fha-assist-improver%2Fbadges%2Fdev.json)](https://github.com/thngkaiyuan/ha-assist-improver/actions/workflows/tests.yml?query=branch%3Amain)
+[![Share of the integration's code the tests run](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Fthngkaiyuan%2Fha-assist-improver%2Fbadges%2Fcoverage.json)](https://github.com/thngkaiyuan/ha-assist-improver/actions/workflows/tests.yml?query=branch%3Amain)
+
 [![Open Assist Improver in your Home Assistant](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=thngkaiyuan&repository=ha-assist-improver&category=integration)
 
 > **Early release.** Used every day in my household, on Home Assistant 2026.11.0. Tell me how it works in yours: [open an issue](https://github.com/thngkaiyuan/ha-assist-improver/issues).
