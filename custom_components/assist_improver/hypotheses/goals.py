@@ -52,7 +52,7 @@ def friction(analysis):
                         "summary": goal["summary"], "user_chose": goal.get("user_chose", [])})
     for item in analysis.get("side_effects_left") or []:
         out.append({"turn": item["turn"], "kind": "side effect",
-                    **{k: item[k] for k in ("entity_id", "start", "end")}})
+                    **{k: item[k] for k in ("entity_id", "start", "end", "settings") if k in item}})
     for goal in goals:
         if goal["kind"] == "conduct":
             out.append({"turn": goal["turn"], "kind": "conduct", "for_goal_at_turn": goal.get("serves"),
@@ -163,8 +163,8 @@ def scenario(analysis, view):
         out["not_analysed"] = TRIAGED_NOTE
     elif analysis.get("not_analysed"):
         out["not_analysed"] = UNANALYSED_NOTE
-    left = [{**{k: f[k] for k in ("entity_id", "start", "end")}, "changed_in_turn": f["turn"], "for_goal_at_turn": t}
-            for t, items in by_goal.items() for f in items if f["kind"] == "side effect"]
+    left = [{**{k: f[k] for k in ("entity_id", "start", "end", "settings") if k in f}, "changed_in_turn": f["turn"],
+             "for_goal_at_turn": t} for t, items in by_goal.items() for f in items if f["kind"] == "side effect"]
     if left:
         out["side_effects_left"] = sorted(left, key=lambda f: f["changed_in_turn"])
     return out

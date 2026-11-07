@@ -233,6 +233,22 @@ def holds(domain, wanted, attributes, found=None):
     return True
 
 
+def moved(domain, was, left, now, found=None):
+    """The settings a device wasn't left at as they started ({attribute: [as it was, as it was left]}): each settable
+    attribute (settable) in was and left, read against now (all its attributes as left) as holds reads it, in any form
+    and a number within tolerance; a colour once. One shown at neither end can't be told to have moved."""
+    settings = settable(domain)
+    out = {}
+    for name, start in was.items():
+        colour = name in colour_modes() or name == "color_name"
+        if (name not in settings or start is None or left.get(name) is None
+                or colour and any(n in colour_modes() or n == "color_name" for n in out)):
+            continue
+        if not holds(domain, {name: start}, now, found):
+            out[name] = [start, left[name]]
+    return out
+
+
 def problems(source, entity_id, state, asked):
     """What's wrong with a target for this entity (asked: its settings as a goal names them): a state it can't be in,
     a setting its domain's services don't set, a value outside the options or range it shows. Empty when it can hold

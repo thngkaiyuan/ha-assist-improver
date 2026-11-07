@@ -377,6 +377,38 @@ def test_a_device_whose_start_was_unknown_is_never_a_side_effect():
     assert analyzer.side_effects_left(view_of(unknown), [RELAY_OFF]) == []
 
 
+def test_a_setting_assist_changed_and_didnt_put_back_is_a_side_effect_and_a_buttons_last_press_never_is():
+    """DETAILS P9.12: what Assist left is a device's settable state, its state and each setting an action of its sets
+    (a light's brightness or colour), compared in any form and a number within tolerance; a reading isn't one. A
+    button's last press, or a script running, is never a side effect left: it keeps no state to reach. A setting
+    unknown at the start can't be told to have moved."""
+    lamp, gate, fan = "light.fixture_lamp", "button.fixture_gate", "fan.fixture_fan"
+    asked = {"turn": 1, "summary": "Fan on", "kind": "state", "entity_id": fan, "state": "on"}
+
+    def left(start, *moves):
+        home = SimpleNamespace(source={"states": {e: {"state": s, "attributes": a} for e, (s, a) in start.items()}},
+                               changes={})
+        for entity, old, new, attributes in moves:
+            home.changes.setdefault(entity, []).append({"during_turn": 1, "by": "assistant", "old": old, "new": new,
+                                                        "attributes_changed": attributes})
+        return analyzer.side_effects_left(home, [asked])
+    lit = {"color_mode": "hs", "brightness": 255, "hs_color": [30.0, 50.0], "supported_color_modes": ["hs"]}
+    assert left({lamp: ("on", lit)}, (lamp, "on", "on", {"brightness": [255, 100]})) == [
+        {"entity_id": lamp, "start": "on", "end": "on", "turn": 1, "settings": {"brightness": [255, 100]}}]
+    assert left({lamp: ("on", lit)}, (lamp, "on", "on", {"brightness": [255, 250]})) == []  # Within tolerance.
+    as_rgb = {"color_mode": ["hs", "rgb"], "hs_color": [[30.0, 50.0], [30.1, 49.8]],
+              "rgb_color": [None, [255, 191, 128]]}
+    assert left({lamp: ("on", lit)}, (lamp, "on", "on", as_rgb)) == []  # The same colour, now shown as rgb.
+    assert left({lamp: ("on", lit)}, (lamp, "on", "on", {"hs_color": [[30.0, 50.0], [240.0, 100.0]]}))[0][
+        "settings"] == {"hs_color": [[30.0, 50.0], [240.0, 100.0]]}
+    unknown = {**lit, "brightness": None}
+    assert left({lamp: ("on", unknown)}, (lamp, "on", "on", {"brightness": [None, 100]})) == []
+    assert left({lamp: ("on", lit)}, (lamp, "on", "on", {"friendly_name": ["Lamp", "Lamp 2"]})) == []  # No setting.
+    assert left({gate: ("2026-01-01T08:00:00+00:00", {})},
+                (gate, "2026-01-01T08:00:00+00:00", "2026-01-01T09:00:00+00:00", {})) == []
+    assert left({"script.fixture_press": ("off", {})}, ("script.fixture_press", "off", "on", {})) == []
+
+
 def test_an_unmet_goal_whose_device_was_unavailable_as_asked_carries_that_the_home_couldnt_do_it():
     """The relay was unavailable when the user asked for it, so its goal is unmet whatever Assist did: the proposer
     is told so, with the friction and in the turn the goal started, and a test keeps it with the goal it judged. The

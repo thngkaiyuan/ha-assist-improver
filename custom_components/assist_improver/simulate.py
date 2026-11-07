@@ -833,7 +833,7 @@ def _replay(replay, judged, heard, told, aside, source, seeded, setup):
             "turns_per_root_goal": judged["turns_per_root_goal"], "counted": judged["counted"],
             "home_couldnt": judged["home_couldnt"],
             "side_effects_left": [{"entity_id": s["entity_id"], "name": _naming(seeded, s["entity_id"])[0],
-                                   "start": s["start"], "end": s["end"], "turn": s["turn"]}
+                                   **{k: s[k] for k in ("start", "end", "turn", "settings") if k in s}}
                                   for s in judged["side_effects_left"]],
             "started_from": started_from(source), "config": assist_config(seeded, setup),
             "conduct": {k: {"state": judged["goals"][k], "answers": (heard.get(k) or {}).get("answers", []),

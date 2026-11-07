@@ -1408,7 +1408,9 @@ Citations in parentheses name the maintainer's earlier notes, which aren't in th
   - **P9.11.5** An analysis that finds no trouble sends the conversation to Your household as No trouble found.
     (SPEC-CORE.md §1)
 - **P9.12 Side effects left.** A side effect left is a device Assist changed that no goal asked for, and that Assist
-  didn't leave as it started. (Kai, 2026-10-26: "1. yes"; 2026-11-02; PRODUCT-SPEC.md, 2026-10-25)
+  didn't leave as it started: its settable state, its state and each setting one of its actions sets (P9.7.1), not a
+  reading. A button's last press or a script running is never one: it keeps no state to reach (P9.7.6). (Kai,
+  2026-10-26: "1. yes"; 2026-11-02; PRODUCT-SPEC.md, 2026-10-25; S5)
   - **P9.12.1** Code derives it, not the model. (PRODUCT-SPEC.md, 2026-10-25; LABELS.md)
   - **P9.12.2** Only Assist's own change counts. A device's own follow-on isn't one. A signed-in person's later change
     to a device Assist acted on is theirs: never counted or labelled as Assist's. (SPEC-CORE.md S2, 2026-10-26;

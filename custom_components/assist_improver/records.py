@@ -87,6 +87,7 @@ class SideEffect(TypedDict, total=False):
     start: str | None
     end: str | None  # As Assist left it, whatever anyone did to it later.
     turn: int | None  # The turn of Assist's change.
+    settings: dict[str, list]  # {attribute: [as it was, as Assist left it]}: each setting it didn't put back.
 
 
 class AnalysisResult(TypedDict, total=False):
@@ -252,7 +253,7 @@ class Replay(TypedDict, total=False):
     turns_per_root_goal: dict[str, int]
     home_couldnt: list[str]  # Root goals the home couldn't reach: their device was unavailable as it was asked for.
     counted: dict[str, list[int]]  # {root goal key: the turns it took}.
-    side_effects_left: list[dict]  # entity_id, name (as the household names it), start, end, turn.
+    side_effects_left: list[dict]  # entity_id, name (as the household names it), start, end, turn, settings?
     started_from: dict  # The home and time it started from (cases.started_from).
     config: dict  # The scripts and the exposure it ran on (snapshot.assist_config).
     conduct: dict[str, dict]  # {conduct goal key: state, answers [{turn, shows, why}], set_aside}: the judge's.

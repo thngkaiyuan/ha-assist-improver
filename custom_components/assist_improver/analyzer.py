@@ -287,14 +287,16 @@ def home_couldnt(view, goal, goals):
 
 def side_effects_left(view, goals):
     """Devices Assist changed itself (not a device's own follow-on) that no goal asked for (or left open for the user)
-    and that Assist didn't leave as they started, with the turn of Assist's last change to each. Assist left one as its
-    last change and that change's own follow-on (a blind opening, then open) left it: anyone or anything else putting it
-    back later (a person, an automation, its own timer) doesn't clear it, since putting it back was work Assist caused;
-    Assist putting it back itself (in its turn, or asked to later) does. Asked for: by a root goal, or a sub-goal asked
-    at once with it (one world state, P0.3), or, for changes in its request's turns from its own, an action's (a speaker
-    left playing or idle by what it spoke); a later sub-goal that repairs a device doesn't make it wanted, nor does a
-    question about it. A device whose start was unknown or unavailable (one asleep) can't be told to have changed,
-    so it isn't one."""
+    and that Assist didn't leave as they started: its state, or a setting Assist changed (targets.moved: a light's
+    brightness or colour), with the turn of Assist's last change to each. Assist left one as its last change and that
+    change's own follow-on (a blind opening, then open) left it: anyone or anything else putting it back later (a
+    person, an automation, its own timer) doesn't clear it, since putting it back was work Assist caused; Assist
+    putting it back itself (in its turn, or asked to later) does. Asked for: by a root goal, or a sub-goal asked at once
+    with it (one world state, P0.3), or, for changes in its request's turns from its own, an action's (a speaker left
+    playing or idle by what it spoke); a later sub-goal that repairs a device doesn't make it wanted, nor does a
+    question about it. A device whose start was unknown or unavailable (one asleep) can't be told to have changed, so
+    it isn't one; nor is one that keeps no state to reach (standin.trigger_only: a button's last press, a script
+    running), whose doings count on the devices they changed."""
     wanted = {g.get("entity_id") for g in goals
               if g.get("serves") is None or root_turn(goals, g["serves"]) == g.get("turn")} | {
         e for g in goals if g.get("kind") == "ask" for e in g.get("entity_ids") or []}
@@ -307,15 +309,27 @@ def side_effects_left(view, goals):
                 spoke.setdefault(e, set()).update(turns)
     left = []
     for entity, changes in view.changes.items():
-        own = [c for c in changes if c["by"] == "assistant"]
-        if not own or entity in wanted or all(c["during_turn"] in spoke.get(entity, ()) for c in own):
+        own, domain = [c for c in changes if c["by"] == "assistant"], entity.split(".", 1)[0]
+        if (not own or entity in wanted or all(c["during_turn"] in spoke.get(entity, ()) for c in own)
+                or standin.trigger_only(domain)):
             continue
-        if entity.startswith("script."):  # On only while it runs: what it changed counts on the devices it changed.
+        begun = view.source.get("states", {}).get(entity) or {}
+        start = begun.get("state", changes[0]["old"])
+        if start in (None, *UNKNOWN_STATES):
             continue
-        start = (view.source.get("states", {}).get(entity) or {}).get("state", changes[0]["old"])
-        end = [c for c in changes if c["by"] in ASSISTANT][-1]["new"]
-        if start not in (None, *UNKNOWN_STATES) and end != start:
-            left.append({"entity_id": entity, "start": start, "end": end, "turn": own[-1]["during_turn"]})
+        last = max(i for i, c in enumerate(changes) if c["by"] in ASSISTANT)
+        attributes, was, settings = dict(begun.get("attributes") or {}), {}, {}
+        for change in changes[:last + 1]:  # Each setting Assist changed: as it was before, and as Assist left it.
+            if change["by"] in ASSISTANT:
+                for name, (_, new) in (change.get("attributes_changed") or {}).items():
+                    was.setdefault(name, attributes.get(name))
+                    settings[name] = new
+            attributes = _moved(attributes, change)
+        settings = targets.moved(domain, was, settings, attributes, targets.shown(view.source, entity))
+        end = changes[last]["new"]
+        if end != start or settings:
+            left.append({"entity_id": entity, "start": start, "end": end, "turn": own[-1]["during_turn"],
+                         **({"settings": settings} if settings else {})})
     return left
 
 
