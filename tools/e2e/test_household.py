@@ -170,12 +170,14 @@ def test_send_in_again(page, ha, fake_model):
     expect(row).to_have_class(ARCHIVED)
 
     # Sent in again from the panel: back in the list, and the improver looks at it now. The panel says so until the
-    # improver has taken it, which a fast run does at once: its chip then says where it stands.
+    # improver has taken it, which a fast run does at once: its chip then says where it stands, and a run that has
+    # already ended has it back among the archived.
     open_conversation(page, said)
     row.get_by_role("button", name="Send this one in").click()
     expect(row.locator(".cs-done", has_text="Sent in. The improver is looking at it now.").or_(
         page.chip(row).filter(has_not_text="Looked smooth")).first).to_be_visible()
-    expect(row).not_to_have_class(ARCHIVED)
+    expect(row.and_(panel.locator(".cs-row:not(.cs-archived)")).or_(
+        page.chip(row).filter(has_text="No trouble found")).first).to_be_visible()
     page.shot("sent-again")
 
     # A run of its own takes it (the fast lane), for a new round: one fresh full analysis, past the quick check this

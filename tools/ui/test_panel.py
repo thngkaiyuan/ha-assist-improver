@@ -336,7 +336,8 @@ STUB = """(replies) => {
   window.__callWS = async (msg) => {
     window.__calls.push(JSON.parse(JSON.stringify(msg)));
     // Home Assistant changed just as it took this one (__changes: {command type: replies}): it, and each one after,
-    // answers from the changed replies; those it took before answered as they were. It takes them in the order sent.
+    // answers from the changed replies; those it took before answered as they were, unless still held (__hold, __asks):
+    // a held one answers from the replies as they stand when it's let go. It takes them in the order sent.
     const change = window.__changes[msg.type];
     if (change) { delete window.__changes[msg.type]; Object.assign(window.__replies, change); }
     window.__inflight++;
@@ -431,7 +432,8 @@ class Panel:
 
     def change_at(self, kind, answers):
         """Home Assistant changes just as it takes the next kind command (a run ends, say): that command and every
-        later one answer as answers says ({kind: value}, kinds as answer takes them); those it took before stay."""
+        later one answer as answers says ({kind: value}, kinds as answer takes them); those it took before stay, unless
+        still held (hold, asks): a held one answers as things stand when it's let go."""
         self.page.evaluate("([t, v]) => { window.__changes[t] = v; }", [
             f"assist_improver/{kind}", {f"assist_improver/{key}": value for key, value in answers.items()}])
 
