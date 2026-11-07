@@ -21,6 +21,8 @@ On Linux, add `--with-deps` to the last line.
 on an otherwise idle 16-processor machine. On a busy one, journeys can time out waiting for a run ("Timed out after
 60 s"): run it again when it's quiet. Any file neither committed nor ignored, even a stray log, keeps it from passing.
 Its logs go to a temporary folder (`CHECK_LOGS=<folder>` picks one), kept and printed when something fails.
+`tools/check.sh --coverage DIR` (an empty folder outside the checkout) also prints the share of the integration's lines
+the suites run: its Python in every process it runs in, and the panel's JavaScript.
 
 Each suite alone (`-rs` prints why a test skipped):
 

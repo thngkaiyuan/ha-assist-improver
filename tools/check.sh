@@ -2,13 +2,31 @@
 # The full test gate: the four suites (offline, panel, end-to-end, graph) side by side on this checkout, each on its
 # own pytest-xdist workers. Prints the commit and whether the tree is clean before and after, each suite's result
 # line (with its failed tests), and a verdict. Exit 0 only when every suite passed on a clean tree whose commit didn't
-# move; 1 otherwise.
-# Usage: tools/check.sh. CHECK_LOGS=<folder> keeps the logs (and a failing journey's Home Assistant folder) there;
-# a new temp folder otherwise, kept and printed when something fails. On the bench (tools/bench/run.sh sets
-# BENCH_IMAGE), the offline and graph suites run in Home Assistant's image, and each journey's Home Assistant too.
+# move (with --coverage, and the report found all its data); 1 otherwise.
+# Usage: tools/check.sh [--coverage DIR]. CHECK_LOGS=<folder> keeps the logs (and a failing journey's Home Assistant
+# folder) there; a new temp folder otherwise, kept and printed when something fails. On the bench (tools/bench/run.sh
+# sets BENCH_IMAGE), the offline and graph suites run in Home Assistant's image, and each journey's Home Assistant too.
+# --coverage DIR (an empty folder outside the checkout; not on the bench, whose image has no coverage.py): every
+# process measures the integration's code into DIR, the panel's JavaScript too, and tools/coverage/report.py prints the
+# figure and writes DIR/totals.json.
 set -u
+COVERAGE=
+if [ $# -gt 0 ]; then
+  [ "$1" = --coverage ] && [ $# = 2 ] || { echo "usage: tools/check.sh [--coverage DIR]"; exit 1; }
+  [ -z "${BENCH_IMAGE:-}" ] || { echo "check.sh: --coverage runs natively only: the image has no coverage.py"; exit 1; }
+  COVERAGE=$(mkdir -p "$2" && cd "$2" && pwd -P) || exit 1  # From the caller's folder.
+fi
 cd "$(dirname "$0")/.."
 ROOT=$PWD
+
+if [ -n "$COVERAGE" ]; then
+  case $COVERAGE/ in "$(pwd -P)"/*)  # Its data would leave the tree unclean.
+    echo "check.sh: --coverage needs a folder outside the checkout: $COVERAGE"; exit 1;;
+  esac
+  [ -z "$(ls -A "$COVERAGE")" ] || { echo "check.sh: --coverage needs an empty folder: $COVERAGE"; exit 1; }
+  mkdir "$COVERAGE/python" "$COVERAGE/js"
+  export IMPROVER_COVERAGE=$COVERAGE PYTHONPATH=$ROOT/tools/coverage/site${PYTHONPATH:+:$PYTHONPATH}
+fi
 
 find_up() {  # A path in this checkout, or in the checkout a worktree hangs from (venvs and browsers aren't copied).
   local base=$ROOT
@@ -85,6 +103,9 @@ for i in "${!SUITES[@]}"; do
   [ "$status" = 0 ] || failed+=("$suite")
 done
 trap - INT TERM HUP
+if [ -n "$COVERAGE" ]; then  # Not measured itself.
+  IMPROVER_COVERAGE= "$PY" tools/coverage/report.py "$COVERAGE" 2>&1 || failed+=(coverage)
+fi
 
 after=$(tree)
 echo "== tree after $after"

@@ -1,0 +1,13 @@
+# What tools/check.sh --coverage measures in each process (site/sitecustomize.py) and how report.py combines it.
+[run]
+# By module name: the checkout, the journeys' copies and the replay workers' folders alike (not the stand-ins').
+source_pkgs = custom_components.assist_improver
+parallel = true
+relative_files = true
+patch = _exit
+disable_warnings = no-data-collected, module-not-imported, module-not-measured
+
+[paths]
+improver =
+    custom_components/assist_improver/
+    **/custom_components/assist_improver/
