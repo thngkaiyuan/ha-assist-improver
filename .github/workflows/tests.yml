@@ -3,7 +3,7 @@
 # dev's builds, on x64 and arm64 and on HA OS (bench.yml); and each new Home Assistant version, for its channel only
 # (home-assistant.yml starts this with the channel and its versions). The Stable check, every stable release's results
 # with hassfest, gates what ships, releases included (tools/passed.py); beta and dev are smoke tests: a failure fails
-# the run, never a release.
+# the run, never a release. The coverage job measures the share of the integration's code the suites run.
 # Pull requests from forks run it too: no job needs a secret, and its token only reads. In a private repository,
 # where GitHub bills each run, every job skips.
 name: Tests
@@ -101,3 +101,40 @@ jobs:
         env:
           RESULTS: ${{ needs.versions.result }} ${{ needs.stable.result }} ${{ needs.hassfest.result }}
         run: test "$RESULTS" = "success success success"
+
+  # The share of the integration's code the four suites run: its Python in every process, and the panel's JavaScript
+  # (tools/check.sh --coverage). Outside the image, which has no coverage.py; not a gate. Code alone decides it, so
+  # not for a new Home Assistant's run.
+  coverage:
+    if: ${{ !github.event.repository.private && github.event_name != 'workflow_dispatch' }}
+    runs-on: ubuntu-26.04
+    timeout-minutes: 90  # The bench's image jobs take 20 to 30 minutes; measuring adds to that.
+    outputs:
+      totals: ${{ steps.coverage.outputs.totals }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2  # v10.3.3; a tag can move.
+        with:
+          enable-cache: false
+      - name: Both venvs and Playwright's Chromium (CONTRIBUTING.md)
+        run: |
+          uv venv .venv --python 3.14 --managed-python
+          uv pip install --python .venv/bin/python -r fixture-test/requirements-lock.txt
+          uv venv tools/e2e/.venv --python 3.14 --managed-python
+          uv pip install --python tools/e2e/.venv/bin/python -r tools/e2e/requirements.txt
+          PLAYWRIGHT_BROWSERS_PATH=tools/ui/browsers tools/e2e/.venv/bin/python -m playwright install --with-deps chromium
+      - id: coverage
+        name: Tests, measured
+        env:
+          BENCH_LANDLOCK: applied
+          CHECK_LOGS: ${{ runner.temp }}/logs
+        run: |
+          set -o pipefail
+          tools/check.sh --coverage "$RUNNER_TEMP/coverage" | tee "$RUNNER_TEMP/check.txt"
+          grep '^== coverage:' "$RUNNER_TEMP/check.txt" >> "$GITHUB_STEP_SUMMARY"
+          echo "totals=$(jq -c . "$RUNNER_TEMP/coverage/totals.json")" >> "$GITHUB_OUTPUT"
+      - if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: logs-coverage
+          path: ${{ runner.temp }}/logs
