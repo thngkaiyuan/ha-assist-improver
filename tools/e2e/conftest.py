@@ -38,7 +38,8 @@ starts and back after it stops, and read there while it runs (HomeAssistant.read
 
 Environment: E2E_RUNS_DIR (where config folders go; a temp folder by default), E2E_KEEP=1 (keep them), E2E_SHOTS=1
 (Screen.shot saves screenshots), E2E_HA_PYTHON (Home Assistant's Python; the checkout's .venv by default),
-PLAYWRIGHT_BROWSERS_PATH (tools/ui/browsers by default), and the bench's BENCH_IMAGE, BENCH_RUNTIME, BENCH_HOST and
+PLAYWRIGHT_BROWSERS_PATH (tools/ui/browsers by default), IMPROVER_COVERAGE (tools/check.sh --coverage: the panel's
+JavaScript is measured too, tools/ui/jscov.py), and the bench's BENCH_IMAGE, BENCH_RUNTIME, BENCH_HOST and
 BENCH_LANDLOCK (tools/bench/run.sh sets them), or BENCH_HAOS (tools/bench/haos.sh). A failing test keeps its Home
 Assistant log, a screenshot and the fake model's requests for that test (e2e-model-requests.jsonl) in its folder, and
 prints where.
@@ -72,7 +73,9 @@ import pytest
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent.parent  # The checkout under test.
 sys.path.insert(0, str(HERE))
+sys.path.append(str(ROOT / "tools/ui"))
 from fake_anthropic import FakeAnthropic  # noqa: E402
+import jscov  # noqa: E402
 
 
 def _find(relative):
@@ -718,9 +721,10 @@ def pytest_runtest_makereport(item, call):
 def browser():
     """Playwright's headless Chromium (from tools/ui/browsers), for the session."""
     with sync_playwright() as playwright:
-        chromium = playwright.chromium.launch(headless=True)
+        chromium = jscov.launch(playwright.chromium, headless=True)
         yield chromium
         chromium.close()
+        jscov.dump("e2e")
 
 
 class Screen:
@@ -830,6 +834,7 @@ class Screen:
 
     def elsewhere(self):
         tab = self.page.context.new_page()
+        jscov.start(tab)
         tab.set_default_timeout(EXPECT_TIMEOUT)
         return Screen(tab, self.ha, self.size)
 
@@ -850,6 +855,7 @@ def page(browser, ha, request):
         f"if (!window.localStorage.getItem('hassTokens')) "
         f"window.localStorage.setItem('hassTokens', {json.dumps(json.dumps(tokens))});")
     tab = context.new_page()
+    jscov.start(tab)
     tab.set_default_timeout(EXPECT_TIMEOUT)
     screen = Screen(tab, ha, size)
     tab.on("pageerror", lambda err: screen.errors.append(f"{err.name}: {err.message} {(err.stack or '')[:600]}"))
@@ -868,4 +874,5 @@ def page(browser, ha, request):
                 tab.screenshot(path=str(ha.folder / f"e2e-{size}.png"), full_page=True)
             except Exception:  # noqa: BLE001 - a screenshot is a courtesy.
                 pass
+        jscov.collect(context)
         context.close()
