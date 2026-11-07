@@ -364,24 +364,41 @@ async def async_unload_entry(hass, entry):
 """}
 
 
-@pytest.mark.asyncio
-@pytest.mark.parametrize("text", ["Answer in a sentence.", "Answer in a sentence. Briefly."])
-async def test_an_assistant_change_whose_integration_doesnt_load_again_is_undone(home, tmp_path, monkeypatch, text):
-    """An assistant's change is its config subentry updated, which reloads its integration: a provider loaded before
-    that isn't loaded after it (its setup failed, or isn't ready) is the step's failure, so the change is undone, and
-    the provider is loaded again with its old value, though its failed setup took away the listener that reloads it."""
+FAILING_PROVIDER = {  # One whose setup, once it has failed, keeps failing: its old instructions don't load it again.
+    **{name: body.replace("fixture_reloading_provider", "fixture_failing_provider")
+       for name, body in RELOADING_PROVIDER.items()},
+    "__init__.py": """FAILED = []
+
+
+async def async_setup_entry(hass, entry):
+    entry.async_on_unload(entry.add_update_listener(reload))
+    if "Answer in a sentence." in entry.subentries["sub9"].data["prompt"]:
+        FAILED.append(True)
+    return not FAILED
+
+
+async def reload(hass, entry):
+    await hass.config_entries.async_reload(entry.entry_id)
+
+
+async def async_unload_entry(hass, entry):
+    return True
+"""}
+
+
+async def provider_of(hass, tmp_path, monkeypatch, files):
+    """A real assistant's integration (files: its own), set up and loaded with PROMPT as its instructions."""
     from homeassistant import loader
-    from homeassistant.config_entries import ConfigEntryState
     from homeassistant.helpers import frame
-    hass = home.hass
-    folder = tmp_path / "integrations" / "custom_components" / "fixture_reloading_provider"
+    domain = json.loads(files["manifest.json"])["domain"]
+    folder = tmp_path / "integrations" / "custom_components" / domain
     folder.mkdir(parents=True)
-    for name, body in RELOADING_PROVIDER.items():
+    for name, body in files.items():
         (folder / name).write_text(body)
     monkeypatch.syspath_prepend(str(tmp_path / "integrations"))
     hass.data.pop(loader.DATA_CUSTOM_COMPONENTS, None)  # Found again, with this one.
     frame.async_setup(hass)  # As Home Assistant's start sets it up: a custom integration's setup reports through it.
-    provider = ConfigEntry(domain="fixture_reloading_provider", title="Assistant", data={}, source="user", version=1,
+    provider = ConfigEntry(domain=domain, title="Assistant", data={}, source="user", version=1,
                            minor_version=1, options={}, unique_id=None, discovery_keys=MappingProxyType({}),
                            subentries_data=[{"data": {"prompt": PROMPT, "llm_hass_api": ["assist"]},
                                              "subentry_type": "conversation", "title": "Assistant",
@@ -389,6 +406,17 @@ async def test_an_assistant_change_whose_integration_doesnt_load_again_is_undone
     await hass.config_entries.async_add(provider)
     await hass.async_block_till_done()
     assert provider.state is ConfigEntryState.LOADED
+    return provider
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("text", ["Answer in a sentence.", "Answer in a sentence. Briefly."])
+async def test_an_assistant_change_whose_integration_doesnt_load_again_is_undone(home, tmp_path, monkeypatch, text):
+    """An assistant's change is its config subentry updated, which reloads its integration: a provider loaded before
+    that isn't loaded after it (its setup failed, or isn't ready) is the step's failure, so the change is undone, and
+    the provider is loaded again with its old value, though its failed setup took away the listener that reloads it."""
+    hass = home.hass
+    provider = await provider_of(hass, tmp_path, monkeypatch, RELOADING_PROVIDER)
     target = f"{provider.entry_id}/sub9"
     steps, _, conflicts = await plan_steps(hass, proposal(home, changes=[
         {"kind": "assistant", "assistant": "Assistant", "target": target, "text": text}], setup={}, tested={}))
@@ -397,6 +425,30 @@ async def test_an_assistant_change_whose_integration_doesnt_load_again_is_undone
     await hass.async_block_till_done()
     assert result["status"] == "rolled_back" and "didn't load again" in result["failure"]["error"], result
     assert provider.subentries["sub9"].data["prompt"] == PROMPT and provider.state is ConfigEntryState.LOADED
+    await hass.config_entries.async_unload(provider.entry_id)
+
+
+@pytest.mark.asyncio
+async def test_an_assistant_change_undone_whose_integration_still_doesnt_load_is_stuck_and_said_so(
+        home, tmp_path, monkeypatch):
+    """DETAILS P12.5.3, P12.5.13: the change's instructions fail its integration's setup, so the change is undone; its
+    old instructions are back, but the integration still doesn't load when reloaded, so that step is stuck, not undone,
+    and the review says so, no sentence of the error inside parentheses."""
+    from custom_components.assist_improver import panel
+    hass = home.hass
+    provider = await provider_of(hass, tmp_path, monkeypatch, FAILING_PROVIDER)
+    steps, _, conflicts = await plan_steps(hass, proposal(home, changes=[
+        {"kind": "assistant", "assistant": "Assistant", "target": f"{provider.entry_id}/sub9",
+         "text": "Answer in a sentence."}], setup={}, tested={}))
+    assert not conflicts and [s["kind"] for s in steps] == ["prompt"]
+    result = await Changesets(hass).run("imp1", "apply", steps)
+    await hass.async_block_till_done()
+    why = "Its integration didn't load again, saying “Failed to set up the config entry”."
+    assert result["status"] == "needs_attention" and result["failure"]["error"] == why and result["undone"] == []
+    assert result["stuck"] == [{"what": steps[0]["what"], "why": why}]
+    assert provider.subentries["sub9"].data["prompt"] == PROMPT and provider.state is ConfigEntryState.SETUP_ERROR
+    assert panel.outcome_text({"outcome": result}) == (
+        f"Some changes couldn't be undone after a failure. {steps[0]['what']}: {why}")
     await hass.config_entries.async_unload(provider.entry_id)
 
 
