@@ -608,6 +608,8 @@ class Flow:
             current["untestable"] = {"why": str(err), "at": utcnow().isoformat()}
         except simulate.Transient as err:  # The machinery cut it off: tried again, then held (P0.8).
             raise Failed(str(err)) from err
+        except Exception as err:  # A crash is Propose's failure, this conversation's alone (P0.8).
+            raise Failed(f"{type(err).__name__}: {err}") from err
         else:
             current.pop("untestable", None)
         await self._meanwhile(conv, back)

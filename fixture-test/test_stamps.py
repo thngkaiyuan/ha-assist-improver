@@ -365,3 +365,15 @@ def test_the_proposer_reads_why_a_question_is_still_unanswered_and_which_was_set
     found = result({"validated": False, "gains": [], "judged": judged, "before": replay, "after": replay})
     assert found["roots"][0]["why"] == "Says off; it's on." and "why" not in found["roots"][1]
     assert found["set_aside"] == ["Whether the lamp is on"]
+
+
+@pytest.mark.parametrize("validated", [[True, False], [False, True]])
+def test_simulates_stamp_is_the_latest_test_of_the_changes(validated):
+    """P0.4: an idea holds Simulate's stamp when its changes validate. The same changes tested again on another setup
+    are another test (DETAILS P6.3.4), and the latest decides: validated, then not, holds no stamp; the other way
+    round, it does."""
+    from custom_components.assist_improver.stamps import of
+    press = idea()
+    tests = [{"changes": digest(press["changes"]), "validated": v} for v in validated]
+    assert of([{"hypothesis": press, "verdict": "approve"}], tests, press) == {"Review": True,
+                                                                               "Simulate": validated[-1]}

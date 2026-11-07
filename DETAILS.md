@@ -2119,7 +2119,8 @@ Citations in parentheses name the maintainer's earlier notes, which aren't in th
   - **P14.3.14** No fix found: none of its goals with trouble has a fix, because the conversation's counterfactuals
     are used up, the proposer said why it's outside the assistant's control, or no idea can be tested on it (P6.6.7).
     Tooltip: 'No fix worked. Send it in again with a note for one more look.', or for one no idea could be tested on,
-    'No fix could be tested on this conversation.' (TEXT-REVIEW.md "No fix found": Kai approved 2026-10-25)
+    'No fix could be tested on this conversation.' (TEXT-REVIEW.md "No fix found": Kai approved 2026-10-25; the
+    second, 2026-11-07)
   - **P14.3.15** Marked as a test: the household said it was a test. Decisions made with the earlier menu still hold.
     (TEXT-REVIEW.md: 2026-10-25; fixture-test/SPEC.md)
   - **P14.3.16** Couldn't be read: no stage can read it. One that couldn't be read after being sent in again shows
@@ -2794,7 +2795,7 @@ words, those words are the requirement; elsewhere the behaviour lives in its own
     yet · The next proposal looks for another fix")
   - **P17.20.6** "No fix found"'s bubble: "No fix worked. Send it in again with a note for one more look.", or for
     one no idea could be tested on (P6.6.7): "No fix could be tested on this conversation." (TEXT-REVIEW.md, Kai
-    approved 2026-10-25)
+    approved 2026-10-25; the second, 2026-11-07)
 
 - **P17.21** The review's words:
   - **P17.21.1** What an improvement gets, on the home list and the review's header: "{n} new thing(s) Assist can do"

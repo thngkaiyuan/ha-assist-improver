@@ -188,6 +188,25 @@ async def test_a_resumed_proposal_is_given_the_rounds_tests_reviews_and_whats_le
     assert propose_record(improver)["given"].get("tests") == [0]
 
 
+# 4. A baseline that crashes fails the whole run.
+
+@pytest.mark.asyncio
+async def test_a_crashed_baseline_fails_propose_not_the_run(improver, monkeypatch):
+    """SPEC.md P0.8: a stage that fails is tried again, then held for that conversation alone. The baseline Propose
+    establishes first (DETAILS P6.6.7) crashing is Propose's failure: the run finishes, and the conversation is held
+    at Propose for failures."""
+    from custom_components.assist_improver import simulate
+
+    async def crashes(*args):
+        raise KeyError("before")
+    monkeypatch.setattr(simulate, "baseline", crashes)
+    await improver.arrives(improver.friction)
+    done = await improver.run()
+    assert done["status"] == "done", done["error"]
+    place = improver.runtime.flow.place("friction01")
+    assert (place["stage"], place["held"]["cause"]) == ("Propose", "failures")
+
+
 def test_a_revision_that_brought_no_new_version_gives_one_reason_the_note_s_goal_first():
     """The line says why in one reason: the proposer's for the note's goal (the last goal of the conversation it gave
     one for), else why its submitted idea didn't go on, ending as a sentence; none when it gave none."""
