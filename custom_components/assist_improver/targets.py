@@ -112,9 +112,9 @@ def settable(domain):
     return out
 
 
-def _known(domain, name):
-    """Whether a goal may name a setting: a settable attribute, or another representation of one (brightness_pct for
-    brightness, a colour's name for its colour)."""
+def known(domain, name):
+    """Whether a goal or a call may name a setting: a settable attribute, or another representation of one
+    (brightness_pct for brightness, a colour's name for its colour)."""
     return bool(representing(domain, name) & set(settable(domain)))
 
 
@@ -323,14 +323,14 @@ def problems(source, entity_id, state, asked):
     allowed = states(source, entity_id)
     if state is not None and allowed is not None and state not in allowed:
         out.append(f"{entity_id} has no state {state!r}; its states are {', '.join(sorted(allowed))}.")
-    known = settable(domain)
+    sets = settable(domain)
     for name, value in asked.items():
-        if not (_known(domain, name) and takes(found, domain, name)):
-            can = sorted(a for a in known if takes(found, domain, a))
+        if not (known(domain, name) and takes(found, domain, name)):
+            can = sorted(a for a in sets if takes(found, domain, a))
             out.append(f"{entity_id} has no setting {name!r}; its settings are {', '.join(can) or 'none'}.")
             continue
         held_as = attribute_of(domain, name)
-        listed = _options(held_as, found) or next((s.get("options") for s in ((known.get(held_as) or {}).get(
+        listed = _options(held_as, found) or next((s.get("options") for s in ((sets.get(held_as) or {}).get(
             "selector") or {}).values() if isinstance(s, dict) and isinstance(s.get("options"), list)), None)
         bounds = (0, 100) if name == "brightness_pct" else _range(domain, held_as, found)
         if listed and not _number(value) and value not in [o.get("value", o) if isinstance(o, dict) else o

@@ -152,14 +152,38 @@ def follow_ons(turn):
     return {e for i, a in enumerate(actions) if in_a_device(i) for e in _targets(a)} - called
 
 
-def recorded_attributes(recording, turn, entities):
-    """{entity: attributes} as the recorded turn's request left each (a light's brightness): as the turn began, or
-    as the request's last change set them."""
-    left = {e: (turn["source"]["states"].get(e) or {}).get("attributes") or {} for e in entities}
-    for change in _request_changes(recording, turn):
-        if change["entity_id"] in left:
-            left[change["entity_id"]] = change["new"].get("attributes") or {}
-    return left
+def assist_settings(recording, turn):
+    """What the recorded Assist set on devices' settings in one turn, as a replay's are compared with it (DETAILS
+    P6.6.1): {entity: {setting: value}}, as the turn's call log asked it (each call that didn't fail, on the entities it
+    names but a device's own follow-ons, its fields that name a setting: targets.known), else, in a recording from
+    before one was kept, each setting the request's own changes moved, as they left it. What a device reports beyond
+    what it was asked (the track a playlist it was asked to play is on) isn't Assist's doing."""
+    from . import happened, targets
+    follow, out = follow_ons(turn), {}
+    if "actions" in ((recording.get("turns") or [])[turn["number"] - 1:turn["number"]] or [{}])[0]:
+        for action in turn.get("actions") or []:
+            data = action.get("data") or {}
+            for entity in set() if action.get("error") else happened.named(action["action"], data, turn["source"]):
+                domain = entity.split(".", 1)[0]
+                if entity not in follow:
+                    out.setdefault(entity, {}).update({k: v for k, v in data.items() if targets.known(domain, k)})
+    else:
+        for change in _request_changes(recording, turn):
+            entity, old = change["entity_id"], change["old"].get("attributes") or {}
+            settable = targets.settable(entity.split(".", 1)[0])
+            if entity not in follow:
+                out.setdefault(entity, {}).update({k: v for k, v in (change["new"].get("attributes") or {}).items()
+                                                   if k in settable and v is not None and old.get(k) != v})
+    return {e: settings for e, settings in out.items() if settings}
+
+
+def same_settings(domain, asked, attributes, found):
+    """Whether a replayed device holds the settings the recorded Assist set on it (assist_settings), as targets.holds
+    reads them, each where the replay shows that setting (a light switched on with none named comes on at the level
+    it remembers, which only the real light knew)."""
+    from . import targets
+    return targets.holds(domain, {k: v for k, v in asked.items() if any(
+        attributes.get(a) is not None for a in targets.representing(domain, k))}, attributes, found)
 
 
 def reports_movement(recording):

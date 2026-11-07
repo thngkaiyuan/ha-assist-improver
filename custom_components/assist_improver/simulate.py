@@ -36,8 +36,8 @@ from .instructions import target
 from .replay import SandboxHome, today as setup_today
 from .sandbox import seeded
 from .serialization import plain
-from .simulation import (_request_changes, assist_transitions, moved_by_others, per_entity, recorded_attributes,
-                         same_effects, setting_off)
+from .simulation import (_request_changes, assist_settings, assist_transitions, moved_by_others, per_entity,
+                         same_effects, same_settings, setting_off)
 from .snapshot import assist_config, at_moment, on_today, renamed, renaming
 from .trace import span
 
@@ -626,8 +626,10 @@ class Trial:
         self.judge, self.states, self.facts = judge, {}, {}  # The judge's model; its answers so far.
         self.turns = recording_turns(recording)
         self.through = through or len(self.turns)
-        # The devices the recorded Assist changed itself, in any turn: what a before is judged on.
-        self.mine = {t["entity_id"] for turn in self.turns for t in assist_transitions(recording, turn)}
+        # The devices the recorded Assist changed itself, in any turn, their state or a setting: what a before is judged
+        # on.
+        self.mine = {t["entity_id"] for turn in self.turns for t in assist_transitions(recording, turn)} | {
+            e for turn in self.turns for e in assist_settings(recording, turn)}
         self.home, self.agent, self.session = None, None, session
         self.conversation_id, self.usage = f"improver-replay-{uuid4()}", []  # In its sandbox only.
         self.unheard = False  # A turn the model finished reported no usage.
@@ -743,22 +745,19 @@ class Trial:
         if self.after:
             return True
         # The conversation goes as it went (DETAILS P6.6.1): the devices the recorded Assist changed get the same
-        # effects, however the model phrased its calls: their states, their settings as the recorded request left them
-        # (targets.moved), where the replay shows one (a light switched on with no brightness named comes on at the
-        # level it remembers, which only the real light knew), and each command that failed at home failing again.
-        # It may vary elsewhere (a question, another device): kept as notes.
+        # effects, however the model phrased its calls: their states, the settings the recorded Assist set on them
+        # (simulation.same_settings), and each command that failed at home failing again. It may vary elsewhere (a
+        # question, another device): kept as notes.
         expected = assist_transitions(self.recording, turn)
         mine = self.mine
         actual_by, expected_by = per_entity(setting_off(transitions)), per_entity(setting_off(expected))
-        then = recorded_attributes(self.recording, turn, mine)
-        source = turn["source"]
+        asked, source = assist_settings(self.recording, turn), turn["source"]
         failed = lambda actions: {e for a in actions or [] if happened.at_home(a)  # noqa: E731
                                   for e in happened.named(a["action"], a.get("data") or {}, source)}
         step.update(home=found["home"], recorded_transitions=expected,  # Its home: where a test may branch from.
                     matched=all(same_effects(actual_by.get(e, []), expected_by.get(e, [])) for e in mine)
-                    and not any(targets.moved(e.split(".", 1)[0], then[e], attributes.get(e) or {},
-                                              attributes.get(e) or {}, targets.shown(source, e))
-                                for e in mine if e in attributes)
+                    and all(same_settings(e.split(".", 1)[0], settings, attributes.get(e) or {},
+                                          targets.shown(source, e)) for e, settings in asked.items())
                     and failed(turn.get("actions")) <= failed(found["actions"]),
                     differences_elsewhere={e: {"replay": [list(c) for c in actual_by.get(e, [])],
                                                "recorded": [list(c) for c in expected_by.get(e, [])]}

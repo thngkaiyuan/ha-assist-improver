@@ -650,9 +650,9 @@ async def test_the_before_compares_a_lights_brightness_where_the_replay_knows_it
 @pytest.mark.asyncio
 async def test_the_before_compares_every_setting_the_recorded_request_left_in_any_form(hass, monkeypatch, effect_guards,
                                                                                      colour, status):
-    """DETAILS P6.6.1: a device's effects are its settings too, compared as a goal's are (targets.moved): the real
-    light came on red, shown in hue and saturation; a replay that sets it red by name goes as it went, one that sets
-    it blue doesn't."""
+    """DETAILS P6.6.1: a device's effects are its settings too, compared as a goal's are (simulation.same_settings):
+    the real light came on red, shown in hue and saturation; a replay that sets it red by name goes as it went, one
+    that sets it blue doesn't."""
     from test_openrouter_replay import bind_openrouter, call, reply
     record = kitchen(color_mode="hs", hs_color=[0.0, 100.0], brightness=255)
     await bind_openrouter(hass, record, [call("light__HassLightSet", {"name": "Kitchen light", "color": colour}, "c1"),
@@ -660,6 +660,62 @@ async def test_the_before_compares_every_setting_the_recorded_request_left_in_an
     found = await (await replay(hass, monkeypatch, record)).run()
     assert found["status"] == status, found["steps"]
     assert found["steps"][0]["transitions"] == [{"entity_id": KITCHEN, "old": "off", "new": "on"}]
+    assert effect_guards == []
+
+
+@pytest.mark.parametrize("asked, status", [(80, "reproduced"), (10, "not_reproducible")])
+@pytest.mark.asyncio
+async def test_the_before_compares_a_device_whose_settings_alone_the_recorded_request_changed(
+        hass, monkeypatch, effect_guards, asked, status):
+    """DETAILS P6.6.1: the kitchen light was on at 20%, and the recorded request took it to 80%, its state unchanged:
+    a replay that sets 80% goes as it went, one that sets 10% doesn't."""
+    from test_openrouter_replay import bind_openrouter, call, reply
+    record = kitchen(204)
+    for n, turn in enumerate(record["turns"]):
+        turn["source"]["states"][KITCHEN].update(state="on", attributes={
+            "friendly_name": "Kitchen light", "supported_color_modes": ["brightness"], "color_mode": "brightness",
+            "brightness": 204 if n else 51})
+    was = deepcopy(record["turns"][0]["source"]["states"][KITCHEN])
+    record["state_changes"][0].update(old=was, new={**record["state_changes"][0]["new"], "state": "on",
+                                                    "attributes": {**was["attributes"], "brightness": 204}})
+    await bind_openrouter(hass, record, [call("light__HassLightSet", {"name": "Kitchen light", "brightness": asked},
+                                              "c1"), reply("Done.")] + [reply("Ok.")] * 3)
+    found = await (await replay(hass, monkeypatch, record)).run()
+    assert found["status"] == status, found["steps"]
+    assert effect_guards == []
+
+
+@pytest.mark.asyncio
+async def test_the_before_compares_the_settings_assist_asked_for_not_what_a_device_reports_beyond(
+        hass, monkeypatch, effect_guards):
+    """DETAILS P6.6.1: the speaker was asked to play a playlist, and showed the track it was on, as a real one does;
+    the replay's speaker, asked for the same playlist, shows the playlist. The settings compared are those the
+    recorded call log asked for, so it goes as it went."""
+    from test_openrouter_replay import bind_openrouter, call, openrouter_recording, reply
+    speaker, playlist = "media_player.kitchen_speaker", "spotify:playlist:37i9dQZF1DXbITWG1ZJKYt"
+    asked = {"media_content_id": playlist, "media_content_type": "playlist"}
+    play = {"alias": "Fixture press", "sequence": [
+        {"action": "media_player.play_media", "target": {"entity_id": speaker}, "data": asked}]}
+    record = json.loads(json.dumps(openrouter_recording(scripts={"fixture_press": play})).replace(
+        TARGET, speaker).replace("Fixture relay", "Kitchen speaker").replace('"domain": ["switch"]',
+                                                                             '"domain": ["media_player"]'))
+    for turn in record["turns"]:
+        turn["source"]["states"][speaker].update(state="idle", attributes={
+            "friendly_name": "Kitchen speaker", "supported_features": 512 | 16384 | 4 | 8, "volume_level": 0.3})
+        turn["source"]["exposure"][SCRIPT] = True
+    first = recording_turns(record)[0]
+    was = deepcopy(first["source"]["states"][speaker])
+    record["state_changes"] = [{"entity_id": speaker, "at": "2026-01-01T00:00:04+00:00", "old": was, "new": {
+        **was, "state": "playing", "attributes": {**was["attributes"], "media_content_type": "music",
+                                                  "media_content_id": "spotify:track:4uLU6hMCjMI75M1A2tKUQC"},
+        "context": deepcopy(first["prepared"]["context"]["context"])}}]
+    record["turns"][0]["actions"] = [{"action": SCRIPT, "data": {}},
+                                     {"action": "media_player.play_media", "data": {"entity_id": speaker, **asked},
+                                      "under": 0}]
+    await bind_openrouter(hass, record, [call("script__fixture_press", {}, "s1"), reply("Playing.")]
+                          + [reply("Ok.")] * 3)
+    found = await (await replay(hass, monkeypatch, record)).run()
+    assert found["status"] == "reproduced", found["steps"]
     assert effect_guards == []
 
 
