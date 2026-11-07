@@ -2932,7 +2932,7 @@ def test_a_script_home_assistant_refuses_to_save_is_answered_with_its_reason_and
     panel = open_review(open_panel)
     reason = "Message malformed: invalid action"
     panel.refuse("POST", "press_garage", reason)
-    result = (f"Nothing was changed: Press garage failed ({reason}), so the steps already done were undone. You can "
+    result = (f"Nothing was changed. Press garage failed: {reason}. The steps already done were undone, so you can "
               "try again.")
     panel.answer("decide", {"result": result, "status": "awaiting_review", "ok": False})
     panel.asks("decide", asking(("close_garage", CLOSE), ("press_garage", PRESS), ("close_garage", None)))

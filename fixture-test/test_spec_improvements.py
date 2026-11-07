@@ -374,8 +374,8 @@ async def test_a_failed_accept_leaves_nothing_applied_and_stays_up_for_review_sa
     sent = await ws(panel.ws_decide, home.hass, writer.editor(home.hass), improvement_id="imp1", decision="accept",
                     note="")
     assert sent[0] == "ok" and sent[1]["status"] == "awaiting_review" and sent[1]["ok"] is False
-    assert sent[1]["result"].startswith("Nothing was changed: ") and "failed (disk full)" in sent[1]["result"]
-    assert sent[1]["result"].endswith("so the steps already done were undone. You can try again.")
+    assert sent[1]["result"].startswith("Nothing was changed. ") and "failed: disk full." in sent[1]["result"]
+    assert sent[1]["result"].endswith("The steps already done were undone, so you can try again.")
     assert await home_now(home) == before
     assert "[Garage](/assist-improver?id=imp1)" in notifications(home.hass)[NOTIFICATION]["message"]  # Still waiting.
     # Trying again works once the fault is gone.
@@ -411,7 +411,7 @@ async def test_a_change_that_cant_be_fully_undone_after_a_failure_needs_attentio
     result = await improvements.decide("imp1", "accept", user_id="alex", editors=write.editor(home.hass).save)
     assert result["status"] == "needs_attention" and result["outcome"]["stuck"] == [
         {"what": "Close garage", "why": "read-only"}]
-    assert panel.outcome_text(result) == "Some changes couldn't be undone after a failure: Close garage (read-only)"
+    assert panel.outcome_text(result) == "Some changes couldn't be undone after a failure. Close garage: read-only."
     # Partial application is visible, never reported as complete: the script that stayed is really there.
     now = await home_now(home)
     assert now["close_garage"] is not None and now["press_garage"]["sequence"] == proposal(home)["tested"][
@@ -479,8 +479,8 @@ async def test_an_undo_that_can_neither_finish_nor_be_reversed_needs_attention_a
     result = await improvements.decide("imp1", "undo", user_id="alex", editors=write.editor(home.hass).save)
     assert result["status"] == "needs_attention" and result["outcome"]["stuck"] == [
         {"what": "Household knowledge", "why": "read-only"}]
-    assert panel.outcome_text(result) == ("Some changes couldn't be undone after a failure: Household knowledge "
-                                          "(read-only)")
+    assert panel.outcome_text(result) == ("Some changes couldn't be undone after a failure. Household knowledge: "
+                                          "read-only.")
     assert "[Garage](/assist-improver?id=imp1)" in notifications(home.hass)[NOTIFICATION]["message"]
 
 
@@ -799,8 +799,8 @@ async def test_a_change_that_cant_be_undone_after_a_restart_needs_attention_and_
     item = restarted.get("imp1")
     assert item["status"] == "needs_attention"
     assert notifications(home.hass)[OUTCOME_NOTIFICATION]["message"] == (
-        "Applying the improvement “Garage” was interrupted. Some changes couldn't be undone: "
-        "light.front (It was changed by someone else meanwhile.)")
+        "Applying the improvement “Garage” was interrupted. Some changes couldn't be undone. "
+        "light.front: It was changed by someone else meanwhile.")
     assert (await home_now(home))["aliases"] == ["my light"]  # Alex's name stays.
     assert "[Garage](/assist-improver?id=imp1)" in notifications(home.hass)[NOTIFICATION]["message"]
     restarted_again = Improvements(home.hass, None)
@@ -1036,10 +1036,10 @@ async def test_an_automation_turned_on_or_off_is_named_as_home_assistant_names_i
      "Nothing was changed: Desk: Gone.; Porch: Changed."),
     ({"status": "awaiting_review", "outcome": {"status": "rolled_back", "failure": {"what": "Desk",
                                                                                      "error": "disk full"}}},
-     "Nothing was changed: Desk failed (disk full), so the steps already done were undone. You can try again."),
+     "Nothing was changed. Desk failed: disk full. The steps already done were undone, so you can try again."),
     ({"status": "needs_attention", "outcome": {"status": "needs_attention", "stuck": [{"what": "Desk",
                                                                                        "why": "read-only"}]}},
-     "Some changes couldn't be undone after a failure: Desk (read-only)"),
+     "Some changes couldn't be undone after a failure. Desk: read-only."),
     ({"status": "awaiting_review", "outcome": {"status": "busy", "error": "Another change is still being applied."}},
      "Another change is still being applied."),
 ], ids=["recorded", "revise", "decline", "applied-script", "applied", "undone", "undone-left", "conflict",

@@ -28,7 +28,7 @@ from .changeset import BUSY, NoPanel, plan_steps
 from .const import DOMAIN, VERSION
 from .devview import COMMANDS as DEVELOPER_COMMANDS
 from .improvements import (DECISIONS, KINDS, PENDING, choices, display_title, gains, physical, reasons, reply_words,
-                           row)
+                           row, sentence, stuck_text)
 from .runtime import loaded
 from .weeks import reviewed
 
@@ -372,11 +372,10 @@ def outcome_text(item):
     if status == "conflict":
         return "Nothing was changed: " + "; ".join(f"{c['what']}: {c['why']}" for c in outcome["conflicts"])
     if status == "rolled_back":
-        return (f"Nothing was changed: {outcome['failure']['what']} failed ({outcome['failure']['error']}), so the "
-                "steps already done were undone. You can try again.")
+        return (f"Nothing was changed. {outcome['failure']['what']} failed: {sentence(outcome['failure']['error'])} "
+                "The steps already done were undone, so you can try again.")
     if status == "needs_attention":
-        return ("Some changes couldn't be undone after a failure: "
-                + "; ".join(f"{s['what']} ({s['why']})" for s in outcome["stuck"]))
+        return f"Some changes couldn't be undone after a failure. {stuck_text(outcome['stuck'])}"
     return outcome.get("error") or status
 
 

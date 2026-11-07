@@ -1210,8 +1210,8 @@ def test_what_a_decision_did_is_said_in_a_sentence_or_two():
     assert said({"status": "conflict", "conflicts": [{"what": "Close garage", "why": "It was changed."}]}, "conflict") \
         == "Nothing was changed: Close garage: It was changed."
     assert said({"status": "rolled_back", "failure": {"what": "Close garage", "error": "disk full"}}) == (
-        "Nothing was changed: Close garage failed (disk full), so the steps already done were undone. "
-        "You can try again.")
+        "Nothing was changed. Close garage failed: disk full. The steps already done were undone, so you can try "
+        "again.")
     assert said({"status": "needs_attention", "stuck": [{"what": "Porch light", "why": "changed meanwhile"}]},
-                "needs_attention") == "Some changes couldn't be undone after a failure: Porch light (changed meanwhile)"
+                "needs_attention") == "Some changes couldn't be undone after a failure. Porch light: changed meanwhile."
     assert said({"status": "busy", "error": "Another change is being applied."}) == "Another change is being applied."

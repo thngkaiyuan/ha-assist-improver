@@ -191,7 +191,13 @@ async def _reloaded(hass, entry, update):
             async with entry.setup_lock:
                 pass
     if was is ConfigEntryState.LOADED and entry.state is not ConfigEntryState.LOADED:
-        raise Conflict(f"Its integration didn't load again ({entry.reason or entry.state.value}).")
+        raise Conflict(unloaded(entry))
+
+
+def unloaded(entry):
+    """Why an assistant's step failed: its integration didn't load again, in Home Assistant's words where it gives
+    them (its config entry's reason), quoted, never inside parentheses."""
+    return "Its integration didn't load again" + (f", saying “{entry.reason}”" if entry.reason else "") + "."
 
 
 def _provider(hass, step):
@@ -591,7 +597,7 @@ class Changesets:
         async with asyncio.timeout(LOAD_TIMEOUT):
             await self.hass.config_entries.async_reload(entry.entry_id)
         if entry.state is not ConfigEntryState.LOADED:
-            raise Conflict(f"Its integration didn't load again ({entry.reason or entry.state.value}).")
+            raise Conflict(unloaded(entry))
 
     async def run(self, improvement_id, action, steps, editors=None):
         """Write each step in order. All of them, verified: {status: done}. Otherwise every done step is undone:

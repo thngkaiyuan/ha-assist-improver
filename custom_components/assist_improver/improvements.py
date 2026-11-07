@@ -44,6 +44,17 @@ def physical(hass, entity_id):
     return device_class in DOORS
 
 
+def sentence(text):
+    """Text as a sentence of its own (an error's words): ending as a sentence ends, never inside parentheses."""
+    text = (text or "").strip()
+    return text if text.endswith((".", "!", "?")) else f"{text}."
+
+
+def stuck_text(stuck):
+    """What couldn't be put back after a failure, each with why: "{what}: {why}." """
+    return " ".join(f"{s['what']}: {sentence(s['why'])}" for s in stuck)
+
+
 # Noticeably wordier: Assist's replies with the change at least this many times as long, and this many more words,
 # a reply on average (counted by code, from the test's conversation and its replay).
 WORDIER, MORE_WORDS = 1.5, 10
@@ -143,8 +154,7 @@ class Improvements:
                        else "Nothing was undone, so all of it is still in place.")
         subject = f"{what} the improvement “{display_title(item) if item else ''}”"
         said = (rolled_back if outcome["status"] == "rolled_back"
-                else "Some changes couldn't be undone: " + "; ".join(f"{s['what']} ({s['why']})"
-                                                                     for s in outcome["stuck"]))
+                else f"Some changes couldn't be undone. {stuck_text(outcome['stuck'])}")
         message = f"{subject} was interrupted. {said}"
         persistent_notification.async_create(self.hass, message, title="Assist Improver",
                                              notification_id=OUTCOME_NOTIFICATION)
