@@ -40,6 +40,19 @@ def test_a_colour_asked_as_rgb_is_met_by_the_light_showing_it_as_hue_and_saturat
     assert analyzer.reached(named, goal(LAMP, "on", color_name="red")) is True
 
 
+def test_white_is_one_colour_whatever_hue_home_assistant_gives_it():
+    """A bulb's own white, xy (0.3227, 0.329), Home Assistant shows as hue 240 at under 1% saturation: it's white, as
+    is the D65 white point; a cool colour temperature is near white on a colour light; a pale blue isn't white."""
+    for xy in ([0.3227, 0.329], [0.3127, 0.329], [0.32, 0.33]):
+        white = home((LAMP, "on", {"color_mode": "xy", "xy_color": xy, "hs_color": None}))
+        for asked in ({"rgb_color": [255, 255, 255]}, {"color_name": "white"}, {"hs_color": [0, 0]}):
+            assert analyzer.reached(white, goal(LAMP, "on", **asked)) is True, (xy, asked)
+    cool = home((LAMP, "on", {"color_mode": "hs", "hs_color": [240.0, 0.4]}))
+    assert analyzer.reached(cool, goal(LAMP, "on", color_temp_kelvin=6500)) is True
+    pale = home((LAMP, "on", {"color_mode": "hs", "hs_color": [220.0, 20.0]}))
+    assert analyzer.reached(pale, goal(LAMP, "on", color_name="white")) is False
+
+
 def test_a_brightness_as_a_percentage_and_as_home_assistants_0_to_255_are_one_setting():
     half = home((LAMP, "on", {"brightness": 128}))
     assert analyzer.reached(half, goal(LAMP, "on", brightness_pct=50)) is True

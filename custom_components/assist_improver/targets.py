@@ -14,6 +14,7 @@ else of the value asked for. A temperature is the entity's own unit, as it shows
 from enum import StrEnum
 import functools
 import importlib
+import math
 from pathlib import Path
 
 from homeassistant.const import STATE_OFF, STATE_ON
@@ -192,6 +193,17 @@ def _hs(name, value, found):
     return None
 
 
+def _same_colour(one, other):
+    """Whether two colours (hue, saturation) are one: within TOLERANCE of each other as points on the colour wheel,
+    saturation its radius, so hue matters less as saturation falls (white is one point, whatever hue Home Assistant
+    gives it); or, at any saturation, with hues within TOLERANCE of the circle and saturations within TOLERANCE (a
+    bulb shows a colour as near as it can make it)."""
+    hue = abs(one[0] - other[0]) % 360
+    apart = math.dist(*[(s * math.cos(math.radians(h)), s * math.sin(math.radians(h))) for h, s in (one, other)])
+    near = abs(one[1] - other[1]) <= TOLERANCE * 100
+    return apart <= TOLERANCE * 100 or near and min(hue, 360 - hue) <= TOLERANCE * 360
+
+
 def _colour(attributes):
     """The colour a light shows: (attribute, value) of its colour mode, else the first colour it shows."""
     modes = {mode: name for name, mode in colour_modes().items()}
@@ -219,10 +231,7 @@ def holds(domain, wanted, attributes, found=None):
                     return False
                 continue
             mine, theirs = _hs(name, asked, found), _hs(shows, now, found) if shows else None
-            if mine is None or theirs is None:
-                return False
-            hue = abs(mine[0] - theirs[0]) % 360
-            if min(hue, 360 - hue) > TOLERANCE * 360 or abs(mine[1] - theirs[1]) > TOLERANCE * 100:
+            if mine is None or theirs is None or not _same_colour(mine, theirs):
                 return False
         elif _number(asked):
             now = attributes.get(name)
