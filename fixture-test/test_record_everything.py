@@ -184,6 +184,17 @@ async def test_a_scripts_failing_step_is_the_call_its_error_goes_on(listening, e
     """The action calls under a request are kept with its turn, each inside the call it was made in, and a tool's
     error goes on the last call made since Assist called it: inside a script, the script's own failing step, not the
     script (DETAILS P8.2.10)."""
+    context, recording = await a_scripts_failing_step(listening)
+    assert [(a["action"], a["data"], a["context"]["id"], a.get("under"), a.get("error"))
+            for a in recording["turns"][0]["actions"]] == [
+        ("script.arrive", {}, context.id, None, None),
+        ("fixture.unlock", {"entity_id": "lock.gate"}, context.id, 0, None),
+        ("fixture.open", {"entity_id": "cover.gate"}, context.id, 0, "Jammed")]
+
+
+async def a_scripts_failing_step(listening):
+    """A turn where Assist ran a script whose second step failed, as the recorder keeps it: its request's context and
+    the recording."""
     from homeassistant.helpers.llm import ToolInput, ToolResult
     from homeassistant.setup import async_setup_component
     hass = listening.hass
@@ -211,11 +222,7 @@ async def test_a_scripts_failing_step_is_the_call_its_error_goes_on(listening, e
         log.async_add_assistant_content_without_tools(AssistantContent(agent_id="conversation.fixture",
                                                                        content="The gate is jammed."))
     await hass.async_block_till_done()
-    actions = (await listening.export(only_key(listening)))["turns"][0]["actions"]
-    assert [(a["action"], a["data"], a["context"]["id"], a.get("under"), a.get("error")) for a in actions] == [
-        ("script.arrive", {}, context.id, None, None),
-        ("fixture.unlock", {"entity_id": "lock.gate"}, context.id, 0, None),
-        ("fixture.open", {"entity_id": "cover.gate"}, context.id, 0, "Jammed")]
+    return context, await listening.export(only_key(listening))
 
 
 @pytest.mark.asyncio

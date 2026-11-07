@@ -10,6 +10,8 @@ import pytest
 from conftest import private
 from recordings import before
 from kit import candidate_turn, improver  # noqa: F401 - improver is a fixture.
+from test_record_everything import a_scripts_failing_step
+from test_spec_retention_recording import listening  # noqa: F401 - listening is a fixture.
 from custom_components.assist_improver import records
 from custom_components.assist_improver.retention import unpack
 
@@ -115,6 +117,16 @@ async def test_what_a_full_run_stores_has_the_declared_shapes(improver):
     assert check_all(index=recorder.index, recordings=[await recorder.export(k) for k in recorder.index],
                      runs=runtime.role_runs.runs, replays=runtime.replays.items,
                      improvements=runtime.improvements.items) == []
+
+
+@pytest.mark.asyncio
+async def test_a_recording_whose_turn_has_action_calls_has_the_declared_shapes(listening, effect_guards):
+    """A turn keeps the action calls under its request (DETAILS P8.2.10): a recording the recorder kept of a script
+    whose step failed, with every field a call can have (the call it was made in, the error and its type), fits."""
+    _, recording = await a_scripts_failing_step(listening)
+    actions = recording["turns"][0]["actions"]
+    assert {key for call in actions for key in call} == set(typing.get_type_hints(records.ActionCall))
+    assert check_all(recordings=[recording]) == []
 
 
 def stored(name):

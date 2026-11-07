@@ -23,6 +23,17 @@ class RecordingSummary(TypedDict, total=False):
     deleting: bool  # Deleted during a run: out of view, and deleted once the run ends (Recorder.forget_later).
 
 
+class ActionCall(TypedDict, total=False):
+    """An action call under a turn's request, as Home Assistant announced it (recorder.Actions; DETAILS P8.2.10)."""
+    at: str
+    action: str  # domain.service.
+    data: dict  # Its service data.
+    context: dict  # id, parent_id, user_id.
+    under: int  # The call it was made inside: its index in the turn's actions.
+    error: str  # A tool's error, on the call that failed: its words.
+    error_type: str  # The type of what was raised, where the tool's result names one.
+
+
 class Turn(TypedDict, total=False):
     """One user turn: what was said, the home as Assist saw it then, and what Assist was given."""
     user: dict  # The user's message: content, created, role.
@@ -33,6 +44,7 @@ class Turn(TypedDict, total=False):
     pipeline: dict  # The voice assistant it ran through, as Home Assistant keeps it (Pipeline.to_json), where known.
     preparations: list[dict]  # The chat log as each answer was prepared.
     context_limitations: list[str]  # What the turn's record lacks when the assistant had no LLM API.
+    actions: list[ActionCall]  # The action calls under its request, in the order Home Assistant announced them.
 
 
 class Recording(TypedDict, total=False):
