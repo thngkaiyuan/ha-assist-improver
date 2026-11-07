@@ -186,8 +186,11 @@ export class PanelApp {
     window.dispatchEvent(new CustomEvent("location-changed"));
   }
 
-  setRun(run) {
+  setRun(run, read = false) {
+    // read: a load's, read with what the page shows (first, so nothing shown is older): what each refresh compares
+    // with. An action's own read updates the Run bar only, so a run that ended since the load is still noticed.
     this.run = run;
+    if (read) this.seen = run?.run;
     if (run?.run?.status !== "running") this.cancelling = false;
   }
 
@@ -205,11 +208,12 @@ export class PanelApp {
         KEPT.page = null;
         await developer.load(this, params);
       } else if (params.get("view") === "settings") {
-        const [found, run, known, list, log] = await Promise.all([this.ws("settings"), this.ws("run"), this.ws("household"),
+        // The run first: Home Assistant takes them in the order sent, so nothing read with it is older (setRun).
+        const [run, found, known, list, log] = await Promise.all([this.ws("run"), this.ws("settings"), this.ws("household"),
           this.ws("improvements").then((r) => r.improvements), this.ws("log").then((r) => r.events)]);
         if (!current()) return;
         Object.assign(this, {settings: found, household: known, list, log, view: "settings", review: null});
-        this.setRun(run);
+        this.setRun(run, true);
         this.poll();
       } else if (id) {
         this.view = "review";
@@ -229,13 +233,13 @@ export class PanelApp {
       } else {
         // The settings only say whether developer mode is on (the Developer link); home works without them.
         const fromReview = this.view === "review";
-        const [found, run, options] = await Promise.all([this.ws("improvements"), this.ws("run"),
+        const [run, found, options] = await Promise.all([this.ws("run"), this.ws("improvements"),  // The run first.
                                                          this.ws("settings").catch(() => null), conversations.load(this)]);
         if (!current()) return;
         Object.assign(this, {list: found.improvements, questions: found.questions || [], developer: !!options?.developer,
                              review: null, view: "home", pop: null});
         if (fromReview) this.scroller().scrollTop = 0;  // Back from a review: home starts at its top.
-        this.setRun(run);
+        this.setRun(run, true);
         KEPT.page = null;
         this.poll();
       }
@@ -255,7 +259,6 @@ export class PanelApp {
   async refresh() {
     if (!this.host.isConnected || !POLLED.includes(this.view)) return;
     if (this.pop) { this.poll(); return; }  // Not while a menu is open: it stays as it was opened.
-    const before = this.run?.run;
     let run;
     try {
       run = await this.ws("run");
@@ -265,8 +268,9 @@ export class PanelApp {
     }
     if (!POLLED.includes(this.view)) return;
     this.setRun(run);
-    // Another run, or this one finished: what it moved, and new improvements, are read again.
-    if (before?.id !== run.run?.id || before?.status !== run.run?.status) { await this.load(true); return; }
+    // Another run, or this one finished, since the page read what it shows: what it moved, and new improvements, are
+    // read again.
+    if (this.seen?.id !== run.run?.id || this.seen?.status !== run.run?.status) { await this.load(true); return; }
     this.render(true);
     this.poll();
   }

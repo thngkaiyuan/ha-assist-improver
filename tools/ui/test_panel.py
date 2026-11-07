@@ -291,7 +291,7 @@ def asking(*saves):
 # The browser side: a stand-in hass whose callWS answers from the replies (and records each call), and the panel.
 
 STUB = """(replies) => {
-  window.__calls = []; window.__replies = replies; window.__holds = {}; window.__inflight = 0;
+  window.__calls = []; window.__replies = replies; window.__holds = {}; window.__inflight = 0; window.__changes = {};
   // The panel's saver: Home Assistant's editor endpoints (callApi), recorded, refusing as told (__apiFail:
   // {"POST config/<kind>/config/<id>": HA's refusal}) and holding a call as told (__apiHolds); and the improver's asks
   // (__asks: {command type: {saves: [{kind, id, config}], wait}}), each sent to the subscriber while that command is
@@ -335,6 +335,10 @@ STUB = """(replies) => {
   window.__release = (type) => { const hold = window.__holds[type]; delete window.__holds[type]; if (hold) hold.release(); };
   window.__callWS = async (msg) => {
     window.__calls.push(JSON.parse(JSON.stringify(msg)));
+    // Home Assistant changed just as it took this one (__changes: {command type: replies}): it, and each one after,
+    // answers from the changed replies; those it took before answered as they were. It takes them in the order sent.
+    const change = window.__changes[msg.type];
+    if (change) { delete window.__changes[msg.type]; Object.assign(window.__replies, change); }
     window.__inflight++;
     try {
       // The archived ones' list (below Show archived) is held, and can be answered, on its own: conversations?archived.
@@ -424,6 +428,12 @@ class Panel:
 
     def answer(self, kind, value):
         self.page.evaluate("([t, v]) => { window.__replies[t] = v; }", [f"assist_improver/{kind}", value])
+
+    def change_at(self, kind, answers):
+        """Home Assistant changes just as it takes the next kind command (a run ends, say): that command and every
+        later one answer as answers says ({kind: value}, kinds as answer takes them); those it took before stay."""
+        self.page.evaluate("([t, v]) => { window.__changes[t] = v; }", [
+            f"assist_improver/{kind}", {f"assist_improver/{key}": value for key, value in answers.items()}])
 
     def asks(self, kind, saves, wait=True, skip=0):
         """While the next kind command is answered (after skip more), the improver asks the panel to save these scripts
@@ -1257,6 +1267,53 @@ def test_an_open_home_page_notices_a_run_that_starts_after_it_loaded(open_panel,
     panel.answer("improvements", {"improvements": PENDING[:1]})
     expect(panel.find("h1")).to_have_text("1 improvement to review", timeout=8000)
     expect(panel.find(".cs-last")).to_have_text("Last run 5 min ago · 1 new improvement")
+
+
+def test_a_run_that_ends_before_a_send_reads_it_is_still_followed_to_where_it_settles(open_panel):
+    """test_send_in_again (tools/e2e) on a slow machine: one that looked smooth, opened among the archived and sent in
+    again, gets a run of its own at once (the fast lane), a quick one: the lists read again after sending find it at
+    Analyze, and the run, read after them, has ended. The page still comes to show where that run left it."""
+    smooth, fine = ({**CHATS[0], "status": standing, "hidden": True} for standing in ("smooth", "fine"))
+    panel = open_panel(replies(conversations=listing(CHATS[1:], hidden=1),
+                               conversation={**chat("smooth"), "hidden": True}))
+    panel.answer("conversations?archived", listing([smooth], hidden=1))
+    panel.click("#cs-archived")
+    panel.click("[data-cs='c1']")
+    chip = panel.find(".cs-row:has([data-cs='c1']) .cs-head .chip")
+    expect(chip).to_have_text("Looked smooth")
+    # While its run goes: back in the list, at Analyze. Once it's over: no trouble found, and archived again.
+    panel.answer("conversations", listing([{**CHATS[0], "status": "queued"}, *CHATS[1:]]))
+    panel.answer("conversations?archived", listing([]))
+    panel.change_at("run", {"run": status({**run(trigger="filed", minutes=0), "id": "r2"}),
+                            "conversations": listing(CHATS[1:], hidden=1, stands=[fine]),
+                            "conversations?archived": listing([fine], hidden=1)})
+    panel.click("#cs-send")
+    expect(chip).to_have_text("No trouble found", timeout=8000)  # At its next refresh.
+
+
+def test_settings_follow_a_run_that_ended_before_a_change_there_read_it(open_panel):
+    """A stage blocked while a run goes: Settings reads the run again for what it holds, and the run has ended in
+    between. Its next refresh still reads what the run did, as for a run that ends untouched."""
+    panel = open_settings(open_panel, run=status(run("running", stage="analyze")),
+                          settings__set=settings(paused=["propose"]))
+    expect(panel.find(".history .h-empty")).to_be_visible()
+    panel.change_at("run", {"run": status(run(progress={"new_improvements": 1})),
+                            "log": {"events": [event_run(progress={"new_improvements": 1})]}})
+    panel.click("[data-gate='propose']")
+    expect(panel.find(".h-row .h-text > div").first).to_have_text("Run finished", timeout=8000)
+
+
+def test_a_run_started_here_that_ends_as_the_page_reads_it_shows_what_it_found(open_panel):
+    """A quick run (on one conversation, say) can end while the page reads what to show after starting it, between
+    any two of its reads (Home Assistant takes them in the order sent). What the page shows is never older than the
+    run its next refresh compares with: here the run ends just as the page reads it."""
+    panel = open_panel(replies(run=status(run(), **NEW)))
+    panel.click("[data-cs-pick='c1']")
+    panel.click("#cs-run")
+    panel.change_at("run", {"run": status({**run(progress={"new_improvements": 1}, minutes=0), "id": "r2"}),
+                            "improvements": {"improvements": PENDING[:1]}})
+    panel.click("#start-run")
+    expect(panel.find("h1")).to_have_text("1 improvement to review", timeout=8000)
 
 
 def test_a_refresh_redraws_only_the_runs_progress(open_panel):
