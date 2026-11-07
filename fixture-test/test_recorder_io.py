@@ -89,6 +89,30 @@ async def test_every_change_is_kept_but_the_improvers_own_ai_tasks(home, effect_
     assert effect_guards == []
 
 
+@pytest.mark.asyncio
+async def test_a_recordings_devices_services_are_read_as_it_is_exported_never_on_the_event_loop(home, monkeypatch):
+    """Home Assistant warns of a file read on its event loop: how it describes the services of a recording's devices
+    (their services.yaml, targets.py) is read in the executor as the recording is exported, so code on the loop that
+    reads a goal's settings (targets.settable) opens no file."""
+    import threading
+    from homeassistant.util import yaml as yaml_util
+    from custom_components.assist_improver import targets
+    loop, read, original = threading.get_ident(), [], yaml_util.load_yaml_dict
+
+    def reading(path, *args, **kwargs):
+        read.append((Path(path).parent.name, threading.get_ident()))
+        return original(path, *args, **kwargs)
+    monkeypatch.setattr(yaml_util, "load_yaml_dict", reading)
+    targets._described.cache_clear()
+    targets.settable.cache_clear()
+    recorder, key = await started(home)
+    await recorder.export(key)
+    assert {"light", "switch"} <= {domain for domain, _ in read} and loop not in {thread for _, thread in read}
+    read.clear()
+    assert "brightness" in targets.settable("light") and read == []
+    await recorder.stop()
+
+
 def _change(entity_id, old, new, context=None, old_attributes=None, new_attributes=None, at=None):
     return {"entity_id": entity_id, "at": at or "2026-01-01T00:00:02+00:00",
             "old": {"entity_id": entity_id, "state": old, "attributes": old_attributes or {}},

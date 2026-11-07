@@ -27,7 +27,7 @@ from homeassistant.helpers.start import async_at_started
 from homeassistant.helpers.storage import Store
 from homeassistant.util.dt import utcnow
 
-from . import touchpoints
+from . import targets, touchpoints
 from .retention import CLOSED, pack, unpack
 from .const import DOMAIN, SAVE_DELAY, STORAGE_VERSION, VERSION
 from .digest import kept
@@ -123,8 +123,11 @@ def _frozen(session):
 
 
 def _copied(recording):
-    """A recording as readers get it: their own copy, unpacked (retention.unpack)."""
-    return unpack(deepcopy(recording))
+    """A recording as readers get it: their own copy, unpacked (retention.unpack), with how Home Assistant describes its
+    devices' services read (targets.describe)."""
+    found = unpack(deepcopy(recording))
+    targets.describe(*((turn.get("source") or {}) for turn in found.get("turns") or []))
+    return found
 
 
 def _pipeline(hass, device_id):
@@ -694,7 +697,7 @@ class Recorder:
             data = _frozen(self.sessions[key])
         elif (data := await self.store(key).async_load()) is None:
             raise ValueError("Recording is unavailable")
-        # Copying and unpacking the whole recording: done off the event loop.
+        # Copying and unpacking the whole recording, and reading what its devices' services are: off the event loop.
         return await self.hass.async_add_executor_job(_copied, data)
 
     async def save_index(self):

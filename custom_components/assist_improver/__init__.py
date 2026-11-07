@@ -45,6 +45,7 @@ async def async_setup(hass, config):
     await household.async_setup(hass)
     panel.register_commands(hass)
     await hass.async_add_executor_job(remove_leftovers)  # Replay workers' folders an earlier run left behind.
+    await hass.async_add_executor_job(touchpoints.load)  # Imported off the event loop, not at a first use on it.
     return True
 
 

@@ -25,7 +25,8 @@ from .sandbox import seed_options, setup_of
 from .serialization import plain
 from .settings import own_models
 from .simulation import UnsupportedSimulation, recorded, reports_movement
-from .snapshot import at_moment
+from .snapshot import at_moment, home
+from .targets import describe
 from .touchpoints import Broken, get, guarded, relied_on, report
 from .trace import span
 from .worker import Refused, RemoteSandbox, WorkerError, context_data
@@ -231,7 +232,7 @@ async def setup_now(hass):
     from homeassistant.components.intent import async_device_supports_timers
     from homeassistant.helpers import device_registry as dr
     from .reflective import role_marker
-    from .snapshot import home, taken
+    from .snapshot import taken
     read = taken(hass)
     context = llm.LLMContext(platform=DOMAIN, context=Context(), language=hass.config.language,
                              assistant="conversation", device_id=None)
@@ -245,8 +246,16 @@ async def setup_now(hass):
                for e in hass.config_entries.async_entries()} if getattr(hass, "config_entries", None) else {}
     services = {domain: {service: hass.services.supports_response(domain, service).value for service in found}
                 for domain, found in hass.services.async_services().items()}
-    return {"home": await hass.async_add_executor_job(home, read), "tools": tools, "timers": timers,
+    return {"home": await hass.async_add_executor_job(_home, read), "tools": tools, "timers": timers,
             "entries": plain(entries), "helpers": await _helpers(hass, read), "services": services}
+
+
+def _home(read):
+    """Today's home as a snapshot keeps it, with how Home Assistant describes its devices' services read
+    (targets.describe): off the event loop."""
+    found = home(read)
+    describe(found)
+    return found
 
 
 async def _helpers(hass, read):

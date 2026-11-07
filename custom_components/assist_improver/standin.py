@@ -284,12 +284,18 @@ def trigger_only(domain):
     """Whether a domain's entities hold no state of their own to reach, only when they were last used or ran: a
     button's, a scene's or a notifier's (the classes whose state Home Assistant sets itself: _NOW), an event entity's,
     or a script, on only while it runs."""
-    from homeassistant.components.event import EventEntity
-    used = tuple(entity_class(d) for d, commands in _table().items() if any(s is _NOW for s, _ in commands.values()))
     try:
-        return domain == "script" or issubclass(entity_class(domain), (*used, EventEntity))
+        return domain == "script" or issubclass(entity_class(domain), _used())
     except (ImportError, ValueError):  # No one class its entities derive from.
         return False
+
+
+@functools.cache
+def _used():
+    """The entity classes whose state says only when they were last used (trigger_only)."""
+    from homeassistant.components.event import EventEntity
+    return (*(entity_class(d) for d, commands in _table().items() if any(s is _NOW for s, _ in commands.values())),
+            EventEntity)
 
 
 def held(domain, attribute):
@@ -615,3 +621,6 @@ class TodoStandIn(StandIn):
 
 
 _EXTRA = {"media_player": MediaPlayerStandIn, "assist_satellite": AssistSatelliteStandIn, "todo": TodoStandIn}
+# The integrations the table and trigger_only read, imported as the improver loads (Home Assistant imports it off its
+# event loop), never on the loop at a first use.
+_used()

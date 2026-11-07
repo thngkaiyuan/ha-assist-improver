@@ -1,9 +1,10 @@
 """A state goal's target State (DETAILS P9.7.1): a state plus any settable attribute, and whether a device holds it.
 
 A settable attribute is one a field of one of its domain's services sets, as Home Assistant describes them (the domain's
-services.yaml), mapped to the attribute through the stand-in's table (standin.attribute_of), and one the stand-in
-reports a command's field back as (_reported: not a fan's percentage_step, the step its increase_speed takes); an entity
-takes it when it passes that field's filters (its supported features, a light's colour modes). Valid values are Home
+services.yaml, read off its event loop as a home comes in: describe), mapped to the attribute through the stand-in's
+table (standin.attribute_of), and one the stand-in reports a command's field back as (_reported: not a fan's
+percentage_step, the step its increase_speed takes); an entity takes it when it passes that field's filters (its
+supported features, a light's colour modes). Valid values are Home
 Assistant's: for the state, the entity's own options where it lists them (a thermostat's modes, a select's options),
 else its domain's enum (CoverState and the like; on and off for a toggle), or, where its entity class's state is a
 number (a number's), one within the min and max it shows; for an attribute, its options and range as the entity shows
@@ -33,10 +34,21 @@ TOLERANCE = 0.05  # Of a setting's range: 5 points of a brightness's 0 to 100.
 BRIGHTNESS = ("brightness", "brightness_pct")  # One setting: 0 to 255, or a percentage.
 
 
+def describe(*homes):
+    """Read how Home Assistant describes the services of each domain these homes have devices of (_described), once:
+    blocking (it imports the domain's integration and reads its services.yaml), so done off Home Assistant's event
+    loop as a home comes in (a recording as it's exported, today's setup as it's read), and code on the loop reads
+    them from memory."""
+    for domain in {e.split(".", 1)[0] for home in homes
+                   for e in [*(home.get("states") or {}), *(home.get("entities") or {})]}:
+        _described(domain)
+
+
 @functools.cache
 def _described(domain):
     """{service: (its target's entity filter, {field: spec})} as Home Assistant describes a domain's services (its
-    services.yaml), a section's fields listed with the others; {} for a domain it doesn't describe."""
+    services.yaml), a section's fields listed with the others; {} for a domain it doesn't describe. Read once, off the
+    event loop where a home's devices are (describe)."""
     try:
         from homeassistant.util.yaml import load_yaml_dict
         module = importlib.import_module(f"homeassistant.components.{domain}")
@@ -106,8 +118,9 @@ def _reported(domain):
     """The attributes a domain's stand-in reports its commands' fields back as (each field to the attribute it names):
     each command's parameters, its table's as its entity class takes them and its own class's (standin._EXTRA: a media
     player's play_media), or where one takes any, the fields of the action of its name (a light's turn_on)."""
-    base, out = entity_class(domain), set()
-    commands = [(c, getattr(base, f"async_{c}", None)) for c in _table().get(domain, {})]
+    table, out = _table().get(domain, {}), set()
+    base = entity_class(domain) if table else None
+    commands = [(c, getattr(base, f"async_{c}", None)) for c in table]
     commands += [(n.removeprefix("async_"), m) for n, m in vars(_EXTRA.get(domain, object)).items()
                  if n.startswith("async_")]
     for command, method in commands:
@@ -125,10 +138,10 @@ def _reported(domain):
 def settable(domain):
     """{attribute: the field's spec}: each attribute a field of the domain's services sets (standin.attribute_of: one
     its stand-in reports, _reported) that its entities hold (standin.held: a light's brightness, not its transition),
-    the state aside."""
+    the state aside; none, its services unread, for a domain its stand-in reports nothing of (a script's)."""
     out = {}
     try:
-        for fields in _services(domain).values():
+        for fields in _services(domain).values() if _reported(domain) else ():
             for field, spec in fields.items():
                 name = attribute_of(domain, field)
                 if not _sets_state(spec) and name in _reported(domain) and held(domain, name):

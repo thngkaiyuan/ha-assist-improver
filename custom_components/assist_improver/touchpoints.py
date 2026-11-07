@@ -1,5 +1,6 @@
 """What the improver relies on in Home Assistant beyond its public API: the names, signatures and shapes below, each
-loaded where it's used, so one that moved or changed stops only the feature it serves.
+read where it's used (their modules imported off the event loop as the improver is set up: load), so one that moved or
+changed stops only the feature it serves.
 
 A break is never silent: it's logged as an error once, and Repairs shows one notice for its feature, saying the
 improver needs an update for this Home Assistant version. A notice goes once a check of what broke passes again (a
@@ -8,7 +9,7 @@ replay as the machinery's fault, never as a verdict; the real instance reports i
 fixture-test/test_touchpoints.py checks every touchpoint on the installed Home Assistant."""
 
 from annotationlib import Format, get_annotations
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from dataclasses import fields, is_dataclass
 from enum import Enum
 import importlib
@@ -148,6 +149,14 @@ class Broken(Exception):
     def __init__(self, name, reason):
         super().__init__(f"Home Assistant changed what Assist Improver relies on ({name}): {reason}")
         self.name, self.reason = name, reason
+
+
+def load():
+    """Each touchpoint's module imported, as the improver is set up: blocking (an import reads files), so in the
+    executor, and get() on the event loop finds it imported. A missing one is reported where it's used."""
+    for point in TOUCHPOINTS.values():
+        with suppress(ImportError):
+            importlib.import_module(point.path.partition(":")[0])
 
 
 def resolve(name):
