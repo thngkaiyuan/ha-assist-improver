@@ -298,19 +298,31 @@ def _used():
             EventEntity)
 
 
+@functools.cache
+def reports(domain):
+    """The attributes a domain's entity class reports, its state's and its capabilities', as Home Assistant's own enums
+    of them name them (FanEntityStateAttribute: a fan's direction, which its class reads from current_direction)."""
+    package = f"homeassistant.components.{domain}"
+    return frozenset(member.value for c in _defined(importlib.import_module(package))
+                     if isinstance(c, type) and issubclass(c, enum.StrEnum) and c.__module__.startswith(package)
+                     and c.__name__.endswith(("StateAttribute", "CapabilityAttribute")) for member in c)
+
+
 def held(domain, attribute):
-    """Whether a domain's entities can hold an attribute a field sets: one its entity class has a property for
-    (PROPERTIES renames), not one following from the state (FROM_STATE: a thermostat's mode is its state)."""
-    known, base = PROPERTIES.get(domain, {}).get(attribute, attribute), entity_class(domain)
-    return known not in FROM_STATE and hasattr(base, known) and not callable(getattr(base, known))
+    """Whether a domain's entities can hold an attribute a field sets: one its entity class reports (reports), not one
+    following from the state (FROM_STATE, by the property it's read from: PROPERTIES; a water heater's operation_mode
+    is its state)."""
+    return attribute in reports(domain) and PROPERTIES.get(domain, {}).get(attribute, attribute) not in FROM_STATE
 
 
 _NOW = object()  # A state Home Assistant's entity class sets itself: the time it was last used.
 _GONE = object()  # An attribute a command leaves its device not showing.
-# A command's fields by the attribute they set where its name differs ({field: attribute, or {domain: attribute}}).
+# A command's fields by the attribute they set where its name differs ({field: attribute, or {domain: attribute}}):
+# what an integration does with a field, which Home Assistant's classes don't say.
 FIELDS = {"position": {"cover": "current_position", "valve": "current_position", "media_player": "media_position"},
           "tilt_position": "current_tilt_position", "volume": "volume_level", "mute": "is_volume_muted",
-          "media_type": "media_content_type", "media_id": "media_content_id"}
+          "media_type": "media_content_type", "media_id": "media_content_id",
+          "activity": {"remote": "current_activity"}}
 # An attribute by the entity property Home Assistant's class reads it from where its name differs.
 PROPERTIES = {"cover": {"current_position": "current_cover_position",
                         "current_tilt_position": "current_cover_tilt_position"},

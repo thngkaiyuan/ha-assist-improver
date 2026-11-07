@@ -166,7 +166,8 @@ def shown(source, entity_id):
 
 def _options(name, found):
     """The values an entity lists for a setting, by Home Assistant's naming of them (fan_mode: fan_modes; effect:
-    effect_list; operation_mode: operation_list; mode: available_modes); None where it lists none."""
+    effect_list; operation_mode: operation_list; mode: available_modes; a remote's activity: activity_list, though it
+    shows it as current_activity); None where it lists none."""
     stem = name.rsplit("_", 1)[0]
     for key in (f"{name}s", f"{name}_list", f"{stem}_list", f"available_{name}s"):
         if isinstance(found.get(key), list):
@@ -424,8 +425,9 @@ def problems(source, entity_id, state, asked):
             out.append(f"{entity_id} has no setting {name!r}; its settings are {', '.join(can) or 'none'}.")
             continue
         held_as = attribute_of(domain, name)
-        listed = _options(held_as, found) or next((s.get("options") for s in ((sets.get(held_as) or {}).get(
-            "selector") or {}).values() if isinstance(s, dict) and isinstance(s.get("options"), list)), None)
+        listed = _options(held_as, found) or _options(name, found) or next((
+            s.get("options") for s in ((sets.get(held_as) or {}).get("selector") or {}).values()
+            if isinstance(s, dict) and isinstance(s.get("options"), list)), None)
         bounds = (0, 100) if name == "brightness_pct" else _range(domain, held_as, found)
         if listed and not _number(value) and value not in [o.get("value", o) if isinstance(o, dict) else o
                                                            for o in listed]:

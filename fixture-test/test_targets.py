@@ -179,6 +179,45 @@ def test_a_setting_is_a_field_an_action_sets_it_with_not_one_another_action_take
         targets.settable("media_player"))
 
 
+def test_a_setting_is_the_attribute_its_device_reports_whatever_its_field_or_property_is_called():
+    """A setting is the attribute Home Assistant's entity class reports for the field that sets it (its own enums of
+    them name them), whatever property the class reads it from or field sets it: a fan's direction (read from
+    current_direction), a remote's activity (shown as current_activity, its options as activity_list). For every domain
+    the stand-in stands in for, each field naming an attribute its class reports is one its devices hold, unless it
+    sets the state (a water heater's operation mode), and none names one its class reports under a longer name
+    (current_<field>) that standin.FIELDS doesn't map it to."""
+    from homeassistant.components.fan import FanEntityFeature
+    from homeassistant.components.remote import RemoteEntityFeature
+    from custom_components.assist_improver import standin
+    for domain in standin._table():
+        reported = standin.reports(domain)
+        for fields in targets._services(domain).values():
+            for field, spec in fields.items():
+                if (name := standin.attribute_of(domain, field)) in reported:
+                    assert standin.held(domain, name) or targets._sets_state(spec), (domain, field)
+                else:
+                    assert not [a for a in reported if a.endswith(f"_{field}")], (domain, field)
+    fan, remote = "fan.ceiling", "remote.living_room"
+    states = {fan: {"state": "on", "attributes": {"direction": "forward",
+                                                  "supported_features": FanEntityFeature.DIRECTION}},
+              "fan.desk": {"state": "on", "attributes": {"supported_features": FanEntityFeature.SET_SPEED}},
+              remote: {"state": "on", "attributes": {"current_activity": "Music", "activity_list": ["Music", "Watch TV"],
+                                                     "supported_features": RemoteEntityFeature.ACTIVITY}}}
+    view = SimpleNamespace(source={"states": states}, changes={e: [
+        {"at": "2026-01-01T09:00:00+00:00", "during_turn": 1, "old": "on", "new": "on", "by": "assistant",
+         "attributes_changed": {name: [states[e]["attributes"][name], value]}}]
+        for e, name, value in ((fan, "direction", "reverse"), (remote, "current_activity", "Watch TV"))})
+    assert {"direction"} <= set(targets.settable("fan")) and {"current_activity"} <= set(targets.settable("remote"))
+    assert targets.problems(view.source, fan, "on", {"direction": "reverse"}) == []
+    assert "has no setting 'direction'" in targets.problems(view.source, "fan.desk", "on", {"direction": "reverse"})[0]
+    assert analyzer.reached(view, goal(fan, "on", direction="reverse")) is True
+    assert analyzer.reached(view, goal(fan, "on", direction="forward")) is False
+    assert targets.problems(view.source, remote, "on", {"activity": "Watch TV"}) == []
+    assert targets.problems(view.source, remote, "on", {"activity": "Gaming"}) == [
+        f"{remote}'s activity can't be 'Gaming'; it takes Music, Watch TV."]
+    assert analyzer.reached(view, goal(remote, "on", activity="Watch TV")) is True
+
+
 def test_valid_states_and_settings_come_from_home_assistant_not_a_copy_of_its_lists():
     for name in ("STATES", "OPTION_ATTRIBUTES", "allowed_states", "BRIGHTNESS_TOLERANCE"):
         assert not hasattr(analyzer, name), name

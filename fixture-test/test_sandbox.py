@@ -595,6 +595,29 @@ async def test_a_command_reports_back_as_its_device_would_a_mode_as_its_state_a_
 
 
 @pytest.mark.asyncio
+async def test_a_setting_reports_back_as_the_attribute_its_device_shows_whatever_its_field_or_property_is_called(
+        hass, effect_guards):
+    """DETAILS P11.4: a fan turned to reverse shows direction reverse (Home Assistant's fan reads it from
+    current_direction), and a remote started on an activity shows it as its current_activity, as their own entities
+    do, though neither showed one before."""
+    seeded = home(**{"fan.ceiling": ("on", {"supported_features": 4}),  # FanEntityFeature.DIRECTION
+                     "remote.living_room": ("on", {"activity_list": ["Music", "Watch TV"],
+                                                   "supported_features": 4})})  # RemoteEntityFeature.ACTIVITY
+    sandbox = await started(seeded, "UTC")
+    try:
+        async def set_both(h):
+            call = h.services.async_call
+            await call("fan", "set_direction", {"entity_id": "fan.ceiling", "direction": "reverse"}, blocking=True)
+            await call("remote", "turn_on", {"entity_id": "remote.living_room", "activity": "Watch TV"}, blocking=True)
+            return h.states.get("fan.ceiling"), h.states.get("remote.living_room")
+        fan, remote = await sandbox.run(set_both)
+    finally:
+        await sandbox.stop()
+    assert fan.attributes["direction"] == "reverse" and remote.attributes["current_activity"] == "Watch TV"
+    assert sandbox.unsimulated == [] and effect_guards == []
+
+
+@pytest.mark.asyncio
 async def test_devices_keep_their_ids_areas_and_names_and_two_integrations_sharing_a_unique_id_both_stand_in(
         hass, effect_guards):
     """DETAILS P11.4: a recorded config entry's devices move to a stand-in entry titled the same, keeping their ids,
