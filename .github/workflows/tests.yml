@@ -119,7 +119,8 @@ jobs:
           enable-cache: false
       - name: ffmpeg, both venvs and Playwright's Chromium (CONTRIBUTING.md)
         run: |
-          sudo apt-get update && sudo apt-get install -y ffmpeg
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
           uv venv .venv --python 3.14 --managed-python
           uv pip install --python .venv/bin/python -r fixture-test/requirements-lock.txt
           uv venv tools/e2e/.venv --python 3.14 --managed-python
