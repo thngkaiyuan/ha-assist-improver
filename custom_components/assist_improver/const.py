@@ -4,7 +4,7 @@ DOMAIN = "assist_improver"
 NAME = "Assist Improver"
 # The manifest's version (build_package.py keeps them equal), read where nothing can be awaited: a recording's stamp,
 # the panel script's ?v=. Home Assistant's loader gives it only by an await.
-VERSION = "0.40.34"
+VERSION = "0.40.35"
 # Conversation providers whose replays are tested end to end; others replay with a "not yet tested" label.
 TESTED_PROVIDERS = {"anthropic", "open_router"}
 STORAGE_VERSION = 1
