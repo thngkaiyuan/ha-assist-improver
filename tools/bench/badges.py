@@ -31,19 +31,24 @@ def said(result):
     return ("passing", "brightgreen") if result == "success" else ("failing", "red")
 
 
+def month(version):  # 2026.12.0.dev202611070215: 2026.12
+    return ".".join(version.split(".")[:2])
+
+
 def coverage_color(percent):  # Shields' endpoint badge is grey unless told.
     return "brightgreen" if percent >= 80 else "yellow" if percent >= 60 else "red"
 
 
 def verdict(needs, run):
     """The endpoint files for a test run's results ({job: {"result", "outputs"}}, as toJSON(needs) gives them):
-    {file name: its JSON}. Stable is the Stable check's verdict over every supported release, named by their months."""
+    {file name: its JSON}. Stable is the Stable check's verdict over every supported release, named by their months;
+    dev names the release its build leads to (its run names the build)."""
     files = {}
     tested = needs["versions"]["outputs"]
     if needs["gate"]["result"] != "skipped":
         state, color = said(needs["gate"]["result"])
         try:
-            months = [".".join(version.split(".")[:2]) for version in json.loads(tested["stable"])]
+            months = [month(version) for version in json.loads(tested["stable"])]
             span = months[0] if months[0] == months[-1] else f"{months[0]} – {months[-1]}"
         except (KeyError, ValueError, IndexError):  # No list: the versions job failed, and so did the check.
             span = ""
@@ -51,7 +56,8 @@ def verdict(needs, run):
     for channel in ("beta", "dev"):
         if needs[channel]["result"] != "skipped":
             state, color = said(needs[channel]["result"])
-            files[f"{channel}.json"] = endpoint(f"Home Assistant {channel}", f"{tested[channel]} {state}", color, run)
+            version = month(tested[channel]) if channel == "dev" else tested[channel]
+            files[f"{channel}.json"] = endpoint(f"Home Assistant {channel}", f"{version} {state}", color, run)
     if needs["coverage"]["result"] == "success":
         totals = json.loads(needs["coverage"]["outputs"]["totals"])
         percent = (totals["python"][0] + totals["js"][0]) * 100 // (totals["python"][1] + totals["js"][1])

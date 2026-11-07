@@ -147,13 +147,13 @@ def test_the_badges_say_what_a_run_tested_and_how_it_went():
     assert said(badges.verdict(needs(), 42)) == {
         "stable.json": ("Home Assistant", "2026.11 – 2026.12 passing", "brightgreen"),
         "beta.json": ("Home Assistant beta", "2027.1.0b1 passing", "brightgreen"),
-        "dev.json": ("Home Assistant dev", "2027.1.0.dev202612090215 passing", "brightgreen"),
+        "dev.json": ("Home Assistant dev", "2027.1 passing", "brightgreen"),
         "coverage.json": ("coverage", "78%", "yellow")}  # 10999 of 14000 lines: 78.6%, rounded down.
     assert all(file["schemaVersion"] == 1 and file["run"] == 42 for file in badges.verdict(needs(), 42).values())
     assert said(badges.verdict(needs(gate="failure", dev="failure", coverage="failure"), 42)) == {
         "stable.json": ("Home Assistant", "2026.11 – 2026.12 failing", "red"),
         "beta.json": ("Home Assistant beta", "2027.1.0b1 passing", "brightgreen"),
-        "dev.json": ("Home Assistant dev", "2027.1.0.dev202612090215 failing", "red")}  # No coverage: no number.
+        "dev.json": ("Home Assistant dev", "2027.1 failing", "red")}  # No coverage: no number.
     one = needs()
     one["versions"]["outputs"]["stable"] = '["2026.11.0"]'
     assert said(badges.verdict(one, 42))["stable.json"] == ("Home Assistant", "2026.11 passing", "brightgreen")
