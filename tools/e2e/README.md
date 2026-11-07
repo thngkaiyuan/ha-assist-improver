@@ -22,8 +22,8 @@ busy machine, where a journey can time out waiting for a run; `tools/check.sh` r
 Options: `E2E_KEEP=1` keeps each test's Home Assistant config folder, `E2E_SHOTS=1` saves the screenshots journeys
 take (`page.shot(name)`), `E2E_RUNS_DIR` says where the folders go. A failing test keeps its folder either way, with
 Home Assistant's log, a screenshot and the stand-in model's requests (`e2e-model-requests.jsonl`), and prints where.
-A test also fails when its Home Assistant logged an error of Assist Improver's, or a blocking call it caught in the
-improver's code on its event loop (`tools/bench/logcheck.py`).
+A test also fails when its Home Assistant, or the household's it started from as it was set up, logged an error of
+Assist Improver's, or a blocking call it caught in the improver's code on its event loop (`tools/bench/logcheck.py`).
 
 ## What's real and what's a stand-in
 

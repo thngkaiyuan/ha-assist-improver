@@ -9,7 +9,8 @@ Fixtures (see each one's docstring):
   (config/configuration.yaml) in their rooms and exposed to Assist, the anthropic integration added through its config
   flow (the fake answers its key check) with its assistant on a model chosen explicitly, Assist using that assistant,
   and Assist Improver added through its own config flow (its AI roles on the anthropic AI Tasks it sets up). Then
-  it's stopped, and its config folder is where every test's Home Assistant starts from.
+  it's stopped, its log checked as each test's is (below), and its config folder is where every test's Home Assistant
+  starts from.
 - ha (function): a fresh Home Assistant from the golden copy, on its own free port, logged in; stopped, with every
   process it started, when the test ends, and its log checked: the test fails if Home Assistant logged an error of
   Assist Improver's or caught a blocking call in its code on the event loop (tools/bench/logcheck.py). One per test,
@@ -646,9 +647,10 @@ def runs_dir(request):
 
 @pytest.fixture(scope="session")
 def golden(fake_model, runs_dir):
-    """A household's Home Assistant, set up once (see the module docstring), then stopped: {"folder", "login"}. Each
-    test's Home Assistant starts from a copy of its folder. The login (username, password) is generated here and never
-    printed or written anywhere but Home Assistant's own auth store."""
+    """A household's Home Assistant, set up once (see the module docstring), then stopped, its log checked as each
+    test's is (ha): {"folder", "login"}. Each test's Home Assistant starts from a copy of its folder. The login
+    (username, password) is generated here and never printed or written anywhere but Home Assistant's own auth
+    store."""
     folder = runs_dir / "golden"
     port = free_port()
     _write_config(folder, port, fake_model.url)
@@ -669,6 +671,10 @@ def golden(fake_model, runs_dir):
         ha.ws.close()
     finally:
         _stop_process(process)
+    log = folder / "e2e-hass.log"
+    logged = logcheck.improvers(log.read_text(errors="replace")) if log.exists() else []
+    assert not logged, (f"Home Assistant logged what's Assist Improver's to fix as the household set it up ({log}):"
+                        "\n\n" + "\n\n".join(logged))
     _onboarded(folder)
     for path in ("home-assistant.log", "home-assistant.log.1", "e2e-hass.log", ".ha_run.lock"):
         (folder / path).unlink(missing_ok=True)
