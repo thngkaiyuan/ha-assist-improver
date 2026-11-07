@@ -4,20 +4,23 @@ A settable attribute is one a field of one of its domain's services sets, as Hom
 domain's services.yaml), mapped to the attribute through the stand-in's table (standin.attribute_of); an entity takes it
 when it passes that field's filters (its supported features, a light's colour modes). Valid values are Home
 Assistant's: for the state, the entity's own options where it lists them (a thermostat's modes, a select's options),
-else its domain's enum (CoverState and the like; on and off for a toggle); for an attribute, its options and range as
-the entity shows them (its capability attributes), else as the field's selector gives them. One setting may be given
-in any of its representations, compared by Home Assistant's own conversions (homeassistant.util.color): a colour as
-hs, rgb, xy, rgbw, rgbww, a name, a colour temperature or white; a brightness as brightness or brightness_pct. Numbers
-match within TOLERANCE of the setting's range (as the entity shows it, else as the field's selector gives it), else of
-the value asked for, or within the step the entity shows for it where that's coarser (a three-speed fan's). A
-temperature is the entity's own unit, as it shows it.
+else its domain's enum (CoverState and the like; on and off for a toggle), or, where its entity class's state is a
+number (a number's), one within the min and max it shows; for an attribute, its options and range as the entity shows
+them (its capability attributes), else as the field's selector gives them. One setting may be given in any of its
+representations, compared by Home Assistant's own conversions (homeassistant.util.color): a colour as hs, rgb, xy,
+rgbw, rgbww, a name, a colour temperature or white; a brightness as brightness or brightness_pct. Numbers, a number's
+state too, match within TOLERANCE of their range (as the entity shows it, else as the field's selector gives it), else
+of the value asked for, or within the step the entity shows for a setting where that's coarser (a three-speed fan's).
+A temperature is the entity's own unit, as it shows it.
 """
 
 from enum import StrEnum
 import functools
 import importlib
+import inspect
 import math
 from pathlib import Path
+import typing
 
 from homeassistant.const import STATE_OFF, STATE_ON
 from homeassistant.exceptions import HomeAssistantError
@@ -165,6 +168,40 @@ def states(source, entity_id):
             if _sets_state(spec) and (listed := _options(field, found)):
                 return set(listed)
     return set(found) if (found := _enum(domain)) else None
+
+
+@functools.cache
+def _numeric(domain):
+    """Whether a domain's state is a number, as its entity class declares it (a number's float, a counter's int)."""
+    from .standin import entity_class
+    try:
+        hint = inspect.signature(inspect.getattr_static(entity_class(domain), "state").fget).return_annotation
+    except (ImportError, ValueError, AttributeError, TypeError):  # No one class, or no declared state.
+        return False
+    return any(t in (int, float) for t in typing.get_args(hint) or (hint,))
+
+
+def _value(state):
+    """A state as a number (Home Assistant keeps a number's state as a float's text: 30.0), else None."""
+    try:
+        found = float(state)
+    except (TypeError, ValueError):
+        return None
+    return found if math.isfinite(found) else None
+
+
+def _bounds(found):
+    """A number's (min, max) as it shows them; None where it doesn't."""
+    return (found["min"], found["max"]) if _number(found.get("min")) and _number(found.get("max")) else None
+
+
+def same_state(domain, wanted, now, found):
+    """Whether a device's state is the one asked for: the same, or where its state is a number (_numeric), the same
+    number within TOLERANCE of the min and max it shows (found: shown)."""
+    if wanted == now or wanted is None or not _numeric(domain):
+        return wanted == now
+    asked, at = _value(wanted), _value(now)
+    return asked is not None and at is not None and _close(asked, at, _bounds(found))
 
 
 def target(goal):
@@ -323,6 +360,11 @@ def problems(source, entity_id, state, asked):
     allowed = states(source, entity_id)
     if state is not None and allowed is not None and state not in allowed:
         out.append(f"{entity_id} has no state {state!r}; its states are {', '.join(sorted(allowed))}.")
+    elif state is not None and _numeric(domain):  # A number's state: one within the min and max it shows.
+        value, bounds = _value(state), _bounds(found)
+        if value is None or bounds and not bounds[0] <= value <= bounds[1]:
+            out.append(f"{entity_id} has no state {state!r}; it takes "
+                       f"{f'{bounds[0]} to {bounds[1]}' if bounds else 'a number'}.")
     sets = settable(domain)
     for name, value in asked.items():
         if not (known(domain, name) and takes(found, domain, name)):

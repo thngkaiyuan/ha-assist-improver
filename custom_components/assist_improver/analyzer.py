@@ -229,7 +229,7 @@ def reached(view, goal, until_turn=None):
 
     Only changes from the goal's turn up to (not including) until_turn count. A state goal is reached when the device
     ends in its target State (targets.py: its state, and each setting it asks for, in any of its representations,
-    numbers within tolerance) because of Assist, or was already there and nobody moved it; a sequence goal when
+    numbers, a number's state too, within tolerance) because of Assist, or was already there and nobody moved it; a sequence goal when
     Assist's changes pass through its states in order.
     """
     if goal["kind"] in ("fact", "ask", "action") or not goal.get("entity_id"):
@@ -258,7 +258,8 @@ def reached(view, goal, until_turn=None):
         attributes = _moved(attributes, change)
         if moved:  # Updates to what the goal doesn't ask for (readings, another setting) neither reach nor undo it.
             state, by_assistant = change["new"], change["by"] in ASSISTANT
-    return (state == wanted_state and targets.holds(domain, wanted, attributes, targets.shown(view.source, entity))
+    shown = targets.shown(view.source, entity)
+    return (targets.same_state(domain, wanted_state, state, shown) and targets.holds(domain, wanted, attributes, shown)
             and by_assistant is not False)
 
 

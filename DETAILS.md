@@ -1310,9 +1310,10 @@ Citations in parentheses name the maintainer's earlier notes, which aren't in th
     a field of one of its domain's actions sets: a light's brightness or colour, a thermostat's temperature). Both must
     be ones the device actually has, as Home Assistant has them, not the user's word: the device's own options, ranges
     and features where it shows them (no brightness for a light that only switches), else its domain's ('cool' is
-    wrong for a climate device whose modes are off, fan_only and heat). A setting is one in any of Home Assistant's forms of it (a colour as rgb or hue and saturation, a
-    brightness as a percentage or 0 to 255), and a number is reached within 5% of its range, or of the device's own
-    step where that's coarser (a three-speed fan's). (MILESTONE-4.md)
+    wrong for a climate device whose modes are off, fan_only and heat). A setting is one in any of Home Assistant's
+    forms of it (a colour as rgb or hue and saturation, a brightness as a percentage or 0 to 255), and a number is
+    reached within 5% of its range (a number device's state too), or of the device's own step for a setting where
+    that's coarser (a three-speed fan's). (MILESTONE-4.md)
   - **P9.7.2** The start state matters: a device already off changes what a request means. (PRODUCT-SPEC.md)
   - **P9.7.3** When either of two devices gets the home to the same end state, either is fine: a smart plug or the
     lamp itself both turn a lamp off. (Kai, 2026-10-23)

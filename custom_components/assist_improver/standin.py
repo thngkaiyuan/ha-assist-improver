@@ -318,8 +318,9 @@ PROPERTIES = {"cover": {"current_position": "current_cover_position",
               "humidifier": {"humidity": "target_humidity"},
               "number": {"min": "native_min_value", "max": "native_max_value", "step": "native_step"},
               "text": {"min": "native_min", "max": "native_max"}}
-# Entity properties Home Assistant's own logic reads that follow from the state (a toggle reads is_on).
-FROM_STATE = {"is_on": lambda s: s == STATE_ON, "is_closed": lambda s: s == CoverState.CLOSED,
+# Entity properties Home Assistant's own logic reads that follow from the state (a toggle reads is_on; a number's value
+# is its state).
+FROM_STATE = {"value": lambda s: s, "is_on": lambda s: s == STATE_ON, "is_closed": lambda s: s == CoverState.CLOSED,
               "is_opening": lambda s: s == CoverState.OPENING, "is_closing": lambda s: s == CoverState.CLOSING,
               "is_locked": lambda s: s == LockState.LOCKED, "is_locking": lambda s: s == LockState.LOCKING,
               "is_unlocking": lambda s: s == LockState.UNLOCKING, "is_jammed": lambda s: s == LockState.JAMMED,

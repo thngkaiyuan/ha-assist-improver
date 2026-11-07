@@ -83,6 +83,28 @@ def test_a_number_is_met_within_the_devices_own_step_where_its_coarser():
     assert analyzer.reached(view, goal(fan, "on", percentage=30)) is False  # A speed away.
 
 
+def test_a_numbers_value_is_its_state_compared_as_a_number_within_the_min_and_max_it_shows():
+    """A number's value is its state, which Home Assistant keeps as a float's text (30.0): a goal of 30 is met by it,
+    within 5% of the min and max it shows; its value is no setting, and a state outside them, or no number, is
+    refused."""
+    from homeassistant.components.number import NumberEntity
+    dryer = "number.dryer_minutes"
+
+    class Dryer(NumberEntity):
+        _attr_native_value = 30.0  # As number.set_value hands it: its schema makes it a float.
+    shows = {"min": 0.0, "max": 120.0, "step": 1.0, "mode": "box"}
+    view = SimpleNamespace(source={"states": {dryer: {"state": "20.0", "attributes": shows}}}, changes={dryer: [
+        {"at": "2026-01-01T09:00:00+00:00", "during_turn": 1, "old": "20.0", "new": str(Dryer().state),
+         "by": "assistant"}]})
+    assert [analyzer.reached(view, goal(dryer, s)) for s in ("30", "35", "40", "20")] == [True, True, False, False]
+    view.digest, view._entities = {"turns": [{"turn": 1, "user_says": "x", "assistant": []}]}, lambda: [dryer]
+    asking = lambda g: analyzer.problems(view, {"goals": [g], "not_requests": [], "question_for_user": ""})  # noqa: E731
+    assert asking(goal(dryer, "30")) == []
+    for state in ("500", "long"):
+        assert asking(goal(dryer, state)) == [f"Goal 1 (turn 1): {dryer} has no state {state!r}; it takes 0.0 to 120.0."]
+    assert "has no setting 'value'" in asking(goal(dryer, "30.0", value=30))[0]
+
+
 def test_another_setting_moving_neither_reaches_nor_undoes_a_goal():
     later = home((THERMOSTAT, "heat", {"temperature": 22}), (THERMOSTAT, "heat", {"current_temperature": 19}))
     later.changes[THERMOSTAT][1]["by"] = "not the assistant"
