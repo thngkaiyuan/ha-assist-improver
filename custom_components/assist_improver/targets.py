@@ -1,17 +1,18 @@
 """A state goal's target State (DETAILS P9.7.1): a state plus any settable attribute, and whether a device holds it.
 
-A settable attribute is one a field of one of its domain's services sets, as Home Assistant describes them (the
-domain's services.yaml), mapped to the attribute through the stand-in's table (standin.attribute_of); an entity takes it
-when it passes that field's filters (its supported features, a light's colour modes). Valid values are Home
+A settable attribute is one a field of one of its domain's services sets, as Home Assistant describes them (the domain's
+services.yaml), mapped to the attribute through the stand-in's table (standin.attribute_of), and one the stand-in
+reports a command's field back as (_reported: not a fan's percentage_step, the step its increase_speed takes); an entity
+takes it when it passes that field's filters (its supported features, a light's colour modes). Valid values are Home
 Assistant's: for the state, the entity's own options where it lists them (a thermostat's modes, a select's options),
 else its domain's enum (CoverState and the like; on and off for a toggle), or, where its entity class's state is a
 number (a number's), one within the min and max it shows; for an attribute, its options and range as the entity shows
 them (its capability attributes), else as the field's selector gives them. One setting may be given in any of its
-representations, compared by Home Assistant's own conversions (homeassistant.util.color): a colour as hs, rgb, xy,
-rgbw, rgbww, a name, a colour temperature or white; a brightness as brightness or brightness_pct. Numbers, a number's
-state too, match within TOLERANCE of their range (as the entity shows it, else as the field's selector gives it), else
-of the value asked for, or within the step the entity shows for a setting where that's coarser (a three-speed fan's).
-A temperature is the entity's own unit, as it shows it.
+representations, compared by Home Assistant's own conversions (homeassistant.util.color): a colour as hs, rgb, xy, rgbw,
+rgbww, a name, a colour temperature or white; a brightness as brightness or brightness_pct. Numbers, a number's state
+too, match within TOLERANCE of their range (as the entity shows it, else as the field's selector gives it), else of the
+value asked for, or within the step the entity shows for a setting where that's coarser (a three-speed fan's). A
+temperature is the entity's own unit, as it shows it.
 """
 
 from enum import StrEnum
@@ -26,7 +27,7 @@ from homeassistant.const import STATE_OFF, STATE_ON
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.util import color as color_util
 
-from .standin import attribute_of, colour_modes, held
+from .standin import _EXTRA, _table, attribute_of, colour_modes, entity_class, held
 
 TOLERANCE = 0.05  # Of a setting's range: 5 points of a brightness's 0 to 100.
 BRIGHTNESS = ("brightness", "brightness_pct")  # One setting: 0 to 255, or a percentage.
@@ -101,14 +102,36 @@ def _sets_state(spec):
 
 
 @functools.cache
+def _reported(domain):
+    """The attributes a domain's stand-in reports its commands' fields back as (each field to the attribute it names):
+    each command's parameters, its table's as its entity class takes them and its own class's (standin._EXTRA: a media
+    player's play_media), or where one takes any, the fields of the action of its name (a light's turn_on)."""
+    base, out = entity_class(domain), set()
+    commands = [(c, getattr(base, f"async_{c}", None)) for c in _table().get(domain, {})]
+    commands += [(n.removeprefix("async_"), m) for n, m in vars(_EXTRA.get(domain, object)).items()
+                 if n.startswith("async_")]
+    for command, method in commands:
+        if method is None:
+            continue
+        for name, parameter in list(inspect.signature(method).parameters.items())[1:]:
+            if parameter.kind is inspect.Parameter.VAR_KEYWORD:
+                out |= {attribute_of(domain, field) for field in _services(domain).get(command, {})}
+            elif parameter.kind is not inspect.Parameter.VAR_POSITIONAL:
+                out.add(attribute_of(domain, name))
+    return out
+
+
+@functools.cache
 def settable(domain):
-    """{attribute: the field's spec}: each attribute a field of the domain's services sets (standin.attribute_of) that
-    its entities hold (standin.held: a light's brightness, not its transition), the state aside."""
+    """{attribute: the field's spec}: each attribute a field of the domain's services sets (standin.attribute_of: one
+    its stand-in reports, _reported) that its entities hold (standin.held: a light's brightness, not its transition),
+    the state aside."""
     out = {}
     try:
         for fields in _services(domain).values():
             for field, spec in fields.items():
-                if not _sets_state(spec) and held(domain, name := attribute_of(domain, field)):
+                name = attribute_of(domain, field)
+                if not _sets_state(spec) and name in _reported(domain) and held(domain, name):
                     out.setdefault(name, spec)
     except (ImportError, ValueError):  # A domain with no one entity class: none.
         return {}

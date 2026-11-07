@@ -157,6 +157,28 @@ def test_a_setting_the_device_cant_take_is_refused_as_its_services_describe_it()
     assert analyzer.reached(view, goal("light.bulb", "on", color_name="white")) is True
 
 
+def test_a_setting_is_a_field_an_action_sets_it_with_not_one_another_action_takes():
+    """DETAILS P9.7.1: a setting is an attribute a field of one of its domain's actions sets. A fan's increase_speed
+    steps its speed by percentage_step, which Home Assistant's fan carries out as a set_percentage: percentage_step is
+    no setting, though the fan shows one, so a goal naming it is refused and a recorded call stepping by it sets
+    nothing the before compares. Nor is a field naming which device an action uses (a speech engine's say: which
+    speaker). A setting an action sets under another name is one (a speaker's volume_set: its volume_level; its
+    play_media: the media it plays)."""
+    from custom_components.assist_improver.simulation import assist_settings
+    fan = "fan.bedroom"
+    source = {"states": {fan: {"state": "on", "attributes": {"percentage": 33, "percentage_step": 100 / 3,
+                                                               "supported_features": 1}}}}  # It sets a speed.
+    assert targets.problems(source, fan, "on", {"percentage_step": 50}) == [
+        f"{fan} has no setting 'percentage_step'; its settings are percentage."]
+    assert targets.problems(source, fan, "on", {"percentage": 67}) == []
+    stepped = {"number": 1, "source": source, "actions": [{"action": "fan.increase_speed",
+                                                           "data": {"entity_id": fan, "percentage_step": 50}}]}
+    assert assist_settings({"turns": [stepped]}, stepped) == {}
+    assert "entity_id" not in targets.settable("tts")
+    assert {"volume_level", "is_volume_muted", "media_content_id", "media_content_type"} <= set(
+        targets.settable("media_player"))
+
+
 def test_valid_states_and_settings_come_from_home_assistant_not_a_copy_of_its_lists():
     for name in ("STATES", "OPTION_ATTRIBUTES", "allowed_states", "BRIGHTNESS_TOLERANCE"):
         assert not hasattr(analyzer, name), name
