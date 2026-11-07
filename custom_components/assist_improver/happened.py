@@ -65,8 +65,13 @@ def _ids(value):
 def named(action, data, source):
     """The entities a call is for (source: the home as recorded): the one its action is named after (a script's own
     action), those its data names (entity_id, or a field ending in _entity_id: tts.speak's media players), and its
-    domain's entities on the devices, areas, floors and labels it names, as Home Assistant resolves a call's target."""
+    domain's entities on the devices, areas, floors and labels it names, as Home Assistant resolves a call's target.
+    Home Assistant's own actions on any entity (homeassistant.turn_on) are for none themselves: the call each makes in
+    an entity's domain is in the call log under it, and a domain without that action (a button's turn_on) gets none."""
+    from homeassistant.core import DOMAIN as HOMEASSISTANT
     domain, entities = action.split(".", 1)[0], source.get("entities") or {}
+    if domain == HOMEASSISTANT:
+        return set()
     out = {e for k, v in data.items() if k == "entity_id" or k.endswith("_entity_id") for e in _ids(v)}
     if action in entities or action in (source.get("states") or {}):
         out.add(action)

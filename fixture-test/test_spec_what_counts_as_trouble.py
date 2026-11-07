@@ -753,6 +753,35 @@ def test_a_button_press_is_an_action_met_when_the_call_reached_it_and_never_a_st
         "command; a scene asked for is its devices' states."]
 
 
+@pytest.mark.asyncio
+async def test_home_assistants_own_turn_on_reaches_a_device_by_the_call_it_makes_in_its_domain(hass):
+    """DETAILS P9.10.5: homeassistant.turn_on calls each entity's own domain's turn_on, logged under it; a button has
+    none, so Home Assistant presses nothing, and the call doesn't reach it. A toggle it does switch is reached by the
+    call made in its domain."""
+    from homeassistant.const import EVENT_CALL_SERVICE
+    from homeassistant.core import Context
+    from homeassistant.setup import async_setup_component
+    from conftest import load_registries
+    from custom_components.assist_improver.recorder import Actions
+    chime, fan = "input_button.chime", "input_boolean.fan"
+    hass.data["assist_improver_sandbox"] = True  # This offline Home Assistant's actions act only on itself.
+    await load_registries(hass)
+    assert await async_setup_component(hass, "homeassistant", {})
+    assert await async_setup_component(hass, "input_button", {"input_button": {"chime": {}}})
+    assert await async_setup_component(hass, "input_boolean", {"input_boolean": {"fan": {}}})
+    request, log, actions = Context(), Actions(), []
+    log.watch("recording", request.id, actions)
+    hass.bus.async_listen(EVENT_CALL_SERVICE, log.heard)
+    await hass.services.async_call("homeassistant", "turn_on", {"entity_id": [chime, fan]}, blocking=True,
+                                   context=request)
+    await hass.async_block_till_done()
+    source = {"states": {e: {"state": "off", "attributes": {}} for e in (chime, fan)}, "entities": {chime: {}, fan: {}}}
+    view = SimpleNamespace(source=source, sources=[source], calls={1: []}, changes={}, actions={1: actions})
+    press = {"turn": 1, "summary": "Ring the chime", "kind": "action", "outcome": "command", "entity_ids": [chime]}
+    assert hass.states.get(chime).state == "unknown" and analyzer.done(view, press, [1]) is False
+    assert hass.states.get(fan).state == "on" and analyzer.done(view, {**press, "entity_ids": [fan]}, [1]) is True
+
+
 def test_a_scripts_run_may_be_a_sequence_goal_as_presses_standing_for_a_motion():
     """DETAILS P9.7.5, P9.7.6: a script that presses a door's relay runs on, then off; a sequence goal on it (the
     presses standing for a motion nobody can check) is accepted and met by that run, as the analysis judges it. A state
