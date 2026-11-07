@@ -71,7 +71,7 @@ def goal_devices(analysis, turn):
 
 
 def friction_by_goal(analysis):
-    """Each goal turn that had friction, with that friction. Stage 3 settled which goal a turn served: an extra
+    """Each goal turn that had friction, with that friction. The analysis settled which goal a turn served: an extra
     turn belongs to the goal its sub-goal serves, or else to the latest goal before it; an ask is its own. A side
     effect belongs to the goal whose turn made the change (the goal a sub-goal there serves, or else the latest goal
     up to that turn). What the household objected to belongs to the goal its conduct goal serves, never to the Assist

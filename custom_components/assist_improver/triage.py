@@ -1,13 +1,11 @@
 """A quick check before the journey analyzer: was every request in a session fulfilled smoothly?
 
-A small model (any AI Task, local ones included) reads a conversation, however many turns it
-has, with all the context Assist had (its instructions, which name the speaker and list the household's
-devices; every tool call and Home Assistant's result), what changed in the home, and
-the involved devices' cards, and answers once. Its tokens are
-cheap next to the analysis they can save, so it gets everything it needs to decide. Only a
-sure "smooth" skips the analyzer; anything else, including a failed check, gets
-the full analysis. A skipped session still reaches the generator and reviewer:
-code records it as a session without friction, with no goals extracted.
+A small model (any AI Task, local ones included) reads a conversation, however many turns it has, with all the context
+Assist had (its instructions, which name the speaker and list the household's devices; every tool call and Home
+Assistant's result), what changed in the home, and the involved devices' cards, and answers once. Its tokens are cheap
+next to the analysis they can save, so it gets everything it needs to decide. Only a sure "smooth" skips the analyzer;
+anything else, including a failed check, gets the full analysis. A skipped session still reaches the generator and
+reviewer: code records it as a session without friction, with no goals extracted.
 """
 
 import probatio
@@ -21,10 +19,11 @@ STUB = {"goals": [], "not_requests": [], "extra_turns": [], "pending_turns": [],
 
 
 def payload(view):
-    """All the context Assist had, turn by turn (its instructions as recorded; what the user said; each tool call
-    with Home Assistant's full result; its reply), what changed in the home during each turn, and the devices involved. Assist's instructions name the speaker and list the household's devices,
-    the same in every turn but for a line or two (the time), so they come in full with the first turn and after that
-    only as the lines that changed: the same facts, without a copy per turn (most of a long conversation's input)."""
+    """All the context Assist had, turn by turn (its instructions as recorded; what the user said; each tool call with
+    Home Assistant's full result; its reply), what changed in the home during each turn, and the devices involved.
+    Assist's instructions name the speaker and list the household's devices, the same in every turn but for a line or
+    two (the time), so they come in full with the first turn and after that only as the lines that changed: the same
+    facts, without a copy per turn (most of a long conversation's input)."""
     from .serialization import plain
     turns, involved, previous = [], set(), None
     for turn, line in zip(view.turns, view.conversation()):

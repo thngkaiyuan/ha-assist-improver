@@ -24,7 +24,8 @@ def deliberate(sent):
 
 async def analyze(hass, entry, runtime, recording_id, triage_only=False, sent=None, revisions=(),
                   answered=()) -> Analysis:
-    """Journey analyzer on one recording: one paid AI Task call with read-only session tools, recorded either way.
+    """Journey analyzer on one recording: one paid AI Task call with read-only session tools (plus the fact judge's
+    where a question is judged), recorded either way.
 
     The answer comes from the submit_goals tool, not the model's final text: the last accepted submission, or
     the best rejected one (with its problems) if none was accepted. triage_only: the quick check instead (with a
@@ -76,7 +77,7 @@ async def analyze(hass, entry, runtime, recording_id, triage_only=False, sent=No
                                                    "as Claude Opus 5.5."})
         else:
             run["output"] = answer
-            if run["answer_status"] == "best_rejected":  # None accepted: only what passed the checks moves on.
+            if run["answer_status"] == "best_rejected":  # None accepted: the run keeps what passed the checks.
                 answer = analyzer.valid_part(answer, found)
             notes = [{"sent": True}] * bool((submit.note or "").strip()) + [{"revision": r["round"]} for r in revisions]
             analysis = analyzer.to_analysis(recording_id, answer, view, notes)

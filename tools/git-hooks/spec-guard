@@ -1,0 +1,8 @@
+#!/bin/sh
+# SPEC.md changes come by pull request, which Kai approves (CONTRIBUTING.md). In his own checkout, a commit or merge
+# that changes it needs KAI_OK_SPEC=1, which Claude Code asks about (.claude/hooks/guard-spec.sh).
+# Installed as .git/hooks/pre-commit and pre-merge-commit: ln -s ../../tools/git-hooks/spec-guard .git/hooks/<name>
+if git diff --cached --name-only | grep -qx 'SPEC.md' && [ "$KAI_OK_SPEC" != 1 ]; then
+  echo "SPEC.md is Kai's: commit a change to it only with his OK (KAI_OK_SPEC=1)." >&2
+  exit 1
+fi

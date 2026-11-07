@@ -1,4 +1,4 @@
-"""Simulate (SPEC.md P0.1, DETAILS P6): an idea tested on the conversation it's proposed for.
+"""Simulate (SPEC.md P0.9, DETAILS P6): an idea tested on the conversation it's proposed for.
 
 The conversation is replayed in a sandbox (sandbox.py, replay.py) set up as the household's Home Assistant is today,
 with its own assistant as set up now and the user's recorded words, in order, from the moment it started (its devices'
@@ -7,9 +7,9 @@ goes as the conversation went (DETAILS P6.6.5): Assist varies from run to run, s
 With the change (the test), it branches from that baseline where the change has to make the difference: the turns
 before are the baseline's, its home and its history; from there it says the turns DETAILS P6.4 doesn't let it skip.
 Code judges both by P0.1.1's measures (measures.py); a small model judges only whether an Assist turn shows what the
-household objected to (a conduct goal), one turn at a time, with what it said and did. Each replay runs once for its
-plan, which names the setup it runs on, and is kept (Replays): a settled one is reused, never resampled, while the
-setup is unchanged; one the machinery cut off runs again.
+household objected to (a conduct goal), one turn at a time, with what it said and did, or whether a reply gives what
+the user asked to know. Each replay runs once for its plan, which names the setup it runs on, and is kept (Replays): a
+settled one is reused, never resampled, while the setup is unchanged; one the machinery cut off runs again.
 """
 
 import asyncio
@@ -317,8 +317,7 @@ def _recorded_turn(recording, recorded, number):
 
 def judgeable(goal, view):
     """Whether a fact can be judged: its truth is in the record (it names a device the recording holds a state of), or
-    the user asked for a form; a question beyond the home with no form asked holds nothing to check (the goal design,
-    2026-10-29)."""
+    the user asked for a form; a question beyond the home with no form asked holds nothing to check (P9.10.4)."""
     recorded = view.source.get("states") or {}
     return goal.get("kind") == "fact" and (any(e in recorded for e in goal.get("entity_ids") or [])
                                            or bool((goal.get("quote") or "").strip()))

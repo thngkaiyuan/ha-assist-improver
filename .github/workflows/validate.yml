@@ -1,4 +1,6 @@
 # The checks HACS's catalog (hacs/default, which the Marketplace in Home Assistant 2026.11 lists) asks to pass.
+# In a private repository, where GitHub bills each run, both skip; a scheduled run can't tell, so it runs only once the
+# repository's WATCH_HOME_ASSISTANT variable is "on" (home-assistant.yml).
 name: Validate
 
 on:
@@ -13,6 +15,9 @@ permissions:
 
 jobs:
   hacs:
+    if: >-
+      ${{ !github.event.repository.private
+      && (github.event_name != 'schedule' || vars.WATCH_HOME_ASSISTANT == 'on') }}
     runs-on: ubuntu-latest
     steps:
       - uses: hacs/action@main
@@ -20,6 +25,9 @@ jobs:
           category: integration
 
   hassfest:
+    if: >-
+      ${{ !github.event.repository.private
+      && (github.event_name != 'schedule' || vars.WATCH_HOME_ASSISTANT == 'on') }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5

@@ -226,17 +226,11 @@ export const STYLE = `
   @media (max-width: 600px) { table.diff td.num { width: 0; padding: 0; font-size: 0; } .page { padding: 12px max(10px, var(--inset-right)) 24px max(10px, var(--inset-left)); }
     .run-head { flex-wrap: wrap; } }
   .run > .title { font-size: 16px; font-weight: 500; }
-  .hero { background: var(--card-background-color); border: 1px solid var(--divider-color); border-radius: 12px;
-    padding: 24px; margin: 8px 0 16px; }
-  .hero-title { font-size: 20px; font-weight: 500; margin-bottom: 8px; }
-  .hero .lead { margin: 0 0 16px; }
   .notice { color: var(--secondary-text-color); font-size: 14px; line-height: 1.5; margin: -6px 0 16px; }
   .notice details { display: inline; } .notice summary { display: inline; cursor: pointer; color: var(--primary-color); }
   .notice code { display: block; margin-top: 6px; font-size: 12px; white-space: pre-wrap; word-break: break-word; }
   .lead { color: var(--secondary-text-color); line-height: 1.5; margin: 0 0 12px; }
   .gains { display: block; color: var(--add-fg); font-size: 13px; font-weight: 500; }
-  .run-line { display: flex; align-items: center; justify-content: space-between; gap: 8px;
-    color: var(--secondary-text-color); font-size: 13px; margin: -4px 4px 16px; }
   .link { border: none; background: none; color: var(--primary-color); font: inherit; font-weight: 500; cursor: pointer; padding: 4px 0; }
   .history { border: none; margin-top: 8px; } .history > summary { padding: 8px 4px; color: var(--secondary-text-color); }
   .next { display: flex; justify-content: flex-end; margin: -4px 0 12px; }
@@ -249,16 +243,13 @@ export const STYLE = `
   .done-msg .mark { font-weight: 700; } .done-msg.ok .mark { color: var(--add-fg); } .done-msg.bad .mark { color: var(--del-fg); }
   .done-row .btn { max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
   .done-row > :last-child { margin-left: auto; }  /* The way on stays where the decision's button was. */
-  .outcome-banner { padding: 10px 14px; border-radius: 8px; margin-bottom: 12px; border: 1px solid; }
-  .outcome-banner.ok { background: var(--add-bg); border-color: var(--add-fg); }
-  .outcome-banner.bad { background: var(--del-bg); border-color: var(--del-fg); }
   .tb-btn { margin-left: auto; display: inline-flex; align-items: center; gap: 6px; border: none; background: none;
     color: inherit; font: inherit; font-size: 15px; cursor: pointer; padding: 8px; border-radius: 18px; }
   .tb-btn:hover { background: rgba(255, 255, 255, 0.12); }
   .tb-btn svg { width: 22px; height: 22px; fill: currentColor; }
   .page.wide { max-width: 1212px; }  /* 1180 px of content. */
   /* The pipeline as a track: one translucent layer of solid strokes (overlaps don't darken), colors blending
-     along it; the step cards sit on top. Laid out in _layout(). */
+     along it; the step cards sit on top. Laid out by track.js's layout(). */
   :host { --track-in: #a3a8af; --track-ai: #a3a8af; --track-out: #a3a8af; --held: #bf9a55; --badge: #8796a8; --done: #6f9e98; }
   :host(.dark) { --track-in: #d4d7dc; --track-ai: #d4d7dc; --track-out: #d4d7dc; }
   .flow-card { padding: 12px 16px 16px; overflow: visible; }
@@ -550,8 +541,6 @@ export const STYLE = `
   .track.vertical .chip-row { flex: 0 1 auto; max-width: 62%; } .track.vertical .chip-row .chip-model { max-width: none; }
   .chip-row .chip-model { max-width: none; flex: 0 1 auto; min-width: 0; }
   .track.vertical .chip-model { align-self: center; max-width: 46%; }
-  .info { border: none; background: none; padding: 2px; margin: 0 0 0 2px; cursor: pointer; color: var(--secondary-text-color);
-    display: inline-flex; vertical-align: middle; } .info .ic { width: 15px; height: 15px; }
   .backdrop { position: fixed; inset: 0; z-index: 10; }
   .pop { position: fixed; z-index: 11; width: 320px; max-height: 70vh; overflow: auto; box-sizing: border-box;
     background: var(--card-background-color); border: 1px solid var(--divider-color); border-radius: 12px;
@@ -580,18 +569,12 @@ export const STYLE = `
   .round { width: 34px; height: 34px; border-radius: 17px; border: 1px solid var(--divider-color); background: none;
     color: var(--primary-text-color); font-size: 18px; cursor: pointer; } .round:disabled { opacity: .4; cursor: default; }
   .t-n { font-size: 22px; font-weight: 500; min-width: 28px; text-align: center; }
-  .rows .row { display: flex; align-items: center; gap: 16px; padding: 14px 16px; border-bottom: 1px solid var(--divider-color); }
-  .rows .row:last-child { border-bottom: none; }
-  .row-text { flex: 1; min-width: 0; } .row-title { font-weight: 500; }
-  .row-sub { font-size: 13px; color: var(--secondary-text-color); line-height: 1.45; margin-top: 2px; }
   .seg { display: inline-flex; border: 1px solid var(--divider-color); border-radius: 18px; overflow: hidden; flex: none; }
   .seg button { border: none; background: none; font: inherit; font-size: 13px; padding: 7px 12px; cursor: pointer;
     color: var(--primary-text-color); border-left: 1px solid var(--divider-color); }
   .seg button:first-child { border-left: none; }
   .seg button.on { background: var(--primary-color); color: var(--text-primary-color, white); }
-  .uses { display: flex; flex-wrap: wrap; gap: 6px 14px; margin-top: 6px; font-size: 13px; }
-  .uses .ok { color: var(--add-fg); }
-  @media (max-width: 600px) { .rows .row { flex-wrap: wrap; } .seg { width: 100%; } .seg button { flex: 1; padding: 7px 4px; } }
+  @media (max-width: 600px) { .seg { width: 100%; } .seg button { flex: 1; padding: 7px 4px; } }
   /* The developer view: dense and technical; wide tables scroll inside their card, never the page. */
   .tb-btn + .tb-btn { margin-left: 0; }
   .tb-btn.tb-text { font-size: 14px; padding: 6px 10px; } .tb-btn.tb-text svg { width: 18px; height: 18px; }

@@ -1,8 +1,7 @@
 // The panel's words: TEXT, and the tables that name a run's stages, the pipeline's steps and each improvement's status.
 
 export const STAGES = [["triage", "Triage"], ["analyze", "Analyze"], ["propose", "Propose"], ["write", "Write up"]];
-// Every label and tooltip the settings view shows, in one place: edit the words here. {name}-style parts are filled
-// in when shown.
+// Most labels and tooltips the settings view shows: edit the words here. {name}-style parts are filled in when shown.
 export const TEXT = {
   steps: {
     requests: {title: "Your Assist", tip: "Your conversations with Assist, recorded as you use it. They wait here until the next run takes them in. The assistant shown is the one Assist uses by default."},
@@ -161,7 +160,7 @@ export const TEXT = {
             not_an_issue: "Declined: not an issue", undo: "Undid"}},
 };
 
-// The settings view draws the pipeline as a track: requests merge onto the improvement loop (triage, analyze,
+// The settings view draws the pipeline as a track: requests pass triage onto the improvement loop (analyze,
 // propose, write up), a small loop joins the proposer and its reviewer, Simulate stamps what the proposer sends on,
 // and you review at the far end; revisions go round again and what you accept peels off to the household. Each AI
 // step names its model; the ones with a gate can be blocked (a run then stops there and what reaches it is held).

@@ -11,7 +11,7 @@ Cut, with the reason: a scene made with scene.create has no definition (its stat
 private caches of Home Assistant's registry classes (fields starting with an underscore) aren't data."""
 
 from copy import deepcopy
-from dataclasses import fields, is_dataclass
+from dataclasses import fields
 
 import attr
 from homeassistant.components.homeassistant import async_should_expose

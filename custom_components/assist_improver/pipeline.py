@@ -4,7 +4,7 @@ moves is the engine's (flow.py, SPEC.md P0); this starts it, keeps its record an
 How runs start (trigger):
 - manual: Run in the panel, after the household confirms what it will spend (preview, read from the flow record). A
   full run, or one on the conversations picked (picked); Run one step runs one stage (only).
-- scheduled: a full run at 03:00, daily or weekly (schedule; off by default).
+- scheduled: a run on new conversations only, at 03:00, daily or weekly (schedule; off by default).
 - filed: the fast lane: a conversation sent in gets a run of its own once it ends, or right after the run in
   progress; after a restart, so does each one sent in and still waiting.
 - revision, conflict or answer: a conversation the household sent back (to Propose, or with its answer to the stage
@@ -169,10 +169,10 @@ class Pipeline:
         return None
 
     def start(self, *, trigger, only=None, picked=None, conversation=None):
-        """trigger: manual or scheduled (a full run, unless picked), filed (the fast lane), or revision, conflict or
-        answer (the one conversation sent back: conversation). only: run just that stage. picked: the recording
-        ids of the conversations the user picked (or filed, for the fast lane): it admits only those
-        (flow.Flow.admitted)."""
+        """trigger: manual (a full run, unless picked), scheduled (new conversations only), filed (the fast lane), or
+        revision, conflict or answer (the one conversation sent back: conversation). only: run just that stage.
+        picked: the recording ids of the conversations the user picked (or filed, for the fast lane): it admits only
+        those (flow.Flow.admitted)."""
         if self.running:
             raise CaseError("A run is already in progress")
         if reason := self.refusal(only):

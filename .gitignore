@@ -1,0 +1,14 @@
+__pycache__/
+.pytest_cache/
+dist/
+.venv/
+.DS_Store
+.claude/settings.local.json
+CLAUDE.local.md
+# Playwright browsers for tools/ui (large, local only).
+tools/ui/browsers/
+
+# Local demo Home Assistant (tools/demo): its environment and runtime state
+tools/demo/.venv/
+tools/demo/config/
+.claude/worktrees/

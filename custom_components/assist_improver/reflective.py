@@ -220,7 +220,7 @@ def _position(runs, run):
 
 
 class RoleRuns:
-    """Private record of every AI role call, kept for scoring and as offline fixtures.
+    """The run log: a private record of every AI role call and pipeline run (records.RUN_LOG).
 
     A kept record changes only by being recorded again, never in place: so its JSON is made once, when it's kept, and
     a write of the log only joins those, off the event loop (the store serializes in the executor)."""

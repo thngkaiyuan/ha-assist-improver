@@ -54,7 +54,7 @@ class Recording(TypedDict, total=False):
     compact: bool  # Kept as a digest (retention.compact): read by every role, never replayed.
 
 
-# What one stage hands the next (SPEC-CORE.md 3): typed here, checked where it's made (contracts.py, with the fields
+# What one stage hands the next (DETAILS P3.2): typed here, checked where it's made (contracts.py, with the fields
 # each stage must hand on), and read by the next stage through these shapes alone.
 
 class Goal(TypedDict, total=False):
@@ -345,7 +345,7 @@ class PipelineRun(TypedDict, total=False):
     """One run of the pipeline (pipeline.py), kept as it goes, with the progress the flow publishes (flow.Flow.run)."""
     id: str
     kind: str  # pipeline.
-    trigger: str  # manual, scheduled, filed (the fast lane), revision or conflict.
+    trigger: str  # manual, scheduled, filed (the fast lane), revision, conflict or answer.
     status: str  # running, done, failed, cancelled or interrupted.
     started: str
     finished: str
@@ -356,7 +356,7 @@ class PipelineRun(TypedDict, total=False):
     error: str | None
     only: str | None  # A run of one step.
     picked: list[str]  # The conversations a picked run (or the fast lane) admits only.
-    conversation: str  # The one a revision's or a conflict's run takes in at Propose.
+    conversation: str  # The one a revision's, conflict's or answer's run takes in.
     admitted: list[str]  # The new ones it took in,
     released: list[str]  # the held ones it released,
     moved: list[str]  # and both, in the order it moved them.

@@ -1,0 +1,32 @@
+# Home Assistant's new versions: every 5 minutes (GitHub's shortest schedule), tools/bench/watch.py starts the tests
+# (tests.yml) once for each channel whose Home Assistant, Supervisor or HA OS version is new. A scheduled run can't tell
+# a public repository from a private one, where GitHub bills each run, so it polls only once the repository's
+# WATCH_HOME_ASSISTANT variable is "on".
+name: Home Assistant
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+
+permissions:
+  actions: write  # To list the tests' runs and start one.
+  contents: read
+
+concurrency:
+  group: home-assistant
+  cancel-in-progress: false
+
+jobs:
+  watch:
+    if: vars.WATCH_HOME_ASSISTANT == 'on'
+    runs-on: ubuntu-26.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          sparse-checkout: tools/bench/watch.py
+          sparse-checkout-cone-mode: false
+      - env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 tools/bench/watch.py

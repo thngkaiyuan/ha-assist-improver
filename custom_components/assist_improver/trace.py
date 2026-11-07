@@ -29,12 +29,12 @@ counts what it drops instead.
 
 The spans, nested as they run (own tags in brackets):
 
-    run [trigger, only, outcome] > the spans below, as the flow moves each conversation (flow.py)
-    conversation [recording_id, steps, triage, status, answer_status] > ai.triage, ai.journey_analyzer
-    propose [sessions, status, generator_run] > evidence.load, ai.hypothesis_generator, ai.hypothesis_reviewer
-    replay [kind: "before" | "after", plan_id, status] > replay.turn [replay: "before" | "after", turn] >
-        replay.tool [tool]; sandbox.start, sandbox.seed, sandbox.stop; ai.feedback_check
-    write [improvement_id, status] > ai.editor
+    run [trigger, only, outcome] > conversation, one for each conversation the flow moves (flow.py)
+    conversation [recording_id, triage] > ai.triage, ai.journey_analyzer, evidence.load, ai.hypothesis_generator,
+        ai.hypothesis_reviewer, ai.feedback_check, replay, week and write
+    replay [kind: "before" | "after", plan_id, status] > replay.turn [replay: "before" | "after", turn];
+        sandbox.start, sandbox.seed, sandbox.stop; ai.feedback_check
+    week [improvement_id, failed]; write [improvement_id, status] > ai.editor
     ai.<role> [role, model, input_chars, status, tokens] > tool.<name> [accepted, or answer: "error"]
         (tool.ask_reviewer > evidence.check)
     tidy, in today's trace; recorder.flush, recorder.pack, recorder.snapshot and recorder.serialize [recording_id]

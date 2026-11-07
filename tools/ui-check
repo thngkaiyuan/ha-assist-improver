@@ -1,0 +1,4 @@
+#!/bin/sh
+# Scripted UI checks against the Home Assistant at HA_URL (tools/private.py); see tools/ui/ui_check.py.
+cd "$(dirname "$0")/.." || exit 1
+PLAYWRIGHT_BROWSERS_PATH="$PWD/tools/ui/browsers" exec tools/e2e/.venv/bin/python tools/ui/ui_check.py "$@"

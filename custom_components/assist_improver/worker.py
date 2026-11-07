@@ -1,4 +1,4 @@
-"""Replay sandboxes in worker processes of their own (N6).
+"""Replay sandboxes in worker processes of their own (P11.8.1).
 
 A sandbox is Home Assistant's own engine seeded as the household's home (sandbox.py). Each replay, and each evidence probe
 (evidence.py), gets a fresh worker process: it starts for that one job, seeds and serves it, and is killed once the job

@@ -1,14 +1,13 @@
 // Icons: the panel's own SVG paths (svg), and Home Assistant's Material Design icons where it has them (glyph).
 
 const ICON = {play: "M8 5.14v13.72L19 12z",
-              block: "M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zm0 2a8 8 0 0 1 6.32 12.9L7.1 5.68A7.96 7.96 0 0 1 12 4zM4 12c0-1.85.63-3.55 1.68-4.9l11.22 11.22A8 8 0 0 1 4 12z", pause: "M7 5h3.5v14H7zm6.5 0H17v14h-3.5z",
+              block: "M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zm0 2a8 8 0 0 1 6.32 12.9L7.1 5.68A7.96 7.96 0 0 1 12 4zM4 12c0-1.85.63-3.55 1.68-4.9l11.22 11.22A8 8 0 0 1 4 12z",
               info: "M11 7h2v2h-2zm0 4h2v6h-2zm1-9a10 10 0 1 0 0 20 10 10 0 0 0 0-20zm0 18a8 8 0 1 1 0-16 8 8 0 0 1 0 16z",
               check: "M9 16.17 4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z",
               clock: "M12 20a8 8 0 1 0 0-16 8 8 0 0 0 0 16zm0-18a10 10 0 1 1 0 20 10 10 0 0 1 0-20zm.5 5v5.25l4.5 2.67-.75 1.23L11 13V7z",
               copy: "M19 21H8V7h11m0-2H8a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h11a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2m-3-4H4a2 2 0 0 0-2 2v14h2V3h12z",
               refresh: "M17.65 6.35A7.96 7.96 0 0 0 12 4a8 8 0 1 0 7.73 10h-2.08A6 6 0 1 1 12 6c1.66 0 3.14.69 4.22 1.78L13 11h7V4z",
               code: "M14.6 16.6 19.2 12l-4.6-4.6L16 6l6 6-6 6zm-5.2 0L4.8 12l4.6-4.6L8 6l-6 6 6 6z",
-              chat: "M20 2H4a2 2 0 0 0-2 2v18l4-4h14a2 2 0 0 0 2-2V4a2 2 0 0 0-2-2m0 14H5.17L4 17.17V4h16zM6 7h12v2H6zm0 4h9v2H6z",
               send: "M2 21 23 12 2 3v7l15 2-15 2z",  // mdi:send
               archive: "M20 21H4V10h2v9h12v-9h2zM3 3h18v6H3zm6.5 8h5c.28 0 .5.22.5.5V13H9v-1.5c0-.28.22-.5.5-.5M5 5v2h14V5z",  // mdi:archive-outline
               unarchive: "M20 21H4V10h2v9h12v-9h2zM3 3h18v6H3zm2 2v2h14V5zm7 5.5 4 4h-2.5V18h-3v-3.5H8z",  // mdi:archive-arrow-up-outline

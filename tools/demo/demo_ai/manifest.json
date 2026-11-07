@@ -1,0 +1,12 @@
+{
+  "domain": "demo_ai",
+  "name": "Demo AI",
+  "codeowners": [],
+  "config_flow": true,
+  "dependencies": ["ai_task", "conversation"],
+  "documentation": "https://github.com/thngkaiyuan/ha-assist-improver",
+  "integration_type": "service",
+  "iot_class": "local_push",
+  "requirements": [],
+  "version": "1.0.0"
+}

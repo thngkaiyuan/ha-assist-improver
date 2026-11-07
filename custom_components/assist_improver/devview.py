@@ -65,7 +65,7 @@ def _friction(analysis):
 
 
 def _improvements(runtime):
-    """{recording ID: the improvements it came from (P0.10)}."""
+    """{recording ID: the improvements that came from it (P0.10)}."""
     out = defaultdict(list)
     for item in runtime.improvements.items.values():
         out[item.get("conversation")].append(item["id"])
@@ -190,7 +190,7 @@ def _tokens(run):
 def recording_timeline(runtime, rid):
     """A recording's lifecycle: recorded and closed, each stage its flow record moved it to, round by round, each
     attempt that didn't finish and its hold; the AI calls and proposals that read it, its replays, and the
-    improvements it came from."""
+    improvements that came from it."""
     summary, short = runtime.recorder.index.get(rid, {}), _short(rid)
     events = [_event(summary.get("started"), "recorded", f"Recording started ({summary.get('user_turns', 0)} user "
                      f"turns so far)", recording=rid)]

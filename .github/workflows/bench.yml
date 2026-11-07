@@ -1,0 +1,80 @@
+# One Home Assistant channel's tests (tools/bench): every suite against its official image on x64 and arm64, with
+# Landlock applied and missing, and the journeys against HA OS's release for the channel.
+name: Bench
+
+on:
+  workflow_call:
+    inputs:
+      channel:
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  image:
+    name: ${{ inputs.channel }} image, ${{ matrix.runner }}, Landlock ${{ matrix.landlock }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-26.04, ubuntu-26.04-arm]
+        landlock: [applied, missing]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2  # v10.3.3; a tag can move.
+        with:
+          enable-cache: false
+      - name: Playwright and pytest on the runner (tools/e2e/README.md)
+        run: |
+          uv venv tools/e2e/.venv --python 3.14 --managed-python
+          uv pip install --python tools/e2e/.venv/bin/python -r tools/e2e/requirements.txt
+          PLAYWRIGHT_BROWSERS_PATH=tools/ui/browsers tools/e2e/.venv/bin/python -m playwright install --with-deps chromium
+      # As root: Home Assistant runs as root in its container, as under the Supervisor, and keeps its stores private.
+      - name: Tests
+        env:
+          CHECK_LOGS: ${{ runner.temp }}/logs
+        run: |
+          sudo git config --system --add safe.directory "$PWD"
+          sudo --preserve-env=CHECK_LOGS tools/bench/run.sh ${{ inputs.channel }} --landlock ${{ matrix.landlock }}
+      - if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: logs-${{ inputs.channel }}-${{ matrix.runner }}-${{ matrix.landlock }}
+          path: ${{ runner.temp }}/logs
+
+  haos:
+    name: ${{ inputs.channel }} HA OS
+    runs-on: ubuntu-26.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2  # v10.3.3; a tag can move.
+        with:
+          enable-cache: false
+      - name: Playwright and pytest on the runner (tools/e2e/README.md)
+        run: |
+          uv venv tools/e2e/.venv --python 3.14 --managed-python
+          uv pip install --python tools/e2e/.venv/bin/python -r tools/e2e/requirements.txt
+          PLAYWRIGHT_BROWSERS_PATH=tools/ui/browsers tools/e2e/.venv/bin/python -m playwright install --with-deps chromium
+      - name: QEMU with KVM (as HA OS's own CI has it)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y qemu-system-x86 ovmf
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' |
+            sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Journeys on HA OS
+        env:
+          BENCH_WORK: ${{ runner.temp }}/haos
+        run: tools/bench/haos.sh ${{ inputs.channel }}
+      - if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: haos-${{ inputs.channel }}
+          path: |
+            ${{ runner.temp }}/haos/serial.log
+            ${{ runner.temp }}/haos/e2e-runs

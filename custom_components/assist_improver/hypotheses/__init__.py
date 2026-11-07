@@ -6,10 +6,10 @@ behind, what the household objected to), groups it into themes and proposes one 
 for the conversation, combining a fix per theme, each the least specific change
 that works. It answers by calling submit_hypotheses, which checks the hypothesis
 against the sessions and the household and rejects it with the reasons until it
-is valid. The reviewer is a separate role: it keeps, revises or drops one
-hypothesis, with a regression check against a summary of the household's
-sessions, and answers through submit_review. Both are agentic, with read-only
-tools over the recordings.
+is valid. The reviewer is a separate role: it reviews each draft in comments
+(approve, or request changes, optionally with a revised version), checking it
+against the sessions where it would apply, and answers through submit_review.
+Both are agentic, with read-only tools over the recordings.
 """
 
 from ..exploration import ListImprovements, ReadImprovement  # noqa: F401 - used through this module.

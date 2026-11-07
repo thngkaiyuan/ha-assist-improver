@@ -1,0 +1,11 @@
+{
+  "domain": "e2e_support",
+  "name": "End-to-end test support",
+  "codeowners": [],
+  "dependencies": [],
+  "documentation": "https://github.com/thngkaiyuan/ha-assist-improver",
+  "integration_type": "service",
+  "iot_class": "calculated",
+  "requirements": [],
+  "version": "0.0.1"
+}

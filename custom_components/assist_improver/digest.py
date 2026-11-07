@@ -269,10 +269,6 @@ def build_digest(recording):
     }
 
 
-def digest_size(digest):
-    return len(json.dumps(digest, ensure_ascii=False, separators=(",", ":")))
-
-
 def label_coverage(digest, label):
     """Entities and turns a label depends on that the digest lacks; empty means covered. A label's note (what the
     conversation was sent in with) is its last turn: the analyzer gets it with the conversation, not in the digest."""

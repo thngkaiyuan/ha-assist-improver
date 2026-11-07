@@ -488,8 +488,6 @@ class Improvements:
             step["before"] = without(kind, step["before"], [key])
 
 
-
-
 def reach(change):
     """What one change applies to, beyond the conversation it came from (SPEC.md P0.10): an editor item or a
     registry entry, the whole household; an assistant change, every conversation with that assistant; a line of

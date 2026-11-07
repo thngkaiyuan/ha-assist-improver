@@ -80,6 +80,10 @@ Developer mode (hidden, for debugging) adds List recordings, List improvements a
 - **Uninstalling** removes everything the improver stored and the AI Tasks it set up. Your accepted improvements stay.
 - **You decide what's kept:** archive a conversation, or delete it for good.
 
+## Contributing
+
+Set-up, tests and pull requests: `CONTRIBUTING.md`, in the repository.
+
 ## License
 
 [Apache 2.0](https://github.com/thngkaiyuan/ha-assist-improver/blob/main/LICENSE)

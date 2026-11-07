@@ -41,7 +41,6 @@ from .trace import journal, span, timed
 # Its error logs name only the exception's type: a message can carry what the household said or has.
 _LOGGER = logging.getLogger(__name__)
 SAVE_EVERY = 15  # Seconds an active recording's changes may wait to be saved, unless a turn was added or it closed.
-# A voice device's Assistant select (assist_pipeline's AssistPipelineSelect), by its unique ID: one per wake word.
 PIPELINE_SELECT = ("pipeline", "pipeline_n")  # A voice device's Assistant selects, by Home Assistant's translation key.
 # What each chat log event carries that the recorder reads, as Home Assistant's subscription gives it.
 CARRIES = {"created": "chat_log", "updated": "chat_log", "content_added": "content"}

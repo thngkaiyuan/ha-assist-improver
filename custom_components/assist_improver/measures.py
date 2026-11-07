@@ -270,9 +270,9 @@ def set_aside(before, conversation, goals):
 
 
 def answered_otherwise(goals, facts):
-    """The questions a replay without the change didn't answer as the conversation did (P6.6.2 for questions, the goal
-    design 2026-10-29): its verdict differs at a reply of the root's run, or the conversation's couldn't be told. Set
-    aside, with the steps and wrap-up under them. facts: the replay's answers, {key: [{turn, gives}]}."""
+    """The questions a replay without the change didn't answer as the conversation did (P6.6.2 for questions): its
+    verdict differs at a reply of the root's run, or the conversation's couldn't be told. Set aside, with the steps and
+    wrap-up under them. facts: the replay's answers, {key: [{turn, gives}]}."""
     went = as_answered(goals)
     return {k for k, answers in facts.items()
             if k not in went or any({a["turn"]: a["gives"] for a in answers}.get(t["turn"]) != t["gives"]

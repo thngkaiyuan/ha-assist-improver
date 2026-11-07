@@ -20,7 +20,7 @@ class UnsupportedSimulation(CaseError):
 def _request_changes(recording, turn, until=None):
     """The changes the assistant made during one recorded turn, attributes too: the real changes HA attributes to the
     turn's request, until as long after the reply as HA puts what a device reports down to a command it got
-    (recent_context): a real device may report a little after the reply (a relay's press, its last step 60 ms after).
+    (recent_context): a real device may report a little after the reply (a relay's press, its last step).
     until: a later end."""
     start = turn["source"]["at"]
     if until is None:
@@ -175,7 +175,7 @@ def setting_off(transitions):
     """Transitions as a reproduction compares them: a device that reports its movement by where it set off for (a
     garage door closing), not by its getting there (closed), which its travel time puts before the reply or after it;
     a script started in the turn by its starting, not its getting done, which the devices it waits on put before the
-    reply or after it (a car's warm-up script ran 17 seconds while the car woke). A script stopped is compared."""
+    reply or after it (one waiting on a device slow to wake). A script stopped is compared."""
     started, out = set(), []
     for t in transitions:
         if t["entity_id"].startswith("script.") and t["new"] == "on":
@@ -189,8 +189,8 @@ def setting_off(transitions):
 def same_effects(replay, recorded):
     """Whether a replayed turn's changes to a device are the recorded ones (per_entity's (old, new) pairs): neither
     changed it, or both did from the same state and it ends the turn where it did, the states the replay set coming in
-    the recorded order. The recording may show more: a real device reports states of its own on its way (a heater fan
-    showed fan only for a moment as it went to heat), which an emulated one doesn't."""
+    the recorded order. The recording may show more: a real device reports states of its own on its way (a climate
+    device passing through another mode), which an emulated one doesn't."""
     if not replay or not recorded:
         return replay == recorded
     then = iter(new for _, new in recorded)

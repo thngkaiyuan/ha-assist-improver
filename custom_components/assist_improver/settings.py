@@ -1,8 +1,9 @@
 """The improver's settings as the panel shows them: which AI model each role uses, beside the other settings.
 
 Each AI role reads its model from its own option, an AI Task entity; unset, it falls back as ROLES says (an
-optional role is then off). Everything lives in the config entry's options; the panel is the one place to change
-them (Configure links there). Changes to these settings apply live; the others reload the integration (__init__.py).
+optional role is then off; reply checks then use the write-up model). Everything lives in the config entry's options;
+the panel is the one place to change them (Configure links there). Changes to these settings apply live; the others
+reload the integration (__init__.py).
 
 The recommended setup: Claude Opus 5.5 for the steps that need judgement, a small model (Claude Haiku, or the
 provider's own small one) for Triage and Write up. AI Tasks that fit are reused; the rest are created through the

@@ -1,0 +1,1 @@
+{"title": "Demo AI", "config": {"step": {"user": {"title": "Demo AI", "description": "A made-up AI provider for the demo home."}}}, "config_subentries": {"ai_task_data": {"initiate_flow": {"user": "Add AI Task"}, "entry_type": "AI Task", "step": {"user": {"title": "Add AI Task", "data": {"name": "Name", "chat_model": "Model"}}}}}}

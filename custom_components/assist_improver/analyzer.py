@@ -36,7 +36,7 @@ List the user's goals. A goal is one thing the user wanted:
 - sequence: a device passing through states in order (entity_id and states), such as a relay pressed off then on;
 - fact: something the user needed to know. fact: what the answer needs (the facts, distinctions or limits it must give, never the answer itself); entity_ids: the devices the answer is about, when it's about the home; quote: the form they asked for the answer in ("in a single brief sentence"), in their own words, only when they asked for one;
 - action: something done that leaves no device in a new state. outcome announce: something spoken or played on devices, whatever its content; entity_ids: every device it's for, in one action (each speaker the household has, when they say all of them). Asked together with a device request, it's a part at that turn;
-- ask: devices whose settings the user's words leave open (entity_ids). Don't guess what the user didn't say: list the controls the user should set, as narrow as their words allow. One control when only its value is open (a seat heater with no level given); the related controls of a device when only the device or the theme is clear ("make the car toasty": its heating controls). The user will be shown those controls and set them.
+- ask: devices whose settings the user's words leave open (entity_ids). Don't guess what the user didn't say: list the controls the user should set, as narrow as their words allow. One control when only its value is open (a heater with no level given); the related controls of a device when only the device or the theme is clear ("make the den cosy": its heating controls). The user will be shown those controls and set them.
 Give each goal the turn where the user first asked for it. A goal is one state of the home at one time: several things asked for at once are one goal, so give the first device as the goal and each other device as a sub-goal with the same turn that serves it. What later turns reveal changes the earlier goal: a correction or clarification makes it more exact rather than adding a goal. When the assistant asks the user a follow-up question, the answer makes the earlier request more exact: give those details the turn of the original request. When the assistant answers a vague request by guessing and asking what the user wants, the user's reply says what they wanted all along: those goals belong to the vague request's turn, and the assistant's guess is not a goal. When a later turn shows how a goal must be reached (such as a relay pressed off then on), change the earlier goal itself. Once a goal has been reached, asking for the same thing again is a new goal with the new turn. Respect the timing and separation of the user's requests: what they asked for separately, at different times, stays separate goals; what they asked for together is one request. Never turn them into a broader request the user didn't make, even if their intent seems predictable.
 
 A sub-goal exists only because of a goal: it is a part of the goal, or a reaction to it. Give it the turn where it was said and serves: the turn of the goal it belongs to. A sub-goal is never a goal of its own. Its kinds:
@@ -99,7 +99,7 @@ STRUCTURE = probatio.Schema({
                                                               probatio.Required("what"): str}]),
     probatio.Required("question_for_user"): str,
 })
-UNKNOWN_STATES = ("unknown", "unavailable")  # A start nobody can compare with (a sleeping car's entities).
+UNKNOWN_STATES = ("unknown", "unavailable")  # A start nobody can compare with (a device asleep).
 REACTIONS = ("step", "conduct", "wrap-up", "thanks")  # Sub-goals that react to their goal, rather than being part of it.
 CUT = re.compile(r"…|\.\.\.")  # Where a quote leaves words out.
 
@@ -309,7 +309,7 @@ def side_effects_left(view, goals):
     Assist putting it back itself (in its turn, or asked to later) does. Asked for: by a root goal, or a sub-goal asked
     at once with it (one world state, P0.3), or, for changes in its request's turns from its own, an action's (a speaker
     left playing or idle by what it spoke); a later sub-goal that repairs a device doesn't make it wanted, nor does a
-    question about it. A device whose start was unknown or unavailable (a sleeping car's) can't be told to have changed,
+    question about it. A device whose start was unknown or unavailable (one asleep) can't be told to have changed,
     so it isn't one."""
     wanted = {g.get("entity_id") for g in goals
               if g.get("serves") is None or root_turn(goals, g["serves"]) == g.get("turn")} | {
@@ -605,9 +605,9 @@ class SubmitGoals(RoleTool):
 
 
 def valid_part(answer, found):
-    """What moves on from the best of answers none of which was accepted (DESIGN.md: an impossible answer never moves
-    on): its goals the checks found nothing wrong with. found: the checks' problems ("Goal n (turn t): ..."). One not
-    in the format moves on with no goals."""
+    """What the run keeps from the best of answers none of which was accepted (nothing moves on: DETAILS P9.15.1): its
+    goals the checks found nothing wrong with. found: the checks' problems ("Goal n (turn t): ..."). One not in the
+    format keeps no goals."""
     if any(p.startswith("The answer does not match the format") for p in found):
         return {"goals": [], "not_requests": [], "question_for_user": ""}
     goals = answer.get("goals") or []

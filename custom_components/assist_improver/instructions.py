@@ -1,11 +1,11 @@
-"""Each assistant's own instructions: which assistant a conversation used, the template it ran with, the edits a
-"prompt" change makes there, and the facts recommended for every assistant's instructions.
+"""Each assistant's own instructions: which assistant a conversation used, the template it ran with, the edits an
+"assistant" change makes there, and the facts recommended for every assistant's instructions.
 
 An assistant (a conversation agent: one of a provider's config subentries) has its own instructions, a template Home
 Assistant renders for every request with ha_name, user_name and llm_context (components/conversation/chat_log.py),
 before Assist's own part and the household knowledge. Household knowledge is shared by every assistant (household.py);
-a fault in one assistant's own instructions (a wrong rule, or a fact they don't give Assist) is fixed there, by a
-"prompt" change that names the assistant. Code derives which assistant a conversation used, the template it ran with,
+a fault in one assistant's own instructions (a wrong rule, or a fact they don't give Assist) is fixed there, by an
+"assistant" change that names the assistant. Code derives which assistant a conversation used, the template it ran with,
 and whether a recommended fact is already there; the sandbox says whether an edited template renders (evidence.py).
 """
 
@@ -35,7 +35,7 @@ class Fact:
 RECOMMENDED = (
     Fact("speaker", "who's speaking",
          "{% if user_name %}The person speaking is {{ user_name }}.{% endif %}",
-         "Requests like \"my study\" or \"my lights\" depend on who asks, and Home Assistant only says it when the "
+         "Requests like \"my room\" or \"my lights\" depend on who asks, and Home Assistant only says it when the "
          "instructions do.",
          ("user_name", "llm_context.context.user_id")),
     Fact("device", "the device the request came from",

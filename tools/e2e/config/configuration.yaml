@@ -1,0 +1,110 @@
+# The throwaway Home Assistant the end-to-end suite runs (tools/e2e/conftest.py fills in {port}). Only what the
+# journeys need: no default_config, no cloud, no discovery; HA listens on 127.0.0.1 only (see http below). The
+# anthropic integration and Assist Improver are set up through their own config flows, not here.
+homeassistant:
+  name: Test Home
+  unit_system: metric
+  time_zone: Asia/Singapore
+  country: SG
+  currency: SGD
+  language: en
+  latitude: 1.3521
+  longitude: 103.8198
+  elevation: 15
+  internal_url: http://127.0.0.1:{port}
+
+# http: Home Assistant 2026.10 keeps its HTTP settings in .storage/http (YAML is only migrated once, as a trial that
+# reverts to the defaults after five minutes), so conftest.py writes that store before every start: 127.0.0.1 only,
+# on a free port.
+
+frontend:
+config:
+# The frontend's dashboard asks for the recorder's info (as every household's Home Assistant has it).
+recorder:
+  purge_keep_days: 1
+person:
+conversation:
+assist_pipeline:
+intent:
+repairs:
+script: !include scripts.yaml
+# Home Assistant's automation and scene editors keep theirs here, as a household's Home Assistant does.
+automation: !include automations.yaml
+scene: !include scenes.yaml
+
+logger:
+  default: warning
+  logs:
+    custom_components.assist_improver: info
+    custom_components.assist_improver.worker: debug  # The replay workers' own lines, the guard's among them.
+
+# Test-only (custom_components/e2e_support): Home Assistant ends a chat session after this many idle seconds, not
+# five minutes, so a conversation ends, and the recorder closes it, soon after its last turn. On HA OS, the stand-in
+# model's address (conftest.py fills it in there).
+e2e_support:
+  conversation_timeout: {conversation_timeout}
+  model_url: "{model_url}"
+
+# The simulated devices: template lights and a switch, each backed by a helper Assist isn't shown. Their names make
+# a missing alias a real friction: nothing here is called the "reading lamp".
+input_boolean:
+  desk_lamp_power:
+    name: Desk lamp power
+    initial: false
+  ceiling_light_power:
+    name: Ceiling light power
+    initial: false
+  floor_lamp_power:
+    name: Floor lamp power
+    initial: false
+  kettle_power:
+    name: Kettle power
+    initial: false
+
+template:
+  - light:
+      - name: Desk lamp
+        unique_id: e2e_desk_lamp
+        state: "{{ is_state('input_boolean.desk_lamp_power', 'on') }}"
+        turn_on:
+          - action: input_boolean.turn_on
+            target:
+              entity_id: input_boolean.desk_lamp_power
+        turn_off:
+          - action: input_boolean.turn_off
+            target:
+              entity_id: input_boolean.desk_lamp_power
+      - name: Ceiling light
+        unique_id: e2e_ceiling_light
+        state: "{{ is_state('input_boolean.ceiling_light_power', 'on') }}"
+        turn_on:
+          - action: input_boolean.turn_on
+            target:
+              entity_id: input_boolean.ceiling_light_power
+        turn_off:
+          - action: input_boolean.turn_off
+            target:
+              entity_id: input_boolean.ceiling_light_power
+      - name: Floor lamp
+        unique_id: e2e_floor_lamp
+        state: "{{ is_state('input_boolean.floor_lamp_power', 'on') }}"
+        turn_on:
+          - action: input_boolean.turn_on
+            target:
+              entity_id: input_boolean.floor_lamp_power
+        turn_off:
+          - action: input_boolean.turn_off
+            target:
+              entity_id: input_boolean.floor_lamp_power
+  - switch:
+      - name: Kettle
+        unique_id: e2e_kettle
+        state: "{{ is_state('input_boolean.kettle_power', 'on') }}"
+        turn_on:
+          - action: input_boolean.turn_on
+            target:
+              entity_id: input_boolean.kettle_power
+        turn_off:
+          - action: input_boolean.turn_off
+            target:
+              entity_id: input_boolean.kettle_power

@@ -1,0 +1,296 @@
+<title>Assist Improver Test Tree</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wdth,wght@85..100,400..700&family=JetBrains+Mono:wght@400;600&display=swap">
+<style>
+/* Layout: one column; a header that is the P0 roll-up and the filter, then an indented outline whose roll-up bars
+   line up in a right rail on wide screens and drop under the name on phones. */
+:root {
+  --bg: #f4f6f5; --surface: #ffffff; --fg: #15201b; --muted: #5c6b64; --line: #d8e0dc; --hover: #e8eeeb;
+  --accent: #2a57c9;
+  --pass: #1a9150; --fail: #d23b34; --amber: #c27c00; --gray: #97a39e;
+  --font-ui: "Instrument Sans", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0d1210; --surface: #141b18; --fg: #e2eae6; --muted: #8d9a94; --line: #26312c; --hover: #1a2420;
+    --accent: #88a6ff;
+    --pass: #3cbf77; --fail: #f2665c; --amber: #eea32c; --gray: #6b7872;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0d1210; --surface: #141b18; --fg: #e2eae6; --muted: #8d9a94; --line: #26312c; --hover: #1a2420;
+  --accent: #88a6ff;
+  --pass: #3cbf77; --fail: #f2665c; --amber: #eea32c; --gray: #6b7872;
+  color-scheme: dark;
+}
+
+body { background: var(--bg); color: var(--fg); font-family: var(--font-ui); font-size: 15px; line-height: 1.4; }
+.page {
+  max-width: 1040px; margin: 0 auto;
+  padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px));
+  padding-block: 20px 48px;
+}
+button { font: inherit; color: inherit; background: none; border: 0; padding: 0; cursor: pointer; text-align: left; }
+button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; border-radius: 4px; }
+
+/* Header: P0 roll-up */
+header { display: grid; gap: 10px; margin-bottom: 14px; }
+.eyebrow { font-size: 12px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+h1 { margin: 0; font-size: 24px; font-weight: 650; font-stretch: 90%; text-wrap: balance; }
+h1 .cid { font-family: var(--font-mono); font-weight: 600; font-size: 18px; color: var(--muted); margin-right: 8px; }
+.when { color: var(--muted); font-size: 13px; font-variant-numeric: tabular-nums; }
+.totals { display: flex; flex-wrap: wrap; gap: 6px 16px; font-size: 14px; font-variant-numeric: tabular-nums; }
+.totals span { display: inline-flex; align-items: center; gap: 6px; }
+.totals b { font-weight: 650; }
+.big.bar { width: 100%; height: 12px; border-radius: 6px; }
+
+/* Filter */
+.filter { display: flex; flex-wrap: wrap; gap: 6px; margin: 4px 0 10px; }
+.filter button {
+  display: inline-flex; align-items: center; gap: 6px; min-height: 34px; padding: 4px 12px;
+  border: 1px solid var(--line); border-radius: 17px; background: var(--surface); font-size: 14px;
+}
+.filter button .n { font-family: var(--font-mono); font-size: 12px; color: var(--muted); }
+.filter button[aria-pressed="true"] { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
+.filter button:hover { background: var(--hover); }
+
+/* State marks: shape and colour both carry the state */
+.dot { flex: none; width: 10px; height: 10px; border-radius: 50%; display: inline-block; box-sizing: border-box; }
+.dot.pass { background: var(--pass); }
+.dot.fail { background: var(--fail); border-radius: 2px; }
+.dot.product { border: 2.5px solid var(--amber); }
+.dot.kit { border: 2px dashed var(--amber); }
+.dot.skipped, .dot.absent, .dot.untested { border: 2px solid var(--gray); }
+.dot.none { visibility: hidden; }
+
+/* Roll-up bars */
+.bar { display: flex; height: 8px; border-radius: 4px; overflow: hidden; background: var(--line); }
+.bar i { display: block; min-width: 2px; }
+.bar i + i { box-shadow: -1px 0 0 var(--surface); }
+.bar .pass { background: var(--pass); }
+.bar .fail { background: var(--fail); }
+.bar .product { background: var(--amber); }
+.bar .kit { background: repeating-linear-gradient(135deg, var(--amber) 0 3px, transparent 3px 6px); }
+.bar .skipped, .bar .absent, .bar .untested { background: var(--gray); }
+
+/* Tree */
+.tree, .kids { list-style: none; margin: 0; padding: 0; }
+.tree { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 6px 6px 6px 2px; }
+.kids { margin-left: 15px; padding-left: 4px; border-left: 1px solid var(--line); }
+.node:not(.open) > .kids { display: none; }
+.row {
+  display: grid; grid-template-columns: 30px minmax(0, 1fr) auto; column-gap: 8px; align-items: start;
+  border-radius: 6px;
+}
+.row:hover { background: var(--hover); }
+.chev, .spacer { width: 30px; height: 34px; display: grid; place-items: center; border-radius: 6px; }
+.chev svg { width: 14px; height: 14px; transition: transform .15s ease; fill: none; stroke: var(--muted); stroke-width: 2; }
+.node.open > .row .chev svg { transform: rotate(90deg); }
+.main { display: flex; gap: 9px; align-items: baseline; min-width: 0; padding: 7px 4px 7px 0; }
+.main .dot { transform: translateY(0px); }
+.label { min-width: 0; overflow-wrap: anywhere; }
+.clause > .row .label { font-weight: 600; }
+.cid { font-family: var(--font-mono); font-size: 13px; font-weight: 600; color: var(--muted); margin-right: 6px; }
+.flag {
+  display: inline-block; margin-left: 6px; padding: 0 7px; border: 1px solid var(--fail); border-radius: 9px;
+  color: var(--fail); font-size: 12px; font-weight: 600; line-height: 17px; white-space: nowrap; vertical-align: 1px;
+}
+.roll { display: flex; align-items: center; gap: 10px; padding: 11px 6px 0 0; }
+.roll .bar { width: 150px; }
+.counts { display: grid; grid-template-columns: repeat(3, 3.2ch); font-family: var(--font-mono); font-size: 12px; text-align: right; font-variant-numeric: tabular-nums; line-height: 1; }
+.counts .p { color: var(--pass); } .counts .f { color: var(--fail); } .counts .a { color: var(--amber); }
+.counts .z { color: var(--muted); opacity: .45; }
+
+/* Detail on demand */
+.detail {
+  margin: 0 8px 8px 38px; padding: 10px 12px; border-left: 3px solid var(--line); background: var(--bg);
+  border-radius: 0 6px 6px 0; display: grid; gap: 8px; font-size: 14px;
+}
+.detail[data-s="fail"] { border-left-color: var(--fail); }
+.detail[data-s="product"], .detail[data-s="kit"] { border-left-color: var(--amber); }
+.detail[data-s="pass"] { border-left-color: var(--pass); }
+.detail .state { font-size: 12px; letter-spacing: .06em; text-transform: uppercase; font-weight: 650; display: flex; gap: 6px; align-items: center; }
+.detail .msg { font-family: var(--font-mono); font-size: 12.5px; white-space: pre-wrap; overflow-wrap: anywhere; margin: 0; }
+.detail .spec { font-style: italic; }
+.detail .doc { color: var(--muted); max-width: 72ch; }
+.detail .id { font-family: var(--font-mono); font-size: 11.5px; color: var(--muted); overflow-wrap: anywhere; user-select: all; }
+.detail .note { color: var(--fail); font-weight: 600; }
+.empty { padding: 16px; color: var(--muted); }
+
+@media (max-width: 680px) {
+  body { font-size: 14.5px; }
+  .row { grid-template-columns: 30px minmax(0, 1fr); }
+  .roll { grid-column: 2; padding: 0 6px 8px 19px; margin-top: -3px; }
+  .roll .bar { width: auto; flex: 1; max-width: 200px; }
+  .detail { margin-left: 8px; }
+  .kids { margin-left: 12px; padding-left: 2px; }
+}
+@media (prefers-reduced-motion: reduce) { .chev svg { transition: none; } }
+</style>
+
+<div class="page">
+  <header id="head"></header>
+  <div class="filter" id="filter" role="group" aria-label="Show"></div>
+  <ul class="tree" id="tree"></ul>
+</div>
+
+<script type="application/json" id="graph-data">__GRAPH_DATA__</script>
+<script>
+(function () {
+  const data = JSON.parse(document.getElementById('graph-data').textContent);
+  const run = data.run, ORDER = run.states;
+  const LABEL = { pass: 'Passes', fail: 'Fails', product: 'Not built: product', kit: 'Not built: test kit',
+    skipped: 'Skipped', absent: 'Not in this run', untested: 'No test yet', none: '' };
+  const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
+  const dot = s => el('span', 'dot ' + s);
+  const rollOf = n => Object.fromEntries(ORDER.map((s, i) => [s, n.r[i]]));
+
+  function bar(r, cls) {
+    const b = el('span', 'bar' + (cls ? ' ' + cls : ''));
+    const total = ORDER.reduce((t, s) => t + r[s], 0);
+    ORDER.forEach(s => { if (r[s]) { const i = el('i', s); i.style.flex = r[s]; b.appendChild(i); } });
+    b.setAttribute('role', 'img');
+    b.setAttribute('aria-label', ORDER.filter(s => r[s]).map(s => r[s] + ' ' + LABEL[s].toLowerCase()).join(', ') + ' of ' + total);
+    return b;
+  }
+
+  // Header: the P0 section is the summary
+  const root = data.roots[0], T = run.totals, head = document.getElementById('head');
+  head.appendChild(el('div', 'eyebrow', 'Assist Improver \u00b7 spec test tree'));
+  const h1 = el('h1'); h1.appendChild(el('span', 'cid', root.c)); h1.appendChild(document.createTextNode(root.n)); head.appendChild(h1);
+  const when = el('div', 'when');
+  let ago = '';
+  const t0 = Date.parse(run.iso);
+  if (!isNaN(t0)) {
+    const m = Math.round((Date.now() - t0) / 60000);
+    ago = m < 1 ? 'just now' : m < 60 ? m + ' min ago' : m < 1440 ? Math.round(m / 60) + ' h ago' : Math.round(m / 1440) + ' d ago';
+  }
+  const took = run.took >= 60 ? Math.floor(run.took / 60) + ' min ' + (run.took % 60) + ' s' : run.took + ' s';
+  when.textContent = 'Run ' + run.when + (ago ? ' (' + ago + ')' : '') + ' \u00b7 took ' + took;
+  head.appendChild(when);
+  const all = {}; ORDER.forEach(s => all[s] = T[s]);
+  head.appendChild(bar(all, 'big'));
+  const totals = el('div', 'totals');
+  const add = (s, n, text) => { if (!n && s !== 'fail' && s !== 'pass') return; const sp = el('span'); sp.appendChild(dot(s)); sp.appendChild(el('b', null, n)); sp.appendChild(document.createTextNode(' ' + text)); totals.appendChild(sp); };
+  add('pass', T.pass, 'pass');
+  add('fail', T.fail, 'fail');
+  add('product', T.product, 'not built: product');
+  add('kit', T.kit, 'not built: test kit');
+  add('skipped', T.skipped, 'skipped');
+  add('absent', T.absent, 'not in this run');
+  add('untested', T.untested, 'clauses with no test');
+  head.appendChild(totals);
+
+  // Tree
+  const nodes = [];
+  function build(n, depth) {
+    const li = el('li', 'node ' + n.k);
+    li._n = n; nodes.push(li);
+    const row = el('div', 'row');
+    const kids = n.ch || [];
+    if (kids.length) {
+      const c = el('button', 'chev');
+      c.setAttribute('aria-expanded', 'false');
+      c.setAttribute('aria-label', 'Show the ' + kids.length + ' below');
+      c.innerHTML = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M6 3.5 10.5 8 6 12.5"/></svg>';
+      c.addEventListener('click', () => setOpen(li, !li.classList.contains('open')));
+      row.appendChild(c);
+    } else row.appendChild(el('span', 'spacer'));
+    const main = el('button', 'main');
+    main.setAttribute('aria-expanded', 'false');
+    main.appendChild(dot(n.s));
+    const label = el('span', 'label');
+    if (n.k === 'clause') label.appendChild(el('span', 'cid', n.c));
+    label.appendChild(document.createTextNode(n.n));
+    if (n.f) label.appendChild(el('span', 'flag', 'children pass'));
+    main.appendChild(label);
+    main.addEventListener('click', () => toggleDetail(li, main));
+    row.appendChild(main);
+    if (kids.length) {
+      const r = rollOf(n), roll = el('div', 'roll');
+      roll.appendChild(bar(r));
+      const counts = el('span', 'counts');
+      [['p', r.pass], ['f', r.fail], ['a', r.product + r.kit]].forEach(([k, v]) => counts.appendChild(el('span', v ? k : 'z', v)));
+      counts.setAttribute('aria-hidden', 'true');
+      roll.appendChild(counts);
+      row.appendChild(roll);
+    }
+    li.appendChild(row);
+    if (kids.length) {
+      const ul = el('ul', 'kids');
+      kids.forEach(k => ul.appendChild(build(k, depth + 1)));
+      li.appendChild(ul);
+    }
+    return li;
+  }
+  function setOpen(li, open) {
+    li.classList.toggle('open', open);
+    const c = li.querySelector(':scope > .row > .chev');
+    if (c) c.setAttribute('aria-expanded', String(open));
+  }
+  function toggleDetail(li, main) {
+    let d = li.querySelector(':scope > .detail');
+    if (!d) { d = detail(li._n); li.insertBefore(d, li.querySelector(':scope > .kids')); d.hidden = true; }
+    d.hidden = !d.hidden;
+    main.setAttribute('aria-expanded', String(!d.hidden));
+  }
+  function detail(n) {
+    const d = el('div', 'detail'); d.dataset.s = n.s;
+    const st = el('div', 'state'); st.appendChild(dot(n.s)); st.appendChild(document.createTextNode(LABEL[n.s]));
+    d.appendChild(st);
+    if (n.f) {
+      const kids = n.ch.length;
+      d.appendChild(el('div', 'note', 'Fails while ' + (kids === 1 ? 'its one child passes' : 'all ' + kids + ' children pass') + ': they don\u2019t yet imply it.'));
+    }
+    if (n.m) d.appendChild(el('pre', 'msg', n.m));
+    if (n.k === 'clause' && n.x) d.appendChild(el('div', 'spec', n.x));
+    if (n.k === 'clause' && n.ts) d.appendChild(el('div', null, 'Top test: ' + n.ts));
+    if (n.d) d.appendChild(el('div', 'doc', n.d));
+    if (n.t) d.appendChild(el('div', 'id', n.t));
+    return d;
+  }
+  const tree = document.getElementById('tree');
+  data.roots.forEach((r, i) => {
+    if (i === 0) r.ch.forEach(c => tree.appendChild(build(c, 0)));
+    else tree.appendChild(build(r, 0));
+  });
+
+  // Filter
+  const amber = s => s === 'product' || s === 'kit';
+  const FILTERS = [
+    ['all', 'All', () => true, nodes.length],
+    ['fail', 'Failing', n => n.s === 'fail', T.fail],
+    ['amber', 'Not built', n => amber(n.s), T.product + T.kit],
+    ['gap', 'Children pass', n => n.f, run.flags],
+  ].filter(f => f[0] === 'all' || f[3] > 0 || f[0] === 'fail');
+  const fbox = document.getElementById('filter'), fbtns = {};
+  FILTERS.forEach(([key, text, , count]) => {
+    const b = el('button'); b.type = 'button'; b.setAttribute('aria-pressed', 'false');
+    b.appendChild(document.createTextNode(text)); b.appendChild(el('span', 'n', count));
+    b.addEventListener('click', () => applyFilter(key));
+    fbox.appendChild(b); fbtns[key] = b;
+  });
+  const empty = el('li', 'empty', 'Nothing here in this run.');
+  function applyFilter(key) {
+    const test = FILTERS.find(f => f[0] === key)[2];
+    Object.entries(fbtns).forEach(([k, b]) => b.setAttribute('aria-pressed', String(k === key)));
+    function walk(li) {
+      const kids = [...li.querySelectorAll(':scope > .kids > .node')];
+      let below = false;
+      kids.forEach(k => { if (walk(k)) below = true; });
+      const self = test(li._n);
+      if (key === 'all') { li.hidden = false; setOpen(li, false); return true; }
+      li.hidden = !(self || below);
+      setOpen(li, below);
+      return self || below;
+    }
+    let any = false;
+    tree.querySelectorAll(':scope > .node').forEach(li => { if (walk(li)) any = true; });
+    if (!any) tree.appendChild(empty); else empty.remove();
+  }
+  applyFilter('all');
+})();
+</script>

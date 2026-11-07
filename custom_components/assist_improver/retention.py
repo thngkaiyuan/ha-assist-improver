@@ -1,4 +1,4 @@
-"""Storage that doesn't grow without end, while every conversation stays in the regression set.
+"""Storage that doesn't grow without end, while no conversation is deleted for its age.
 
 A recording keeps the moment, the whole home, once in its first turn (a few megabytes in a large home), and each later
 turn's states. Once a recording closes it's packed, losslessly: later turns keep only what changed since the first
@@ -30,7 +30,7 @@ KEEP_NEWEST = 20
 KEEP_HISTORY_DAYS = 365
 TRACE_DAYS = 7
 TRACE_MAX_BYTES = 20 * 1024 * 1024
-READ_EVENTS = ("created", "content_added", "deleted")  # The events cases._content reads; the rest are copies.
+READ_EVENTS = ("created", "content_added", "deleted")  # The events cases.py reads; the rest are copies.
 CLOSED = ("session_expired", "interrupted", "capture_timed_out")
 
 

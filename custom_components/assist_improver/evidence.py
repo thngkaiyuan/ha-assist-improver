@@ -9,8 +9,9 @@ touched.
 - resolution signals: the recorded HA tool calls of every session the change could affect (sessions.applies: its calls
   or requests touch the change's devices, their names or areas, or what Assist can see) are replayed without and with
   the change, and the calls HA now resolves differently are listed. A session none of whose calls touch any of that
-  resolves exactly as before, so it isn't replayed; how many weren't, and why, is said. They are signals to weigh, not regressions: a change that folds several
-  flows into one more general script makes the old calls resolve differently while the new script covers them.
+  resolves exactly as before, so it isn't replayed; how many weren't, and why, is said. They are signals to weigh, not
+  regressions: a change that folds several flows into one more general script makes the old calls resolve differently
+  while the new script covers them.
 - capabilities: each of HA's Assist tools is tried on each device, and what HA carries out is what Assist can do.
 - instructions: an assistant's instructions as an assistant change edits them, rendered by HA for that assistant's newest
   conversation as its chat log renders them (ha_name, user_name, llm_context): what Assist would read, or HA's error;

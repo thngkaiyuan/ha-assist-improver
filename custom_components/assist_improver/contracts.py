@@ -1,4 +1,4 @@
-"""The stages' contracts (SPEC-CORE.md 3): what each stage hands the next, typed in records.py, with the fields each
+"""The stages' contracts (DETAILS P3.2): what each stage hands the next, typed in records.py, with the fields each
 must hand on (REQUIRED), checked where it's made. A stage whose output breaks its contract fails that item, with why
 (tried again, then held: flow.py), instead of handing on what the next stage can't read. The interface tests
 (fixture-test/test_contracts.py) connect each stage's real output to the next stage.

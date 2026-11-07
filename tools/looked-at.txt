@@ -1,0 +1,22 @@
+# Images someone opened and checked by eye before they went public, by their exact bytes. To record one:
+# .venv/bin/python tools/leak_guard.py looked-at IMAGE...
+# sha256  path  date
+0af03a3e8ba4e7cccf93b929c629e5561bc2bbdbe80f48a88c63c7099985cbaa  assets/getting-started/panel.png  2026-10-25
+6b13aab3321798d6f353e835a75b71594634c64951e94eb7b08fae96d8f4ee46  assets/getting-started/conversation.png  2026-10-25
+a5a03f64698c9774385a82ecb281d3aba6207617e316d6273db6b1700a14620f  assets/getting-started/settings.png  2026-10-25
+548238bbbf8bff3a5a32e31f1ba25f0a31a2c1f7fb5662a801fac44f42dbeeb5  assets/getting-started/review.png  2026-10-25
+b2361b8746a3ab51e2785a334ddd1363292a699b0706d6cf880159517e5c50c3  assets/getting-started/what-changes.png  2026-10-25
+aabb4ff186e6cebe1643e86d7e82e1b5364edb6e4633f64a7261a307ec06faab  assets/icon.png  2026-10-25
+7206eb6a32f5db72ca71047dafe1d4b6fefcebf7d76bb1f32d88c39f8806a360  assets/smoother.png  2026-10-25
+8f211f4e0343b7d4b6802890873d88526ca48487dc74421fffbf0d4a2e28a67e  assets/intervention.gif  2026-10-25
+397ae58a69970a6a5d264fa2aae403af9c3ca45d612e23b688966caf5ca0f022  custom_components/assist_improver/brand/icon.png  2026-10-25
+9eaff023395d00ddc8d7f036b922a89ec1e6df9520465f82c4c349608cc4023b  assets/getting-started/panel.png  2026-10-31
+d91d725469b79391300a12067ddccf5368fe05b96bf57875515b9f29d302a1b7  assets/getting-started/conversation.png  2026-10-31
+d616ab89281d72cb563b44938c697203df925e9d6ecc37a2d48406dc1642848f  assets/getting-started/settings.png  2026-10-31
+0f20db3c2f5f4c79fdf67f17625bbd4251a9a1b4f60c04604873bb016f18cee4  assets/getting-started/review.png  2026-10-31
+702f4c5ecf6956dc0d0da813f0814871023dea39cc09fa25cd6467080168b715  assets/getting-started/what-changes.png  2026-10-31
+feaadffdc1766bdd2fc085c7d73484650f8d427597dbb97f834f9a93e6437524  assets/getting-started/panel.png  2026-11-04
+4baabe1c31519ed34f1b08a64ca6f0b47a800ce27de049fef20384db992619f9  assets/getting-started/conversation.png  2026-11-04
+bbdaa3fcd17b2c0d677b4dcbf149ba4110bd36887183952c76bbddb330b2da2f  assets/getting-started/settings.png  2026-11-04
+d58bbc0c8e35b17b4ee17df03856f54e67f94ac17f18dc0dc95a254f452f0404  assets/getting-started/review.png  2026-11-04
+e06c152bead78ce2c8c85a35bc37c39b1076bc2bd177e9791dbecf869d353761  assets/getting-started/what-changes.png  2026-11-04

@@ -101,8 +101,6 @@ Models answer through tools that validate their answer against the household and
 - **Triage before the deep analysis.** With a triage model chosen in Settings (a small model, set up by default), each conversation is checked first, however many turns it has; one it's sure went smoothly skips the journey analyzer. It's told what a later turn usually means (the user repeating, correcting, answering a question, or telling the assistant how it behaved). Unsure means a full analysis. The check is calibrated on labelled conversations: it must never skip one that had friction.
 - **A goal that's already fixed stops early.** The analyzer sees the existing improvements on the devices its conversation touched (found by code) and can read any of them; a goal one of them already fixes is marked as a duplicate, checked by code, and goes no further.
 - **Every conversation stays visible.** The generator and reviewer see all recordings, analysed, skipped as smooth, or not analysed yet: the ones with friction upfront, the rest through their session tools, and all of them in the regression replays. Filtering only saves the deep analysis.
-
-
 - **Your conversations stay in your Home Assistant.** Analysis sends what it needs to the AI model you chose, through Home Assistant's own AI Task.
 - **Paid analysis runs only when you allow it.** Cost controls are coarse on purpose, not per-call accounting: the **tests per conversation** setting caps how many fixes each conversation is tested with, each round. Each test replays a conversation on the household's own assistant, so it works as a multiplier on what the assistant normally costs.
 

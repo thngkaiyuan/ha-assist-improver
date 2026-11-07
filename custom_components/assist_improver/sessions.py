@@ -10,9 +10,9 @@ Why each piece is there (what it helps the roles do):
   moment) and the assistant's configuration stay for the whole run.
 - where_it_applies: the sessions whose recorded calls or requests touch a change's devices, their names or areas,
   and every session on an assistant whose own instructions it edits. Sessions without friction come first: they're
-  where a rule could misfire on requests that already work. The regression replays use the same test (without the
-  assistants: an instruction edit doesn't change how Home Assistant resolves a call), so a session no change could
-  affect isn't replayed.
+  where a rule could misfire on requests that already work. The resolution signals (evidence.py) use the same test
+  (without the assistants: an instruction edit doesn't change how Home Assistant resolves a call), so a session no
+  change could affect isn't replayed.
 """
 
 from collections import Counter, OrderedDict
