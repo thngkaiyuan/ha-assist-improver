@@ -9,7 +9,8 @@ checkout's venv and browsers):
 
 PANEL_BROWSER=webkit runs them in WebKit (Safari, and Home Assistant's iPhone and macOS apps), once it's installed
 there: PLAYWRIGHT_BROWSERS_PATH=<main checkout>/tools/ui/browsers <main checkout>/tools/e2e/.venv/bin/python \
--m playwright install webkit. Chromium otherwise.
+-m playwright install webkit. Chromium otherwise, measuring the panel's JavaScript when IMPROVER_COVERAGE is set
+(tools/check.sh --coverage, tools/ui/jscov.py).
 
 The page is served from a stand-in origin (http://panel.test, answered in the browser, never on the network) so the
 panel's own addresses (?id=..., ?view=settings) work, and the clock is fixed so times read the same every run. Every
@@ -25,6 +26,8 @@ from urllib.parse import urlparse
 
 import pytest
 from playwright.sync_api import expect, sync_playwright
+
+import jscov
 
 ROOT = Path(__file__).resolve().parent.parent.parent
 WWW = ROOT / "custom_components/assist_improver/www"  # panel.js, and the modules it loads from panel/.
@@ -503,9 +506,10 @@ def load_panel(page):
 @pytest.fixture(scope="session")
 def browser():
     with sync_playwright() as p:
-        browser = getattr(p, os.environ.get("PANEL_BROWSER", "chromium")).launch()
+        browser = jscov.launch(getattr(p, os.environ.get("PANEL_BROWSER", "chromium")))
         yield browser
         browser.close()
+        jscov.dump("panel")
 
 
 @pytest.fixture
@@ -515,6 +519,7 @@ def open_panel(browser):
     def open_(answers=None, path="/assist-improver", size=PHONE, dark=True, held=(), touch=False):
         context = browser.new_context(viewport=size, color_scheme="dark" if dark else "light", has_touch=touch)
         page = context.new_page()
+        jscov.start(page)
         errors, dialogs = [], []
         page.on("pageerror", lambda err: errors.append(str(err)))
         # With the clock fixed, an error thrown in a timer or an animation frame reaches the console, not pageerror.
@@ -542,6 +547,7 @@ def open_panel(browser):
         # Let what's already scheduled run (a frame, then a timer), so an error it throws is counted too.
         panel.page.evaluate("() => new Promise((r) => requestAnimationFrame(() => setTimeout(r)))")
         errors = list(panel.errors)
+        jscov.collect(context)
         context.close()
         assert not errors, f"The panel threw: {errors}"  # It never throws, whatever it's shown.
 
