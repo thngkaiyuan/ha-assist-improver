@@ -53,9 +53,11 @@ def _worker(cov, data):
             snapshot()
             return super().write(b)
 
-    def _exit(code):
-        snapshot()
-        exit_(code)
+    def _exit(code):  # Exits as unmeasured, whatever the snapshot does.
+        try:
+            snapshot()
+        finally:
+            exit_(code)
 
     out, exit_ = sys.stdout, os._exit
     sys.stdout = io.TextIOWrapper(Answers(io.FileIO(out.fileno(), "w", closefd=False)), encoding=out.encoding,
