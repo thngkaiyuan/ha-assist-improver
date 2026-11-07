@@ -231,6 +231,24 @@ async def test_a_question_answered_from_a_tools_result_is_judged_with_what_that_
     assert did["called"] == "HassTimerStatus" and "Pasta" in did["result"] and "240" in did["result"]
 
 
+@pytest.mark.parametrize("result, judgeable", [
+    (None, False),
+    ({"data": {"speech": {}, "response_type": "action_done", "data": {"success": [{"id": "light.lamp"}]}}}, False),
+    ({"data": {"result": {}}}, False),
+    ({"error": True, "data": {"error": "HomeAssistantError", "error_text": "Lamp unreachable"}}, False),
+    ({"data": {"timers": [{"name": "Pasta", "seconds_left": 240}]}}, True),
+])
+def test_a_question_is_judged_on_what_a_tool_reported_not_on_an_actions_report(result, judgeable):
+    """DETAILS P9.10.4: a question beyond the home with no form asked is judgeable when a tool in its turns reported
+    something; an action's result reports only what it did (an intent's report, a script returning nothing, an
+    error), so a lamp switched on beside the question doesn't make it judgeable."""
+    from custom_components.assist_improver import simulate
+    question = {"turn": 1, "kind": "fact", "fact": "How far away the moon is", "key": "1:0", "label": 1}
+    calls = [{"tool": "HassTurnOn", "args": {"name": "Lamp"}, "result": result}] if result else []
+    view = SimpleNamespace(source={"states": {"light.lamp": {"state": "off"}}}, calls={1: calls})
+    assert simulate.judgeable(question, view, [question]) is judgeable
+
+
 def judging_facts(gives=True):
     """A stand-in check_facts: every question answered (gives) on its turn; what it was asked: each call's questions."""
     asked = []

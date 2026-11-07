@@ -335,13 +335,15 @@ def _recorded_turn(recording, recorded, number):
 
 def judgeable(goal, view, goals):
     """Whether a fact can be judged (DETAILS P9.10.4): its truth is in the record, as the home (it names a device the
-    recording holds a state of) or what a tool returned to Assist in a turn of its run (analyzer.question_run), or the
-    user asked for a form; a question beyond both with no form asked holds nothing to check."""
+    recording holds a state of) or what a tool reported to Assist in a turn of its run (analyzer.question_run;
+    happened.reported: an action's report of what it did tells nothing of a question), or the user asked for a form;
+    a question beyond both with no form asked holds nothing to check."""
     from .analyzer import question_run
     recorded, calls = view.source.get("states") or {}, getattr(view, "calls", None) or {}
-    return goal.get("kind") == "fact" and (any(e in recorded for e in goal.get("entity_ids") or [])
-                                           or any(calls.get(t) for t in question_run(goals, goal))
-                                           or bool((goal.get("quote") or "").strip()))
+    return goal.get("kind") == "fact" and (
+        any(e in recorded for e in goal.get("entity_ids") or [])
+        or any(happened.reported(c) for t in question_run(goals, goal) for c in calls.get(t) or [])
+        or bool((goal.get("quote") or "").strip()))
 
 
 def question_of(goal, view, turn, user_said, world=None):

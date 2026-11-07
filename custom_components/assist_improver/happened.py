@@ -99,6 +99,22 @@ def _results(call, *keys):
     return {t.get("id") for k in keys for t in inner.get(k) or [] if isinstance(t, dict) and t.get("id")}
 
 
+def reported(call):
+    """Whether a tool call's result tells Assist something beyond what it did, as a question may be answered from it
+    (DETAILS P9.10.4): it didn't fail, and isn't only an action's report: an intent's of what it acted on
+    (response_type action_done), or one holding no value (a script that returns nothing)."""
+    result = call.get("result") if isinstance(call.get("result"), dict) else {}
+    data = result.get("data")
+    if result.get("error") or isinstance(data, dict) and data.get("response_type") == "action_done":
+        return False
+
+    def holds(value):
+        if isinstance(value, dict | list):
+            return any(holds(v) for v in (value.values() if isinstance(value, dict) else value))
+        return value is not None and value is not False and value != ""
+    return holds(data)
+
+
 def succeeded(call):
     """The entities a tool call's result says it acted on (an intent's success targets); none for a failed call."""
     return set() if (call.get("result") or {}).get("error") else _results(call, "success")

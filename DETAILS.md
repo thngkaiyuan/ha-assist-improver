@@ -1384,8 +1384,8 @@ Citations in parentheses name the maintainer's earlier notes, which aren't in th
     in the form asked for, with what the home did in that turn beside it. In the conversation it's judged once, at
     analysis, on the reply that ends its run of steps (a reply a step follows is unmet by the step itself, as is the
     last one said when the note asks again); a wrong answer is an unmet goal, trouble. One beyond both is judged only
-    on whether the reply answers it, in the form asked for when given; with no form and no tool's result in its turns,
-    it can't be told.
+    on whether the reply answers it, in the form asked for when given; with no form and nothing a tool reported in its
+    turns (an action's result reports only what it did), it can't be told.
   - **P9.10.5** An action (P9.7.6) is met when the calls of its own request's turns, from its turn on, did it on every
     device it's for (an entity counts for its whole device; one unavailable as its turn began reached nothing): an
     announcement is a call at the device carrying words or media (a chime), its content not judged for now; a command
