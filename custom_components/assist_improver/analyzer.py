@@ -333,11 +333,13 @@ def side_effects_left(view, goals):
         if start in (None, *UNKNOWN_STATES):
             continue
         last = max(i for i, c in enumerate(changes) if c["by"] in ASSISTANT)
-        attributes, was, settings = dict(begun.get("attributes") or {}), {}, {}
-        for change in changes[:last + 1]:  # Each setting Assist changed: as it was before, and as Assist left it.
-            if change["by"] in ASSISTANT:
-                for name, (_, new) in (change.get("attributes_changed") or {}).items():
-                    was.setdefault(name, attributes.get(name))
+        started = dict(begun.get("attributes") or {})
+        attributes, first, was, settings = dict(started), {}, {}, {}
+        for change in changes[:last + 1]:  # Each setting Assist changed: as it started, and as Assist left it.
+            for name, (old, new) in (change.get("attributes_changed") or {}).items():
+                first.setdefault(name, old)  # Where the start doesn't show it: as its first change found it.
+                if change["by"] in ASSISTANT:
+                    was.setdefault(name, started.get(name, first[name]))
                     settings[name] = new
             attributes = _moved(attributes, change)
         settings = targets.moved(domain, was, settings, attributes, targets.shown(view.source, entity))

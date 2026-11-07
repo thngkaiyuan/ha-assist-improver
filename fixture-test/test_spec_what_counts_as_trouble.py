@@ -380,8 +380,8 @@ def test_a_device_whose_start_was_unknown_is_never_a_side_effect():
 def test_a_setting_assist_changed_and_didnt_put_back_is_a_side_effect_and_a_buttons_last_press_never_is():
     """DETAILS P9.12: what Assist left is a device's settable state, its state and each setting an action of its sets
     (a light's brightness or colour), compared in any form and a number within tolerance; a reading isn't one. A
-    button's last press, or a script running, is never a side effect left: it keeps no state to reach. A setting
-    unknown at the start can't be told to have moved."""
+    button's last press, or a script running, is never a side effect left: it keeps no state to reach. A setting, as
+    its state, is compared with how it started; one unknown at the start can't be told to have moved."""
     lamp, gate, fan = "light.fixture_lamp", "button.fixture_gate", "fan.fixture_fan"
     asked = {"turn": 1, "summary": "Fan on", "kind": "state", "entity_id": fan, "state": "on"}
 
@@ -404,6 +404,13 @@ def test_a_setting_assist_changed_and_didnt_put_back_is_a_side_effect_and_a_butt
     unknown = {**lit, "brightness": None}
     assert left({lamp: ("on", unknown)}, (lamp, "on", "on", {"brightness": [None, 100]})) == []
     assert left({lamp: ("on", lit)}, (lamp, "on", "on", {"friendly_name": ["Lamp", "Lamp 2"]})) == []  # No setting.
+    dimmed = {"during_turn": 1, "by": "a person", "old": "on", "new": "on",
+              "attributes_changed": {"brightness": [255, 51]}}
+    for back, found in ((255, []), (128, [{"brightness": [255, 128]}])):  # Assist sets it after a person dimmed it.
+        put = {**dimmed, "by": "assistant", "during_turn": 2, "attributes_changed": {"brightness": [51, back]}}
+        home = SimpleNamespace(source={"states": {lamp: {"state": "on", "attributes": lit}}},
+                               changes={lamp: [dimmed, put]})
+        assert [e["settings"] for e in analyzer.side_effects_left(home, [asked])] == found
     assert left({gate: ("2026-01-01T08:00:00+00:00", {})},
                 (gate, "2026-01-01T08:00:00+00:00", "2026-01-01T09:00:00+00:00", {})) == []
     assert left({"script.fixture_press": ("off", {})}, ("script.fixture_press", "off", "on", {})) == []
