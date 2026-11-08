@@ -1,6 +1,7 @@
 """AI-role runtime and guided AI Task setup: real HA AI Task and Anthropic code, scripted transport."""
 
 from datetime import datetime, UTC
+import hashlib
 import json
 import re
 from types import MappingProxyType, SimpleNamespace
@@ -20,7 +21,8 @@ from recordings import make_recording
 from test_changeset import tested
 from test_milestone1 import fake_entry, recording_hass  # noqa: F401  (fixture)
 from conftest import loaded_for
-from custom_components.assist_improver import ai_setup, analyzer, touchpoints
+from custom_components.assist_improver import ai_setup, analyzer, editor, hypotheses, touchpoints
+from custom_components.assist_improver.analysis import analyzer_input
 from custom_components.assist_improver.cases import CaseError
 from custom_components.assist_improver.exploration import SessionView
 from custom_components.assist_improver.const import CONF_ACCEPTED_WEAK, CONF_AI_TASK, DOMAIN
@@ -754,6 +756,70 @@ def test_submit_goals_keeps_the_best_answer():
     assert status == "best_rejected" and answer == one_wrong and len(found) == 1
     assert submit.run(**ANALYSIS) == {"accepted": True, "message": "Accepted. Finish with one short sentence."}
     assert submit.best() == ("accepted", ANALYSIS, [])
+
+
+def test_the_analyzers_answer_is_refused_with_its_problems_and_with_improvements_its_acceptance_points_to_the_check():
+    """What submit_goals answers, word for word, and keeps (every submission with its problems). Built as the
+    analysis builds it with improvements to check, its acceptance tells the analyzer to check them
+    (mark_duplicate)."""
+    view = SessionView(make_recording())
+    item = {"improvement": "imp1", "title": "Press script", "status": "applied", "applied": "2999-01-01T00:00:00+00:00"}
+    runtime = SimpleNamespace(improvements=SimpleNamespace(catalog=lambda asking, detailed: [item]))
+    *_, submit, mark = analyzer_input(runtime, view.digest["recording_id"], view)
+    one_wrong = {**ANALYSIS, "goals": [{**ANALYSIS["goals"][0], "states": ["off", "pressed"]}, *ANALYSIS["goals"][1:]]}
+    found = ["Goal 1 (turn 1): switch.fixture_relay has no state 'pressed'; its states are off, on."]
+    assert submit.run(**one_wrong) == {"accepted": False, "problems": found}
+    assert submit.run(**ANALYSIS) == {"accepted": True, "message": "Accepted. " + analyzer.MarkDuplicate.THEN}
+    assert submit.submissions == [{"answer": one_wrong, "problems": found}, {"answer": ANALYSIS, "problems": []}]
+    assert (submit.then, submit.existing, submit.note, submit.revisions) == (mark.THEN, [item], None, [])
+
+
+def test_each_roles_answer_tool_reads_to_the_model_as_it_did():
+    """What every AI role's answer tool hands the model: its name, its description (by digest) and its schema; the
+    reviewer's both alone and in its loop (ChannelSubmitReview, the one a round gives it)."""
+    frozen = {hypotheses.SubmitHypotheses: ("submit_hypotheses", "6654a22ddcaa506f", hypotheses.HYPOTHESES),
+              hypotheses.SubmitReview: ("submit_review", "bf3b51089ae35677", hypotheses.REVIEW),
+              hypotheses.ChannelSubmitReview: ("submit_review", "2249cc0b8c166b71", hypotheses.REVIEW),
+              analyzer.SubmitGoals: ("submit_goals", "dbfc1e647adb8c92", analyzer.STRUCTURE),
+              editor.SubmitCopy: ("submit_copy", "24826ab1bad04c61", editor.STRUCTURE)}
+    for tool, (name, description, parameters) in frozen.items():
+        assert (tool.name, hashlib.sha256(tool.description.encode()).hexdigest()[:16]) == (name, description), tool
+        assert tool.parameters is parameters, tool
+
+
+COPY = {"headline": "Open both garage doors at once", "benefit": "Say “open the garage” and both open."}
+UNREAD = ["The headline has 1 characters; keep it between 3 and 60.", "Start the headline with a capitalised verb.",
+          "Write the benefit: what gets easier, addressed to you."]
+
+
+def test_the_editors_copy_is_refused_with_what_to_fix_and_accepted_once_it_reads_right():
+    submit = editor.SubmitCopy()
+    assert submit.run(headline="x", benefit="") == {"accepted": False, "problems": UNREAD}
+    assert submit.run(**COPY) == {"accepted": True, "message": "Accepted. Finish with one short sentence."}
+    assert submit.submissions == [{"answer": {"headline": "x", "benefit": ""}, "problems": UNREAD},
+                                  {"answer": COPY, "problems": []}]
+
+
+@pytest.mark.asyncio
+async def test_the_write_up_is_the_editors_last_accepted_copy_and_fails_without_one(hass, monkeypatch):
+    """The write-up is the last copy the editor got accepted, stripped, though a refused one came after it; with
+    none accepted, it fails with the run's error (none here)."""
+    copies = []
+
+    async def run_role(hass, **kwargs):
+        (submit,) = kwargs["llm_api"].tools
+        for copy in copies:
+            submit.run(**copy)
+        return {}
+    monkeypatch.setattr(editor.reflective, "run_role", run_role)
+    item = {"title": "T", "cause": "C", "provider": {"title": "Kitchen"}, "test": tested("Open it"), "changes": []}
+    refused = {"headline": "x", "benefit": ""}
+    copies[:] = [refused]
+    assert await editor.write(hass, item, "ai_task.small") == {"status": "failed", "entity_id": "ai_task.small",
+                                                               "error": None}
+    copies[:] = [refused, {"headline": f" {COPY['headline']} ", "benefit": f"{COPY['benefit']} "}, refused]
+    assert await editor.write(hass, item, "ai_task.small") == {"status": "written", "entity_id": "ai_task.small",
+                                                               **COPY}
 
 
 def test_ask_goals_are_validated_and_count_as_goals():

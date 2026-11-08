@@ -1,5 +1,6 @@
 """Hypothesis generator and reviewer: friction, validation, read tools, and both roles through HA's AI Task."""
 
+import asyncio
 from types import SimpleNamespace
 
 import pytest
@@ -7,7 +8,7 @@ import pytest
 from test_ai_roles import ANALYSIS, task_entity
 from recordings import SCRIPT, TARGET, at_home, make_recording
 from test_milestone1 import fake_entry, recording_hass  # noqa: F401
-from custom_components.assist_improver import hypotheses
+from custom_components.assist_improver import hypotheses, stamps
 from custom_components.assist_improver.analyzer import to_analysis
 from custom_components.assist_improver.cases import digest
 from custom_components.assist_improver.const import CONF_AI_TASK
@@ -148,6 +149,60 @@ def test_an_idea_sent_on_whose_exact_changes_lack_a_stamp_is_named_while_it_can_
     ask.cap = hypotheses.REVIEWS_PER_ROUND
     ask.stopped = True  # The reviewer stopped.
     assert named(unstamped) == [] and submit.best() == ("accepted", {"hypotheses": [unstamped]}, [])
+
+
+@pytest.mark.asyncio
+async def test_the_generators_and_reviewers_answer_tools_answer_and_keep_as_they_did():
+    """What submit_hypotheses and submit_review answer, word for word (alone, and in the reviewer's loop), and what
+    the run reads back: every submission with what's wrong with it (a stamp still lacking isn't), and the best."""
+    s, analysis = sessions()
+    session = hypotheses.short(analysis["recording_id"])
+    accepted = {"accepted": True, "message": "Accepted. Finish with one short sentence."}
+    submit = hypotheses.SubmitHypotheses(s)
+    assert (submit.submissions, submit.best()) == ([], ("no_answer_submitted", None, []))
+    bad = {"hypotheses": [hypothesis({"kind": "registry", "entity_id": TARGET, "expose": True})]}
+    good = {"hypotheses": [hypothesis({"kind": "registry", "entity_id": SCRIPT, "expose": True})]}
+    exposed = ["Hypothesis 1 ('Press the relay'): switch.fixture_relay is already exposed to Assist."]
+    assert submit.run(**bad) == {"accepted": False, "problems": exposed}
+    assert submit.best() == ("best_rejected", bad, exposed)
+    assert submit.run(**good) == accepted and submit.run(**bad) == {"accepted": False, "problems": exposed}
+    assert submit.submissions == [{"answer": bad, "problems": exposed}, {"answer": good, "problems": []},
+                                  {"answer": bad, "problems": exposed}]
+    assert submit.best() == ("accepted", good, [])  # The last accepted, though one came after it.
+    ask = hypotheses.AskReviewer(s, hypotheses.ReviewChannel())
+    flow = SimpleNamespace(tests=lambda rid, number=None: [], tests_left=lambda rid: 2)
+    stamped = hypotheses.SubmitHypotheses(s, ask, stamps.TestIdea(flow, "rid", ask, 3))
+    unapproved = ("The reviewer hasn't approved idea 1 ('Press the relay') with exactly these changes, so it won't go "
+                  "on: send the exact changes it approved, or ask it about these (ask_reviewer).")
+    assert stamped.run(**bad) == {"accepted": False, "problems": [*exposed, unapproved]}
+    assert stamped.run(**good) == {"accepted": False, "problems": [unapproved]}
+    assert stamped.submissions == [{"answer": bad, "problems": exposed}, {"answer": good, "problems": []}]
+    assert stamped.best() == ("accepted", good, [])
+    review = hypotheses.SubmitReview(s)
+    unsupported = {"label": "issue", "decorations": ["blocking"], "subject": "Wrong cause"}
+    supported = {**unsupported, "evidence": [{"session": session, "turn": 2, "note": "the user had to correct it"}]}
+    no_evidence = ["Comment 1: give household evidence (a session and turn, a device, or a pattern)."]
+    assert review.run(comments=[unsupported]) == {"accepted": False, "problems": no_evidence}
+    assert review.best() == ("best_rejected", {"comments": [unsupported]}, no_evidence)
+    assert review.run(comments=[supported]) == accepted
+    assert review.submissions == [{"answer": {"comments": [unsupported]}, "problems": no_evidence},
+                                  {"answer": {"comments": [supported]}, "problems": []}]
+    assert review.best() == ("accepted", {"comments": [supported]}, [])
+    channel = hypotheses.ReviewChannel()
+    loop = hypotheses.ChannelSubmitReview(s, channel)
+    no_draft = ["There's no draft to review; call wait_for_draft first."]
+    assert loop.run(comments=[supported]) == {"accepted": False, "problems": no_draft}
+    draft, waiting = {"title": "Press the relay"}, asyncio.get_running_loop().create_future()
+    channel.current = (draft, waiting)
+    assert loop.run(comments=[unsupported]) == {"accepted": False, "problems": no_evidence}
+    assert channel.current == (draft, waiting) and not waiting.done()
+    assert loop.run(comments=[supported]) == {"accepted": True,
+                                              "message": "Sent to the generator. Call wait_for_draft for the next draft."}
+    assert channel.current is None and waiting.result() == {"comments": [supported]}
+    assert loop.submissions == [{"answer": {"comments": [supported]}, "problems": no_draft},
+                                {"answer": {"comments": [unsupported]}, "problems": no_evidence},
+                                {"answer": {"comments": [supported]}, "problems": []}]
+    assert loop.best() == ("accepted", {"comments": [supported]}, [])
 
 
 class RoleRouter:
