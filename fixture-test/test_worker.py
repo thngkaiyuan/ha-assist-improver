@@ -22,7 +22,7 @@ from kit import improver  # noqa: F401 - a fixture.
 from custom_components.assist_improver import replay
 from custom_components.assist_improver import sandbox as sandbox_module
 from custom_components.assist_improver import worker as worker_module
-from custom_components.assist_improver.cases import recording_turns
+from custom_components.assist_improver.cases import CaseError, recording_turns
 from custom_components.assist_improver.replay import SandboxHome
 
 POPEN = subprocess.Popen  # Before the effect guards: this module's tests start worker processes for real.
@@ -203,6 +203,12 @@ async def test_home_assistants_tool_errors_cross_with_their_name_and_text(hass, 
         assert type(raised.value).__name__ == "MatchFailedError" and "Nothing by that name" in str(raised.value)
     finally:
         await home.stop()
+
+
+def test_a_case_the_replay_cant_run_crosses_as_one():
+    """A CaseError in the worker is a CaseError in the real instance, with its text: the case can't be replayed."""
+    crossed = worker_module.raised(worker_module._error(CaseError("x")))
+    assert type(crossed) is CaseError and str(crossed) == "x"
 
 
 @pytest.mark.asyncio
