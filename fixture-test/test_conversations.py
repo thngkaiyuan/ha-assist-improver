@@ -11,7 +11,7 @@ from kit import FIRST, HELD, improver, seat, variant  # noqa: F401 - improver is
 from test_records import problems
 from recordings import make_recording
 from custom_components.assist_improver import panel, records
-from custom_components.assist_improver.cases import transcript
+from custom_components.assist_improver.cases import failed_calls, replayed, transcript
 
 
 async def ask(hass, handler, **msg):
@@ -74,6 +74,41 @@ def test_a_failed_step_shows_in_the_turn_it_happened_in_plain_words():
         {"step": "Media player mute · media player", "error": "Not supported"}]  # Named from the tool's own name.
     assert said[1]["assist"] == "Done, except the rug."
     assert all(problems(t, records.Said) == [] for t in said)
+
+
+LAMP_ERROR = {"error": "HomeAssistantError", "error_text": "Lamp unreachable"}
+
+
+def lamp_answered(**answer):
+    """Assist turning on the lamp, Home Assistant's answer to its call (answer: the tool result's fields), and its
+    reply: the messages a recording's chat log and a replay step's output both hold."""
+    return [{"role": "assistant", "content": None, "tool_calls": [
+                {"id": "a", "tool_name": "intent__HassTurnOn", "tool_args": {"name": "Lamp"}, "external": False}]},
+            {"role": "tool_result", "tool_call_id": "a", "tool_name": "intent__HassTurnOn", **answer},
+            {"role": "assistant", "content": "The lamp didn't answer."}]
+
+
+def failed_steps(answered):
+    """(the recording's failed steps, its count of failed calls, the replay's failed steps) for one turn whose
+    messages after the user's are answered."""
+    record = {"turns": [{}], "chat_log": {"content": [{"role": "user", "content": "Turn on the lamp."}, *answered]}}
+    return (transcript(record)[0].get("failed"), failed_calls(record),
+            replayed([{"input": "Turn on the lamp.", "output": answered}])[0].get("failed"))
+
+
+def test_a_failed_step_reads_alike_in_a_recording_and_a_replay_from_each_copy_home_assistant_writes():
+    """DETAILS P14.4.11 and P14.4.12: a step Home Assistant answered with an error shows in its turn and in the row's
+    count, the same in a recording and in a replay's steps, written as Home Assistant does today (its result and
+    tool_result, the copy) or as it did before 2026.10 (tool_result alone). A result that only flags an error (an MCP
+    tool's) names no error, so it shows no failed step."""
+    shown = [{"step": "Turn on · Lamp", "error": "Lamp unreachable"}]
+    assert failed_steps(lamp_answered(result={"data": LAMP_ERROR, "error": True}, tool_result=LAMP_ERROR)) == (
+        shown, 1, shown)
+    assert failed_steps(lamp_answered(tool_result=LAMP_ERROR)) == (shown, 1, shown)
+    done = {"speech": {}, "response_type": "action_done", "data": {"success": [{"id": "light.lamp"}], "failed": []}}
+    assert failed_steps(lamp_answered(result={"data": done, "error": False}, tool_result=done)) == (None, 0, None)
+    assert failed_steps(lamp_answered(result={"data": {"content": [{"type": "text", "text": "No."}]},
+                                              "error": True})) == (None, 0, None)
 
 
 @pytest.mark.asyncio

@@ -700,6 +700,31 @@ def test_the_judge_at_analysis_hears_that_a_recorded_turn_ran_a_script_whose_doi
     assert "ran_scripts" not in simulate._recorded_turn(plain, recording_turns(plain, replay=False), 1)[4]["home_did"]
 
 
+def test_a_turn_that_kept_no_call_log_is_told_from_one_whose_call_log_is_empty_wherever_it_is_read():
+    """DETAILS P8.2.10: a turn recorded before the recorder kept a call log (no actions) can't tell what Assist's calls
+    set or what its script did, so what its request changed stands in for what Assist set; an empty call log says
+    Assist's calls set nothing. The views (what each turn's calls named), the before's settings and the judge's
+    recorded turn tell them apart; the digest reads both alike."""
+    from custom_components.assist_improver import simulate
+    from custom_components.assist_improver.cases import recording_turns
+    from custom_components.assist_improver.digest import build_digest
+    from custom_components.assist_improver.simulation import assist_settings
+    untold = broadcast("bcast-log", (), "script__say_it")
+    turn = recording_turns(untold, replay=False)[0]
+    untold["state_changes"].append({"entity_id": SPEAKER, "at": turn["source"]["at"], "old": {
+        "state": "idle", "attributes": {"volume_level": 0.2}}, "new": {"state": "idle", "attributes": {
+            "volume_level": 0.5}, "context": {"id": turn["prepared"]["context"]["context"]["id"]}}})
+    empty = deepcopy(untold)
+    empty["turns"][0]["actions"] = []
+    views = view_of(untold), view_of(empty)
+    assert [v.actions for v in views] == [{1: None}, {1: []}]
+    assert [v._named(1) for v in views] == [None, set()]
+    assert [assist_settings(r, recording_turns(r)[0]) for r in (untold, empty)] == [{SPEAKER: {"volume_level": 0.5}}, {}]
+    home_did = [simulate._recorded_turn(r, recording_turns(r, replay=False), 1)[4]["home_did"] for r in (untold, empty)]
+    assert "ran_scripts" in home_did[0] and "ran_scripts" not in home_did[1]
+    assert build_digest(untold) == build_digest(empty)
+
+
 def both_sides(record, goal):
     """Whether an action was done, read the same way recorded and replayed (happened.py): by the recording's analysis
     (True, False or None: can't be told), and by a replay whose turn did what the recorded one did, its tool calls and

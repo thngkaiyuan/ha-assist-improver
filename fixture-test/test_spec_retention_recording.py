@@ -655,6 +655,13 @@ def test_the_events_every_reader_needs_survive_packing_and_copies_lose_only_thei
                                                        {"at": "4", "type": "log_observed"}, record["events"][4]]
 
 
+def test_a_recording_is_read_as_a_conversation_once_it_has_finished_however_it_finished():
+    for status in ("session_expired", "interrupted", "capture_timed_out"):  # Every way a recording finishes.
+        assert recording_turns({**make_recording(), "status": status})
+    with pytest.raises(CaseError, match="still active"):
+        recording_turns({**make_recording(), "status": "active"})
+
+
 def test_packing_happens_once_and_only_to_a_finished_recording():
     for status in ("session_expired", "interrupted", "capture_timed_out"):  # Every way a recording finishes.
         assert retention.pack({**make_recording(), "status": status})["packed"]
