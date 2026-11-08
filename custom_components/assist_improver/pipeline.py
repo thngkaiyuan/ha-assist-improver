@@ -10,10 +10,11 @@ How runs start (trigger):
 - revision, conflict or answer: a conversation the household sent back (to Propose, or with its answer to the stage
   that asked) gets a run of its own, now or right after the run in progress (P0.7).
 
-A run that needs a stage whose AI model isn't available doesn't start (refusal); one nobody is watching is kept as
-failed, with why. A run's record is kept from the start and after each move, so a restart that cuts it off shows it
-interrupted, never restarted on its own; Cancel ends it cancelled. Its problems are kept in its progress (failures.py)
-and its trace under its id (trace.py).
+A run that needs a stage whose AI model isn't available doesn't start (refusal); one not started from Run is kept as
+failed, with why, and a conversation sent back is held where it went, with that why (SPEC.md P0.8). A run's record is
+kept from the start and after each move, so a restart that cuts it off shows it interrupted, never restarted on its
+own; Cancel ends it cancelled. Its problems are kept in its progress (failures.py) and its trace under its id
+(trace.py).
 """
 
 import asyncio
@@ -77,8 +78,9 @@ class Pipeline:
             recording_id, trigger = self._sent_back.pop(0)
             try:
                 self.start(trigger=trigger, conversation=recording_id)
-            except CaseError:  # A step's model isn't available: the run doesn't start, and nothing records it.
-                pass
+            except CaseError as err:  # A step's model isn't available: recorded as failed, with why, and the
+                self.entry.async_create_task(  # conversation held where it went, with that why (SPEC.md P0.8).
+                    self.hass, self.runtime.flow.refused(recording_id, str(err)), "assist_improver_refused")
 
     @callback
     def _ran(self, task):
@@ -170,7 +172,7 @@ class Pipeline:
         if self.running:
             raise CaseError("A run is already in progress")
         if reason := self.refusal(only):
-            if trigger in ("scheduled", "filed"):  # Nobody is watching: kept for the history, not failed midway.
+            if trigger != "manual":  # Not the household's Run, which shows it the refusal: kept for the history.
                 now = utcnow().isoformat()
                 self.current = {"id": uuid4().hex, "kind": "pipeline", "trigger": trigger, "status": "failed",
                                 "started": now, "finished": now, "stage": None, "progress": {}, "error": reason,

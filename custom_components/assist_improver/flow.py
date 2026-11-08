@@ -80,6 +80,14 @@ class Flow:
             if self._in_round(conv) and conv["stage"] not in ENDS and not conv["held"]:
                 self._hold(conv, "cut off", "The run was cut off before this was done.")
 
+    async def refused(self, rid, why):
+        """A conversation sent back whose run of its own was refused (pipeline.Pipeline.start: a step's model isn't
+        available) is held where it went, for failures, with why, for a release to carry its round on (P0.8)."""
+        conv = self.record(rid)
+        if self._in_round(conv) and conv["stage"] not in ENDS:
+            self._hold(conv, "failures", why)
+            await self.save()
+
     async def save(self):
         await self.store.async_save({"conversations": self.conversations})
 
