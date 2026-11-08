@@ -96,6 +96,24 @@ async def test_the_run_preview_goes_by_the_last_fifty_analyses_and_quick_checks(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("full, expected", [("analyze", (30_500, 200)), ("triage", (2_000, 3_050))])
+async def test_each_step_goes_by_its_own_last_fifty_when_the_other_has_only_a_few(improver, full, expected):
+    """One step has 55 records, the other only the first three's: the one goes by its last fifty, the other by its
+    three."""
+    for n in range(1, 56):
+        run = {"id": f"a{n}", "kind": "journey_analyzer", "recording_id": f"r{n}"}
+        if n <= 3 or full == "analyze":
+            run.update(status="completed", analysis={"goals": []}, answer_status="accepted", usage=used(1_000 * n, 0))
+        else:
+            run.update(status="held", answer_status="awaiting_analysis")
+        if n <= 3 or full == "triage":
+            run["triage"] = check(100 * n, 0)
+        await improver.runtime.role_runs.record(run)
+    spend = improver.runtime.pipeline.preview()["spend"]
+    assert (spend["analyze"]["tokens"], spend["triage"]["tokens"]) == expected
+
+
+@pytest.mark.asyncio
 async def test_a_record_recorded_again_goes_to_the_end_and_the_log_on_disk_is_what_is_in_memory(hass):
     role_runs = RoleRuns(hass)
     await role_runs.start()
