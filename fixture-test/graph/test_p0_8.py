@@ -168,8 +168,9 @@ def test_each_release_gives_one_more_try_at_its_stage_which_holds_it_again_or_ca
                 assert place.stage == "Your review" and place.held is None
 
 
-# Layer 3: children of the tests above, each refining its parent by name. The first test (retries, then a hold) and the
-# last (one more try per release) need none: each is already one scenario on the driver, run per stage or per release.
+# Layer 3: children of the tests above, each refining its parent by name. The first test (retries, then a hold) needs
+# none: it's already one scenario on the driver, run per stage. The last (one more try per release) needs one, for the
+# release by a run of a stage that's still blocked.
 
 LINE = ["Your Assist", "Triage", "Analyze", "Propose", "Write up", "Your review"]
 PASSED = ("scope", "cut off", "blocked")  # the holds whose problem has passed once held_still() returns
@@ -351,11 +352,31 @@ def test_a_run_of_its_stage_tries_a_released_conversation_once_there_and_holds_i
         assert attempts(home, talk, "Propose") == tried + 1 and attempts(home, talk, "Write up") == 0
 
 
+@refines("test_each_release_gives_one_more_try_at_its_stage_which_holds_it_again_or_carries_it_on")
+def test_a_run_of_a_blocked_stage_still_gives_what_is_held_there_its_one_more_try_and_holds_it_at_the_next_stage():
+    """Running a blocked stage on its own still runs it (DETAILS P3.6.3, P5.6.3): a run of Propose releases what its
+    block holds there, tries it there once, and its scope holds what it passes on at Write up; Propose stays blocked.
+    The control: with Write up blocked as well, what it passes on is held there for that block, before its scope."""
+    for also in (None, "Write up"):
+        home, talk = held_for("blocked")
+        if also:
+            home.block(also)
+        assert held_there(home, talk, "blocked")
+        tried = attempts(home, talk, "Propose")
+        assert home.moved(home.run("stage", stage="Propose")) == {talk}
+        place = home.place(talk)
+        assert place.stage == "Write up" and place.held.cause == ("blocked" if also else "scope") and place.round == 1
+        assert attempts(home, talk, "Propose") == tried + 1 and attempts(home, talk, "Write up") == 0
+        new = home.converse(FRICTION)  # Propose is still blocked: a scheduled run holds a new one there for it.
+        home.run("scheduled")
+        assert held_there(home, new, "blocked")
+
+
 # Layer 4: children of the two layer-3 tests that each put two separate runs in one household (a scheduled run and the
 # fast lane; a revision and a resolved conflict): one child per run, so a failure names the run. Each control shows that
 # run worked, on another conversation, at the stage holding this one. The cut-off test gets two children: two tests cut
 # off at once, as Home Assistant runs one message's tool calls; and what else the cut-off run had taken in or released.
-# The other ten need none: each is already one scenario on the driver.
+# The other eleven need none: each is already one scenario on the driver.
 
 
 @refines("test_a_scheduled_run_or_the_fast_lane_moves_only_the_new_conversation_it_takes_in_and_leaves_a_held_one_as_it_was")
