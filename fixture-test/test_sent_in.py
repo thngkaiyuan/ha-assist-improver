@@ -130,7 +130,7 @@ async def test_picking_one_already_sent_in_with_a_note_keeps_its_note_and_its_wa
     improver.entry.options = {**improver.entry.options, "paused_stages": ["propose", "write"]}
     await flow.sent_in("friction01", NOTE, via="assist")  # Filed from Assist, with what to improve.
     hearing = heard(monkeypatch)
-    status, _ = await ask(hass, panel.ws_run_start, confirmed=True, picked=True, conversations=["friction01"])
+    status, _ = await ask(hass, panel.ws_run_start, confirmed=True, conversations=["friction01"])
     assert status == "ok"
     await improver.runtime.pipeline._task
     assert flow.sent("friction01")["note"] == NOTE, "the household's note was dropped"

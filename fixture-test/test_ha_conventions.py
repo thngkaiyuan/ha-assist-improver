@@ -1,6 +1,6 @@
-"""Home Assistant's conventions: each action is drawn from the icons file, the panel's commands answer cleanly once the
-integration has unloaded, and every AI role's tools take arguments as Home Assistant hands them over and convert to a
-provider's tool format."""
+"""Home Assistant's conventions: each action is drawn from the icons file, the panel's commands answer administrators
+only and answer cleanly once the integration has unloaded, and every AI role's tools take arguments as Home Assistant
+hands them over and convert to a provider's tool format."""
 
 import asyncio
 import json
@@ -12,6 +12,7 @@ import pytest
 from homeassistant import config_entries, loader
 from homeassistant.components.conversation import ToolResultContent
 from homeassistant.components.conversation.chat_log import ChatLog
+from homeassistant.exceptions import Unauthorized
 from homeassistant.helpers import icon, llm
 
 from ha_task import refused
@@ -112,12 +113,28 @@ MESSAGE = {"id": 1, "improvement_id": "imp1", "decision": "accept", "note": "", 
            "entry_id": "provider", "model": "m", "role": "main", "query": "x", "trace_id": "x"}
 
 
-def _commands(monkeypatch):
+def _registered(monkeypatch):
     registered = []
     monkeypatch.setattr(panel.websocket_api, "async_register_command", lambda hass, handler: registered.append(handler))
     panel.register_commands(None)
     assert set(devview.COMMANDS) <= set(registered)
-    return [h for h in registered if h not in INDEPENDENT]
+    return registered
+
+
+def test_every_command_answers_administrators_only(monkeypatch):
+    """Records are private (DETAILS P8.10.5): every command the panel registers refuses anyone who isn't an
+    administrator, before it touches hass (here there is none)."""
+    guest = SimpleNamespace(user=SimpleNamespace(id="guest", is_admin=False))
+    let_in = []
+    for handler in _registered(monkeypatch):
+        try:
+            handler(None, guest, {"id": 1})
+        except Unauthorized:
+            continue
+        except Exception:  # noqa: BLE001 - It got past the check and ran into the missing hass.
+            pass
+        let_in.append(handler._ws_command)  # Two commands' handlers share a name (ws_conversations).
+    assert let_in == []
 
 
 @pytest.mark.asyncio
@@ -129,7 +146,7 @@ async def test_every_command_that_needs_the_improver_answers_not_loaded_after_un
         added.append(args)
         return "ai_task.new", None
     monkeypatch.setattr(ai_setup, "create_ai_task", create_ai_task)
-    commands = _commands(monkeypatch)
+    commands = [handler for handler in _registered(monkeypatch) if handler not in INDEPENDENT]
     entry = fake_entry()
     await async_setup_entry(hass, entry)
     await async_unload_entry(hass, entry)

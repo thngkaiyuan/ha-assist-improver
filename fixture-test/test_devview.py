@@ -5,7 +5,6 @@ import json
 from types import SimpleNamespace
 
 import pytest
-from homeassistant.exceptions import Unauthorized
 
 from recordings import before, make_recording
 from test_changeset import _ws
@@ -44,16 +43,12 @@ async def one_run(improver):
 
 
 @pytest.mark.asyncio
-async def test_every_command_needs_developer_mode_and_an_admin(improver):
+async def test_every_command_needs_developer_mode(improver):
     hass = improver.hass
     for handler in devview.COMMANDS:
         msg = {"query": "x"} if handler is devview.ws_lookup else {"trace_id": "x"} if handler is devview.ws_trace \
             else {}
         assert (await ask(hass, handler, **msg))[0] == "developer_mode_off"
-        connection = SimpleNamespace(user=SimpleNamespace(id="guest", is_admin=False),
-                                     send_result=lambda *a: None, send_error=lambda *a: None)
-        with pytest.raises(Unauthorized):
-            handler(hass, connection, {"id": 1, "type": "x", **msg})
 
 
 @pytest.mark.asyncio
