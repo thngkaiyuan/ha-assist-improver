@@ -111,6 +111,14 @@ def test_a_failed_step_reads_alike_in_a_recording_and_a_replay_from_each_copy_ho
                                               "error": True})) == (None, 0, None)
 
 
+def test_a_failed_step_still_shows_once_home_assistant_writes_its_result_alone():
+    """DETAILS P14.4.11 and P14.4.12: Home Assistant's chat log marks its tool_result copy for removal (by Core
+    2027.11). A step it answered with an error in its result alone still shows in its turn and the row's count, in a
+    recording and in a replay's steps."""
+    shown = [{"step": "Turn on · Lamp", "error": "Lamp unreachable"}]
+    assert failed_steps(lamp_answered(result={"data": LAMP_ERROR, "error": True})) == (shown, 1, shown)
+
+
 @pytest.mark.asyncio
 async def test_kept_conversations_are_found_by_what_was_said_and_when(improver):
     hass = improver.hass
