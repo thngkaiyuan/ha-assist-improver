@@ -4,8 +4,9 @@ A small model (any AI Task, local ones included) reads a conversation, however m
 Assist had (its instructions, which name the speaker and list the household's devices; every tool call and Home
 Assistant's result), what changed in the home, and the involved devices' cards, and answers once. Its tokens are cheap
 next to the analysis they can save, so it gets everything it needs to decide. Only a sure "smooth" skips the analyzer;
-anything else, including a failed check, gets the full analysis. A skipped session still reaches the generator and
-reviewer: code records it as a session without friction, with no goals extracted.
+any other answer gets the full analysis. A failed check is retried, then held at Triage (SPEC.md P0.8). A skipped
+session still reaches the generator and reviewer: code records it as a session without friction, with no goals
+extracted.
 """
 
 import probatio

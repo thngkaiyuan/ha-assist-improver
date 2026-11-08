@@ -29,7 +29,7 @@ from . import failures
 from .analysis import deliberate
 from .flow import KEYS
 from .records import PipelineRun
-from .reflective import index_of
+from .reflective import recent_spend
 from .settings import GATES, blocked_stages, listed, model_name, paused, role_model
 from .trace import for_run, journal, span, tag
 
@@ -142,9 +142,9 @@ class Pipeline:
     def _spend(self):
         """Recent analyses' and quick checks' tokens each, on average, with the model each of those steps runs on now
         (as Settings names it): what the confirmation's rough estimate goes by. No prices, no spend tracking."""
-        runs, out = index_of(self.runtime.role_runs), {}  # The run log's index (reflective.RunIndex).
+        spent, out = recent_spend(self.runtime.role_runs.runs), {}
         for stage, role in (("analyze", "analyzer"), ("triage", "triage")):
-            if (per := runs.spent[stage].average()) and (entity_id := role_model(self.entry, role)):
+            if (per := spent[stage]) and (entity_id := role_model(self.entry, role)):
                 out[stage] = {"tokens": round(per), "model": model_name(self.hass, entity_id)}
         return out
 

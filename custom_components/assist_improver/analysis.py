@@ -10,7 +10,7 @@ from .cases import CaseError, digest as content_digest
 from .exploration import ListImprovements, ReadImprovement, SessionAPI, related_improvements, session_view
 from .failures import closing
 from .records import Analysis
-from .reflective import index_of, run_role
+from .reflective import held_verdict, run_role
 from .settings import role_model
 
 
@@ -137,5 +137,6 @@ def analyzer_input(runtime, recording_id, view, sent=None, revisions=(), answere
 
 def kept_verdict(runtime, recording_id, digest_sha256):
     """The quick check's verdict on a session waiting for analysis (same content), if one was kept."""
-    run = index_of(runtime.role_runs).held.get(recording_id)  # Its latest held record (reflective.RunIndex).
+    run = next((r for r in reversed(runtime.role_runs.runs)  # Its latest held record decides.
+                if r.get("recording_id") == recording_id and held_verdict(r)), None)
     return run["triage"] if run is not None and run.get("digest_sha256") == digest_sha256 else None

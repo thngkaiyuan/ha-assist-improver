@@ -1,4 +1,5 @@
-"""The run log on disk is what's in memory, and its index keeps what recent analyses and quick checks used."""
+"""The run log: on disk what's in memory, a record recorded again moved to the end, and what the pipeline reads from it
+(the tokens recent analyses and quick checks used, a conversation's latest held verdict)."""
 
 from datetime import timedelta
 import json
@@ -8,7 +9,7 @@ import pytest
 from homeassistant.util.dt import parse_datetime
 
 from custom_components.assist_improver.analysis import kept_verdict
-from custom_components.assist_improver.reflective import RoleRuns, RunIndex
+from custom_components.assist_improver.reflective import RoleRuns
 from custom_components.assist_improver.settings import model_name
 from kit import improver  # noqa: F401 - a fixture.
 
@@ -32,33 +33,6 @@ async def test_a_record_that_wont_serialize_is_reported_as_before_and_the_rest_s
 
 def used(inp, out):
     return {"events": [{"input_tokens": inp, "output_tokens": out}]}
-
-
-def test_the_index_keeps_what_recent_analyses_and_quick_checks_used_without_counting_one_twice():
-    """The run confirmation's rough estimate: input plus output tokens, on average, over the recent analyses and quick
-    checks. A smooth verdict is a quick check, not an analysis; a verdict kept from an earlier check is counted once."""
-    from custom_components.assist_improver import reflective
-    check = lambda inp, out, **extra: {"status": "completed", "usage": used(inp, out), **extra}  # noqa: E731
-    runs = [
-        {"id": "a1", "kind": "journey_analyzer", "recording_id": "r1", "status": "completed", "analysis": {"goals": []},
-         "answer_status": "accepted", "usage": used(20_000, 1_000), "triage": check(3_000, 100)},
-        {"id": "s1", "kind": "journey_analyzer", "recording_id": "r2", "status": "completed", "analysis": {"triaged": {}},
-         "answer_status": "triaged_smooth", "triage": check(2_000, 100)},
-        {"id": "h1", "kind": "journey_analyzer", "recording_id": "r3", "status": "held", "triage": check(4_000, 200)},
-        {"id": "a3", "kind": "journey_analyzer", "recording_id": "r3", "status": "completed", "analysis": {"goals": []},
-         "answer_status": "accepted", "usage": used(30_000, 2_000), "triage": check(4_000, 200, kept=True)},
-        {"id": "f1", "kind": "journey_analyzer", "recording_id": "r4", "status": "failed", "usage": used(9_000, 0)},
-        {"id": "old", "kind": "journey_analyzer", "recording_id": "r5", "status": "completed",
-         "analysis": {"goals": []}, "answer_status": "accepted"},  # Trimmed by the tidy-up: no usage left.
-    ]
-    index = RunIndex(runs)
-    assert index.spent["analyze"].average() == (21_000 + 32_000) / 2
-    assert index.spent["triage"].average() == (3_100 + 2_100 + 4_200) / 3
-    recent = reflective.Recent(size=2)
-    for value in (10, 20, 30):
-        recent.add(value)
-    assert recent.average() == 25  # Only the last ones count.
-    assert RunIndex().spent["analyze"].average() is None
 
 
 @pytest.mark.asyncio

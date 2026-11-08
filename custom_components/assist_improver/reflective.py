@@ -6,7 +6,6 @@ Usage is what the provider reports through HA's conversation trace, if any.
 """
 
 import asyncio
-from collections import deque
 from contextlib import contextmanager, nullcontext
 from contextvars import ContextVar
 from copy import deepcopy
@@ -123,84 +122,38 @@ def tokens(stats):
 RECENT = 50  # Analyses (and quick checks) the run confirmation's rough token estimate goes by.
 
 
-class Recent:
-    """The last few values added, with their sum: an average kept as they come, without a scan."""
-
-    def __init__(self, size=RECENT):
-        self.values, self.total = deque(maxlen=size), 0
-
-    def add(self, value):
-        if len(self.values) == self.values.maxlen:
-            self.total -= self.values[0]
-        self.values.append(value)
-        self.total += value
-
-    def average(self):
-        return self.total / len(self.values) if self.values else None
+def _analysis(run):
+    return run.get("kind") == "journey_analyzer" and run.get("status") == "completed" and bool(run.get("analysis"))
 
 
-class RunIndex:
-    """What the pipeline reads from the run log, gathered in one pass: each recording's latest held quick-check verdict,
-    records by id, and the tokens recent analyses and quick checks used. Kept current as records are added; taking out
-    one an answer rests on (rare: a record replaced by one with its id) means building it again."""
+def _tokens(usage):
+    spent = tokens([e for e in (usage or {}).get("events") or [] if isinstance(e, dict)])  # Only what reads as counts.
+    return spent.get("input_tokens", 0) + spent.get("output_tokens", 0)
 
-    def __init__(self, runs=()):
-        self.held = {}  # {recording id: its latest held record with a completed quick check}
-        self.ids = {}  # {record id: the first record with it}
-        self.repeated = set()  # Ids more than one record has (only an old log's): replacing those rebuilds.
-        # Provider-reported tokens (input plus output) each recent analysis and quick check used: a rough guide only.
-        self.spent = {"analyze": Recent(), "triage": Recent()}
-        self.size = 0
-        for run in runs:
-            self.add(run)
 
-    @staticmethod
-    def _analysis(run):
-        return run.get("kind") == "journey_analyzer" and run.get("status") == "completed" and bool(run.get("analysis"))
+def held_verdict(run):
+    """Whether a run record is a quick check's verdict held for its analysis (analysis.kept_verdict reuses it)."""
+    return (run.get("kind") == "journey_analyzer" and run.get("status") == "held"
+            and (run.get("triage") or {}).get("status") == "completed")
 
-    @staticmethod
-    def _tokens(usage):
-        spent = tokens([e for e in (usage or {}).get("events") or [] if isinstance(e, dict)])  # Only what reads as counts.
-        return spent.get("input_tokens", 0) + spent.get("output_tokens", 0)
 
-    @staticmethod
-    def _verdict(run):
-        return (run.get("kind") == "journey_analyzer" and run.get("status") == "held"
-                and (run.get("triage") or {}).get("status") == "completed")
-
-    def add(self, run):
-        """A record appended to the log."""
-        self.size += 1
-        if (key := run.get("id")) in self.ids:
-            self.repeated.add(key)
-        else:
-            self.ids[key] = run
+def recent_spend(runs):
+    """The provider-reported tokens (input plus output) the last RECENT analyses and quick checks in a run log used,
+    each on average (None for none): a rough guide only. A verdict kept from an earlier check cost nothing this time."""
+    spent = {"analyze": [], "triage": []}
+    for run in reversed(runs):
+        if len(spent["analyze"]) == len(spent["triage"]) == RECENT:
+            break
         if run.get("kind") != "journey_analyzer":
-            return
-        if self._analysis(run):
-            if run.get("answer_status") != "triaged_smooth" and (used := self._tokens(run.get("usage"))):
-                self.spent["analyze"].add(used)
-        elif self._verdict(run):
-            self.held[run.get("recording_id")] = run
-        check = run.get("triage") or {}  # A verdict kept from an earlier check cost nothing this time.
-        if ((self._analysis(run) or self._verdict(run)) and check.get("status") == "completed"
-                and not check.get("kept") and (used := self._tokens(check.get("usage")))):
-            self.spent["triage"].add(used)
-
-    def remove(self, run):
-        """A record taken out of the log. False when an answer rested on it: build again."""
-        key = run.get("id")
-        if key in self.repeated or self.ids.get(key) is not run or self._analysis(run) or self._verdict(run):
-            return False
-        del self.ids[key]
-        self.size -= 1
-        return True
-
-
-def index_of(role_runs):
-    """The index of a run log: RoleRuns keeps its own current; anything else holding runs (a test's stand-in) gets one
-    built from them."""
-    return role_runs.run_index if isinstance(role_runs, RoleRuns) else RunIndex(getattr(role_runs, "runs", []))
+            continue
+        if (_analysis(run) and run.get("answer_status") != "triaged_smooth" and len(spent["analyze"]) < RECENT
+                and (used := _tokens(run.get("usage")))):
+            spent["analyze"].append(used)
+        check = run.get("triage") or {}
+        if ((_analysis(run) or held_verdict(run)) and check.get("status") == "completed" and not check.get("kept")
+                and len(spent["triage"]) < RECENT and (used := _tokens(check.get("usage")))):
+            spent["triage"].append(used)
+    return {stage: sum(used) / len(used) if used else None for stage, used in spent.items()}
 
 
 def _frozen(run):
@@ -210,14 +163,6 @@ def _frozen(run):
         return orjson.Fragment(json_bytes(run))
     except TypeError:
         return run
-
-
-def _position(runs, run):
-    """Where a record is in the log (searched from the end: the one replaced is usually recent)."""
-    for n in range(len(runs) - 1, -1, -1):
-        if runs[n] is run:
-            return n
-    return None
 
 
 class RoleRuns:
@@ -230,15 +175,7 @@ class RoleRuns:
                            serialize_in_event_loop=False)
         self.runs: list[RoleCall | PipelineRun] = []  # By kind: records.RUN_LOG.
         self.lock = asyncio.Lock()
-        self._index = self._indexed = None  # The index, and the list of runs it was built for.
         self._json, self._json_for = [], None  # Each record's JSON, in order, and the list of runs it's for.
-
-    @property
-    def run_index(self):
-        """The index (RunIndex), built again if the log was replaced or changed other than by record() and prune()."""
-        if self._indexed is not self.runs or self._index.size != len(self.runs):
-            self._index, self._indexed = RunIndex(self.runs), self.runs
-        return self._index
 
     def _frozen_runs(self):
         if self._json_for is not self.runs or len(self._json) != len(self.runs):
@@ -256,33 +193,19 @@ class RoleRuns:
             if run["status"] == "running":  # A pipeline run's error is text (records.PipelineRun): none to add.
                 run.update(status="interrupted", error=None if run.get("kind") == "pipeline" else
                            {"message": "Reload during the call; not repeated"})
-        self._index, self._indexed = RunIndex(self.runs), self.runs
         await self._save()
 
     async def record(self, run):
-        """Keep a record (replacing the one with its id). One a pipeline run creates names the run and its trace."""
+        """Keep a record, at the end of the log, replacing any with its id (an old log's may have several). One a
+        pipeline run creates names the run and its trace."""
         kept = deepcopy(run)
         if kept.get("kind") != "pipeline":
             for key, value in ids().items():
                 kept.setdefault(key, value)
         async with self.lock:
-            runs, frozen, index = self.runs, self._frozen_runs(), self.run_index
-            old = index.ids.get(run["id"])
-            n = _position(runs, old) if old is not None and run["id"] not in index.repeated else None
-            if n is not None:  # It replaces the one with its id: out of its place, and in at the end.
-                runs, frozen = runs[:n] + runs[n + 1:], frozen[:n] + frozen[n + 1:]
-                if not index.remove(old):
-                    index = None
-            elif old is not None:  # Several records with its id (an old log's): it replaces them all.
-                kept_pairs = [(r, f) for r, f in zip(runs, frozen) if r.get("id") != run["id"]]
-                runs, frozen, index = [r for r, _ in kept_pairs], [f for _, f in kept_pairs], None
-            self.runs, self._json = [*runs, kept], [*frozen, _frozen(kept)]
-            self._json_for = self.runs
-            if index is None:
-                self._index = RunIndex(self.runs)
-            else:
-                index.add(kept)
-            self._indexed = self.runs
+            others = [(r, f) for r, f in zip(self.runs, self._frozen_runs()) if r.get("id") != run["id"]]
+            self.runs = self._json_for = [*(r for r, _ in others), kept]
+            self._json = [*(f for _, f in others), _frozen(kept)]
             await self._save()
         return deepcopy(kept)
 
@@ -294,7 +217,6 @@ class RoleRuns:
             if dropped:
                 self.runs = self._json_for = [r for r, _ in kept]
                 self._json = [f for _, f in kept]
-                self._index, self._indexed = RunIndex(self.runs), self.runs
                 await self._save()
         return dropped
 
