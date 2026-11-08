@@ -22,14 +22,17 @@ from homeassistant.core import CoreState, callback
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.util.hass_dict import HassKey
 
-from . import conversations
+from . import ai_setup, conversations
 from .cases import CaseError
 from .changeset import BUSY, NoPanel, plan_steps
 from .const import DOMAIN, VERSION
 from .devview import COMMANDS as DEVELOPER_COMMANDS
+from .household import API_ID, API_NAME, KEY, SHOWN, as_text, normalized, pipelines, plain, user_names
 from .improvements import (DECISIONS, KINDS, PENDING, choices, display_title, gains, moves, reasons, reply_words,
                            row, sentence, stuck_text)
+from .instructions import is_edit
 from .runtime import loaded
+from .settings import ROLES, SettingsError, provider_models, recommended_options, updated, view
 from .weeks import reviewed
 
 URL_PATH = "assist-improver"  # The panel's address: /assist-improver?id=<improvement>.
@@ -136,10 +139,8 @@ def _yaml(config):
 def change_rows(step, names=None):
     kind, before, after = step["kind"], step["before"], step["after"]
     if kind == "household":
-        from .household import as_text
         return numbered_diff(as_text(before, names).splitlines(), as_text(after, names).splitlines())
     if kind == "assistant_api":
-        from .household import API_ID, API_NAME
         label = lambda a: API_NAME if a == API_ID else "Assist" if a == "assist" else a
         return ([{"sign": "-", "old": None, "new": None, "text": label(a)} for a in before or [] if a not in after]
                 + [{"sign": "+", "old": None, "new": None, "text": label(a)} for a in after if a not in (before or [])])
@@ -382,7 +383,6 @@ def outcome_text(item):
 def _change_text(change, assistant, hass=None):
     """A change as proposed, in a line: what the review lists once nothing of it is planned or applied. hass: Home
     Assistant now, for an automation's name."""
-    from .instructions import is_edit
     kind = change.get("kind")
     if is_edit(change):  # One assistant's own instructions: lines added, replaced or removed there.
         name = change.get("assistant") or assistant
@@ -430,7 +430,6 @@ def _change_text(change, assistant, hass=None):
 def _only_recommends(change):
     """Whether a change is only a recommendation: an assistant change that sets neither its instructions nor its LLM
     APIs."""
-    from .instructions import is_edit
     return change.get("kind") == "assistant" and not is_edit(change) and "llm_hass_api" not in change
 
 
@@ -442,7 +441,6 @@ def _recommended_text(change, assistant):
 
 def _change_kind(change):
     """A change as proposed, labelled as the review labels its steps (improvements.KINDS)."""
-    from .instructions import is_edit
     kind = change.get("kind")
     if kind == "preference" or is_edit(change):
         return "instructions"
@@ -642,7 +640,6 @@ async def ws_answer(hass, connection, msg):
 async def ws_household(hass, connection, msg):
     """The household knowledge (everyone's lines, then each person's; and as one plain text, which the settings'
     Uninstall shows to save), and Home Assistant's assistants."""
-    from .household import KEY, normalized, pipelines, plain, user_names
     knowledge = normalized(getattr(hass.data.get(KEY), "knowledge", None))
     lines = len(knowledge["everyone"]) + sum(len(v) for v in knowledge["people"].values())
     names = await user_names(hass, knowledge["people"])
@@ -663,7 +660,6 @@ async def ws_household(hass, connection, msg):
 async def ws_household_edit(hass, connection, msg):
     """Add, change or remove one household knowledge line: everyone's (scope "everyone") or one person's (their user
     ID). A line being changed or removed must still read as it did (old), so two edits never cross."""
-    from .household import KEY, normalized
     household = hass.data.get(KEY)
     if household is None:
         connection.send_error(msg["id"], "not_ready", "Household knowledge isn't loaded yet.")
@@ -758,7 +754,6 @@ def _entry(hass, connection, msg):
 @callback
 def ws_settings(hass, connection, msg):
     """The settings view: each AI role's model, the AI Tasks to choose from, and the other settings."""
-    from .settings import view
     if (entry := _entry(hass, connection, msg)) is None:
         return
     connection.send_result(msg["id"], view(hass, entry))
@@ -773,7 +768,6 @@ def ws_settings(hass, connection, msg):
 @callback
 def ws_settings_set(hass, connection, msg):
     """Change one setting; it applies right away, even during a run."""
-    from .settings import SettingsError, updated, view
     if (entry := _entry(hass, connection, msg)) is None:
         return
     try:
@@ -794,7 +788,6 @@ def ws_settings_set(hass, connection, msg):
 @websocket_api.async_response
 async def ws_settings_models(hass, connection, msg):
     """The models a provider offers for a new AI Task, from its own add-AI-Task flow."""
-    from .settings import provider_models
     try:
         connection.send_result(msg["id"], await provider_models(hass, msg["entry_id"]))
     except Exception as err:  # noqa: BLE001 - a provider's flow may refuse with anything: said, not raised.
@@ -808,14 +801,13 @@ async def ws_settings_models(hass, connection, msg):
 @websocket_api.async_response
 async def ws_settings_create(hass, connection, msg):
     """Add an AI Task through the provider's own flow, with the chosen model, and use it for one role."""
-    from .ai_setup import create_ai_task
-    from .settings import ROLES, SettingsError, updated, view
     if (entry := _entry(hass, connection, msg)) is None:  # Before adding anything at the provider.
         return
     if msg["role"] not in ROLES:  # Checked first, so nothing is added at the provider for nothing.
         connection.send_error(msg["id"], "invalid", f"Unknown role {msg['role']}")
         return
-    entity_id, reason = await create_ai_task(hass, msg["entry_id"], "chosen", model=msg["model"], name=msg.get("name"))
+    entity_id, reason = await ai_setup.create_ai_task(hass, msg["entry_id"], "chosen", model=msg["model"],
+                                                      name=msg.get("name"))
     if entity_id is None:
         connection.send_error(msg["id"], "create_failed", reason)
         return
@@ -834,7 +826,6 @@ async def ws_settings_create(hass, connection, msg):
 async def ws_settings_recommended(hass, connection, msg):
     """The recommended setup for every step: AI Tasks that fit are reused, the rest added through the provider's own
     flow. The view comes back with notes on anything that couldn't be done."""
-    from .settings import SettingsError, recommended_options, view
     if (entry := _entry(hass, connection, msg)) is None:
         return
     try:
@@ -1024,7 +1015,6 @@ async def ws_conversations_delete(hass, connection, msg):
 async def ws_uninstall(hass, connection, msg):
     """Uninstall, from the settings: the improver's config entry is removed, as Home Assistant's own page removes it,
     with no notification of the household's lines, as its step showed them."""
-    from .household import SHOWN
     if (runtime := _runtime(hass, connection, msg)) is None:
         return
     entry = runtime.pipeline.entry  # Kept: the integration unloads as it's removed.

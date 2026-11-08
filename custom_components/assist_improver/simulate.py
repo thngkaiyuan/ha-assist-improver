@@ -25,17 +25,20 @@ from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.storage import Store
 from homeassistant.util.dt import utcnow
 
-from . import happened, measures, targets, touchpoints
+from . import happened, measures, reflective, targets, touchpoints
+from .analyzer import question_run
 from .cases import (CaseError, calls_in, digest, recording_turns, replay_readiness, replayed, started_from,
                     transcript)
-from .changes import setup_from_changes
+from .changes import apis_now, setup_from_changes
 from .const import DOMAIN, STORAGE_VERSION, TESTED_PROVIDERS
 from .digest import _clip, _naming
+from .exploration import session_view
 from .failures import closing
-from .instructions import target
+from .instructions import is_edit, live, ran_with, target
 from .replay import SandboxHome, today as setup_today
 from .sandbox import seeded
 from .serialization import plain
+from .settings import role_model
 from .simulation import (_request_changes, assist_settings, assist_transitions, moved_by_others, per_entity,
                          same_effects, same_settings, setting_off)
 from .snapshot import assist_config, at_moment, on_today, renamed, renaming
@@ -213,7 +216,6 @@ def tested_against(hass, hypothesis, setup, source):
     """What a change was tested against, as the home has it (source): each item it saves (None: a new one), each
     automation it turns on or off, each registry field it sets, the exposure it changes; and, as Home Assistant has
     them, the instructions and LLM APIs it edits."""
-    from .changes import apis_now
     states, registry = source.get("states") or {}, setup.get("registry") or {}
     items = {"scripts": source.get("scripts") or {},
              **{key: {str(i.get("id")): i for i in source.get(key) or [] if i.get("id") is not None}
@@ -237,7 +239,6 @@ def tested_against(hass, hypothesis, setup, source):
 def reaches(hypothesis, recording):
     """Whether an idea changes anything for this conversation (DETAILS P6.8.5): an assistant change reaches only a
     conversation with that assistant, and a recommendation none (it's never replayed); everything else does."""
-    from .instructions import ran_with
     changes = hypothesis.get("changes") or []
     if not changes or any(c.get("kind") != "assistant" for c in changes):
         return True
@@ -249,7 +250,6 @@ def reaches(hypothesis, recording):
 def instructions_now(hass, hypothesis):
     """{target: template} of the assistants whose instructions the hypothesis edits, as Home Assistant has them while
     it's tested: applying it later finds a conflict if one changed since."""
-    from .instructions import is_edit, live
     found = {}
     for change in hypothesis.get("changes") or []:
         if is_edit(change) and change.get("target") and (now := live(hass, change["target"])) is not None:
@@ -338,7 +338,6 @@ def judgeable(goal, view, goals):
     recording holds a state of) or what a tool reported to Assist in a turn of its run (analyzer.question_run;
     happened.reported: an action's report of what it did tells nothing of a question), or the user asked for a form;
     a question beyond both with no form asked holds nothing to check."""
-    from .analyzer import question_run
     recorded, calls = view.source.get("states") or {}, getattr(view, "calls", None) or {}
     return goal.get("kind") == "fact" and (
         any(e in recorded for e in goal.get("entity_ids") or [])
@@ -382,12 +381,11 @@ async def check_facts(hass, entity_id, questions, turns):
     """The small model's answers on whether turns' replies give what the user asked to know: {status, answers, error,
     usage}, completed only with a well-formed answer for each question. questions: [{goal, asked, needs, form?,
     home?, turn}]; turns: each judged turn as the judge reads it (_turn)."""
-    from .reflective import run_role
     if not entity_id:
         return {"status": "not_run", "answers": [], "error": {"message": "No model to check with"}}
-    record = await run_role(hass, role=CONDUCT_ROLE, entity_id=entity_id, instructions=FACT_INSTRUCTIONS,
-                            payload={"questions": questions, "turns": turns}, structure=FACT_STRUCTURE,
-                            allow_paid_inference=True)
+    record = await reflective.run_role(hass, role=CONDUCT_ROLE, entity_id=entity_id, instructions=FACT_INSTRUCTIONS,
+                                       payload={"questions": questions, "turns": turns}, structure=FACT_STRUCTURE,
+                                       allow_paid_inference=True)
     given = {(a.get("goal"), a.get("turn")): a for a in _well_formed(FACT_STRUCTURE, record.get("output"))}
     judged = record["status"] == "completed" and all((q["goal"], q["turn"]) in given for q in questions)
     return {"status": "completed" if judged else "failed",
@@ -404,7 +402,6 @@ async def answered(hass, model, view, goals):
         recorded = recording_turns(view.recording, replay=False)
     except CaseError:
         return {}, None
-    from .analyzer import question_run
     roots = {n: g for n, g in enumerate(goals) if g.get("serves") is None and g.get("kind") == "fact"}
     found, runs = {}, {n: question_run(goals, g) for n, g in roots.items()  # Not one in the note: no reply.
                        if judgeable(g, view, goals) and g["turn"] <= len(recorded)}
@@ -477,12 +474,12 @@ async def check_conduct(hass, entity_id, objections, steps, turns):
     error, usage}, completed only with an answer for each turn every objection lists. Without a model it can't say
     (status not_run). objections: [{goal, quote, objected_to, judge: [turns]}]; steps: the replay's; turns: the
     recording's."""
-    from .reflective import run_role
     if not entity_id:
         return {"status": "not_run", "answers": [], "error": {"message": "No model to check with"}}
-    record = await run_role(hass, role=CONDUCT_ROLE, entity_id=entity_id, instructions=CONDUCT_INSTRUCTIONS,
-                            payload={"objections": objections, "replay": [_replayed_turn(s, turns) for s in steps]},
-                            structure=CONDUCT_STRUCTURE, allow_paid_inference=True)
+    record = await reflective.run_role(hass, role=CONDUCT_ROLE, entity_id=entity_id, instructions=CONDUCT_INSTRUCTIONS,
+                                       payload={"objections": objections,
+                                                "replay": [_replayed_turn(s, turns) for s in steps]},
+                                       structure=CONDUCT_STRUCTURE, allow_paid_inference=True)
     given = {(a.get("goal"), a.get("turn")): a for a in _well_formed(CONDUCT_STRUCTURE, record.get("output"))}
     asked = sorted((o["goal"], t) for o in objections for t in o["judge"])
     judged = record["status"] == "completed" and all(k in given for k in asked)
@@ -497,7 +494,6 @@ class Unjudged(Exception):
 
 def judge_model(entry):
     """The model that judges replies: its own setting, else the write-up model's."""
-    from .settings import role_model
     return role_model(entry, CONDUCT_ROLE) or role_model(entry, "editor")
 
 
@@ -654,7 +650,6 @@ class Trial:
                 if not identity.get("id") or not {"id", "user_id", "parent_id"} <= identity.keys():
                     raise CaseError("Cannot backfill missing historical identity")
             if self.after and self.session is None:  # What the replay with the change is judged on.
-                from .exploration import session_view
                 self.session = await session_view(self.hass, self.recording, setup=False)
             said = self.branch - 1  # The turns before the branch: the baseline's (DETAILS P6.2).
             carried = [s for s in self.baseline["steps"] if s["turn"] <= said] if said else []
@@ -873,7 +868,6 @@ async def baseline(hass, entry, runtime, rid, goals):
     the recording and goals under today's entity IDs, its turns, the recording as the analysis read it (session) and
     the judge's model. Untestable (conversation) when no idea can be tested on it (P6.6.7); Transient: the machinery's
     doing."""
-    from .exploration import session_view
     replays = runtime.replays
     try:
         recording = await runtime.recorder.export(rid)

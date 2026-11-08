@@ -21,11 +21,14 @@ from .cases import CaseError
 from .changes import changed
 from .const import DOMAIN
 from .digest import machinery
+from .household import render
+from .recorder import _pipeline, _pipeline_record
+from .reflective import role_marker
 from .sandbox import seed_options, setup_of
 from .serialization import plain
 from .settings import own_models
 from .simulation import UnsupportedSimulation, recorded, reports_movement
-from .snapshot import at_moment, home
+from .snapshot import at_moment, home, taken
 from .targets import describe
 from .touchpoints import Broken, get, guarded, relied_on, report
 from .trace import span
@@ -81,7 +84,6 @@ class SandboxHome:
                 raise
             raise UnsupportedSimulation(f"The sandbox could not be set up as the household's home: {err}") from err
         if (knowledge := self.knowledge()) is not None:
-            from .household import render
             await self.sandbox.call("household", knowledge=knowledge)
             lines = render(knowledge, user_id)
             # Never a test without the lines it's meant to read: the sandbox's fault.
@@ -210,7 +212,6 @@ def _pipeline_now(hass, recording):
     today's): the one it was recorded running through, else its device's, else Home Assistant's preferred one; None
     when there's none."""
     from homeassistant.components.assist_pipeline import PipelineNotFound, async_get_pipeline
-    from .recorder import _pipeline, _pipeline_record
     if "assist_pipeline" not in hass.config.components:
         return None
     turns = recording.get("turns") or []
@@ -231,8 +232,6 @@ async def setup_now(hass):
     a timer), with its storage and its configuration.yaml part, and every action, by whether it answers."""
     from homeassistant.components.intent import async_device_supports_timers
     from homeassistant.helpers import device_registry as dr
-    from .reflective import role_marker
-    from .snapshot import taken
     read = taken(hass)
     context = llm.LLMContext(platform=DOMAIN, context=Context(), language=hass.config.language,
                              assistant="conversation", device_id=None)

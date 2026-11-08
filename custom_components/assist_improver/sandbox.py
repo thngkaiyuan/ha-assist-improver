@@ -35,8 +35,11 @@ from homeassistant.util import dt as dt_util
 from homeassistant.util.hass_dict import HassKey
 
 from . import clock, standin
+from .cases import CaseError
 from .const import DOMAIN
 from .digest import kept
+from .recorder import Actions, acted
+from .serialization import plain
 from .touchpoints import relied_on, resolve
 
 _LOGGER = logging.getLogger(__name__)
@@ -117,7 +120,6 @@ def _tool_windows(hass, conversation_id, cap):
     """In a sandbox's loop, while a turn runs: a window (clock.Window, never past cap) from each assistant message
     with tool calls Home Assistant runs being added to the conversation's chat log (its stream has ended) until the
     last of their results is (the next model call starts there)."""
-    from .serialization import plain
     subscribe, events = resolve("chat_log_subscribe"), resolve("chat_log_events")
     open_ = {}  # "window" and the "calls" whose results it waits for, while one is open.
 
@@ -153,8 +155,6 @@ def _call_log(hass, held, request_id):
     P8.2.10): every action call under the turn's request (request_id: its context's), a script's own included, the
     one a failing tool call of its conversation (held's) ended in marked with its error (recorder.acted). Each {at,
     action, data, context, under?, error?}."""
-    from .recorder import Actions, acted
-    from .serialization import plain
     subscribe, events = resolve("chat_log_subscribe"), resolve("chat_log_events")
     log, actions, since = Actions(), [], [None]
     log.watch(None, request_id, actions)
@@ -334,7 +334,6 @@ class Sandbox:
         moved = {k: [old.attributes.get(k), new.attributes.get(k)] for k in {*old.attributes, *new.attributes}
                  if old.attributes.get(k) != new.attributes.get(k) and k != "friendly_name"}
         if old.state != new.state or moved:  # Its settings too, as a recording keeps them (exploration.SessionView).
-            from .serialization import plain
             self.changes.append({"entity_id": new.entity_id, "old": old.state, "new": new.state,
                                  **({"attributes_changed": plain(dict(sorted(moved.items())))} if moved else {})})
 
@@ -619,7 +618,6 @@ async def load_assistant(hass, entry, agent):
     if not set_up or conversation.async_get_agent(hass, entity_id) is None:
         from homeassistant.config_entries import ConfigEntryState
         from homeassistant.loader import IntegrationNotFound, async_get_integration
-        from .cases import CaseError
         state = loaded.state
         await hass.config_entries.async_remove(loaded.entry_id)  # No retries against the provider meanwhile.
         why = " | ".join([f"The sandbox could not set up the assistant's {loaded.domain} entry ({state.value})",
@@ -660,7 +658,6 @@ def _stand_in_apis(hass, subentries, recorded):
             self.parameters = probatio.Schema(Specified(spec.get("parameters") or {}))
 
         async def async_call(self, hass, tool_input, llm_context):
-            from .serialization import plain
             sandbox, args = hass.data[SANDBOX_KEY], plain(tool_input.tool_args)
             answer = next((r["result"] for r in sandbox.recorded.get("results") or []
                            if r["tool_name"] == self.name and r["tool_args"] == args), None)
@@ -741,7 +738,6 @@ def _actions(hass):
 async def _answer(hass, call):
     """A call beyond the home, logged as an outside receipt: answered empty, as not simulated (no action's answer is
     recorded)."""
-    from .serialization import plain
     sandbox, name = hass.data[SANDBOX_KEY], f"{call.domain}.{call.service}"
     sandbox.outside.append({"action": name, "data": plain(dict(call.data)), "answer": "not simulated"})
     sandbox.unsimulated.append(name)
@@ -818,7 +814,6 @@ async def run_turn(hass, text, conversation_id, context, language, agent_id, dev
     from homeassistant.components import conversation
     from homeassistant.core import Context
     from homeassistant.helpers import chat_session
-    from .serialization import plain
     sandbox, usage, held = hass.data[SANDBOX_KEY], [], {}
     before = {e: dict(state.attributes) for e in watch if (state := hass.states.get(e)) is not None}
     marks = {k: len(getattr(sandbox, k)) for k in MARKED}
@@ -858,7 +853,6 @@ async def run_turn(hass, text, conversation_id, context, language, agent_id, dev
 def home_now(hass):
     """The home's states now, each {state, attributes} in plain form: the voice assistant's own entities and the
     improver's own AI Tasks aren't the home (digest.kept)."""
-    from .serialization import plain
     gears = hass.data[SANDBOX_KEY].machinery | hass.data[SANDBOX_KEY].cut
     return {s.entity_id: {"state": s.state, "attributes": plain(dict(s.attributes))} for s in hass.states.async_all()
             if s.entity_id not in gears}
@@ -991,7 +985,6 @@ async def snapshot(hass, attributes=(), until=None):
     changed), its device commands and its calls beyond the home; the attributes of the entities named (the settings
     a turn is judged on)."""
     from copy import deepcopy
-    from .serialization import plain
     sandbox = hass.data[SANDBOX_KEY]
     with _held(hass):
         await hass.loop.settle(_epoch(until), until=hass.async_block_till_done())

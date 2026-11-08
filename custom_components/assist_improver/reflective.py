@@ -26,6 +26,7 @@ from .cases import CaseError, digest
 from .const import DOMAIN, STORAGE_VERSION
 from .failures import closing
 from .records import PipelineRun, RoleCall
+from .retention import prune_runs
 from .serialization import plain
 from .trace import ids, span, timed
 
@@ -299,7 +300,6 @@ class RoleRuns:
 
     async def prune(self, recordings, now=None):
         """The daily tidy-up (retention.prune_runs); returns what it did."""
-        from .retention import prune_runs
         async with self.lock:
             runs, done = prune_runs(self.runs, recordings, now)
             if done["deleted"]:

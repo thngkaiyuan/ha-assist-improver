@@ -25,7 +25,7 @@ import re
 import probatio
 
 from . import happened, standin, targets
-from .exploration import RoleTool
+from .exploration import RoleTool, applied_too_early
 
 ROLE = "journey_analyzer"
 ASSISTANT = ("assistant", "follow-on of an assistant change on the same physical device")
@@ -528,7 +528,6 @@ def problems(view, answer, note=None, existing=(), revisions=()):
 def _conduct_problems(view, answer, goal, where, note_turns, existing):
     """A conduct goal, checked: the Assist turn it's about, in its goal's tree and before it was said ("all" only in
     a note); its quote, the household's own words where they said them; an applied improvement it names."""
-    from .exploration import applied_too_early
     found, turn, about = [], goal["turn"], goal.get("about")
     said = note_turns[turn] if turn in note_turns else next(
         (t["user_says"] for t in view.digest["turns"] if t["turn"] == turn), "")
@@ -646,7 +645,6 @@ class MarkDuplicate(RoleTool):
         self.existing, self.marks = {i["improvement"]: i for i in existing}, {}
 
     def run(self, goal_turn, improvement, why):
-        from .exploration import applied_too_early
         item = self.existing.get(improvement)
         if item is None:
             return {"accepted": False, "problem": f"There's no improvement {improvement!r}; list_improvements shows "

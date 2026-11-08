@@ -16,6 +16,7 @@ from homeassistant.util.hass_dict import HassKey
 
 from . import household, touchpoints
 from .const import DOMAIN
+from .reflective import ROLE_ACTIVE
 from .runtime import loaded
 
 
@@ -74,7 +75,5 @@ def async_get_tools(hass, llm_context, api_id):
 
 
 def role_active():
-    """Whether one of the improver's own AI roles is calling (they, and replays, never file anything). Imported here:
-    a sandbox's worker reads this module for the household's lines and never loads the AI roles."""
-    from .reflective import ROLE_ACTIVE
+    """Whether one of the improver's own AI roles is calling (they, and replays, never file anything)."""
     return ROLE_ACTIVE.get()

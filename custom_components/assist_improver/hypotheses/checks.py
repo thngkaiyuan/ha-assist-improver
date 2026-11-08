@@ -6,7 +6,8 @@ import probatio
 
 from .. import changes
 from ..exploration import applied_too_early
-from ..instructions import FACTS, carried, edit, effective, is_edit
+from ..household import normalized
+from ..instructions import FACTS, carried, edit, effective, is_edit, target
 from .goals import friction_by_goal, goal_summary
 from .schema import HYPOTHESES
 
@@ -93,7 +94,6 @@ def _open_goals(sessions, answer):
 
 def household_knowledge(sessions):
     """The household knowledge as it is now (lines every assistant on Assist reads), in today's setup."""
-    from ..household import normalized
     return normalized(sessions.household.source.get("household"))
 
 
@@ -108,7 +108,6 @@ def known_lines(sessions):
 def instructions(sessions):
     """(template, configuration) of the newest recorded assistant: its instructions as they are now (as it ran with
     them when it's no longer set up, or isn't told apart), or None."""
-    from ..instructions import target
     assistant = getattr(sessions.assistant_view, "assistant", None)
     record = sessions.assistants().get(target(assistant)) if assistant else None
     return (sessions.current_template(record) if record else (assistant or {}).get("options", {}).get("prompt"),

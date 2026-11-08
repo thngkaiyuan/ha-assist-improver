@@ -3,7 +3,7 @@ in the run log however it ends."""
 
 from uuid import uuid4
 
-from . import hypotheses, service_user, trace, triage
+from . import hypotheses, replay, service_user, trace, triage
 from .cases import CaseError
 from .exploration import session_view
 from .failures import closing
@@ -33,7 +33,6 @@ async def window(runtime, analyses, *, feedback=None, sent_back=None, so_far=Non
     (answered: [{question, answer}]), and the other conversations' improvements waiting for review or applied
     (existing). The household is today's setup (today: replay.setup_now's, read now unless given) at its newest
     conversation's moment. The preflight loads the same (tools/preflight.py), on a setup of its own."""
-    from .replay import setup_now
     recorder = runtime.recorder
     analyses, given = list(analyses), {a["recording_id"] for a in analyses}
     others = [rid for rid in sorted(set(recorder.index) - given)
@@ -47,7 +46,7 @@ async def window(runtime, analyses, *, feedback=None, sent_back=None, so_far=Non
 
     async def load(recording_id):
         return await session_view(recorder.hass, await recorder.export(recording_id))
-    today = today if today is not None else await setup_now(recorder.hass)
+    today = today if today is not None else await replay.setup_now(recorder.hass)
     household = await session_view(recorder.hass, as_today(household.recording, today["home"]))
     sessions = hypotheses.Sessions(analyses, briefs=briefs, loader=load, household=household, assistant=assistant)
     sessions.today, sessions.hass = today, recorder.hass  # Its validators check changes; its readers read them.

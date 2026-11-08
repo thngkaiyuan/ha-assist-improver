@@ -15,11 +15,16 @@ import logging
 from homeassistant.helpers.storage import Store
 from homeassistant.util.dt import utcnow
 
-from . import stamps
+from . import contracts, records, simulate, stamps
 from .analysis import analyze, deliberate
+from .analyzer import top_level
+from .hypotheses import REVIEWS_PER_ROUND, friction_by_goal
+from .improvements import PENDING, display_title
+from .measures import goals_of, note_labels
 from .proposal import propose
-from .cases import CaseError
-from .const import DOMAIN
+from .cases import CaseError, digest, recording_turns, started_from
+from .const import CONF_TESTS_PER_GOAL, DEFAULT_TESTS_PER_GOAL, DOMAIN
+from .settings import paused, role_model
 from .trace import span
 
 HOME_ASSISTANT, SENTENCE = "conversation.home_assistant", "sentence_trigger"  # Who answers a turn, not an AI.
@@ -37,7 +42,6 @@ CLOSED = ("session_expired", "interrupted", "capture_timed_out")  # A conversati
 def analysed_turns(analysis):
     """An analysis's turns: each one said (by number), then each note's label: "note" for the note it was sent in
     with, "revision:<round>" for a revision note (measures.note_labels)."""
-    from .measures import note_labels
     goals = analysis.get("goals") or []
     said = int(analysis.get("turns") or max([g.get("turn") or 0 for g in goals] or [0]))
     return list(range(1, said + 1)) + [label for _, label in sorted(note_labels({**analysis, "turns": said}).items())]
@@ -286,7 +290,6 @@ class Flow:
 
     def _handoff(self, conv, start, end, data):
         """What a move hands the stage it enters, checked against its contract (records.HANDOFFS)."""
-        from . import contracts, records
         base = {"conversation": conv["id"], "round": conv["round"]}
         if end == "Your household":
             kind, record = records.Ended, {**base, "outcome": conv["outcome"]}
@@ -319,7 +322,6 @@ class Flow:
     def _judged(self, conv):
         """The goals the conversation carries, as measures.goals_of gives them: its latest analysis's, its notes'
         among them; none while it has no analysis."""
-        from .measures import goals_of
         try:
             return goals_of(self._latest_analysis(conv))
         except Failed:
@@ -339,7 +341,6 @@ class Flow:
     def revisions(self, conv):
         """The revision notes since the conversation was last sent in, in order, as its next analysis reads them, each
         with the improvement it revises (P12.8.1): {round, note, title (as the household reads it), changes, roots}."""
-        from .improvements import display_title
         sent = max((int(n) for n, r in conv["rounds"].items() if "Your Assist" in r["records"]), default=0)
         out = []
         for n, r in sorted(conv["rounds"].items(), key=lambda kv: int(kv[0])):
@@ -381,7 +382,6 @@ class Flow:
     async def _advance(self, rid, run, moved, released=False):
         """Moves the conversation on until its round stops; after each move, the run says the stage at work on it, and
         moved() keeps that."""
-        from .settings import paused
         conv = self.record(rid)
         tries = 1 if released else RETRIES
         while conv["stage"] not in ENDS:
@@ -443,7 +443,6 @@ class Flow:
     # The stages' work: each moves the conversation on, ends it, or raises Failed.
 
     async def _triage(self, rid, conv):
-        from .settings import role_model
         if not role_model(self.entry, "triage"):  # No quick check set up: it passes straight through.
             self._enter(conv, "Analyze")
             return
@@ -462,7 +461,6 @@ class Flow:
             raise Failed(str((result.get("error") or {}).get("message") or "The quick check didn't finish."))
 
     async def _analyze(self, rid, conv):
-        from .hypotheses import friction_by_goal
         if (analysis := await self._analysed(rid, conv)) is None:
             return
         trouble = set(friction_by_goal(analysis))
@@ -481,7 +479,6 @@ class Flow:
     async def _answered_locally(self, rid):
         """The first turn Home Assistant's built-in commands answered, not the AI (records.CantImprove), or None. An
         automation's sentence trigger answers before the AI too, but no setting gives that turn to the AI."""
-        from .cases import recording_turns
         recording = await self.runtime.recorder.export(rid)
         replied = lambda turn: [m.get("agent_id") for m in turn["messages"]  # noqa: E731 - who answered it last.
                                 if m.get("role") == "assistant"][-1:]
@@ -539,7 +536,6 @@ class Flow:
 
     def tests_cap(self):
         """The tests each round gets: the counterfactual setting (P0.9)."""
-        from .const import CONF_TESTS_PER_GOAL, DEFAULT_TESTS_PER_GOAL
         return int(self.entry.options.get(CONF_TESTS_PER_GOAL, DEFAULT_TESTS_PER_GOAL))
 
     def tests_left(self, rid):
@@ -555,7 +551,6 @@ class Flow:
         acts again after a test, that test sent it back to Propose, paid for by the round's tests.
         simulate.Untestable: why it can't be tested (a conversation no idea can be tested on is marked so for its
         round); Failed: the machinery cut it off, and it can run again."""
-        from . import contracts, records, simulate
         conv = self.record(rid)
         record = conv["rounds"][str(conv["round"])]["records"]["Propose"]
         try:  # Decided from today's plan each time: a repeat on the same plan replays nothing (its replays are kept).
@@ -587,9 +582,6 @@ class Flow:
         (ask_reviewer) and Simulate's validation (test_idea) for each idea, spending the round's tests as it sees fit,
         and sends on one idea that has both (P0.4, P0.9): a round brings its conversation one improvement (P0.6,
         P0.10). With none, the round ends no fix found."""
-        from . import contracts, records, simulate
-        from .cases import digest
-        from .hypotheses import REVIEWS_PER_ROUND
         kept = conv["rounds"][str(conv["round"])]["records"]
         if (kept.get("Propose") or {}).get("revision") and not (kept.get("Analyze") or {}).get("analysis"):
             # A revision's round reads the conversation afresh first, its note a turn with its goals (P12.8.1).
@@ -718,7 +710,6 @@ class Flow:
         met a conflict back up for the household to decide, and a revision's saying so, with why (unrevised; why:
         "" for none); otherwise the conversation ends a duplicate (addressed: the improvement that covers it) or no fix
         found."""
-        from .improvements import PENDING
         improvements = self.runtime.improvements
         earlier = improvements.items.get(back.get("improvement")) or {}
         if earlier.get("status") in (*PENDING, "conflict"):
@@ -745,24 +736,21 @@ class Flow:
     async def _write(self, rid, conv):
         """The editor's write-up, after an automation's simulated week (Improvements.add_week); a failed write-up is a
         failure of this stage like any other (P0.8): the improvement isn't up for review until it's written up."""
-        from .pipeline import editor_model
         improvements = self.runtime.improvements
         unwritten = [item["id"] for item in improvements.unwritten() if item["id"] in self._improvements(rid)]
         await improvements.add_weeks(unwritten, self.runtime.recorder)  # An automation's week, which its review shows.
-        if unwritten and await improvements.write_copy(editor_model(self.entry), unwritten):
+        if unwritten and await improvements.write_copy(role_model(self.entry, "editor"), unwritten):
             raise Failed("The write-up didn't finish.")
         self._enter(conv, "Your review")
 
     def _improvements(self, rid, pending=False):
         """The improvements of a conversation: those it came from (P0.10)."""
-        from .improvements import PENDING
         return [item["id"] for item in self.runtime.improvements.items.values()
                 if item.get("conversation") == rid and (not pending or item["status"] in PENDING)]
 
     async def _started_from(self, rid):
         """The home and time the conversation started from, as its recording keeps them: what every replay of it
         starts from too (P0.1)."""
-        from .cases import started_from
         try:
             first = ((await self.runtime.recorder.export(rid)).get("turns") or [{}])[0].get("source") or {}
         except Exception:  # noqa: BLE001 - one that can't be read is ended by the stage that reads it, with why.
@@ -773,7 +761,6 @@ class Flow:
     def _addressed(rid, analysis, answer):
         """The improvement the proposer says already covers all of this conversation's trouble (P0.12: a duplicate),
         or None."""
-        from .hypotheses import friction_by_goal
         covered = {r.get("goal_turn"): r.get("improvement") for r in answer.get("already_addressed") or []
                    if str(r.get("session"))[:8] == rid[:8] and r.get("improvement")}
         trouble = set(friction_by_goal(analysis))
@@ -847,7 +834,6 @@ class Flow:
     def _roots_fixed(self, conv, item):
         """The turns of the root goals an improvement was for (P0.3): those its test helped (its fixes), else the
         conversation's first."""
-        from .analyzer import top_level
         roots = sorted({int(turn) for key in item.get("fixes") or [] if (turn := key.rsplit(":", 1)[-1]).isdigit()})
         if roots:
             return roots
@@ -896,7 +882,6 @@ class Flow:
         """Whether an improvement of this conversation (P0.10) waits for the household: up for review (the earlier
         version too, while its revision's round runs), needing attention, or met a conflict. It isn't archived or
         marked as a test meanwhile: the household's decision is its way out (P0.11)."""
-        from .improvements import PENDING
         return any(item.get("conversation") == rid and item["status"] in (*PENDING, "conflict") and item.get("copy")
                    for item in self.runtime.improvements.items.values())
 

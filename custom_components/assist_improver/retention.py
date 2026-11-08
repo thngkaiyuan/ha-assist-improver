@@ -23,7 +23,7 @@ from datetime import timedelta
 from homeassistant.helpers.storage import STORAGE_DIR
 from homeassistant.util.dt import parse_datetime, utcnow
 
-from .trace import journal
+from .trace import journal, remove, stored
 
 KEEP_FULL_DAYS = 30
 KEEP_NEWEST = 20
@@ -243,7 +243,6 @@ def prune_runs(runs, recordings, now=None):
 async def prune_traces(hass, active=(), now=None):
     """The daily tidy-up of the traces: those not written for TRACE_DAYS are deleted, then the oldest until the rest
     fit in TRACE_MAX_BYTES; an active one (`active`: their ids) never. Returns {"deleted": n, "bytes": total left}."""
-    from .trace import remove, stored
     now = (now or utcnow()).timestamp()
     files = sorted(await hass.async_add_executor_job(stored, hass.config.path(STORAGE_DIR)), key=lambda f: f["mtime"])
     total, deleted = sum(f["bytes"] for f in files), 0

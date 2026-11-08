@@ -5,7 +5,7 @@ from uuid import uuid4
 
 from homeassistant.util.dt import utcnow
 
-from . import analyzer, contracts, records, trace, triage
+from . import analyzer, contracts, records, simulate, trace, triage
 from .cases import CaseError, digest as content_digest
 from .exploration import ListImprovements, ReadImprovement, SessionAPI, related_improvements, session_view
 from .failures import closing
@@ -82,7 +82,6 @@ async def analyze(hass, entry, runtime, recording_id, triage_only=False, sent=No
             notes = [{"sent": True}] * bool((submit.note or "").strip()) + [{"revision": r["round"]} for r in revisions]
             analysis = analyzer.to_analysis(recording_id, answer, view, notes)
             # What the user asked to know, judged once on the reply that ends its run (DETAILS P9.7.4, P9.10).
-            from . import simulate
             facts, heard = await simulate.answered(hass, simulate.judge_model(entry), view, analysis["goals"])
             for n, goal in enumerate(analysis["goals"]):  # Each its own: two questions may share a turn.
                 if n in facts:

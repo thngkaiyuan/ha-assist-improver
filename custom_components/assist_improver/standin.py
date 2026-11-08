@@ -30,6 +30,9 @@ from homeassistant.const import (ATTR_AREA_ID, ATTR_DEVICE_ID, ATTR_ENTITY_ID, A
                                  STATE_OFF, STATE_ON, STATE_UNAVAILABLE, Platform)
 from homeassistant.exceptions import HomeAssistantError
 
+from .happened import tts_message
+from .serialization import plain
+
 STANDIN = "assist_improver_standin"
 TARGETS = (ATTR_ENTITY_ID, ATTR_DEVICE_ID, ATTR_AREA_ID, ATTR_FLOOR_ID, ATTR_LABEL_ID)  # A call's target, not its data.
 # What a device that reports its movement shows on its way to each end, as Home Assistant's covers, valves and locks
@@ -428,7 +431,6 @@ class StandIn:
         """A service call on this stand-in, as Home Assistant's entity services make it: logged as a command (the
         call's data, its target aside); refused as at home when the recording shows it failed there in the turn the
         sandbox is at (DETAILS P11.4); reported as not simulated when the stand-in can't take it."""
-        from .serialization import plain
         domain, service, data = await self._call()
         name = f"{domain}.{service}"
         self._sandbox.commands.append({"entity_id": self.entity_id, "service": name,
@@ -472,7 +474,6 @@ class StandIn:
         """What a command reports back (_table): its new state, and the attributes its fields and the command set."""
         from homeassistant.helpers import config_validation as cv
         from homeassistant.util import dt as dt_util
-        from .serialization import plain
         # Its own fields: no target (a thermostat's set_temperature passes it), as Home Assistant's own helper strips.
         fields = {k: v for k, v in fields.items() if k not in cv.ENTITY_SERVICE_FIELDS}
         if _IN_CALL.get() is not self:  # Called on the entity itself (a relative volume, by Home Assistant's intent).
@@ -547,7 +548,6 @@ class MediaPlayerStandIn(StandIn):
         self.hold(self._state, {"volume_level": round(max(0.0, min(1.0, level + direction * self.volume_step)), 2)})
 
     async def async_play_media(self, media_type, media_id, **kwargs):
-        from .happened import tts_message
         self._refuse()
         self._handled = True
         if tts_message(media_id) is None and not kwargs.get("announce"):  # Spoken words, or an announcement, pass.

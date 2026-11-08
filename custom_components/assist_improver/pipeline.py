@@ -30,15 +30,10 @@ from .analysis import deliberate
 from .flow import KEYS
 from .records import PipelineRun
 from .reflective import index_of
-from .settings import GATES, blocked_stages, listed, paused, role_model
+from .settings import GATES, blocked_stages, listed, model_name, paused, role_model
 from .trace import for_run, journal, span, tag
 
 _LOGGER = logging.getLogger(__name__)
-
-
-def editor_model(entry):
-    """The editor's model: its own setting, else the quick-check model, else the feedback check's, else the main one."""
-    return role_model(entry, "editor")
 
 
 class Pipeline:
@@ -147,7 +142,6 @@ class Pipeline:
     def _spend(self):
         """Recent analyses' and quick checks' tokens each, on average, with the model each of those steps runs on now
         (as Settings names it): what the confirmation's rough estimate goes by. No prices, no spend tracking."""
-        from .settings import model_name
         runs, out = index_of(self.runtime.role_runs), {}  # The run log's index (reflective.RunIndex).
         for stage, role in (("analyze", "analyzer"), ("triage", "triage")):
             if (per := runs.spent[stage].average()) and (entity_id := role_model(self.entry, role)):

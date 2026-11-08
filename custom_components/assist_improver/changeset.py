@@ -42,8 +42,10 @@ from homeassistant.helpers import area_registry as ar, device_registry as dr, en
 from homeassistant.helpers.event import async_track_state_added_domain
 from homeassistant.helpers.storage import Store
 
-from . import changes as kinds, touchpoints
+from . import changes as kinds, household, touchpoints
 from .const import DOMAIN, STORAGE_VERSION
+from .household import normalized
+from .instructions import edit, effective, household_line, is_edit, live
 
 # The safe order (DETAILS P12.5.9): names, registry entries and fewer LLM APIs (assistant_api); scripts and scenes,
 # inert until run; exposure, which lands on a new script's or scene's registry entry once it's there; the household
@@ -141,7 +143,6 @@ async def read(hass, kind, target):
         apis = sub.data.get("llm_hass_api") or []
         return [apis] if isinstance(apis, str) else list(apis)
     if kind == "household":
-        from . import household
         return household.normalized(getattr(hass.data.get(household.KEY), "knowledge", None))
     raise ValueError(kind)
 
@@ -174,7 +175,6 @@ async def write(hass, kind, target, value):
         await _reloaded(hass, entry, lambda: hass.config_entries.async_update_subentry(
             entry, sub, data={**sub.data, key: value}))
     elif kind == "household":
-        from . import household
         await (await household.async_setup(hass)).save(value)
     else:
         raise ValueError(kind)
@@ -352,12 +352,10 @@ async def plan_steps(hass, proposal):
         base = _ANY if entity_id in new else tested["exposure"].get(entity_id, False)
         add("exposure", entity_id, async_should_expose(hass, "conversation", entity_id), exposed, base,
             _name(hass, entity_id, setup.get("scripts", {})))
-    from .instructions import edit, household_line, is_edit
     prompts = {}  # {target: [instructions now, as they become, base, name]}: one step per assistant.
     if any(household_line(c) for c in proposal["changes"]):
         # Household lines go into the household knowledge, which every assistant on Assist reads; a line they
         # replace in the tested assistant's own instructions comes out of those. No assistant is switched.
-        from . import household
         provider = proposal["provider"]
         target = f"{provider['config_entry_id']}/{provider['subentry_id']}"
         title = provider.get("title") or "Assist"
@@ -456,7 +454,6 @@ def _taken(hass, kind, item_id, config):
 
 def _assistant_title(hass, target):
     """An assistant's name in Home Assistant now, or None."""
-    from .instructions import live
     return (live(hass, target) or {}).get("title")
 
 
@@ -771,7 +768,6 @@ def without(kind, value, keys):
     """A shared value without these lines or names (keys as undo_steps' kept has them): what an improvement's undo
     takes out as its own once another's undo handed them over."""
     if kind == "household":
-        from .household import normalized
         value = normalized(value)
         for whose, line in keys:
             lines = value["everyone"] if whose == "everyone" else value["people"].get(whose, [])
@@ -802,7 +798,6 @@ def taken_back(step, live, keep=()):
     is in kept. None when that part isn't as the step left it, or for any other kind."""
     kind, before, after = step["kind"], step["before"], step["after"]
     if kind == "household":
-        from .household import normalized
         before, after, live = normalized(before), normalized(after), normalized(live)
         lists = {"everyone": (before["everyone"], after["everyone"], live["everyone"])} | {
             user_id: tuple(value["people"].get(user_id, []) for value in (before, after, live))
@@ -817,7 +812,6 @@ def taken_back(step, live, keep=()):
     if kind == "alias" and live is not None:  # No aliases: Assist knows it by its own name (plan_steps).
         return _lines_back(before or [None], after, live or [None], keep)
     if kind == "prompt" and live is not None:
-        from .instructions import effective
         base = effective(before)  # Empty instructions are Home Assistant's default ones, which an edit started from.
         taken = _lines_back(base.split("\n"), after.split("\n"), live.split("\n"), keep)
         if taken is None:

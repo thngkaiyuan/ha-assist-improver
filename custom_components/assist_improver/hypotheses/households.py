@@ -3,12 +3,12 @@
 from copy import deepcopy
 import json
 
-from .. import evidence
+from .. import changes, changes as reading, evidence
 from ..cases import CaseError, digest
 from ..digest import _clip, _text
 from ..exploration import related_improvements
 from ..failures import contained
-from ..sessions import SessionSet, footprint
+from ..sessions import SessionSet, device_names, footprint
 from ..snapshot import renamed
 from .assistants import Assistants
 from .goals import (FRICTION_KINDS, capabilities, friction, friction_by_goal, goal_devices, goal_summary,
@@ -46,7 +46,6 @@ class Sessions(Assistants, SessionSet):
     async def check_changes(self, hass, hypotheses):
         """Each change of these hypotheses checked by Home Assistant's own validators and the safety rules
         (changes.check), once per change, for the checks to read (checked_of)."""
-        from .. import changes
         todo = {digest(c): c for h in hypotheses or [] if isinstance(h, dict)
                 for c in self.with_targets(h.get("changes")) if isinstance(c, dict)}
         todo = {k: c for k, c in todo.items() if k not in self.checked}
@@ -60,7 +59,6 @@ class Sessions(Assistants, SessionSet):
 
     def devices_of(self, changes):
         """The entities changes touch, as Home Assistant reads them (changes.referenced)."""
-        from .. import changes as reading
         return reading.referenced(self.hass, self.with_targets(changes), self.home())["entities"]
 
     async def load_evidence(self):
@@ -157,7 +155,6 @@ class Sessions(Assistants, SessionSet):
         return self.page(names=self._names(), **filters)
 
     def _names(self):
-        from ..sessions import device_names
         return {e: device_names(self.household, e) for e in self.household._entities()}
 
     def assist_tools(self):

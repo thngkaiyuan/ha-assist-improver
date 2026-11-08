@@ -15,6 +15,7 @@ from homeassistant.helpers.selector import SelectOptionDict, SelectSelector, Sel
 
 from . import ai_setup, settings
 from .const import CONF_ACCEPTED_WEAK, CONF_AI_TASK, DOMAIN, NAME
+from .panel import URL_PATH
 
 CREATE = "create"  # List values "create:<config entry>:<recommended|default>" add a new AI Task.
 USE_ANYWAY = "use_anyway"
@@ -151,6 +152,5 @@ class AssistantImproverOptionsFlow(OptionsFlow):
     """Configure: the settings live in the panel, where the whole pipeline is shown; this links there."""
 
     async def async_step_init(self, user_input=None):
-        from .panel import URL_PATH
         return self.async_abort(reason="settings_in_panel",
                                 description_placeholders={"link": f"/{URL_PATH}?view=settings"})

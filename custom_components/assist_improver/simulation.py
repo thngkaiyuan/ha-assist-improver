@@ -7,7 +7,7 @@ from datetime import datetime, timedelta
 
 from homeassistant.core import async_get_hass_or_none
 
-from . import touchpoints
+from . import happened, targets, touchpoints
 from .cases import CaseError, calls_in
 from .digest import kept, machinery
 from .happened import at_home
@@ -159,7 +159,6 @@ def assist_settings(recording, turn):
     device's own follow-ons, its fields that name a setting: targets.known), else, in a recording from before one was
     kept, each setting the request's own changes moved, as they left it. What a device reports beyond what it was
     asked (the track a playlist it was asked to play is on) isn't Assist's doing."""
-    from . import happened, targets
     follow, out = follow_ons(turn), {}
     if "actions" in ((recording.get("turns") or [])[turn["number"] - 1:turn["number"]] or [{}])[0]:
         for action in turn.get("actions") or []:
@@ -183,7 +182,6 @@ def same_settings(domain, asked, attributes, found):
     """Whether a replayed device holds the settings the recorded Assist set on it (assist_settings), as targets.holds
     reads them, each where the replay shows that setting (a light switched on with none named comes on at the level
     it remembers, which only the real light knew)."""
-    from . import targets
     return targets.holds(domain, {k: v for k, v in asked.items() if any(
         attributes.get(a) is not None for a in targets.representing(domain, k))}, attributes, found)
 

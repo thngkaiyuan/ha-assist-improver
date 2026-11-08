@@ -12,7 +12,7 @@ from homeassistant.helpers.service import async_register_admin_service
 from homeassistant.helpers.start import async_at_started
 from homeassistant.helpers.storage import STORAGE_DIR, Store
 
-from . import ai_setup, household, panel, retention, service_user, settings, touchpoints, trace
+from . import ai_setup, household, panel, retention, service_user, settings, simulate, touchpoints, trace
 from .const import CONF_ACCEPTED_WEAK, CONF_AI_TASK, CONF_DEVELOPER, CONF_SCHEDULE, DOMAIN, STORAGE_VERSION
 from .cases import CaseError
 from .conversations import Transcripts
@@ -226,9 +226,8 @@ async def async_setup_entry(hass, entry):
         if not call.data.get("allow_paid_inference"):
             raise ServiceValidationError(translation_domain=DOMAIN, translation_key="paid_inference_not_allowed")
         known(call)
-        from .simulate import replay_recording as replay
         try:
-            return await replay(hass, recorder, call.data["recording_id"], call.data["last_turn"])
+            return await simulate.replay_recording(hass, recorder, call.data["recording_id"], call.data["last_turn"])
         except (CaseError, ValueError) as err:
             raise cannot_replay(err) from err
 

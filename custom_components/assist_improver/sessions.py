@@ -21,7 +21,9 @@ from homeassistant.helpers.storage import Store
 
 from .cases import CaseError, replayable_turns
 from .const import DOMAIN, STORAGE_VERSION
+from .exploration import session_view
 from .failures import contained
+from .instructions import is_edit, ran_with
 
 LOADED = 12  # Full recordings loaded at once, besides the household's and the assistant's.
 PAGE = 20  # Sessions per list_sessions page.
@@ -58,7 +60,6 @@ def brief(view, recording_id):
         replayable = bool(replayable_turns(view.recording))
     except CaseError:
         replayable = False
-    from .instructions import ran_with
     used = ran_with(view.recording) or {}
     return {"recording_id": recording_id, "session": short(recording_id), "started": view.digest["started"],
             "turns": len(turns), "requests": [(t.get("user_says") or "").strip()[:300] for t in turns],
@@ -88,7 +89,6 @@ class BriefCache:
         kept = self.briefs.get(recording_id)
         if kept and kept.get("stamp") == stamp:
             return kept["brief"], None
-        from .exploration import session_view
         view = await session_view(recorder.hass, await recorder.export(recording_id))
         made = await recorder.hass.async_add_executor_job(brief, view, recording_id)  # Reads it all: off the loop.
         self.briefs[recording_id] = {"stamp": stamp, "brief": made}
@@ -114,7 +114,6 @@ def _stamp(summary):
 async def catalog(recorder, recording_ids):
     """(briefs, the household's view, the assistant's view) for these recordings, reading in full only those with
     no brief yet (one at a time) and the two views the whole run needs."""
-    from .exploration import session_view
     cache = getattr(recorder, "brief_cache", None)
     if cache is None:
         cache = recorder.brief_cache = BriefCache(recorder.hass)
@@ -305,7 +304,6 @@ def footprint(changes, household, entities=()):
     """What a set of changes touches, for matching sessions: devices (entities: those Home Assistant reads in them,
     changes.referenced), their names and aliases (and the names they give), their areas and domains, whether it changes
     what Assist can see, and the assistants whose own instructions it edits."""
-    from .instructions import is_edit
     entities = set(entities)
     names, areas = set(), set()
     for change in changes:

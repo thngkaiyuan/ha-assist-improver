@@ -38,11 +38,13 @@ from homeassistant.core import async_get_hass
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.util.hass_dict import HassKey
 
-from . import guard, touchpoints
+from . import guard, household, sandbox, touchpoints
 from .cases import CaseError
 from .const import DOMAIN
-from .sandbox import STATS as SANDBOX_STATS
+from .sandbox import (STATS as SANDBOX_STATS, THREAD_NAME, Sandbox, call_tool, carry, observe, seed, snapshot,
+                      system_prompt)
 from .simulation import UnsupportedSimulation
+from .standin import write
 from .trace import span
 
 _LOGGER = logging.getLogger(__name__)
@@ -241,7 +243,6 @@ def _folder(providers):
     (standin.write) and the household's assistants' providers that are custom integrations ({domain: its folder}), so
     its sandbox loads the household's assistant by its own integration (DETAILS P6.2.3). No other custom integration
     ever is. A provider gone from home isn't there: it can't load (can't replay)."""
-    from .standin import write
     folder = tempfile.mkdtemp(prefix=PREFIX)
     own = Path(folder, "custom_components")
     own.mkdir()
@@ -361,7 +362,6 @@ class Server:
         self.sandbox = self.api = None
 
     async def answer(self, message):
-        from . import sandbox
         try:
             handler = getattr(self, "op_" + message["op"].replace(".", "_"))
             result = {"result": await handler(**message["args"])}
@@ -381,12 +381,10 @@ class Server:
         return {**(extra or {}), "unsimulated": list(self.sandbox.unsimulated), "log": list(self.sandbox.log)}
 
     async def op_home_start(self, time_zone, home=None, setup=None):
-        from .sandbox import Sandbox
         self.sandbox = await Sandbox.start(time_zone, home, setup)
 
     async def op_home_seed(self, options, person=None, scripts=None, automations=None, exposure_changes=None,
                            moving=(), machinery=(), cut=(), recorded=None):
-        from .sandbox import seed
         await self.sandbox.run(lambda hass: seed(
             hass, person=person, **options, scripts=scripts, automations=automations,
             exposure_changes=exposure_changes, moving=moving, machinery=machinery, cut=cut, recorded=recorded))
@@ -395,21 +393,18 @@ class Server:
     async def op_home_assistant(self, entry, agent):
         """The household's assistant, loaded by its provider's own integration (sandbox.load_assistant), which the
         guard lets reach its provider's own endpoints."""
-        from .sandbox import load_assistant
         guard.allow(entry)
-        return self._reported({"agent": await self.sandbox.run(lambda hass: load_assistant(hass, entry, agent))})
+        return self._reported({"agent": await self.sandbox.run(lambda hass: sandbox.load_assistant(
+            hass, entry, agent))})
 
     async def op_home_household(self, knowledge):
         """The household knowledge the sandbox's Assist reads."""
-        from .household import serve
-
-        await self.sandbox.run(lambda hass: serve(hass, knowledge))
+        await self.sandbox.run(lambda hass: household.serve(hass, knowledge))
         return self._reported()
 
     async def op_home_prompt(self, context, api_id, template):
         """Assist's system prompt and tools as HA builds them in the sandbox, each tool's parameters as the JSON
         schema its own serializer gives."""
-        from .sandbox import system_prompt
         prompt, api = await self.sandbox.run(lambda hass: system_prompt(hass, llm_context(context), api_id, template))
         self.api = api
         if api is None:
@@ -422,19 +417,16 @@ class Server:
     async def op_home_turn(self, text, conversation_id, context, language, agent_id, device_id=None, watch=(),
                            until=None):
         """One Assist turn, the household's assistant answering here (sandbox.run_turn), never past until."""
-        from .sandbox import run_turn
-        return self._reported(await self.sandbox.run(lambda hass: run_turn(
+        return self._reported(await self.sandbox.run(lambda hass: sandbox.run_turn(
             hass, text, conversation_id, context, language, agent_id, device_id, watch, until)))
 
     async def op_home_carry(self, conversation_id, context, steps):
         """A test's turns before its branch, its baseline's, in the replay's chat log (sandbox.carry)."""
-        from .sandbox import carry
         await self.sandbox.run(lambda hass: carry(hass, conversation_id, llm_context(context), steps))
         return self._reported()
 
     async def op_home_tool(self, tool_name, tool_args, call_id=None, external=False):
         from homeassistant.helpers import llm
-        from .sandbox import call_tool
         if self.api is None:
             raise WorkerError("The sandbox has no Assist tools yet")
         tool_input = llm.ToolInput(tool_name=tool_name, tool_args=tool_args, external=external,
@@ -443,12 +435,10 @@ class Server:
         return self._reported({"data": result.data, "error": result.error})
 
     async def op_home_observe(self, source, moves=()):
-        from .sandbox import observe
         await self.sandbox.run(lambda hass: observe(hass, source, moves))
         return self._reported()
 
     async def op_home_snapshot(self, attributes=(), until=None):
-        from .sandbox import snapshot
         return self._reported(await self.sandbox.run(lambda hass: snapshot(hass, attributes, until)))
 
     async def op_evidence(self, job, **args):
@@ -488,7 +478,6 @@ def _error(err):
 def main(folder):
     """The worker process: answer messages from stdin. The real instance kills it once its job is done; should the
     real instance end first, its input closes, and it exits at once, its folder removed."""
-    from .sandbox import THREAD_NAME
     logging.basicConfig(level=logging.WARNING, stream=sys.stderr, format="%(levelname)s %(name)s: %(message)s")
     # Its sandbox's lines go to the replay (sandbox._Log), not to Home Assistant's log: stderr is the worker's own.
     logging.getLogger().handlers[0].addFilter(lambda record: record.threadName != THREAD_NAME)

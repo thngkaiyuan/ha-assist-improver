@@ -32,8 +32,9 @@ from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.template import Template, is_template_string
 from homeassistant.util import slugify
 
-from . import touchpoints
+from . import household, instructions, touchpoints
 from .cases import CaseError
+from .standin import _GONE, _NOW, FIELDS, _table
 
 CONFIG_KINDS = ("script", "automation", "scene")  # Items of Home Assistant's editors.
 # An editor item's id, which ends the address of its editor's endpoint (config/<kind>/config/<id>): a plain token.
@@ -322,7 +323,6 @@ async def _scene_problems(hass, validated, home, descriptions):
 
 def settable_attributes(domain, descriptions):
     """The attributes a domain's actions set: each field of its actions, by the attribute it sets (standin.FIELDS)."""
-    from .standin import FIELDS
     out = set()
     for service in (descriptions.get(domain) or {}).values():
         for field in _fields(service):
@@ -335,7 +335,6 @@ def valid_states(domain, attributes, descriptions):
     """The states an entity of this domain can be set to: its domain's own (the states its commands leave it in, in
     Home Assistant's enums), on and off where its domain turns on and off, and those it lists itself (options, HVAC
     modes, operation modes); None where any text or number goes (TEXT_DOMAINS, NUMBER_DOMAINS)."""
-    from .standin import _GONE, _NOW, _table
     if domain in TEXT_DOMAINS or domain in NUMBER_DOMAINS:
         return None
     out = {str(state) for state, _ in (_table().get(domain) or {}).values()
@@ -629,7 +628,6 @@ def setup_from_changes(changes, *, source, prompt, scripts, user_id=None, assist
     without them keeps its digest). Household lines go into the household knowledge, as applying puts them; an edit of
     an assistant's instructions or LLM APIs changes this conversation's only when it used that assistant; a
     recommendation is never replayed. Only what a sandbox needs is checked here; check() checks the rest first."""
-    from . import household, instructions
     out = {"exposure": {}, "aliases": {}, "scripts": {}}
     removals, automations, switched, scenes, apis = {}, {}, {}, {}, None
     registry = {"entities": {}, "devices": {}, "areas": {}}

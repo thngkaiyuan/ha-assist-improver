@@ -19,7 +19,9 @@ from homeassistant.helpers.storage import STORAGE_DIR
 
 from . import trace
 from .const import CONF_DEVELOPER, DOMAIN, VERSION
+from .hypotheses import friction_by_goal, short
 from .runtime import loaded
+from .worker import KEY, STATS
 
 MIN_PREFIX = 4  # Characters an ID prefix needs before lookup tries it.
 JOURNAL_SHOWN = 200  # Journal entries a lookup shows; the Logs tab pages through the rest.
@@ -39,7 +41,6 @@ def _runtime(hass, connection, msg):
 
 
 def _short(recording_id):
-    from .hypotheses import short
     return short(recording_id)
 
 
@@ -57,7 +58,6 @@ def _recording_sizes(hass):
 
 
 def _friction(analysis):
-    from .hypotheses import friction_by_goal
     try:
         return friction_by_goal(analysis)
     except (KeyError, TypeError):
@@ -401,7 +401,6 @@ def _max_rss():
 
 async def health(hass, runtime):
     from .diagnostics import _storage
-    from .worker import KEY, STATS
     disk = await hass.async_add_executor_job(_storage, hass.config.path(STORAGE_DIR))
     pipeline = runtime.pipeline
     current = pipeline.current or {}

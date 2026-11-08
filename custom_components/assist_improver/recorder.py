@@ -28,12 +28,14 @@ from homeassistant.helpers.storage import Store
 from homeassistant.util.dt import utcnow
 
 from . import targets, touchpoints
+from .happened import uncalled
 from .retention import CLOSED, pack, unpack
 from .const import DOMAIN, SAVE_DELAY, STORAGE_VERSION, VERSION
 from .digest import kept
 from .records import Recording, RecordingSummary
 from .reflective import ROLE_ACTIVE
 from .serialization import plain
+from .sessions import BriefCache
 from .settings import own_models
 from .snapshot import answering, home, provider_config, refresh, state_record, subentry_of, taken
 from .trace import journal, span, timed
@@ -102,7 +104,6 @@ def acted(actions, content, since):
     error's words and type (error_type); none did when Home Assistant raised it before announcing any call
     (happened.uncalled: data its schema refused, an unknown action). since: the log's length when they were (None:
     none called yet); its new value."""
-    from .happened import uncalled
     if content.get("role") == "assistant" and content.get("tool_calls"):
         return len(actions)
     if (error := _tool_error(content)) and since is not None and len(actions) > since:
@@ -781,7 +782,6 @@ class Recorder:
         if self.on_forgotten is not None:
             await self.on_forgotten(gone)
         if self.brief_cache is None:  # No proposal has read the briefs since Home Assistant started.
-            from .sessions import BriefCache
             self.brief_cache = BriefCache(self.hass)
         await self.brief_cache.drop(self, *gone)
         journal("info", f"{len(gone)} recording(s) deleted at the household's request", recording_ids=sorted(gone))

@@ -25,6 +25,7 @@ from homeassistant.util import dt as dt_util
 
 from .cases import failed_calls, transcript
 from .const import DOMAIN, STORAGE_VERSION
+from .household import voice_assistant
 
 WORDS = 1000  # Characters kept of each message.
 SAID = 160  # Characters of the first thing said, for the list.
@@ -151,7 +152,6 @@ QUOTED = 60  # Characters of what the household said that a chip's bubble quotes
 def cant_improve(hass, question):
     """What the household is told of a conversation Home Assistant answered itself (records.CantImprove): what they
     said there, cut short, and the voice assistant whose settings let it answer first."""
-    from .household import voice_assistant
     quote = " ".join((question.get("quote") or "").split())
     if len(quote) > QUOTED:
         quote = quote[:QUOTED].rsplit(" ", 1)[0].rstrip(",;:.") + "…"

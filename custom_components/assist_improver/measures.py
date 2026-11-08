@@ -14,6 +14,7 @@ from types import SimpleNamespace
 from .analyzer import ASSISTANT, couldnt, destination, done, question_run, reached, root_turn, side_effects_left
 from .cases import calls_in
 from .exploration import with_percent
+from .simulation import moved_by_others
 
 CONVERSATION = None  # As conduct: the conversation as it went, where every reaction is open (the user reacted).
 MEASURES = ("goals met", "turns per root goal", "side effects left")
@@ -289,7 +290,6 @@ def replay_view(turns, session_view, steps):
     step (calls, actions: happened.py); and each recorded turn's home as it began (sources), as the conversation's view
     has it. turns: the recording's turns; steps: the replay's, each {turn, output (Assist's messages), actions (its
     call log), changes: [{entity_id, old, new, attributes_changed: {attribute: [old, new]}}]}."""
-    from .simulation import moved_by_others
     assistant = {e for e, cs in session_view.changes.items() if any(c["by"] in ASSISTANT for c in cs)}
     changes, touched, said = {}, {}, 1
     for step in steps:

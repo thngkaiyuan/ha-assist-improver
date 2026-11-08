@@ -9,6 +9,7 @@ from .. import contracts, records
 from ..cases import digest
 from ..exploration import (LISTING, TOOLS, DeviceDetails, DevicesInArea, FindActions, ListImprovements, ReadAssistant,
                            ReadImprovement, ReadReadings, ReadTurn, RoleTool)
+from ..instructions import ran_with
 from ..sessions import STATES
 from ..trace import span
 from .checks import household_knowledge, instructions, problems
@@ -503,7 +504,6 @@ class ReadAssistantInstructions(RoleTool):
         return self.run(**args)
 
     def run(self, session=None, assistant=None):
-        from ..instructions import ran_with
         knowledge = household_knowledge(self.sessions)
         household = {"everyone": knowledge["everyone"],
                      "the_person_in_the_sessions": [l for mine in knowledge["people"].values() for l in mine]}

@@ -180,7 +180,6 @@ def _enum(domain):
     """A domain's own states: its StrEnum of them (CoverState, VacuumActivity), on and off for a toggle; None for
     neither."""
     from homeassistant.helpers.entity import ToggleEntity
-    from .standin import entity_class
     package = f"homeassistant.components.{domain}"
     try:
         module = importlib.import_module(package)
@@ -210,7 +209,6 @@ def states(source, entity_id):
 @functools.cache
 def _numeric(domain):
     """Whether a domain's state is a number, as its entity class declares it (a number's float, a counter's int)."""
-    from .standin import entity_class
     try:
         hint = inspect.signature(inspect.getattr_static(entity_class(domain), "state").fget).return_annotation
     except (ImportError, ValueError, AttributeError, TypeError):  # No one class, or no declared state.

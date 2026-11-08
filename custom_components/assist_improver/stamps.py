@@ -9,6 +9,7 @@ import probatio
 from .cases import digest
 from .hypotheses.schema import _HYPOTHESIS, verdict
 from .hypotheses.tools import StampTool
+from .simulate import Untestable
 
 
 def of(reviews, tests, hypothesis):
@@ -101,7 +102,6 @@ class TestIdea(StampTool):
     async def take(self, hass, hypothesis):
         """The test of arguments its schema took: an argument error goes back to the model before this (RoleTool),
         so whatever stops Simulate here is Simulate's own."""
-        from .simulate import Untestable
         # Tested as it would be sent on: an edit of an assistant's instructions names the assistant it edits.
         hypothesis = {**hypothesis, "changes": self.ask.sessions.with_targets(hypothesis["changes"])}
         if not of(self.ask.reviews, (), hypothesis)["Review"]:  # Approval first: what validates has both (P0.4).

@@ -25,6 +25,7 @@ from homeassistant.helpers.storage import Store
 from homeassistant.util.hass_dict import HassKey
 
 from .const import DOMAIN, STORAGE_VERSION
+from .instructions import household_line
 
 API_ID = DOMAIN  # The household API up to 0.37: what recordings of then still name.
 API_NAME = "Assist with household knowledge"
@@ -77,7 +78,6 @@ def edit(knowledge, changes, user_id, prompt=None):
     it is: from each list the new line goes in that holds it; else, for a person's line, from everyone's, and for
     everyone's, from each person's; else from the assistant's own instructions (lines written there before). One
     that's in none of those has changed since the change was tested: a problem, unless the new line is there already."""
-    from .instructions import household_line
     knowledge, problems = normalized(knowledge), []
     people = list(user_id) if isinstance(user_id, (list, tuple)) else [user_id]
     for change in changes:

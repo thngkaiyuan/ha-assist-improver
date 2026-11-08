@@ -31,15 +31,21 @@ from homeassistant.core import Context
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import llm
 
-from . import happened, targets
+from . import clock, happened, targets
 from .analyzer import done, reached
 from .cases import CaseError, recording_turns, replayable_turns
 from .changes import RESOLVING, changed, setup_from_changes
 from .failures import contained
+from .instructions import assistant_config, is_edit, target
+from .replay import today as setup_today
 from .sandbox import SANDBOX_KEY, Sandbox, observe, seed, seed_options, setup_of
+from .serialization import plain
+from .sessions import applies, footprint
+from .simulate import agent_of
 from .simulation import ended, moved_by_others, recorded
 from .snapshot import at_moment, on_today, renamed, renaming
 from .touchpoints import Broken
+from .weeks import week
 from .worker import job
 
 CONCURRENT = 4  # Workers running the jobs below at once, per instance (worker.job).
@@ -190,7 +196,6 @@ class Evidence:
     def setup(self, hypothesis, session=None):
         """A hypothesis's changes as a sandbox runs them, on today's setup and the instructions of the session's
         assistant now (the household's newest session's by default)."""
-        from .instructions import assistant_config, target
         view = self.sessions.views[session] if session else self.sessions.household
         turn = recording_turns(view.recording)[0]
         assistant = target(assistant_config(turn["prepared"]["provider_config"]))
@@ -212,7 +217,6 @@ class Evidence:
     async def instructions(self, hypothesis, hass=None):
         """Each assistant's instructions as the hypothesis's assistant changes edit them: rendered by HA (what Assist
         would read), or why not."""
-        from .instructions import is_edit
         changes, facts = self.sessions.with_targets(hypothesis.get("changes")), []
         for target in sorted({c["target"] for c in changes if is_edit(c) and c.get("target")}):
             record = self.sessions.assistants()[target]
@@ -255,7 +259,6 @@ class Evidence:
         implementation = await self.implementation(hypothesis, setup)
         edited = await self.instructions(hypothesis, hass)
         if any(setup.get(k) for k in RESOLVING):
-            from .sessions import applies, footprint
             # An edit of an assistant's instructions doesn't change how HA resolves a recorded call.
             changes = hypothesis.get("changes") or []
             fp = {**footprint(changes, self.sessions.household, self.sessions.devices_of(changes)), "assistants": set()}
@@ -521,7 +524,6 @@ def _render_error(err):
 
 async def _states(hass, entity_ids):
     """Each entity's state and attributes now, in plain form; none for one with no state."""
-    from .serialization import plain
     await hass.async_block_till_done()
     return {e: {"state": found.state, "attributes": plain(dict(found.attributes))} for e in entity_ids
             if (found := hass.states.get(e)) is not None}
@@ -613,9 +615,6 @@ async def improvement_week(hass, recorder, item):
     id: its configuration (as proposed, or for one turned on or off as the home has it), whether it's new, and its
     week (weeks.week) of the improvement's whole setup on top of today's (what it saves with the automation, a scene it
     turns on, say), on the conversation it came from. One whose week couldn't run says why (failed)."""
-    from .replay import today as setup_today
-    from .simulate import agent_of
-    from .weeks import week
     recording = await recorder.export(item["conversation"])
     agent, _ = await hass.async_add_executor_job(agent_of, recording)
     today = await setup_today(hass, agent)
@@ -640,8 +639,6 @@ async def run_week(recording, today, change=None, seconds=WEEK_SECONDS):
     from homeassistant.components.automation import EVENT_AUTOMATION_TRIGGERED
     from homeassistant.const import EVENT_STATE_CHANGED
     from homeassistant.core import callback
-    from . import clock
-    from .serialization import plain
     change = change or {}
     saving = {k: change[k] for k in ("automations", "automation_on") if change.get(k)}
     source = changed(at_moment(today["home"], ended(recording)), {k: v for k, v in change.items() if k not in saving})

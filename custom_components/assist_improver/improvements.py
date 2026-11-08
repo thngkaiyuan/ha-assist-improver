@@ -14,11 +14,16 @@ from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.storage import Store
 from homeassistant.util.dt import utcnow
 
+from .analyzer import REACTIONS, couldnt
 from .cases import CaseError, digest
+from .changes import referenced
 from .changeset import ORDER, Changesets, Conflict, plan_steps, read, readable, undo_steps, without
 from .const import DOMAIN, STORAGE_VERSION
 from .failures import contained
-from . import contracts, editor, records
+from . import contracts, editor, evidence, records
+from .household import EMPTY, edit
+from .instructions import is_edit
+from .measures import compared, helped
 from .records import Improvement
 from .trace import journal, span, timed
 
@@ -59,7 +64,6 @@ def moves(hass, item):
     """Whether an improvement involves motion a replay takes as done once its command succeeds (DETAILS P11.5): a
     device it involves moves something physical (physical), or a goal it helped is a sequence goal (P9.7.5: presses
     standing for a motion nobody can check, such as a relay-driven door's)."""
-    from .measures import helped
     test = item.get("test") or {}
     judged = test.get("judged") or {}
     roots = set(helped(test["before"], test["after"], judged)) if judged else set()
@@ -218,14 +222,13 @@ class Improvements:
     async def add_week(self, improvement_id, recorder):
         """An improvement that changes an automation gets its simulated week (evidence.improvement_week), once, for its
         review (weeks.py): before it's written up. One that couldn't run is said so, and the improvement goes on."""
-        from .evidence import improvement_week
         item = self.items[improvement_id]
         setup = item.get("setup") or {}
         if "week" in item or not (setup.get("automations") or setup.get("automation_on")):
             return
         async with span("week", improvement_id=improvement_id) as section:
             try:
-                item["week"] = await improvement_week(self.hass, recorder, item)
+                item["week"] = await evidence.improvement_week(self.hass, recorder, item)
             except Exception as err:  # noqa: BLE001 - the week informs the review; it never holds the improvement.
                 item["week"] = {"failed": str(err) or type(err).__name__, "automations": []}
             if failed := item["week"].get("failed"):
@@ -307,8 +310,6 @@ class Improvements:
         the round's test that validated its changes, the root goals that test helped (measures.helped) and the devices
         they want. revises: the improvement the household sent back for this round (a revision, or a conflict), which
         this new version beside it replaces: marked revised while still pending or in conflict. Its id."""
-        from .changes import referenced
-        from .measures import helped
         improvement_id = digest({"changes": test["changes"], "conversation": recording_id, "round": round_number})[:16]
         roots = helped(test["before"], test["after"], test["judged"])
         touched = referenced(self.hass, hypothesis["changes"], {})["entities"]  # As Home Assistant reads them.
@@ -470,8 +471,6 @@ class Improvements:
         """What the other applied improvements' own changes added, as they were applied, which undoing this one leaves
         in place (undo_steps' kept): their household lines (each where it went: everyone's, or each person's it was
         applied for), the names they give devices, and the lines they write in an assistant's own instructions."""
-        from .household import EMPTY, edit
-        from .instructions import is_edit
         out = {}
         for other in self.items.values():
             if other["id"] == item["id"] or other["status"] != "applied":
@@ -543,8 +542,6 @@ def row(test):
     home couldn't do it either way, and because: failed or unavailable), those still unmet with it the home could do
     (unmet), the conversation as it went
     beside its replay with the change (with the steps that failed in each turn), and the turns no longer needed."""
-    from .analyzer import REACTIONS, couldnt
-    from .measures import compared, helped
     before, after, judged = test["before"], test["after"], test["judged"]
     roots = set(before["turns_per_root_goal"])
     both = compared(after, before)

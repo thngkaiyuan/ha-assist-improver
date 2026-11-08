@@ -11,6 +11,7 @@ import re
 
 import probatio
 
+from . import reflective
 from .exploration import RoleTool, SessionAPI
 
 ROLE = "editor"
@@ -139,11 +140,10 @@ class SubmitCopy(RoleTool):
 async def write(hass, item, entity_id):
     """{headline, benefit, status, entity_id} for an improvement, or a failed status (the improvement keeps the
     generator's title, and its page reads the same as before)."""
-    from .reflective import run_role
     submit = SubmitCopy()
-    record = await run_role(hass, role=ROLE, entity_id=entity_id, instructions=INSTRUCTIONS,
-                            payload=payload(item, entity_names(hass, item), hass=hass),
-                            structure=None, llm_api=SessionAPI(hass, tools=[submit]), allow_paid_inference=True)
+    record = await reflective.run_role(hass, role=ROLE, entity_id=entity_id, instructions=INSTRUCTIONS,
+                                       payload=payload(item, entity_names(hass, item), hass=hass), structure=None,
+                                       llm_api=SessionAPI(hass, tools=[submit]), allow_paid_inference=True)
     answer = submit.best()
     if answer is None:
         return {"status": "failed", "entity_id": entity_id, "error": record.get("error")}
