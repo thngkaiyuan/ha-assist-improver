@@ -22,7 +22,7 @@ from .hypotheses import REVIEWS_PER_ROUND, friction_by_goal
 from .improvements import PENDING, display_title
 from .measures import goals_of, note_labels
 from .proposal import propose
-from .cases import CaseError, digest, recording_turns, started_from
+from .cases import CLOSED, CaseError, digest, recording_turns, started_from
 from .const import CONF_TESTS_PER_GOAL, DEFAULT_TESTS_PER_GOAL, DOMAIN
 from .settings import paused, role_model
 from .trace import span
@@ -36,7 +36,6 @@ STAGES = ("Your Assist", "Triage", "Analyze", "Propose", "Write up", "Your revie
 KEYS = {"Triage": "triage", "Analyze": "analyze", "Propose": "propose", "Write up": "write"}  # Settings' stage names.
 ENDS = ("Your review", "Your household")  # Where a round stops moving.
 RETRIES = 3  # The tries a stage gives a conversation in one run before holding it ("a few", P0.8).
-CLOSED = ("session_expired", "interrupted", "capture_timed_out")  # A conversation Assist has closed.
 
 
 def analysed_turns(analysis):
@@ -47,12 +46,13 @@ def analysed_turns(analysis):
     return list(range(1, said + 1)) + [label for _, label in sorted(note_labels({**analysis, "turns": said}).items())]
 
 
+def _sent_round(conv):
+    """The round the conversation was last sent in: its latest with a Your Assist record (sent_in), or None."""
+    return max((int(n) for n, r in conv["rounds"].items() if "Your Assist" in r["records"]), default=None)
+
+
 class Failed(Exception):
     """A stage couldn't do its work on a conversation this time (the model erred, say)."""
-
-
-class CutOff(Exception):
-    """The run was cut off (cancelled, or Home Assistant stopping) while a stage worked on a conversation."""
 
 
 class TakenOut(Exception):
@@ -222,7 +222,7 @@ class Flow:
                 await self.save()
                 await moved()
             progress["conversation"] = None
-        except (asyncio.CancelledError, CutOff):
+        except asyncio.CancelledError:
             for rid in pending:  # What it hadn't finished is held for a manual full run or its stage's run.
                 if self._deleted(rid):
                     continue
@@ -349,7 +349,7 @@ class Flow:
     def revisions(self, conv):
         """The revision notes since the conversation was last sent in, in order, as its next analysis reads them, each
         with the improvement it revises (P12.8.1): {round, note, title (as the household reads it), changes, roots}."""
-        sent = max((int(n) for n, r in conv["rounds"].items() if "Your Assist" in r["records"]), default=0)
+        sent = _sent_round(conv) or 0
         out = []
         for n, r in sorted(conv["rounds"].items(), key=lambda kv: int(kv[0])):
             if int(n) > sent and (revision := (r["records"].get("Propose") or {}).get("revision")):
@@ -382,6 +382,15 @@ class Flow:
         conv["outcome"] = outcome
         conv.update(extra)
         self._enter(conv, "Your household", outcome=outcome)
+
+    def _take_out(self, rid, conv, outcome, **extra):
+        """The household takes it out (TAKEN_OUT): unheld, its round ends in Your household from wherever it reached;
+        one not in a round has one started at Your Assist, to end it (P0.6)."""
+        if not self._in_round(conv):
+            conv.update(stage="Your Assist", outcome=None, archived=False)
+            self._start_round(rid, conv)
+        conv["held"] = None
+        self._end(conv, outcome, **extra)
 
     def _trip(self, conv, start, end, paid_by):
         conv["trips"].append({"start": start, "end": end, "round": conv["round"], "paid_by": paid_by,
@@ -523,13 +532,11 @@ class Flow:
         household's answers to the analyzer's questions since then; None when no role can read the conversation (it
         ends as couldn't be read)."""
         conv = self.record(rid)
-        sent_in = max((int(n) for n, r in conv["rounds"].items() if "Your Assist" in r["records"]), default=None)
+        sent_in = _sent_round(conv)
         try:
             return await analyze(self.hass, self.entry, self.runtime, rid,
                                  sent=self._sent(conv, sent_in) if sent_in else None,
                                  answered=self._answers(conv, "Analyze", since=sent_in or 0), **kwargs)
-        except asyncio.CancelledError:
-            raise
         except CaseError as err:
             self._end(self.record(rid), "couldn't be read", why=str(err)[:500])
             return None
@@ -828,11 +835,9 @@ class Flow:
         for rid in self._covering(item, None if accepted or decision == "decline" else "Your review"):
             conv = self.record(rid)
             if accepted:  # A run working on it leaves it (TakenOut), as after a decline.
-                conv["held"] = None
-                self._end(conv, "improved")
+                self._take_out(rid, conv, "improved")
             elif decision == "decline":
-                conv["held"] = None
-                self._end(conv, "declined", archived=True)
+                self._take_out(rid, conv, "declined", archived=True)
             elif decision == "revise":  # The note is a turn, whose goals the round's analysis gives (P12.8.1).
                 self._back_to_propose(rid, conv, revision={"improvement": item["id"], "note": note})
                 back.append(rid)
@@ -917,11 +922,8 @@ class Flow:
                 conv["before_archive"] = {k: conv[k] for k in ("stage", "outcome", "covered_by")}
                 if conv["stage"] == "Your household":  # Its round already ended there.
                     conv.update(archived=True, outcome="archived", held=None)
-                else:
-                    if not self._in_round(conv):  # Waiting for a run: a round starts, to end it.
-                        self._start_round(rid, conv)
-                    conv["held"] = None
-                    self._end(conv, "archived", archived=True)  # Its round ends here, from where it reached (P0.6).
+                else:  # Its round ends here, from where it reached (P0.6).
+                    self._take_out(rid, conv, "archived", archived=True)
             elif not archived:
                 if conv["archived"]:
                     before = conv.pop("before_archive", {})
@@ -957,12 +959,7 @@ class Flow:
         an improvement of it waits for the household (waits). Whether it was marked."""
         if self.waits(rid):
             return False
-        conv = self.record(rid)
-        if not self._in_round(conv):  # Not in a round: one starts at Your Assist, to end it (P0.6).
-            conv.update(stage="Your Assist", outcome=None, archived=False)
-            self._start_round(rid, conv)
-        conv["held"] = None
-        self._end(conv, "marked as a test")
+        self._take_out(rid, self.record(rid), "marked as a test")
         await self.save()
         return True
 
@@ -972,10 +969,8 @@ class Flow:
         conv = self.record(rid)
         if conv["sent"]:
             return deepcopy(conv["sent"])
-        for number in sorted(conv["rounds"], key=int, reverse=True):
-            if "Your Assist" in (records := conv["rounds"][number]["records"]):
-                return deepcopy(records["Your Assist"].get("sent"))
-        return None
+        number = _sent_round(conv)
+        return deepcopy(self._sent(conv, number)) if number else None
 
     async def sent_in(self, rid, note="", via="panel", by=None):
         """Sent in: from the panel (Send this one in, or picked from Your household) or filed from Assist (via). New,

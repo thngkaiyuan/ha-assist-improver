@@ -43,7 +43,6 @@ from .cases import CaseError
 from .const import DOMAIN
 from .sandbox import (STATS as SANDBOX_STATS, THREAD_NAME, Sandbox, call_tool, carry, observe, seed, snapshot,
                       system_prompt)
-from .simulation import UnsupportedSimulation
 from .standin import write
 from .trace import span
 
@@ -298,8 +297,6 @@ def raised(error):
     kind, name, message = error["kind"], error["name"], error["message"]
     if kind == "case":
         return CaseError(message)
-    if kind == "unsupported":
-        return UnsupportedSimulation(message)
     if kind == "touchpoint":  # The machinery's: never a verdict.
         return touchpoints.Broken(name, message)
     if kind == "refused":
@@ -454,9 +451,8 @@ def context_data(llm_context):
 def _error(err):
     if isinstance(err, touchpoints.Broken):
         return {"kind": "touchpoint", "name": err.name, "message": err.reason}
-    kind = ("unsupported" if isinstance(err, UnsupportedSimulation) else "case" if isinstance(err, CaseError)
-            else "ha" if isinstance(err, HomeAssistantError) else "invalid" if isinstance(err, probatio.Invalid)
-            else "other")
+    kind = ("case" if isinstance(err, CaseError) else "ha" if isinstance(err, HomeAssistantError)
+            else "invalid" if isinstance(err, probatio.Invalid) else "other")
     return {"kind": kind, "name": type(err).__name__, "message": str(err)[:2000]}
 
 

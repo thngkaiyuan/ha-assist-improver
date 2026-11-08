@@ -32,7 +32,7 @@ from .improvements import (DECISIONS, KINDS, PENDING, choices, display_title, ga
                            row, sentence, stuck_text)
 from .instructions import is_edit
 from .runtime import loaded
-from .settings import ROLES, SettingsError, provider_models, recommended_options, updated, view
+from .settings import GATES, ROLES, SettingsError, provider_models, recommended_options, updated, view
 from .weeks import reviewed
 
 URL_PATH = "assist-improver"  # The panel's address: /assist-improver?id=<improvement>.
@@ -701,7 +701,7 @@ def ws_run_status(hass, connection, msg):
 
 @websocket_api.websocket_command({probatio.Required("type"): f"{DOMAIN}/run/start",
                                   probatio.Required("confirmed"): True,
-                                  probatio.Optional("only"): probatio.In(("triage", "analyze", "propose", "write")),
+                                  probatio.Optional("only"): probatio.In(GATES),
                                   probatio.Optional("conversations"): probatio.All([str], probatio.Length(max=1000))})
 @websocket_api.require_admin
 @websocket_api.async_response
