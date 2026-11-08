@@ -635,11 +635,14 @@ def test_only_carrying_assists_change_through_is_its_follow_on_whatever_else_it_
     again or settling (a blind opening, then open), with each attribute it set kept; turning it elsewhere (the wall
     dimmer down to 30%, the blind sent back, the volume or the thermostat set back) is someone's correction (P9.1.7),
     though Assist also changed another entity of the same device just before. What the device reports on its own (a
-    reading) and what Assist never set may move with a follow-on."""
+    reading) and what Assist never set may move with a follow-on: where the turn's calls were recorded, Assist set what
+    they named, their target aside."""
     from custom_components.assist_improver.exploration import SessionView
 
-    def after(entity, start, assist, later, sibling=None):
+    def after(entity, start, assist, later, sibling=None, called=None):
         record = variant(make_recording(), "carried01", "Toggle the fixture relay.", turns=1)
+        if called:  # The turn's call log.
+            record["turns"][0]["actions"] = [called]
         first = record["turns"][0]["source"]
         context = record["state_changes"][0]["new"]["context"]
         for e in (entity, sibling) if sibling else (entity,):
@@ -682,6 +685,12 @@ def test_only_carrying_assists_change_through_is_its_follow_on_whatever_else_it_
     blind = lambda state, position: {"state": state, "attributes": {"current_position": position}}  # noqa: E731
     assert after("cover.blind", blind("closed", 0), blind("opening", 10), blind("opening", 40)).startswith("follow-on")
     assert after("climate.hall", heat(19, 19.5), heat(22, 19.6, "eco"), heat(22, 19.6, "none")).startswith("not the")
+    # Its call named the setpoint alone: the preset that moved with it was the thermostat's own, free to move back.
+    setpoint = {"action": "climate.set_temperature", "data": {"entity_id": ["climate.hall"], "temperature": 22}}
+    assert after("climate.hall", heat(19, 19.5), heat(22, 19.6, "eco"), heat(22, 19.6, "none"),
+                 called=setpoint).startswith("follow-on")
+    assert after("climate.hall", heat(19, 19.5), heat(22, 19.6, "eco"), heat(20, 19.6, "eco"),
+                 called=setpoint).startswith("not the")
 
 
 def test_someone_setting_back_in_a_later_turn_what_assist_set_reaches_the_quick_check_and_the_analyzer():
