@@ -5,7 +5,7 @@ manual release. A conversation that reaches a blocked stage is held there (SPEC.
 one of the three releases. The number of retries is DETAILS.md's (P4.4.2); here "a few" is more than one.
 """
 
-from household import BROKEN, FINE, FRICTION, SIDE_EFFECT, UNMET, Household
+from household import BROKEN, FINE, FRICTION, SIDE_EFFECT, UNCLEAR, UNMET, Household
 from spec_graph import refines
 
 # P0.8's four problems, as a held conversation's why names them, and the stage each holds it at in held_for().
@@ -228,6 +228,36 @@ def test_a_run_cut_off_while_a_stage_works_on_a_conversation_holds_it_there_afte
     assert attempts(home, talk, "Propose") == 1
 
 
+@refines("test_a_held_conversation_waits_at_the_stage_its_problem_stopped_it_and_its_why_names_that_problem")
+def test_a_conversation_sent_back_while_its_runs_model_is_unavailable_is_held_where_it_went_the_refusal_its_why():
+    """A revision and a conflict go back in at Propose, an answer to the stage that asked, each on a run of its own
+    (P0.7). While a step that run needs has no AI model available, the run is refused before anything is spent
+    (DETAILS P13.5.2), and kept in the history as a scheduled run's refusal is. The conversation isn't left there for
+    no run to move: it's held there for failures, the refusal its why. With the model back, a manual full run releases
+    it and carries its round on to where it stops (answered, the analyzer finds nothing to fix)."""
+    for send_back, stage, stops in [("revision", "Propose", "Your review"), ("conflict", "Propose", "Your review"),
+                                    ("answer", "Analyze", "Your household")]:
+        home = Household()
+        talk = home.converse(UNCLEAR if send_back == "answer" else FRICTION)
+        home.run()  # it waits at Your review: an improvement, or the analyzer's question
+        home.model_down("Propose")  # Propose's model, which Analyze shares
+        if send_back == "revision":
+            refused = home.decide(improvement_for(home, talk), "revise", "only the left door").run
+        elif send_back == "conflict":
+            improvement = improvement_for(home, talk)
+            home.edit_home(improvement)
+            refused = home.agree(home.decide(improvement, "accept"))
+        else:
+            refused = home.answer(talk, "the left one")
+        assert (refused.trigger, refused.status) == (send_back, "failed") and "Propose" in refused.error
+        place = home.place(talk)
+        assert (place.stage, place.held.cause, place.held.why) == (stage, "failures", refused.error)
+        assert set(home.shown(talk).values()) == {stage}  # every screen shows it held there, with that why
+        home.model_up("Propose")
+        assert talk in home.moved(home.run("full"))
+        assert (home.place(talk).stage, home.place(talk).held, home.place(talk).round) == (stops, None, place.round)
+
+
 @refines("test_whatever_held_it_every_other_run_leaves_a_held_conversation_exactly_as_it_was_until_a_pick_moves_it")
 def test_a_scheduled_run_or_the_fast_lane_moves_only_the_new_conversation_it_takes_in_and_leaves_a_held_one_as_it_was():
     """The control: each run moved the new conversation it took in."""
@@ -376,7 +406,7 @@ def test_a_run_of_a_blocked_stage_still_gives_what_is_held_there_its_one_more_tr
 # fast lane; a revision and a resolved conflict): one child per run, so a failure names the run. Each control shows that
 # run worked, on another conversation, at the stage holding this one. The cut-off test gets two children: two tests cut
 # off at once, as Home Assistant runs one message's tool calls; and what else the cut-off run had taken in or released.
-# The other eleven need none: each is already one scenario on the driver.
+# The other twelve need none: each is already one scenario on the driver.
 
 
 @refines("test_a_scheduled_run_or_the_fast_lane_moves_only_the_new_conversation_it_takes_in_and_leaves_a_held_one_as_it_was")

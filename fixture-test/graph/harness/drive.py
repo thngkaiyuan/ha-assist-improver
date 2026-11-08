@@ -192,13 +192,12 @@ class Question:
         return hash(("question", self.conversation.id))
 
 
-class Run:
-    def __init__(self, record):
-        self.record = record
+class Run(Record):
+    """A run, read by field as its record keeps it (the record History lists)."""
 
-    @property
-    def started(self):
-        return self.record["started"]
+    def __init__(self, record):
+        super().__init__("Run", record)
+        self.record = record
 
     def __eq__(self, other):
         return isinstance(other, Run) and other.record["id"] == self.record["id"]
@@ -574,6 +573,22 @@ class Drive:
         from custom_components.assist_improver.settings import updated
         entry = self._world.entry
         entry.options = updated(self._world.hass, entry, stage=STAGE_KEYS[stage], pause=pause)
+
+    def model_down(self, stage):
+        self._model(stage, "unavailable")
+
+    def model_up(self, stage):
+        self._model(stage, "unknown")  # As the world set it up.
+
+    def _model(self, stage, state):
+        """The AI Tasks that stage's roles call (settings.STAGE_ROLES) take that state in Home Assistant."""
+        from custom_components.assist_improver.settings import STAGE_ROLES, role_model
+        world = self._world
+
+        async def set_state():
+            for entity_id in {role_model(world.entry, role) for role in STAGE_ROLES[STAGE_KEYS[stage]]} - {None}:
+                world.hass.states.async_set(entity_id, state)
+        self._acting(set_state())
 
     def decide(self, item, decision, note=None, reason=None):
         (status, result), run = self._acting(self._deciding(item, decision, note, reason))

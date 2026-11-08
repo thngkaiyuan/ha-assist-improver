@@ -106,6 +106,9 @@ class Interface:
                                                  #   waits at Your review with
     block = _missing("block")                    # (stage)
     unblock = _missing("unblock")                # (stage): lifts a block (releases nothing by itself, P0.8)
+    model_down = _missing("model_down")          # (stage): the AI model that stage's roles call is unavailable in Home
+                                                 #   Assistant (so is every stage's that calls the same one)
+    model_up = _missing("model_up")              # (stage): it's available again
     decide = _missing("decide")                  # (item, decision, note=None, reason=None) -> Outcome; decision in
                                                  #   DECISIONS; reason ("not an issue") only with "decline"
     agree = _missing("agree")                    # (outcome) -> run: yes to what an outcome asks, e.g. resolving a conflict
@@ -187,7 +190,8 @@ class Interface:
 #   simulated), tested (what each of its review's Before & after rows says it tested)
 # Item: conversation, question (None for an improvement)
 # Outcome: run (the run it started, if any), asks (what it asks the household first, if anything; asks.about)
-# Run: started (comparable with a conversation's end)
+# Run: started (comparable with a conversation's end), trigger, status, error (a refused run's refusal), as History
+#   lists it
 # Trip: start (the stage it went back from), paid_by ("person", or the budget it spent, which has a cap)
 # Review: run, title and changes (the draft's), verdict ("approve" or "request_changes")
 # Received: run, input (as the product handed it to the stand-in), after_cut (logged after its run was cut off)
