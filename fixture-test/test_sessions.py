@@ -140,6 +140,31 @@ async def test_briefs_are_made_once_per_recording_and_again_only_when_it_changes
 
 
 @pytest.mark.asyncio
+async def test_a_brief_stamped_by_an_earlier_format_is_made_again_on_the_next_read(hass):
+    base = make_recording()
+    stores = {"brief001": variant(base, "brief001", "Fixture relay off.")}
+    exported = []
+
+    class Recorder:
+        index = {"brief001": {"status": "session_expired", "user_turns": 4, "updated": "1"}}
+
+        def __init__(self):
+            self.hass = hass
+
+        async def export(self, rid):
+            exported.append(rid)
+            return deepcopy(stores[rid])
+    recorder, cache = Recorder(), session_set.BriefCache(hass)
+    await cache.get(recorder, "brief001")
+    await cache.get(recorder, "brief001")
+    assert exported == ["brief001"]  # Same format: kept.
+    cache.briefs["brief001"]["stamp"][-1] = session_set.BRIEF_FORMAT - 1  # Stored by the format before.
+    await cache.get(recorder, "brief001")
+    assert exported == ["brief001"] * 2
+    assert cache.briefs["brief001"]["stamp"][-1] == session_set.BRIEF_FORMAT
+
+
+@pytest.mark.asyncio
 async def test_while_briefs_are_made_only_the_views_the_run_may_still_use_are_held(hass):
     """A view read in full is megabytes: while the briefs are made, only the newest that could be the household's view
     (replayable, else any) and the assistant's stay held, and the run gets the same two as choosing among them all."""

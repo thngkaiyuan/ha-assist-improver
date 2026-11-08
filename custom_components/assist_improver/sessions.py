@@ -29,7 +29,9 @@ LOADED = 12  # Full recordings loaded at once, besides the household's and the a
 PAGE = 20  # Sessions per list_sessions page.
 APPLIES_SHOWN = 12  # Sessions where a change applies, listed with a draft; the count covers the rest.
 STATES = ("open_friction", "without_friction", "not_analysed")
-BRIEF_FORMAT = 2  # A brief made by an earlier format is made again (2: which assistant the session used).
+# A brief made by an earlier format is made again (2: which assistant the session used; 3: the devices a session
+# touched read the one record of what happened, 0.40.34).
+BRIEF_FORMAT = 3
 
 
 def short(recording_id):
