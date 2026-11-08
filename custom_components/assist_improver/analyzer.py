@@ -25,7 +25,7 @@ import re
 import probatio
 
 from . import happened, standin, targets
-from .exploration import RoleTool, applied_too_early
+from .exploration import RoleTool, Submit, applied_too_early
 
 ROLE = "journey_analyzer"
 ASSISTANT = ("assistant", "follow-on of an assistant change on the same physical device")
@@ -560,8 +560,8 @@ def _conduct_problems(view, answer, goal, where, note_turns, existing):
     return found
 
 
-class SubmitGoals(RoleTool):
-    """The analyzer's only way to answer. Keeps every submission so the best one can be used."""
+class SubmitGoals(Submit):
+    """The analyzer's only way to answer, checked against the recording."""
     name = "submit_goals"
     description = ("Submit your answer: the user's goals (sub-goals in the same list, with serves; a conduct goal "
                    "with about and quote), the turns that were not requests, any revision note only about the "
@@ -569,27 +569,12 @@ class SubmitGoals(RoleTool):
                    "the recording; if problems are reported, fix them and submit again.")
     parameters = STRUCTURE
 
-    def __init__(self, view, then="Finish with one short sentence.", note=None, existing=(), revisions=()):
+    def __init__(self, view, then=Submit.then, note=None, existing=(), revisions=()):
         super().__init__(view)
-        self.submissions, self.then, self.note, self.existing = [], then, note, list(existing)
-        self.revisions = list(revisions)
+        self.then, self.note, self.existing, self.revisions = then, note, list(existing), list(revisions)
 
-    def run(self, **answer):
-        found = problems(self.view, answer, self.note, self.existing, self.revisions)
-        self.submissions.append({"answer": answer, "problems": found})
-        if found:
-            return {"accepted": False, "problems": found}
-        return {"accepted": True, "message": f"Accepted. {self.then}"}
-
-    def best(self):
-        """(status, answer, problems): the last accepted submission, else the one with fewest problems."""
-        if not self.submissions:
-            return "no_answer_submitted", None, []
-        accepted = [s for s in self.submissions if not s["problems"]]
-        if accepted:
-            return "accepted", accepted[-1]["answer"], []
-        best = min(reversed(self.submissions), key=lambda s: len(s["problems"]))
-        return "best_rejected", best["answer"], best["problems"]
+    def check(self, answer):
+        return problems(self.view, answer, self.note, self.existing, self.revisions)
 
 
 def valid_part(answer, found):

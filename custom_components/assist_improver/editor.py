@@ -12,7 +12,7 @@ import re
 import probatio
 
 from . import reflective
-from .exploration import RoleTool, SessionAPI
+from .exploration import SessionAPI, Submit
 
 ROLE = "editor"
 INSTRUCTIONS = """You write the two short texts a household reads first when deciding whether to accept a change to their Home Assistant voice assistant ("Assist"). You get the change (its idea, what was going wrong, and the exact changes) and what testing showed: what the household said, what happened before, and what happened with the change.
@@ -114,27 +114,15 @@ def outcome(test, names):
     return fixed, still
 
 
-class SubmitCopy(RoleTool):
-    """The editor's only way to answer; keeps every submission so the best one can be used."""
+class SubmitCopy(Submit):
+    """The editor's only way to answer."""
     name = "submit_copy"
     description = ("Submit the headline and the benefit. They're checked; if problems are reported, fix them and submit "
                    "again.")
     parameters = STRUCTURE
 
-    def __init__(self):
-        self.submissions = []
-
-    def run(self, **answer):
-        found = problems(answer)
-        self.submissions.append({"answer": answer, "problems": found})
-        if found:
-            return {"accepted": False, "problems": found}
-        return {"accepted": True, "message": "Accepted. Finish with one short sentence."}
-
-    def best(self):
-        """The last accepted answer, or None."""
-        accepted = [s["answer"] for s in self.submissions if not s["problems"]]
-        return accepted[-1] if accepted else None
+    def check(self, answer):
+        return problems(answer)
 
 
 async def write(hass, item, entity_id):
@@ -144,8 +132,8 @@ async def write(hass, item, entity_id):
     record = await reflective.run_role(hass, role=ROLE, entity_id=entity_id, instructions=INSTRUCTIONS,
                                        payload=payload(item, entity_names(hass, item), hass=hass), structure=None,
                                        llm_api=SessionAPI(hass, tools=[submit]), allow_paid_inference=True)
-    answer = submit.best()
-    if answer is None:
+    status, answer, _ = submit.best()
+    if status != "accepted":  # None accepted: a copy with problems is never the write-up.
         return {"status": "failed", "entity_id": entity_id, "error": record.get("error")}
     return {"status": "written", "entity_id": entity_id, "headline": answer["headline"].strip(),
             "benefit": answer["benefit"].strip()}

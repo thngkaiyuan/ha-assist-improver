@@ -8,7 +8,7 @@ import probatio
 from .. import contracts, records
 from ..cases import digest
 from ..exploration import (LISTING, TOOLS, DeviceDetails, DevicesInArea, FindActions, ListImprovements, ReadAssistant,
-                           ReadImprovement, ReadReadings, ReadTurn, RoleTool)
+                           ReadImprovement, ReadReadings, ReadTurn, RoleTool, Submit)
 from ..instructions import ran_with
 from ..sessions import STATES
 from ..trace import span
@@ -21,42 +21,7 @@ REVIEWS_PER_ROUND, REVIEWS_PER_IDEA = 15, 5
 STOPPED = "The reviewer has stopped, so it can approve no more ideas this round."
 
 
-class _Submit(RoleTool):
-    """A role's only way to answer. Keeps every submission so the best one can be used."""
-
-    def __init__(self, sessions):
-        super().__init__(sessions.household)
-        self.sessions, self.submissions = sessions, []
-
-    def check(self, answer):
-        """What's wrong with the answer itself (checked against the sessions and the household)."""
-        raise NotImplementedError
-
-    def pending(self, answer):
-        """What the role must still do before the answer is accepted, though nothing is wrong with it."""
-        return []
-
-    def run(self, **answer):
-        found, pending = self.check(answer), self.pending(answer)
-        self.submissions.append({"answer": answer, "problems": found})
-        if found or pending:
-            return {"accepted": False, "problems": found + pending}
-        return {"accepted": True, "message": "Accepted. Finish with one short sentence."}
-
-    def best(self):
-        """(status, answer, problems): the last submission with nothing wrong with it, accepted though something was
-        still pending (were it the answer left when the model stopped, it's the answer), else the one with fewest
-        problems."""
-        if not self.submissions:
-            return "no_answer_submitted", None, []
-        accepted = [s for s in self.submissions if not s["problems"]]
-        if accepted:
-            return "accepted", accepted[-1]["answer"], []
-        best = min(reversed(self.submissions), key=lambda s: len(s["problems"]))
-        return "best_rejected", best["answer"], best["problems"]
-
-
-class SubmitHypotheses(_Submit):
+class SubmitHypotheses(Submit):
     name = "submit_hypotheses"
     description = ("Submit your answer: one hypothesis for this conversation, its changes combining the fixes of "
                    "every theme (they can be broad), with the goals it fixes (session and goal turn, from "
@@ -67,7 +32,8 @@ class SubmitHypotheses(_Submit):
     parameters = HYPOTHESES
 
     def __init__(self, sessions, ask=None, tester=None):
-        super().__init__(sessions)
+        super().__init__(sessions.household)
+        self.sessions = sessions
         self.ask, self.tester = ask, tester  # Its ask_reviewer and test_idea (stamps.TestIdea): the stamps' tools.
 
     async def answer(self, hass, args):
@@ -119,12 +85,16 @@ class SubmitHypotheses(_Submit):
         return found
 
 
-class SubmitReview(_Submit):
+class SubmitReview(Submit):
     name = "submit_review"
     description = ("Submit your review: your comments (label, blocking or non-blocking, subject, discussion, household "
                    "evidence) and, when you know a better version, the revised hypothesis. The outcome follows from "
                    "the comments: any blocking comment requests changes.")
     parameters = REVIEW
+
+    def __init__(self, sessions):
+        super().__init__(sessions.household)
+        self.sessions = sessions
 
     async def answer(self, hass, args):
         await self.sessions.check_changes(hass, [args.get("revised")])  # The checks read what Home Assistant found.
@@ -315,25 +285,21 @@ class WaitForDraft(RoleTool):
             return {"draft": waited[0]}
 
 
-class ChannelSubmitReview(_Submit):
+class ChannelSubmitReview(SubmitReview):
     """submit_review in the loop: an accepted review answers the draft the generator is waiting on."""
-    name = "submit_review"
     description = ("Submit your review of the current draft: your comments (label, blocking or non-blocking, subject, "
                    "discussion, household evidence) and, when you know a better version, the revised hypothesis. The "
                    "outcome follows from the comments: any blocking comment requests changes. Then call "
                    "wait_for_draft for the next draft.")
-    parameters = REVIEW
 
     def __init__(self, sessions, channel):
         super().__init__(sessions)
         self.channel = channel
 
-    answer = SubmitReview.answer
-
     def check(self, answer):
         if self.channel.current is None:
             return ["There's no draft to review; call wait_for_draft first."]
-        return SubmitReview(self.sessions).check(answer)
+        return super().check(answer)
 
     def run(self, **answer):
         result = super().run(**answer)

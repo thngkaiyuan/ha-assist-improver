@@ -1,4 +1,5 @@
-"""Read-only tools for the roles: read a session turn by turn and explore the household.
+"""Read-only tools for the roles: read a session turn by turn and explore the household; and the base of each role's
+tool for answering (Submit).
 
 What they show of the home comes from the recording (its conversation and the home snapshot taken at its first turn),
 never from the live home, so analysing a session can't change or reveal anything beyond what was recorded. Only what
@@ -553,6 +554,42 @@ class RoleTool(llm.Tool):
     async def answer(self, hass, args):
         """What the model gets back for arguments its schema took."""
         return self.run(**args)
+
+
+class Submit(RoleTool):
+    """A role's only way to answer. Keeps every submission so the best one can be used."""
+    then = "Finish with one short sentence."  # What the role is told to do once its answer is accepted.
+
+    def __init__(self, view=None):
+        super().__init__(view)
+        self.submissions = []
+
+    def check(self, answer):
+        """What's wrong with the answer itself."""
+        raise NotImplementedError
+
+    def pending(self, answer):
+        """What the role must still do before the answer is accepted, though nothing is wrong with it."""
+        return []
+
+    def run(self, **answer):
+        found, pending = self.check(answer), self.pending(answer)
+        self.submissions.append({"answer": answer, "problems": found})
+        if found or pending:
+            return {"accepted": False, "problems": found + pending}
+        return {"accepted": True, "message": f"Accepted. {self.then}"}
+
+    def best(self):
+        """(status, answer, problems): the last submission with nothing wrong with it, accepted though something was
+        still pending (were it the answer left when the model stopped, it's the answer), else the one with fewest
+        problems."""
+        if not self.submissions:
+            return "no_answer_submitted", None, []
+        accepted = [s for s in self.submissions if not s["problems"]]
+        if accepted:
+            return "accepted", accepted[-1]["answer"], []
+        best = min(reversed(self.submissions), key=lambda s: len(s["problems"]))
+        return "best_rejected", best["answer"], best["problems"]
 
 
 class ReadTurn(RoleTool):
