@@ -152,7 +152,8 @@ class World:
     async def settle(self):
         """Waits for a run in progress, any its end starts right after it, and what Home Assistant was doing, to finish:
         a run that doesn't within the deadline fails the test, rather than hanging the suite. Then Home Assistant cleans
-        up the chat sessions the runs' AI Tasks opened, as it does minutes later."""
+        up the chat sessions the runs' AI Tasks opened, as it does minutes later. At rest, no kept conversation is left
+        between stages unheld: each is at Your Assist, Your review or Your household, or held with a cause and a why."""
         from homeassistant.helpers.chat_session import DATA_CHAT_SESSION_CLEANUP
 
         def running():  # A run in progress, or one queued for right after it (Pipeline._ran starts it once the run
@@ -167,6 +168,13 @@ class World:
                 if cleanup := self.hass.data.get(DATA_CHAT_SESSION_CLEANUP):
                     cleanup._cleanup(utcnow() + timedelta(minutes=6))
                     await self.hass.async_block_till_done()
+            index = self.runtime.recorder.index
+            stranded = [conv for rid, conv in self.runtime.flow.conversations.items()  # Not flow.record: it makes one.
+                        if rid in index and not index[rid].get("deleting")
+                        and conv["stage"] not in ("Your Assist", "Your review", "Your household")
+                        and not all((conv["held"] or {}).get(key) for key in ("cause", "why"))]
+            assert not stranded, "Left between stages, unheld (SPEC P0.6, P0.8): " + "; ".join(
+                f"{conv['id'][:8]} at {conv['stage']}, round {conv['round']}, held {conv['held']}" for conv in stranded)
         except TimeoutError:
             raise AssertionError(f"The run never finished (waited {DEADLINE} s)") from None
 
