@@ -1,1 +1,1 @@
-{"schemaVersion": 1, "label": "Home Assistant dev", "message": "2026.12 passing", "color": "brightgreen", "run": 42438277137}
+{"schemaVersion": 1, "label": "Home Assistant dev", "message": "2026.12 failing", "color": "red", "run": 42443059833}
