@@ -213,7 +213,7 @@ def effect_guards(monkeypatch):
     monkeypatch.setattr(socket, "getaddrinfo", deny("DNS"))
     monkeypatch.setattr(subprocess, "Popen", deny("subprocess"))
     # A sandbox's voice assistant sets up Home Assistant's ffmpeg, which asks the ffmpeg binary its version: the one
-    # process a worker's guard lets it start (guard.py). Here no binary is asked.
+    # process a worker's guard lets it start (guard.py). Here no binary is asked; a real worker asks ffmpeg_stand_in.
     from homeassistant.components.ffmpeg import FFmpegManager
 
     async def no_binary(manager):
@@ -242,6 +242,18 @@ def sandbox_integrations(tmp_path_factory):
     sys.path.append(str(root))
     yield
     sys.path.remove(str(root))
+
+
+@pytest.fixture(scope="session", autouse=True)
+def ffmpeg_stand_in(tmp_path_factory):
+    """The ffmpeg a real worker's Home Assistant finds first on the PATH and asks its version, the same on every host,
+    with ffmpeg or without."""
+    stand_in = tmp_path_factory.mktemp("ffmpeg") / "ffmpeg"
+    stand_in.write_text('#!/bin/sh\necho "ffmpeg version 7.1-fixture"\n')
+    stand_in.chmod(0o755)
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setenv("PATH", f"{stand_in.parent}{os.pathsep}{os.environ['PATH']}")
+        yield
 
 
 @pytest.fixture(autouse=True)
