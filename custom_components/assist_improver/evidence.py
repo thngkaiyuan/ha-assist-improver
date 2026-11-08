@@ -35,6 +35,7 @@ from . import clock, happened, targets
 from .analyzer import done, reached
 from .cases import CaseError, recording_turns, replayable_turns
 from .changes import RESOLVING, changed, setup_from_changes
+from .exploration import BY_ASSISTANT
 from .failures import contained
 from .instructions import assistant_config, is_edit, target
 from .replay import today as setup_today
@@ -438,7 +439,7 @@ def _ran(sandbox):
     start, changes = datetime.fromisoformat(sandbox.home.get("at") or "2000-01-01T00:00:00+00:00"), {}
     for n, change in enumerate(sandbox.changes, 1):
         changes.setdefault(change["entity_id"], []).append({
-            **change, "at": (start + timedelta(milliseconds=n)).isoformat(), "during_turn": 1, "by": "assistant"})
+            **change, "at": (start + timedelta(milliseconds=n)).isoformat(), "during_turn": 1, "by": BY_ASSISTANT})
     return SimpleNamespace(source=sandbox.home, sources=[sandbox.home], calls={1: []}, changes=changes,
                            actions={1: [{"action": f"{d}.{s}", "data": data} for d, s, data in sandbox.calls]})
 

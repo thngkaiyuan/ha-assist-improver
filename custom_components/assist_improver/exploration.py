@@ -46,6 +46,12 @@ INTERNAL_NOTES = ("provider_native_history_omitted",)
 LATE = 30  # Seconds after the assistant's reply beyond which a change is flagged as late.
 FOLLOW_ON = 10  # Seconds within which a same-device change counts as a follow-on of an assistant change.
 SETTLES = {(moving, end) for end, moving in UNDERWAY.items()}  # A mover on its way to an end, then there.
+# Who made a change (its "by"): Assist; its follow-on (_mark_follow_ons); a person signed in; someone else between a
+# replay's turns (measures.replay_view); anyone else.
+BY_ASSISTANT = "assistant"
+BY_FOLLOW_ON = "follow-on of an assistant change on the same physical device"
+BY_PERSON = "a person (signed in to Home Assistant)"
+BETWEEN_TURNS = "someone else, between turns"
 NOBODY = "not the assistant (a person at the device or app, an automation, or the device itself)"
 
 
@@ -210,8 +216,8 @@ class SessionView:
         for number, turn in enumerate(self.turns, 1):
             for entity_id in follow_ons(turn):
                 for c in changes.get(entity_id, []):
-                    if c["during_turn"] == number and c["by"] == "assistant":
-                        c["by"] = "follow-on of an assistant change on the same physical device"
+                    if c["during_turn"] == number and c["by"] == BY_ASSISTANT:
+                        c["by"] = BY_FOLLOW_ON
         stamped = sorted(((datetime.fromisoformat(c["at"]), e, c) for e, cs in changes.items() for c in cs),
                          key=lambda x: x[0])
         assists = {}  # {entity: Assist's changes to it so far, oldest first}
@@ -220,16 +226,16 @@ class SessionView:
             device, own = self._device(entity_id), assists.get(entity_id, [])
             how = self._indirect.get((entity_id, c["at"]))
             late = how == 2 and at > datetime.fromisoformat(self.replies[c["during_turn"] - 1] or c["at"])
-            if c["by"] == "assistant" and how and any(
+            if c["by"] == BY_ASSISTANT and how and any(
                     a["during_turn"] == c["during_turn"] and (late or self._indirect.get((entity_id, a["at"]), 0) < how)
                     for a in own) and not _carries(own, c, self._named):
                 c["by"] = NOBODY
-            if c["by"] == "assistant":
+            if c["by"] == BY_ASSISTANT:
                 assists.setdefault(entity_id, []).append(c)
                 if device:
                     near.append((device, at))
                 continue
-            if c["by"] == "a person (signed in to Home Assistant)":
+            if c["by"] == BY_PERSON:
                 continue
             if own:  # Assist changed this entity: only carrying that through is its follow-on.
                 follows = (at - datetime.fromisoformat(own[-1]["at"])).total_seconds() <= FOLLOW_ON and _carries(own, c, self._named)
@@ -237,7 +243,7 @@ class SessionView:
                 follows = bool(device) and any(d == device and 0 <= (at - t).total_seconds() <= FOLLOW_ON
                                                for d, t in near)
             if follows:
-                c["by"] = "follow-on of an assistant change on the same physical device"
+                c["by"] = BY_FOLLOW_ON
 
     def _who(self, entity_id, turn, context, at=None):
         """Assist, a signed-in person, or something else; recordings before identity capture use Assist's results."""
@@ -245,16 +251,16 @@ class SessionView:
         if turn_context.get("id") and turn_context["id"] in (context.get("id"), context.get("parent_id")):
             if context.get("id") != turn_context["id"]:  # What its request set off (a sentence trigger, an automation).
                 self._indirect[(entity_id, at)] = 1
-            return "assistant"
+            return BY_ASSISTANT
         # A person's own action, in the app or panel; before identity capture Assist's own carried the person's too.
         if turn_context.get("id") and context.get("user_id") and not context.get("parent_id"):
-            return "a person (signed in to Home Assistant)"
+            return BY_PERSON
         found = next((t for t in self.digest["turns"] if t["turn"] == turn), None)
         if found and any(entity_id in str(step.get("result", "")) for step in found["assistant"]):
             self._indirect[(entity_id, at)] = 2  # Only its results say so (_mark_follow_ons reads them again).
-            return "assistant"
+            return BY_ASSISTANT
         if context.get("user_id"):
-            return "a person (signed in to Home Assistant)"
+            return BY_PERSON
         return NOBODY
 
     def _entry(self, entity_id):
@@ -341,12 +347,13 @@ class SessionView:
                     pass
             steps.append(step)
         changed, found_readings = [], []
-        acted = {e for e, cs in self.changes.items() for c in cs if c["during_turn"] <= turn and c["by"] == "assistant"}
+        acted = {e for e, cs in self.changes.items() for c in cs
+                 if c["during_turn"] <= turn and c["by"] == BY_ASSISTANT}
         for e, cs in self.changes.items():
             for c in cs:
                 if c["during_turn"] != turn:
                     continue
-                if c.get("reading") and c["by"] != "assistant" and e not in acted:  # Listed last (digest.readings).
+                if c.get("reading") and c["by"] != BY_ASSISTANT and e not in acted:  # Listed last (digest.readings).
                     found_readings.append((e, {k: c[k] for k in ("at", "old", "new", "attributes_changed") if k in c}))
                 else:
                     changed.append({"entity_id": e, "name": _naming(self.source, e)[0], **c})
@@ -457,7 +464,7 @@ class SessionView:
         siblings = self._page([e for e in self._entities() if device_id and e != entity_id
                                and self._entry(e).get("device_id") == device_id], page)
         changes = self.changes.get(entity_id, [])
-        apart = not any(c["by"] == "assistant" for c in changes)  # Its readings, where Assist never changed it.
+        apart = not any(c["by"] == BY_ASSISTANT for c in changes)  # Its readings, where Assist never changed it.
         lines, _ = readings([(entity_id, c) for c in changes if apart and c.get("reading")])
         return {**self._card(entity_id, detailed=True),
                 "changes_during_session": [c for c in changes if not (apart and c.get("reading"))],

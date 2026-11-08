@@ -25,10 +25,10 @@ import re
 import probatio
 
 from . import happened, standin, targets
-from .exploration import RoleTool, Submit, applied_too_early
+from .exploration import BY_ASSISTANT, BY_FOLLOW_ON, RoleTool, Submit, applied_too_early
 
 ROLE = "journey_analyzer"
-ASSISTANT = ("assistant", "follow-on of an assistant change on the same physical device")
+ASSISTANT = (BY_ASSISTANT, BY_FOLLOW_ON)
 
 INSTRUCTIONS = """You analyse one recorded session between a household and its Home Assistant voice assistant ("Assist"). Your job is to work out what the user wanted. You start with an overview: the whole conversation (what the user and the assistant said in each turn, and each of the assistant's tool calls with Home Assistant's result, clipped), the household's areas and the assistant's tools. Read the whole conversation before deciding anything, since later turns often explain what earlier ones meant. State changes, and tool results past the overview's clip, appear only in read_turn, so read every turn with it before answering (several turns at once if you like). Explore the household with the other tools whenever you need to understand what the user meant: which device, which room, what a device can do. Before deciding what a request means for a device, find out how the household operates it: scripts or automations that drive it, and other entities on the same device. The tools answer from the recording, never the live home, but for a device's actions, which are today's. Request several turns or lookups in one round when you can.
 
@@ -325,7 +325,7 @@ def side_effects_left(view, goals):
                 spoke.setdefault(e, set()).update(turns)
     left = []
     for entity, changes in view.changes.items():
-        own, domain = [c for c in changes if c["by"] == "assistant"], entity.split(".", 1)[0]
+        own, domain = [c for c in changes if c["by"] == BY_ASSISTANT], entity.split(".", 1)[0]
         if (not own or entity in wanted or all(c["during_turn"] in spoke.get(entity, ()) for c in own)
                 or standin.trigger_only(domain)):
             continue

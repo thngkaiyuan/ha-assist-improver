@@ -32,7 +32,7 @@ from .cases import (CaseError, calls_in, digest, recording_turns, replay_readine
 from .changes import apis_now, setup_from_changes
 from .const import DOMAIN, STORAGE_VERSION, TESTED_PROVIDERS
 from .digest import _clip, _naming
-from .exploration import session_view
+from .exploration import BETWEEN_TURNS, BY_ASSISTANT, session_view
 from .failures import closing
 from .instructions import is_edit, live, ran_with, target
 from .replay import SandboxHome, today as setup_today
@@ -363,7 +363,7 @@ def question_of(goal, view, turn, user_said, world=None):
             before = [c for c in changes.get(e, []) if c["during_turn"] < turn]
             state = before[-1]["new"] if before else ((view.sources[0].get("states") or {}).get(e) or {}).get("state")
         during = [c for c in changes.get(e, []) if c["during_turn"] == turn
-                  and (world is not None and c["by"] == "assistant" or "between turns" not in c["by"] and (
+                  and (world is not None and c["by"] == BY_ASSISTANT or c["by"] != BETWEEN_TURNS and (
                       replied is None or datetime.fromisoformat(c["at"]) <= datetime.fromisoformat(replied)))]
         changed = [{k: c[k] for k in ("old", "new", "by")} for c in during if not c.get("reading")]
         if readings := [c for c in during if c.get("reading")]:  # One line, last: from the first to the last.

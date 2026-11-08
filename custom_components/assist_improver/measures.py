@@ -13,7 +13,7 @@ from types import SimpleNamespace
 
 from .analyzer import ASSISTANT, couldnt, destination, done, question_run, reached, root_turn, side_effects_left
 from .cases import calls_in
-from .exploration import with_percent
+from .exploration import BETWEEN_TURNS, BY_ASSISTANT, with_percent
 from .simulation import moved_by_others
 
 CONVERSATION = None  # As conduct: the conversation as it went, where every reaction is open (the user reacted).
@@ -302,13 +302,13 @@ def replay_view(turns, session_view, steps):
                         (turns[0]["source"].get("states") or {}).get(entity) or {}).get("state")
                     changes.setdefault(entity, []).append({
                         "at": turn["source"]["at"], "during_turn": turn["number"] - 1, "old": was,
-                        "new": move["state"], "by": "someone else, between turns"})
+                        "new": move["state"], "by": BETWEEN_TURNS})
         said = max(said, number)
         for n, move in enumerate(step.get("changes") or [], 1):
             entity = move["entity_id"]
             changes.setdefault(entity, []).append({
                 "at": (at + timedelta(milliseconds=n)).isoformat(), "during_turn": number, "old": move["old"],
-                "new": move["new"], "by": "assistant", **({"attributes_changed": with_percent(
+                "new": move["new"], "by": BY_ASSISTANT, **({"attributes_changed": with_percent(
                     entity, move["attributes_changed"])} if move.get("attributes_changed") else {})})
             touched.setdefault(entity, number)
     for entity, recorded in session_view.changes.items():
