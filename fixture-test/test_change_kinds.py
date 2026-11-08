@@ -196,6 +196,7 @@ LAMP_ON = [{"condition": "state", "entity_id": LAMP, "state": "on"}]
     ({"alias": "Any", "sequence": [{"sequence": [PICKED]}]}, PICKED_SAYS),
     ({"alias": "Any", "sequence": [{"choose": [{"conditions": LAMP_ON, "sequence": [{"delay": 1}]}],
                                     "default": [PICKED]}]}, PICKED_SAYS),
+    ({"alias": "Any", "sequence": [{"choose": [{"conditions": LAMP_ON, "sequence": [PICKED]}]}]}, PICKED_SAYS),
     ({"alias": "Any", "sequence": [{"parallel": [PICKED]}]}, PICKED_SAYS),
     ({"alias": "Any", "sequence": [{"parallel": [{"sequence": [PICKED]}]}]}, PICKED_SAYS),
     ({"alias": "Any", "sequence": [{"parallel": [[PICKED]]}]}, PICKED_SAYS),
@@ -206,8 +207,8 @@ LAMP_ON = [{"condition": "state", "entity_id": LAMP, "state": "on"}]
         "target-from-field", "automation-variables", "script-service-data", "templated-data-key",
         "templated-data-whole", "select-picks-target", "select-picks-action", "config-entry-field",
         "undescribed-field", "event-data", "data-template-under-data", "variables-template-under-data",
-        "nested-webhook-wait", "in-if-then", "in-else", "in-sequence", "in-choose-default", "in-parallel-step",
-        "in-parallel-sequence", "in-parallel-list", "in-repeat-while", "in-deep-mix"])
+        "nested-webhook-wait", "in-if-then", "in-else", "in-sequence", "in-choose-default", "in-choose-option",
+        "in-parallel-step", "in-parallel-sequence", "in-parallel-list", "in-repeat-while", "in-deep-mix"])
 @pytest.mark.asyncio
 async def test_no_action_or_target_takes_its_value_from_a_field_a_template_or_trigger_data(hass, config, problem):
     """Rule 2: what a step does and what it acts on are fixed in the configuration the household reviews."""
