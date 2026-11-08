@@ -225,7 +225,7 @@ async def test_the_households_timed_automations_dont_fire_in_a_replay_of_an_earl
         await home.start()
         await asyncio.sleep(1)
         world = await home.snapshot()
-        assert world["commands"] == [] and world["transitions"] == [], home.sandbox.log[:3]
+        assert world["commands"] == [] and world["transitions"] == [], world
     finally:
         await home.stop()
         await worker_module.shutdown(hass)

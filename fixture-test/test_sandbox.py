@@ -321,7 +321,7 @@ async def test_the_households_scripts_and_automations_run_in_the_replay(hass, ef
         assert [c["service"] for c in world["commands"]] == ["switch.turn_off", "switch.turn_on"]
         # The automation reacted, on a device the home doesn't have: Home Assistant skips it, as at home.
         assert any("switch.never_recorded" in line for line in inside(home.sandbox).log)
-        assert home.sandbox.unsimulated == []
+        assert inside(home.sandbox).unsimulated == []
     finally:
         await home.stop()
     assert effect_guards == []

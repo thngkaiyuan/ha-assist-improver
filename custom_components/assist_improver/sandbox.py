@@ -805,17 +805,15 @@ async def run_turn(hass, text, conversation_id, context, language, agent_id, dev
     at the recorded turn's time: HA opens the chat session and log as its pipeline does, the assistant renders its
     prompt, builds its tools, asks its model and runs each tool call here, at once, as it comes, waits inside them
     passing at once (_tool_windows), never past until (the next recorded turn's time, ISO; None: none). Its answer:
-    what the turn added to the chat log after the person's words (each as HA gives it), what the assistant was given
-    (its system prompt, its tools' names), the provider's usage as the assistant traces it, the watched entities'
-    attributes before and after, the turn's call log (each action it set off, a script's own among them, as recorded
-    at home: recorder.Actions), and the home once everything the turn set off has run or until came (snapshot): its
-    changes, commands and calls beyond the home (outside), and what of it wasn't simulated (unemulated), the turn's
-    own."""
+    what the turn added to the chat log after the person's words (each as HA gives it), the provider's usage as the
+    assistant traces it, the watched entities' attributes after, the turn's call log (each action it set off, a
+    script's own among them, as recorded at home: recorder.Actions), and the home once everything the turn set off has
+    run or until came (snapshot): its changes, commands and calls beyond the home (outside), and what of it wasn't
+    simulated (unemulated), the turn's own."""
     from homeassistant.components import conversation
     from homeassistant.core import Context
     from homeassistant.helpers import chat_session
     sandbox, usage, held = hass.data[SANDBOX_KEY], [], {}
-    before = {e: dict(state.attributes) for e in watch if (state := hass.states.get(e)) is not None}
     marks = {k: len(getattr(sandbox, k)) for k in MARKED}
     with _call_log(hass, held, context["id"]) as actions:  # Until what the turn set off has run (snapshot).
         with chat_session.async_get_chat_session(  # Its owner: whoever says the turn (async_converse).
@@ -839,12 +837,9 @@ async def run_turn(hass, text, conversation_id, context, language, agent_id, dev
             added = chat_log.content[start:]
             if added and added[0].role == "user":
                 added = added[1:]
-            api = chat_log.llm_api
-            given = {"prompt": chat_log.content[0].content if chat_log.content else None,
-                     "tools": [t.name for t in api.tools] if api else []}
         found = await snapshot(hass, watch, until)
     return {"content": plain([c.as_dict() for c in added]), "reply": plain(result.response.as_dict()),
-            "given": given, "usage": usage, "before": plain(before), "attributes": plain(found["attributes"]),
+            "usage": usage, "attributes": plain(found["attributes"]),
             **{k: plain(found[k][marks[k]:]) for k in marks if k != "unsimulated"},
             "actions": [{k: v for k, v in a.items() if k != "context"} for a in actions],  # Its ids differ each run.
             "unemulated": found["unsimulated"][marks["unsimulated"]:], "home": moved(sandbox.moment, home_now(hass))}

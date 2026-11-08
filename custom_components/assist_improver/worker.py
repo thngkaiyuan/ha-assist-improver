@@ -320,14 +320,10 @@ def _named(kind, name, base):
 
 
 class RemoteSandbox:
-    """A replay's sandbox, in a worker of its own, as replay.py uses it: its operations by name, and what it
-    reported."""
+    """A replay's sandbox, in a worker of its own, as replay.py uses it: its operations by name."""
 
     def __init__(self, worker):
         self.worker = worker
-        # What the sandbox didn't simulate (a device's command, an outside call), as of its last answer.
-        self.unsimulated = []
-        self.log = []  # What HA logged inside it, as of its last answer.
 
     @classmethod
     @span("sandbox.start")
@@ -343,10 +339,7 @@ class RemoteSandbox:
         return cls(worker)
 
     async def call(self, op, **args):
-        found = await self.worker.call(f"home.{op}", **args)
-        if isinstance(found, dict) and "unsimulated" in found:
-            self.unsimulated, self.log = found["unsimulated"], found.get("log", self.log)
-        return found
+        return await self.worker.call(f"home.{op}", **args)
 
     async def stop(self):
         async with span("sandbox.stop"):
@@ -377,9 +370,6 @@ class Server:
             sandbox, self.sandbox = self.sandbox, None
             await sandbox.stop()
 
-    def _reported(self, extra=None):
-        return {**(extra or {}), "unsimulated": list(self.sandbox.unsimulated), "log": list(self.sandbox.log)}
-
     async def op_home_start(self, time_zone, home=None, setup=None):
         self.sandbox = await Sandbox.start(time_zone, home, setup)
 
@@ -388,19 +378,16 @@ class Server:
         await self.sandbox.run(lambda hass: seed(
             hass, person=person, **options, scripts=scripts, automations=automations,
             exposure_changes=exposure_changes, moving=moving, machinery=machinery, cut=cut, recorded=recorded))
-        return self._reported()
 
     async def op_home_assistant(self, entry, agent):
         """The household's assistant, loaded by its provider's own integration (sandbox.load_assistant), which the
         guard lets reach its provider's own endpoints."""
         guard.allow(entry)
-        return self._reported({"agent": await self.sandbox.run(lambda hass: sandbox.load_assistant(
-            hass, entry, agent))})
+        return {"agent": await self.sandbox.run(lambda hass: sandbox.load_assistant(hass, entry, agent))}
 
     async def op_home_household(self, knowledge):
         """The household knowledge the sandbox's Assist reads."""
         await self.sandbox.run(lambda hass: household.serve(hass, knowledge))
-        return self._reported()
 
     async def op_home_prompt(self, context, api_id, template):
         """Assist's system prompt and tools as HA builds them in the sandbox, each tool's parameters as the JSON
@@ -408,22 +395,21 @@ class Server:
         prompt, api = await self.sandbox.run(lambda hass: system_prompt(hass, llm_context(context), api_id, template))
         self.api = api
         if api is None:
-            return self._reported({"prompt": prompt, "api_prompt": None, "tools": []})
+            return {"prompt": prompt, "api_prompt": None, "tools": []}
         tools = [{"name": t.name, "description": t.description, "integration": getattr(t, "integration", None),
                   "parameters": probatio.to_openapi(t.parameters, custom_serializer=api.custom_serializer,
                                                     openapi_version="3.1.0")} for t in api.tools]
-        return self._reported({"prompt": prompt, "api_prompt": api.api_prompt, "tools": tools})
+        return {"prompt": prompt, "api_prompt": api.api_prompt, "tools": tools}
 
     async def op_home_turn(self, text, conversation_id, context, language, agent_id, device_id=None, watch=(),
                            until=None):
         """One Assist turn, the household's assistant answering here (sandbox.run_turn), never past until."""
-        return self._reported(await self.sandbox.run(lambda hass: sandbox.run_turn(
-            hass, text, conversation_id, context, language, agent_id, device_id, watch, until)))
+        return await self.sandbox.run(lambda hass: sandbox.run_turn(
+            hass, text, conversation_id, context, language, agent_id, device_id, watch, until))
 
     async def op_home_carry(self, conversation_id, context, steps):
         """A test's turns before its branch, its baseline's, in the replay's chat log (sandbox.carry)."""
         await self.sandbox.run(lambda hass: carry(hass, conversation_id, llm_context(context), steps))
-        return self._reported()
 
     async def op_home_tool(self, tool_name, tool_args, call_id=None, external=False):
         from homeassistant.helpers import llm
@@ -432,14 +418,13 @@ class Server:
         tool_input = llm.ToolInput(tool_name=tool_name, tool_args=tool_args, external=external,
                                    **({"id": call_id} if call_id else {}))
         result = await self.sandbox.run(lambda hass: call_tool(hass, self.api, tool_input))
-        return self._reported({"data": result.data, "error": result.error})
+        return {"data": result.data, "error": result.error}
 
     async def op_home_observe(self, source, moves=()):
         await self.sandbox.run(lambda hass: observe(hass, source, moves))
-        return self._reported()
 
     async def op_home_snapshot(self, attributes=(), until=None):
-        return self._reported(await self.sandbox.run(lambda hass: snapshot(hass, attributes, until)))
+        return await self.sandbox.run(lambda hass: snapshot(hass, attributes, until))
 
     async def op_evidence(self, job, **args):
         """One of evidence.py's sandbox jobs, run here whole."""
