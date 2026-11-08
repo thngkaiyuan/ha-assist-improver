@@ -370,7 +370,6 @@ Citations in parentheses name the maintainer's earlier notes, which aren't in th
   - **P5.6.1** A stage run is Run one step, from the Run button's menu, after a confirmation that counts what waits at
     that stage. It works at that stage only; what it passes on waits at the next. (SPEC-CORE R5: Kai 2026-10-24;
     DESIGN.md; fixture-test SPEC)
-  - **P5.6.2** Run one step's Triage also admits the new conversations, and counts them. (TEXT-REVIEW, 2026-10-25)
   - **P5.6.3** A blocked stage can still be run on its own; its model is checked first. (fixture-test SPEC)
 - **P5.8 Starting a run.**
   - **P5.8.1** Nothing paid runs without the household's say: a manual run starts only once the household confirms

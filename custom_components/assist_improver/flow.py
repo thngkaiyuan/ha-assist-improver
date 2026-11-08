@@ -396,7 +396,7 @@ class Flow:
                 self._enter(conv, "Analyze")
                 continue
             key = KEYS[stage]
-            if key in paused(self.entry):
+            if key in paused(self.entry) and run.get("only") != key:  # Run one step still runs it (DETAILS P3.6.3).
                 self._hold(conv, "blocked", f"{stage} is blocked.")
                 return
             if run.get("only") and run["only"] != key:

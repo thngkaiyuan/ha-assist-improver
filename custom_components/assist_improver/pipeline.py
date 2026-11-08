@@ -77,7 +77,7 @@ class Pipeline:
             recording_id, trigger = self._sent_back.pop(0)
             try:
                 self.start(trigger=trigger, conversation=recording_id)
-            except CaseError:  # A step's model isn't available: recorded as failed, with why.
+            except CaseError:  # A step's model isn't available: the run doesn't start, and nothing records it.
                 pass
 
     @callback

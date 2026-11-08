@@ -86,8 +86,7 @@ def test_a_picked_run_moves_exactly_the_conversations_picked_whether_new_or_held
 
 @refines("P0.7")
 def test_a_stage_run_releases_what_is_held_at_that_stage_and_nothing_held_elsewhere_or_new():
-    """Stages after Triage. A run of Triage takes no new conversation in either: SPEC.md lists none for a stage run,
-    over DETAILS P5.6.2."""
+    """Stages after Triage. A run of Triage takes no new conversation in either: SPEC.md lists none for a stage run."""
     home, new, failing, parked, waiting, done = crowded()
     left_out = where(home, *new, failing)
     assert home.moved(home.run("stage", stage="Propose")) == {parked}
@@ -323,7 +322,7 @@ def test_a_stage_run_leaves_a_conversation_held_at_another_stage_exactly_as_it_w
 
 @refines("test_a_stage_run_releases_what_is_held_at_that_stage_and_nothing_held_elsewhere_or_new")
 def test_a_stage_run_takes_in_no_new_conversation_not_even_a_run_of_triage():
-    """SPEC.md lists none for a stage run, over DETAILS P5.6.2. The same run releases what's held at its stage."""
+    """SPEC.md lists none for a stage run. The same run releases what's held at its stage."""
     for home, talk in holds():
         new = home.converse(FINE)
         left_out = where(home, new)
@@ -649,8 +648,7 @@ def test_a_picked_run_leaves_a_conversation_sent_in_earlier_whose_analysis_faile
 
 @refines("test_a_stage_run_takes_in_no_new_conversation_not_even_a_run_of_triage")
 def test_a_run_of_triage_releases_what_is_held_at_triage_and_takes_in_no_new_conversation():
-    """SPEC.md lists no new conversation for a stage run (Kai's ruling), over DETAILS P5.6.2, where Run one step's
-    Triage also admits the new ones. The control: a full run takes it in."""
+    """SPEC.md lists no new conversation for a stage run (Kai's ruling). The control: a full run takes it in."""
     home, stuck = held_by("Triage")
     new = home.converse(FINE)
     left_out = where(home, new)
