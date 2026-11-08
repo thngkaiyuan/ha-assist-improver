@@ -15,8 +15,11 @@ import time
 
 import pytest
 
-from recordings import TARGET, make_recording, recorded_today
+from conftest import assist_home
+from recordings import (PROFILE, REPLAY_ENTITIES, TARGET, at_home, bind_agent, make_recording, prepared_recording,
+                        recorded_today)
 from kit import improver  # noqa: F401 - a fixture.
+from custom_components.assist_improver import replay
 from custom_components.assist_improver import sandbox as sandbox_module
 from custom_components.assist_improver import worker as worker_module
 from custom_components.assist_improver.cases import recording_turns
@@ -210,6 +213,49 @@ async def test_the_worker_process_answers_as_a_sandbox_in_this_process_does(hass
     monkeypatch.setattr(worker_module, "INLINE", False)
     assert await built(hass, make_recording()) == inline
     assert not hass.data[worker_module.KEY] and not sandbox_threads()
+
+
+@pytest.mark.asyncio
+async def test_a_turns_answer_from_the_worker_process_carries_what_a_replay_keeps_of_it_the_turns_own(
+        hass, provider_process, monkeypatch):
+    """Each turn's answer crosses from the worker with all a replay keeps of it (simulate.Trial._turn): the words the
+    turn added and its reply, the provider's usage, the watched devices' attributes, the turn's own transitions,
+    changes, commands, calls beyond the home and what wasn't simulated, its call log, and the home after it."""
+    await assist_home(hass, REPLAY_ENTITIES)
+    record = prepared_recording()
+    agent, client = await bind_agent(hass, record, PROFILE)
+    at_home(monkeypatch, record, {"notify": {"mobile_app_phone": "none"}}, automations=[  # Turn 1 sets it off.
+        {"id": "tell", "alias": "Tell the phone", "triggers": [{"trigger": "state", "entity_id": TARGET, "to": "off"}],
+         "actions": [{"action": "notify.mobile_app_phone", "data": {"message": "Relay off"}}]}])
+    client.blocks = [[{"type": "tool_use", "id": "off", "name": "intent__HassTurnOff",
+                       "input": {"name": "Fixture relay", "domain": ["switch"]}}],
+                     [{"type": "text", "text": "Done."}], [{"type": "text", "text": "Ok."}]]
+    one, two = recording_turns(record)[:2]
+    home = SandboxHome(hass, record, one, "fixture-turns", await replay.today(hass, agent.entity_id), watch=[TARGET])
+    try:
+        agent_id = await home.load_assistant()
+        first = await home.turn(one, agent_id, home.id)
+        second = await home.turn(two, agent_id, home.id)
+    finally:
+        await home.stop()
+    kept = {"content", "reply", "usage", "attributes", "transitions", "changes", "commands", "outside", "actions",
+            "unemulated", "home"}
+    assert kept <= set(first) and kept <= set(second)
+    assert [m["role"] for m in first["content"]] == ["assistant", "tool_result", "assistant"]
+    assert first["content"][-1]["content"] == first["reply"]["speech"]["plain"]["speech"] == "Done."
+    assert first["usage"] and second["usage"]
+    assert [t["attributes"][TARGET]["friendly_name"] for t in (first, second)] == ["Fixture relay"] * 2
+    assert first["transitions"] == [{"entity_id": TARGET, "old": "on", "new": "off"}] == first["changes"][:1]
+    assert first["commands"] == [{"entity_id": TARGET, "service": "switch.turn_off", "data": {}}]
+    assert first["outside"] == [{"action": "notify.mobile_app_phone", "data": {"message": "Relay off"},
+                                 "answer": "not simulated"}] and first["unemulated"] == ["notify.mobile_app_phone"]
+    assert [a["action"] for a in first["actions"]] == [
+        "homeassistant.turn_off", "switch.turn_off", "notify.mobile_app_phone"]
+    assert first["home"][TARGET]["state"] == second["home"][TARGET]["state"] == "off"
+    # Turn 2's lists are its own: nothing of turn 1's.
+    assert second["content"][-1]["content"] == second["reply"]["speech"]["plain"]["speech"] == "Ok."
+    assert second["transitions"] == second["changes"] == second["commands"] == second["outside"] == []
+    assert second["actions"] == second["unemulated"] == []
 
 
 @pytest.mark.asyncio
