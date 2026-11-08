@@ -25,6 +25,7 @@ from .digest import (_clip, _naming, _text, async_time_zone, build_digest, devic
                      readings, time_zone)
 from .ha_tools import tools as ha_tools
 from .simulation import follow_ons
+from .standin import TARGETS, UNDERWAY
 from .targets import TOLERANCE
 from .trace import traced_tool
 
@@ -44,8 +45,7 @@ UNSEARCHED = frozenset({
 INTERNAL_NOTES = ("provider_native_history_omitted",)
 LATE = 30  # Seconds after the assistant's reply beyond which a change is flagged as late.
 FOLLOW_ON = 10  # Seconds within which a same-device change counts as a follow-on of an assistant change.
-SETTLES = {("opening", "open"), ("closing", "closed"), ("locking", "locked"), ("unlocking", "unlocked")}
-TARGETS = {"entity_id", "device_id", "area_id", "floor_id", "label_id"}  # Whom an action call is for.
+SETTLES = {(moving, end) for end, moving in UNDERWAY.items()}  # A mover on its way to an end, then there.
 NOBODY = "not the assistant (a person at the device or app, an automation, or the device itself)"
 
 
@@ -191,7 +191,7 @@ class SessionView:
         raw = self.recording.get("turns", [])
         if not 0 < turn <= len(raw) or "actions" not in raw[turn - 1]:
             return None
-        return {k for a in raw[turn - 1]["actions"] for k in a.get("data") or {}} - TARGETS
+        return {k for a in raw[turn - 1]["actions"] for k in a.get("data") or {} if k not in TARGETS}
 
     def _device(self, entity_id):
         return (self.source.get("entities", {}).get(entity_id) or {}).get("device_id")

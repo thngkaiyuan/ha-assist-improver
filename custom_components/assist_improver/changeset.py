@@ -54,8 +54,7 @@ ORDER = ("alias", "entity", "device", "area", "assistant_api", "script", "scene"
          "automation", "automation_on")
 LOAD_TIMEOUT = 30  # Seconds HA may take to load an item the panel saved, let go of one it deleted, or reload.
 # Where Home Assistant registers an editor item's entity (domain, platform); its unique ID is the item's id.
-ENTITIES = {"script": ("script", "script"), "automation": ("automation", "automation"),
-            "scene": ("scene", "homeassistant")}
+ENTITIES = {kind: (kind, platform) for kind, platform in kinds.PLATFORMS.items()}  # A kind is its domain.
 # What Home Assistant fires once its editor's reload after a save is done (its script editor's reload fires nothing).
 RELOADED = {"automation": "automation_reloaded", "scene": "scene_reloaded"}
 

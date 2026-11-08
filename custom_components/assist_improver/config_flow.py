@@ -47,8 +47,7 @@ class _AiTaskSteps:
             state = self.hass.states.get(entity_id)
             assessment = ai_setup.assess(self.hass, entity_id)
             name = state.attributes.get("friendly_name", entity_id) if state else entity_id
-            model = settings.model_label(self.hass, entity_id)
-            model = f"Claude {model}" if settings.CLAUDE.search(assessment.get("model") or "") else model
+            model = settings.model_name(self.hass, entity_id)
             # Labels stay English: the options are entity IDs and provider entries, and HA translates fixed values only.
             label = f"{model} · {name}" if model != name else name
             if ai_setup.is_recommended(assessment):
