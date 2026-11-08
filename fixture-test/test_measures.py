@@ -252,8 +252,8 @@ def test_a_replays_view_holds_what_others_moved_between_turns_on_a_device_assist
     steps = [{"turn": 1, "changes": [{"entity_id": LAMP, "old": "off", "new": "on"}]},
              {"turn": 2, "changes": [{"entity_id": LAMP, "old": "off", "new": "on"}]}]
     home = measures.replay_view(turns, recorded, steps)
-    assert [(c["during_turn"], c["new"], c["by"] == "assistant") for c in home.changes[LAMP]] == [
-        (1, "on", True), (1, "off", False), (2, "on", True)]
+    assert [(c["during_turn"], c["new"], c["by"]) for c in home.changes[LAMP]] == [
+        (1, "on", "assistant"), (1, "off", "someone else, between turns"), (2, "on", "assistant")]
     goals = measures.goals_of({"turns": 2, "goals": [state(1, LAMP, "on"), step(2, 1)]})
     assert measures.judge(goals, home, [1, 2], {})["goals"] == {"1:0": "met", "2:1": "unmet"}
 

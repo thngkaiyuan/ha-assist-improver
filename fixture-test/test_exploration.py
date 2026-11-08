@@ -213,6 +213,32 @@ def test_changes_say_who_made_them_and_what_attributes_changed():
     assert later["by"] in ("assistant", "a person (signed in to Home Assistant)")
 
 
+def test_each_change_says_who_made_it_in_the_words_the_roles_read():
+    """The words for who made a change reach the roles as they are (read_turn) and are what code counts by: in turn 1,
+    Assist turns the relay off; the relay's own status light, on the same physical device, follows a moment later;
+    Alex, signed in, turns the porch light on in the app; an automation turns the hall light on."""
+    record = make_recording()
+    led, porch, hall = "switch.fixture_relay_led", "light.porch", "light.hall"
+    first = record["turns"][0]["source"]
+    first["entities"][TARGET]["device_id"] = "relay-device"
+    first["entities"][led] = {**first["entities"][TARGET], "name": "Relay light"}
+    for entity in (led, porch, hall):
+        first["states"][entity] = {"entity_id": entity, "state": "off", "attributes": {}}
+    record["state_changes"] += [
+        {"entity_id": entity, "at": at, "old": {"entity_id": entity, "state": "off", "attributes": {}},
+         "new": {"entity_id": entity, "state": "on", "attributes": {}, "context": context}}
+        for entity, at, context in (
+            (led, "2026-01-01T00:00:04.500000+00:00", {"id": "relay-own", "parent_id": None, "user_id": None}),
+            (porch, "2026-01-01T00:00:05.200000+00:00", {"id": "alex-app", "parent_id": None, "user_id": "alex"}),
+            (hall, "2026-01-01T00:00:05.400000+00:00", {"id": "automation-run", "parent_id": None, "user_id": None}))]
+    view = SessionView(record)
+    words = {TARGET: "assistant", led: "follow-on of an assistant change on the same physical device",
+             porch: "a person (signed in to Home Assistant)",
+             hall: "not the assistant (a person at the device or app, an automation, or the device itself)"}
+    assert {e: view.changes[e][0]["by"] for e in words} == words
+    assert {c["entity_id"]: c["by"] for c in view.read_turn(1)["state_changes_during_turn"]} == words
+
+
 def test_cards_say_when_a_state_is_from_and_turns_can_be_read_together():
     view = SessionView(make_recording())
     card = view.devices_in_area("Fixture room")["devices"][0]
