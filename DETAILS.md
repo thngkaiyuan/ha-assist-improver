@@ -801,16 +801,16 @@ Citations in parentheses name the maintainer's earlier notes, which aren't in th
     the readings")
   - **P7.6.14** The proposer and reviewer also read the live home through Home Assistant's own tools, as the
     improver's service user (P7.6.15): an entity's history, a template rendered, an integration's entries in the
-    system log, and the config entries. Only tools Home Assistant ships, marks read-only and that are on this pinned
-    list are kept; a test fails when Home Assistant adds or renames one. Left out: system health and integration
-    search (the version is known; the improver never proposes installing an integration), the two log readers (size;
-    the entries carry the errors), search and action search (the improver's lookups are wider), and the date and time
-    (the recording has it). Never a tool that acts, and never the Assist API (under an AI Task it writes an exposure
-    option into every entity). A template renders on the real instance, up to 3 seconds in a thread and then on Home
-    Assistant's event loop, and each call counts against the role's tool-call limit (1,000 for Anthropic's AI Task).
-    Their instructions say which tools read a recording's moment and which the live home. The analyzer and the judges
-    answer from the recording, never the live home, but for what P7.6.13 takes from Home Assistant now. (Kai,
-    2026-11-05)
+    system log, the config entries, and the Supervisor's installed apps where it runs. Only tools Home Assistant
+    ships, marks read-only and that are on this pinned list are kept; a test fails when Home Assistant adds or
+    renames one. Left out: system health and integration search (the version is known; the improver never proposes
+    installing an integration), the two log readers (size; the entries carry the errors), search and action search
+    (the improver's lookups are wider), and the date and time (the recording has it). Never a tool that acts, and
+    never the Assist API (under an AI Task it writes an exposure option into every entity). A template renders on the
+    real instance, up to 3 seconds in a thread and then on Home Assistant's event loop, and each call counts against
+    the role's tool-call limit (1,000 for Anthropic's AI Task). Their instructions say which tools read a recording's
+    moment and which the live home. The analyzer and the judges answer from the recording, never the live home, but
+    for what P7.6.13 takes from Home Assistant now. (Kai, 2026-11-05)
   - **P7.6.15** The service user is an "Assist Improver" system user in the administrators group, local only and
     without credentials, so no one can sign in as it. Setup creates it when missing and keeps its id in the config
     entry; a leftover one of that name the entry doesn't name is removed, since Home Assistant's UI can't delete a

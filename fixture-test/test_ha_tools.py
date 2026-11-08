@@ -10,8 +10,9 @@ from types import SimpleNamespace
 
 import homeassistant.components
 import pytest
+from awesomeversion import AwesomeVersion
 from homeassistant.auth import auth_manager_from_config
-from homeassistant.const import EVENT_COMPONENT_LOADED, KEY_DATA_LOGGING
+from homeassistant.const import EVENT_COMPONENT_LOADED, KEY_DATA_LOGGING, __version__ as HA_VERSION
 from homeassistant.core import Context
 from homeassistant.helpers import llm
 from homeassistant.setup import async_setup_component
@@ -23,6 +24,11 @@ from custom_components.assist_improver.exploration import SessionAPI
 # API a tool shows here. The Supervisor's loads only where its library is installed.
 PROVIDERS = sorted({path.parent.name for path in Path(homeassistant.components.__path__[0]).glob("*/llm.py")}
                    - {"hassio"})
+
+
+def supervisors(names):
+    """The Supervisor's tools among these: Home Assistant offers them only where it runs."""
+    return {name for name in names if name.startswith("hassio__")}
 
 
 async def home_assistant(hass, supervisor=False):
@@ -54,8 +60,12 @@ async def test_every_tool_of_home_assistants_api_is_pinned_left_out_or_never(has
     everything = await llm.async_get_api(hass, llm.LLM_API_HOME_ASSISTANT, context(user.id))
     assert not [r for r in caplog.records if r.levelno >= logging.ERROR]  # No platform failed giving its tools.
     names = {t.name for t in everything.tools}
-    other = "system_log__get_logs" if supervisor else "hassio__get_logs"
-    assert names == (ha_tools.PINNED | set(ha_tools.LEFT_OUT) | ha_tools.NEVER) - {other}
+    known = ha_tools.PINNED | set(ha_tools.LEFT_OUT) | ha_tools.NEVER
+    absent = {"system_log__get_logs"} if supervisor else supervisors(known)
+    if AwesomeVersion(HA_VERSION) < AwesomeVersion("2026.12.0.dev0"):  # Offered from 2026.12.
+        absent |= {"hassio__get_apps"}
+    assert names == known - absent
+    assert all(ha_tools.kept(t) for t in everything.tools if t.name in ha_tools.PINNED)  # Each reaches the roles.
     assert all(not t.annotations.read_only for t in everything.tools if t.name in ha_tools.NEVER)
     assert not ha_tools.PINNED & (set(ha_tools.LEFT_OUT) | ha_tools.NEVER)
 
@@ -65,7 +75,7 @@ async def test_the_roles_bundle_holds_only_the_pinned_read_only_tools_run_as_the
     user = await home_assistant(hass)
     hass.states.async_set("light.fixture_lamp", "on")
     instance = await SessionAPI(hass, tools=[], user_id=user.id).async_get_api_instance(context())
-    assert {t.name for t in instance.tools} == ha_tools.PINNED
+    assert {t.name for t in instance.tools} == ha_tools.PINNED - supervisors(ha_tools.PINNED)  # No Supervisor.
     render = next(t for t in instance.tools if t.name == "homeassistant__render_template")
     result = await render.async_call(hass, llm.ToolInput(tool_name=render.name, tool_args={
         "template": "{{ states.light | count }} {{ states('light.fixture_lamp') }}"}), context())  # As an AI Task calls.

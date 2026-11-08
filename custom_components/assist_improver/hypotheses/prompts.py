@@ -32,7 +32,7 @@ SOURCES = ("Tools that take a session answer from its recording, but for a devic
            "household's tools (list_areas, find_devices, devices_in_area, device_details without a session, "
            "read_definition, find_actions) from its setup today, with its newest session's states; Home Assistant's "
            "own (history__get_history, homeassistant__render_template, system_log__get_entries, "
-           "config__get_config_entries) from the live home, now.")
+           "config__get_config_entries, hassio__get_apps) from the live home, now.")
 
 # What each assistant's own instructions are for, with the facts recommended for every assistant's (instructions.py).
 ASSISTANT_INSTRUCTIONS = """Assistants' own instructions: each session says which assistant it used (your input's assistants lists them), and read_assistant_instructions shows the exact instructions a session ran with and that assistant's current ones. Faults can lie there. A fault in one assistant's instructions (a fact they don't give, a rule that's wrong or contradicts another) is fixed there, with an assistant change on that assistant: name it in assistant; text adds lines, and replaces lists the lines the text replaces (or removes, without text); lines may use Home Assistant's template values. A household fact, or behaviour every assistant should share, goes in the household knowledge (a preference), not in one assistant's instructions. Recommended facts every assistant's instructions should give Assist, each with the line that gives it: read_assistant_instructions lists those an assistant's instructions lack. Add one only there, and only when a friction's cause is Assist not knowing it (for example, "my room" when Assist didn't know who was speaking):

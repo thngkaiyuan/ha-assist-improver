@@ -13,9 +13,10 @@ from .const import DOMAIN
 
 # The tools a role gets: an entity's history; a template, rendered on the real instance (up to 3 seconds in a thread,
 # then on Home Assistant's event loop; each call counts against the role's tool-call limit); an integration's entries
-# in the system log (why a command failed at home); and the config entries.
+# in the system log (why a command failed at home); the config entries; and, where the Supervisor runs, its installed
+# apps (each one's version and state).
 PINNED = {"history__get_history", "homeassistant__render_template", "system_log__get_entries",
-          "config__get_config_entries"}
+          "config__get_config_entries", "hassio__get_apps"}
 # Read-only too, and left out: why each.
 LEFT_OUT = {
     "system_health__get_system_info": "the version is known",
