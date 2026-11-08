@@ -111,12 +111,9 @@ def _stamp(summary):
             BRIEF_FORMAT]
 
 
-async def catalog(recorder, recording_ids):
+async def catalog(cache, recorder, recording_ids):
     """(briefs, the household's view, the assistant's view) for these recordings, reading in full only those with
     no brief yet (one at a time) and the two views the whole run needs."""
-    cache = getattr(recorder, "brief_cache", None)
-    if cache is None:
-        cache = recorder.brief_cache = BriefCache(recorder.hass)
     # The newest so far that could be the household's view (replayable, else any) or the assistant's, each with its
     # view if this run read it in full: no other view is held (each is megabytes), and an earlier one wins a tie.
     briefs, best = [], {}

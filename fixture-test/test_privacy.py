@@ -22,19 +22,19 @@ async def ask(hass, handler, user="alex", **msg):
 
 @pytest.mark.asyncio
 async def test_a_forgotten_conversation_goes_with_what_was_derived_from_it(improver):
-    from custom_components.assist_improver.sessions import BriefCache
     recorder, runtime = improver.recorder, improver.runtime
     await improver.arrives(improver.friction)
     await runtime.role_runs.record({"id": "a1", "kind": "journey_analyzer", "recording_id": "friction01",
                                     "status": "completed", "analysis": {"goals": []}})
     assert "friction01" in await runtime.transcripts.all()
-    recorder.brief_cache = BriefCache(improver.hass)
-    await recorder.brief_cache.get(recorder, "friction01")
+    await runtime.briefs.get(recorder, "friction01")
+    await runtime.briefs.save(recorder)
     await runtime.replays.save({"plan": {"id": "plan-f"}, "recording_id": "friction01", "status": "reproduced"})
     await recorder.forget("friction01")
     assert "friction01" not in recorder.index and await recorder.store("friction01").async_load() is None
     assert not [r for r in runtime.role_runs.runs if r.get("recording_id") == "friction01"]
-    assert "friction01" not in runtime.transcripts.kept and "friction01" not in recorder.brief_cache.briefs
+    assert "friction01" not in runtime.transcripts.kept and "friction01" not in runtime.briefs.briefs
+    assert "friction01" not in (await runtime.briefs.store.async_load())["briefs"]
     assert runtime.replays.items == {}  # Its replays, with what the user said in them, went too.
 
 
@@ -294,7 +294,6 @@ async def test_delete_for_good_drops_the_brief_even_before_any_proposal_has_read
     for rid in ("porch0001", "weather01"):
         await earlier.get(recorder, rid)
     await earlier.save(recorder)
-    recorder.brief_cache = None
     await ask(hass, panel.ws_conversation_delete, recording_id="porch0001")
     stored = (await BriefCache(hass).store.async_load())["briefs"]
     assert "porch0001" not in stored and "weather01" in stored

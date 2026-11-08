@@ -14,6 +14,7 @@ if TYPE_CHECKING:
     from .pipeline import Pipeline
     from .recorder import Recorder
     from .reflective import RoleRuns
+    from .sessions import BriefCache
     from .simulate import Replays
 
 
@@ -23,6 +24,7 @@ class RuntimeData:
     role_runs: RoleRuns  # The run log: each AI role call and each pipeline run.
     replays: Replays  # Each conversation's replays, without a change and with one, by their plans.
     improvements: Improvements  # What goes to the household for review, and what they decided.
+    briefs: BriefCache  # Each recording's brief for the proposer (sessions.BriefCache).
     pipeline: Pipeline | None = None  # Set once the rest has started.
     flow: object | None = None  # The model's engine and records (flow.Flow), set with the pipeline.
     panel: bool = False  # Whether this entry registered the panel.

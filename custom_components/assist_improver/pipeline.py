@@ -132,7 +132,7 @@ class Pipeline:
         """What was said first in a few of the new conversations a run admits, for its confirmation: those sent in
         first, then the newest. Read from the conversations view's kept words, so nothing is opened; none until that
         view has read them."""
-        kept = getattr(getattr(self.runtime, "transcripts", None), "kept", None) or {}
+        kept = self.runtime.transcripts.kept or {}
         index = self.recorder.index
         new = sorted(admits, key=lambda rid: index[rid].get("started") or "", reverse=True)
         new.sort(key=lambda rid: not self.filed(rid))  # Stable: the newest first within each.

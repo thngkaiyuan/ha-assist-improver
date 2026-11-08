@@ -37,7 +37,8 @@ async def window(runtime, analyses, *, feedback=None, sent_back=None, so_far=Non
     analyses, given = list(analyses), {a["recording_id"] for a in analyses}
     others = [rid for rid in sorted(set(recorder.index) - given)
               if recorder.index[rid].get("user_turns") != 0 and not recorder.index[rid].get("deleting")]
-    briefs, household, assistant = await catalog(recorder, [a["recording_id"] for a in analyses] + others)
+    briefs, household, assistant = await catalog(runtime.briefs, recorder,
+                                                 [a["recording_id"] for a in analyses] + others)
     readable = {b["recording_id"] for b in briefs}
     if household is None:
         raise CaseError("No recorded conversation can be read")

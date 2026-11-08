@@ -35,7 +35,6 @@ from .digest import kept
 from .records import Recording, RecordingSummary
 from .reflective import ROLE_ACTIVE
 from .serialization import plain
-from .sessions import BriefCache
 from .settings import own_models
 from .snapshot import answering, home, provider_config, refresh, state_record, subentry_of, taken
 from .trace import journal, span, timed
@@ -243,7 +242,6 @@ class Recorder:
         self.on_filed = None  # Awaited with (recording ID, note, user ID) as Assist files one (flow.sent_in).
         self.on_filed_closed = None  # Called with each recording's ID once it ends: one sent in gets its run.
         self.answering = {}  # Recording ID -> the subentry of the assistant answering it, once it has.
-        self.brief_cache = None  # Each recording's brief (sessions.BriefCache), loaded when a proposal first needs it.
         self.on_forgotten = None  # Awaited with a forgotten recording's ID: what was derived from it goes too.
         self.ignored = set()  # Conversations not kept (not Assist's, or deleted while going): never recorded again.
         self.actions = Actions()  # The action calls under each turn's request.
@@ -769,8 +767,8 @@ class Recorder:
 
     async def forget(self, *keys):
         """Conversations the household doesn't want kept: their recordings, and what the improver derived from them
-        (their run-log records, their briefs, and what on_forgotten drops), go for good, each store written once
-        however many go. Improvements already built from them stay. One still going isn't recorded again."""
+        (what on_forgotten drops: their run-log records, their briefs and the rest), go for good, each store written
+        once however many go. Improvements already built from them stay. One still going isn't recorded again."""
         gone = set(keys)
         self.ignored |= self._going(gone)
         async with self.lock:  # After a save in progress, and with nothing left to save, so none lands after this.
@@ -781,9 +779,6 @@ class Recorder:
             await self.index_store.async_save({"sessions": deepcopy(self.index)})
         if self.on_forgotten is not None:
             await self.on_forgotten(gone)
-        if self.brief_cache is None:  # No proposal has read the briefs since Home Assistant started.
-            self.brief_cache = BriefCache(self.hass)
-        await self.brief_cache.drop(self, *gone)
         journal("info", f"{len(gone)} recording(s) deleted at the household's request", recording_ids=sorted(gone))
 
     def status(self):

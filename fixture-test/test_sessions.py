@@ -129,13 +129,13 @@ async def test_briefs_are_made_once_per_recording_and_again_only_when_it_changes
         async def export(self, rid):
             exported.append(rid)
             return deepcopy(stores[rid])
-    recorder = Recorder()
-    briefs, household_view, _ = await session_set.catalog(recorder, ["brief001"])
+    recorder, cache = Recorder(), session_set.BriefCache(hass)
+    briefs, household_view, _ = await session_set.catalog(cache, recorder, ["brief001"])
     assert [b["session"] for b in briefs] == ["brief001"] and household_view is not None
-    await session_set.catalog(recorder, ["brief001"])
+    await session_set.catalog(cache, recorder, ["brief001"])
     assert exported.count("brief001") == 2  # Once for the brief, once for the household's view: never again for the brief.
     recorder.index["brief001"]["updated"] = "2"
-    await session_set.catalog(recorder, ["brief001"])
+    await session_set.catalog(cache, recorder, ["brief001"])
     assert exported.count("brief001") == 3  # Changed: read once more, for its new brief and the household's view.
 
 
@@ -169,8 +169,8 @@ async def test_while_briefs_are_made_only_the_views_the_run_may_still_use_are_he
 
         class Recorder:
             def __init__(self):
-                self.hass, self.brief_cache = hass, Cache()
-        briefs, household, assistant = await session_set.catalog(Recorder(), list(specs))
+                self.hass = hass
+        briefs, household, assistant = await session_set.catalog(Cache(), Recorder(), list(specs))
         assert [b["recording_id"] for b in briefs] == list(specs)
         return household and household.rid, assistant and assistant.rid, held
 
@@ -226,7 +226,7 @@ async def test_a_view_and_its_time_zone_are_made_off_the_event_loop(hass, monkey
 
         async def export(self, rid):
             return deepcopy(record)
-    _, view, _ = await session_set.catalog(Recorder(), ["zoned001"])
+    _, view, _ = await session_set.catalog(session_set.BriefCache(hass), Recorder(), ["zoned001"])
     assert view.zone.key == "America/Los_Angeles"
     assert scenario({"recording_id": "zoned001", "goals": []}, view)["turns"][0]["at"] == "Wed 2025-12-31 16:00"
     assert not any(looked_up) and made and not any(made) and briefed and not any(briefed)

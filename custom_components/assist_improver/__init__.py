@@ -24,6 +24,7 @@ from .reflective import RoleRuns
 from .runtime import RuntimeData
 from .sandbox import SANDBOX_KEY
 from .serialization import exported
+from .sessions import BriefCache
 from .settings import role_model
 from .simulate import Replays
 from .worker import remove_leftovers, shutdown
@@ -107,7 +108,7 @@ async def async_setup_entry(hass, entry):
     entry.async_on_unload(undo_if_failed)
     await recorder.start()
     runtime = RuntimeData(recorder=recorder, role_runs=RoleRuns(hass), replays=Replays(hass),
-                          improvements=Improvements(hass, recorder))
+                          improvements=Improvements(hass, recorder), briefs=BriefCache(hass))
     await runtime.replays.start()
     await runtime.role_runs.start()
     runtime.flow = Flow(hass, entry, runtime)  # Where each conversation is, round by round (SPEC.md P0).
@@ -131,13 +132,14 @@ async def async_setup_entry(hass, entry):
     recorder.on_filed_closed = closed
     runtime.transcripts = Transcripts(hass, recorder)
     async def forgotten(keys):
-        # What was derived from deleted conversations goes with them: their flow records, run-log records, words
-        # and replays (an improvement keeps its own copy of its test).
+        # What was derived from deleted conversations goes with them: their flow records, run-log records, words,
+        # briefs and replays (an improvement keeps its own copy of its test).
         await runtime.flow.forget(keys)
         runtime.improvements.refresh()  # A question of one goes; a version being revised for one waits again.
         await runtime.role_runs.drop(keys)
         await runtime.transcripts.all()  # Drops what's no longer in the index.
         await runtime.replays.drop(keys)
+        await runtime.briefs.drop(recorder, *keys)
     recorder.on_forgotten = forgotten
     # Deleted during a run that a restart cut off: they go now.
     entry.async_create_task(hass, recorder.forget_queued(), "assist_improver_forget_queued")

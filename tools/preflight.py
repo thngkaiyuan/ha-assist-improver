@@ -108,6 +108,7 @@ async def _runtime(hass, folder):
     from custom_components.assist_improver.flow import Flow
     from custom_components.assist_improver.improvements import Improvements
     from custom_components.assist_improver.recorder import Recorder
+    from custom_components.assist_improver.sessions import BriefCache
     from custom_components.assist_improver.simulate import Replays
     storage = Path(hass.config.path(".storage"))
     storage.mkdir(parents=True, exist_ok=True)
@@ -119,6 +120,7 @@ async def _runtime(hass, folder):
     await replays.start()
     runtime = types.SimpleNamespace(recorder=recorder, replays=replays)
     runtime.improvements = Improvements(hass, recorder)
+    runtime.briefs = BriefCache(hass)
     runtime.flow = Flow(hass, types.SimpleNamespace(options={}), runtime)  # Where each conversation is (flow.py).
     await runtime.flow.load()
     return runtime
