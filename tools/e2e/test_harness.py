@@ -21,7 +21,7 @@ def refusing(tmp_path, monkeypatch):
     (stand_ins / "ssh").chmod(0o755)
     monkeypatch.setenv("PATH", f"{stand_ins}{os.pathsep}{os.environ['PATH']}")
     monkeypatch.setattr(conftest, "HAOS", str(tmp_path / "ssh_config"))
-    monkeypatch.setattr(conftest, "_STUCK", [], raising=False)  # The bench's own journeys never meet these stops.
+    monkeypatch.setattr(conftest, "_STUCK", [])  # The bench's own journeys never meet these stops.
 
     def journey(name):
         folder = tmp_path / name
@@ -34,11 +34,10 @@ def refusing(tmp_path, monkeypatch):
     return journey
 
 
-def test_a_refused_stop_on_ha_os_ends_the_session(refusing):
-    """On HA OS, a stop its Supervisor refuses ends the session once the harness's own process is stopped: that Home
-    Assistant may still run, and no journey may start on it."""
+def test_a_refused_stop_on_ha_os_fails_loudly(refusing):
+    """On HA OS, a stop its Supervisor refuses raises, saying why, once the harness's own process is stopped."""
     process = refusing("t01")
-    with pytest.raises(pytest.exit.Exception, match="Another job is running"):
+    with pytest.raises(RuntimeError, match="didn't stop: Error: Another job is running$"):
         conftest._stop_process(process)
     assert process.poll() is not None and process not in conftest._RUNNING
 

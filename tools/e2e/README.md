@@ -92,8 +92,8 @@ browser refuses any request beyond 127.0.0.1; no model call is paid; no fixed sl
   filing made once the request was met is set aside, said with the change too.
 - `test_questions.py`: what Alex asked to know about the home. Assist answers without looking and he asks again; the
   fix (check before answering) has it answer right the first time, and the review shows the question met.
-- `test_harness.py`: the harness itself, with no Home Assistant: on HA OS, a stop its Supervisor refuses ends the
-  session.
+- `test_harness.py`: the harness itself, with no Home Assistant: on HA OS, a stop its Supervisor refuses fails, and
+  no journey starts after it.
 
 A test that fails because the product falls short keeps asserting the right behaviour (no skip, no xfail).
 

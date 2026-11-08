@@ -119,6 +119,7 @@ expect.set_options(timeout=EXPECT_TIMEOUT)
 
 _RUNNING = set()  # Home Assistant processes still running: stopped at exit, whatever happens.
 _NUMBERS = itertools.count(1)  # Each test's config folder, numbered in the order the tests ran.
+_STUCK = []  # On HA OS, why a stop failed: that Home Assistant may still run, so none starts after it.
 # Being stopped (SIGTERM: tools/check.sh stops a suite so) is an interrupt, so the session still stops every Home
 # Assistant it started.
 signal.signal(signal.SIGTERM, signal.default_int_handler)
@@ -366,7 +367,9 @@ def _start_process(folder, model_url, port):
     only losing the port to another listener between free_port() and Home Assistant binding it could reach it. On the
     bench, Home Assistant's image instead (its container's lifetime is the process's), in the household's time zone,
     as the Supervisor gives Core the system's; or HA OS's own, the folder copied in first, started by its Supervisor
-    (the process follows its log until it stops)."""
+    (the process follows its log until it stops); never once a stop there failed (_STUCK): the session ends."""
+    if HAOS and _STUCK:
+        pytest.exit(f"HA OS's Home Assistant didn't stop ({_STUCK[0]}), so no journey starts after it", returncode=1)
     env = {k: v for k, v in os.environ.items() if not k.lower().endswith("_proxy")}
     own = dict(ANTHROPIC_BASE_URL=model_url, NO_PROXY="127.0.0.1,localhost", no_proxy="127.0.0.1,localhost",
                SETUP_PORT=str(port))
@@ -405,17 +408,19 @@ def _stop_process(process, timeout=45):
     """Stop Home Assistant gently, then anything left in its process group by force. Its replay workers, each in a
     session of its own, end with it: their input closes. On the bench, its container is stopped (s6 stops Home
     Assistant gently); on HA OS, its Supervisor stops it, and its /config is copied back into the folder. A stop there
-    that's refused, fails or times out ends the session: that Home Assistant may still run, and no journey may start on
-    it."""
+    that's refused, fails or times out raises, and is kept in _STUCK: that Home Assistant may still run, so no other
+    starts (_start_process)."""
     failed = None
-    if process.stop and (HAOS or process.poll() is None):  # HA OS's Home Assistant may outlive its log's ssh.
+    if HAOS:  # Its Home Assistant may outlive its log's ssh.
         try:
-            subprocess.run(process.stop, timeout=timeout + 15 + (HAOS_BUSY if HAOS else 0), stdout=subprocess.DEVNULL,
-                           stderr=subprocess.PIPE, text=True, check=bool(HAOS))
+            subprocess.run(process.stop, timeout=timeout + 15 + HAOS_BUSY, stdout=subprocess.DEVNULL,
+                           stderr=subprocess.PIPE, check=True)
         except subprocess.SubprocessError as error:
-            if not HAOS:
-                raise
-            failed = error
+            failed = (error.stderr or b"").decode(errors="replace").strip() or str(error)
+            _STUCK.append(failed)
+    elif process.stop and process.poll() is None:
+        subprocess.run(process.stop, timeout=timeout + 15, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                       check=False)
     if process.poll() is None:
         try:
             process.send_signal(signal.SIGTERM)
@@ -440,7 +445,7 @@ def _stop_process(process, timeout=45):
     process.log.close()
     _RUNNING.discard(process)
     if failed:
-        pytest.exit(f"HA OS's Home Assistant didn't stop: {failed}\n{failed.stderr or ''}", returncode=1)
+        raise RuntimeError(f"HA OS's Home Assistant didn't stop: {failed}")
     if HAOS:
         _haos_pull(process.folder)
 
