@@ -127,6 +127,11 @@ async def test_a_scenes_targets_are_checked_against_what_their_domains_actions_s
     assert problems[2] == ["the scene sets light.nowhere, which isn't in the home."]
 
 
+PICKED = {"action": "light.turn_on", "target": {"entity_id": "{{ states.light | first }}"}}
+PICKED_SAYS = "light.turn_on's target comes from a script field, a template or trigger data."
+LAMP_ON = [{"condition": "state", "entity_id": LAMP, "state": "on"}]
+
+
 @pytest.mark.parametrize("config, problem", [
     ({"alias": "Any", "fields": {"what": {"selector": {"entity": {}}}},
       "sequence": [{"action": "scene.apply", "data": {"entities": "{{ what }}"}}]},
@@ -154,6 +159,8 @@ async def test_a_scenes_targets_are_checked_against_what_their_domains_actions_s
     ({"alias": "Any", "sequence": [{"action": "script.press", "data": {"which": "{{ states.lock | first }}"}}]},
      "script.press passes variables from a script field, a template or trigger data."),
     ({"alias": "Any", "sequence": [{"action": "light.turn_on", "data": {"{{ 'entity_id' }}": "light.any"}}]},
+     "light.turn_on's data comes from a template, which can pick what it acts on."),
+    ({"alias": "Any", "sequence": [{"action": "light.turn_on", "data": "{{ {'entity_id': 'light.any'} }}"}]},
      "light.turn_on's data comes from a template, which can pick what it acts on."),
     # Not even a select field's: Home Assistant doesn't hold a call to its options (Assist's model calls a script with
     # any value), so it would pick any action or device.
@@ -183,10 +190,24 @@ async def test_a_scenes_targets_are_checked_against_what_their_domains_actions_s
     ({"alias": "Any", "sequence": [{"wait_for_trigger": [{"triggers": [
         {"trigger": "webhook", "webhook_id": "fixture-hook", "local_only": False}]}]}]},
      "a webhook trigger is local only (local_only: false would let anyone on the internet run it)."),
+    # Wherever a step is nested, in each form Home Assistant takes.
+    ({"alias": "Any", "sequence": [{"if": LAMP_ON, "then": [PICKED]}]}, PICKED_SAYS),
+    ({"alias": "Any", "sequence": [{"if": LAMP_ON, "then": [{"delay": 1}], "else": [PICKED]}]}, PICKED_SAYS),
+    ({"alias": "Any", "sequence": [{"sequence": [PICKED]}]}, PICKED_SAYS),
+    ({"alias": "Any", "sequence": [{"choose": [{"conditions": LAMP_ON, "sequence": [{"delay": 1}]}],
+                                    "default": [PICKED]}]}, PICKED_SAYS),
+    ({"alias": "Any", "sequence": [{"parallel": [PICKED]}]}, PICKED_SAYS),
+    ({"alias": "Any", "sequence": [{"parallel": [{"sequence": [PICKED]}]}]}, PICKED_SAYS),
+    ({"alias": "Any", "sequence": [{"parallel": [[PICKED]]}]}, PICKED_SAYS),
+    ({"alias": "Any", "sequence": [{"repeat": {"while": LAMP_ON, "sequence": [PICKED]}}]}, PICKED_SAYS),
+    ({"alias": "Any", "sequence": [{"parallel": [{"sequence": [{"if": LAMP_ON, "then": [
+        {"choose": [], "default": [{"repeat": {"while": LAMP_ON, "sequence": [PICKED]}}]}]}]}]}]}, PICKED_SAYS),
 ], ids=["scene-apply-entities", "service-template", "conversation-text", "conversation-fixed", "script-variables",
-        "target-from-field", "automation-variables", "script-service-data", "templated-data-key", "select-picks-target",
-        "select-picks-action", "config-entry-field", "undescribed-field", "event-data", "data-template-under-data",
-        "variables-template-under-data", "nested-webhook-wait"])
+        "target-from-field", "automation-variables", "script-service-data", "templated-data-key",
+        "templated-data-whole", "select-picks-target", "select-picks-action", "config-entry-field",
+        "undescribed-field", "event-data", "data-template-under-data", "variables-template-under-data",
+        "nested-webhook-wait", "in-if-then", "in-else", "in-sequence", "in-choose-default", "in-parallel-step",
+        "in-parallel-sequence", "in-parallel-list", "in-repeat-while", "in-deep-mix"])
 @pytest.mark.asyncio
 async def test_no_action_or_target_takes_its_value_from_a_field_a_template_or_trigger_data(hass, config, problem):
     """Rule 2: what a step does and what it acts on are fixed in the configuration the household reviews."""

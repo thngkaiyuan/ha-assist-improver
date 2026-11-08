@@ -6,7 +6,7 @@ import pytest
 
 from test_changeset import tested
 from test_evidence import TODAY, PRESS, hypothesis, sessions
-from custom_components.assist_improver import editor, panel
+from custom_components.assist_improver import changes, editor, panel
 from custom_components.assist_improver.evidence import Evidence
 from custom_components.assist_improver.hypotheses import prompts
 from custom_components.assist_improver.hypotheses.checks import speech
@@ -39,6 +39,14 @@ def test_the_speech_a_change_adds_is_listed_by_code_with_its_words():
         {"change": "preference", "kind": "removes",
          "text": "When a garage door is pressed, tell the user its position can't be read.", "words": 14}]
     assert speech({"changes": [{"kind": "registry", "entity_id": "light.front", "aliases": ["Lamp"]}]}) == []
+
+
+def test_a_stop_message_is_listed_wherever_its_step_is_nested():
+    config = {"alias": "Any", "sequence": [
+        {"choose": [{"conditions": [], "sequence": [{"stop": "Chosen."}]}], "default": [{"stop": "By default."}]},
+        {"parallel": [{"stop": "Alongside."}, {"sequence": [{"stop": "In a branch."}]}]},
+        {"repeat": {"count": 2, "sequence": [{"stop": "Repeated."}]}}]}
+    assert changes.stops(config) == ["By default.", "Chosen.", "Alongside.", "In a branch.", "Repeated."]
 
 
 def test_the_households_own_words_and_self_checks_arent_talk():
