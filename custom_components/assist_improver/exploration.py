@@ -154,14 +154,12 @@ class SessionView:
                                if t.get("prepared") and t["prepared"].get("provider_config")), None)
         # {(entity, at): 1 if Assist's request is only its context's parent, 2 if only Assist's results name it} (_who).
         self._indirect = {}
-        self.changes = self._changes()
-        self.notes = {}  # Its notes, where the analyzer hears them, by their turns after those said (read_turn).
         # What happened in each turn (happened.py): its tool calls with Home Assistant's results, and its call log
         # (None: a recording from before it kept one, P8.2.10).
-        raw = recording.get("turns") or []
         self.calls = {t["number"]: calls_in(t["messages"][1:]) for t in turns}
-        self.actions = {t["number"]: raw[t["number"] - 1].get("actions") if "actions" in raw[t["number"] - 1] else None
-                        for t in turns}
+        self.actions = {t["number"]: t["actions"] for t in turns}
+        self.changes = self._changes()
+        self.notes = {}  # Its notes, where the analyzer hears them, by their turns after those said (read_turn).
 
     def _turn_of(self, at):
         return sum(1 for start in self.starts if datetime.fromisoformat(at) >= datetime.fromisoformat(start))
@@ -194,10 +192,10 @@ class SessionView:
     def _named(self, turn):
         """The settings a turn's action calls named (their data, but whom it's for): what Assist set in it. None
         where its calls weren't recorded."""
-        raw = self.recording.get("turns", [])
-        if not 0 < turn <= len(raw) or "actions" not in raw[turn - 1]:
+        actions = self.actions.get(turn)
+        if actions is None:
             return None
-        return {k for a in raw[turn - 1]["actions"] for k in a.get("data") or {} if k not in TARGETS}
+        return {k for a in actions for k in a.get("data") or {} if k not in TARGETS}
 
     def _device(self, entity_id):
         return (self.source.get("entities", {}).get(entity_id) or {}).get("device_id")

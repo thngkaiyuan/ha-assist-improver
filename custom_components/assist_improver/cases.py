@@ -7,6 +7,9 @@ import json
 import re
 
 
+CLOSED = ("session_expired", "interrupted", "capture_timed_out")  # A conversation Assist has closed.
+
+
 class CaseError(ValueError):
     """Evidence is incomplete, inconsistent, or outside the supported slice."""
 
@@ -32,6 +35,18 @@ def _content(recording, replay):
     return rebuilt
 
 
+def _result(message):
+    """Home Assistant's result in a tool_result message, {data, ...}: before 2026.10 only its data was written, as
+    tool_result."""
+    return message["result"] if "result" in message else {"data": message.get("tool_result")}
+
+
+def _failed(item):
+    """Whether a message is a step Home Assistant answered with an error: its result's data names one."""
+    return (item["role"] == "tool_result" and isinstance(result := _result(item), dict)
+            and isinstance(result.get("data"), dict) and "error" in result["data"])
+
+
 # Assist's steps (its tool calls) in plain words; others are named from their own name ("HassLawnMowerDock": "Lawn
 # mower dock").
 STEPS = {"HassTurnOn": "Turn on", "HassTurnOff": "Turn off", "HassToggle": "Toggle", "HassLightSet": "Set light",
@@ -49,7 +64,7 @@ def step(call, result):
     space, _, name = (call.get("tool_name") or result.get("tool_name") or "").rpartition("__")
     what = (f"Run script {name.replace('_', ' ')}" if space == "script" else STEPS.get(name)
             or " ".join(re.findall(r"[A-Z][a-z]*|[a-z]+|\d+", name.removeprefix("Hass")) or [name]).capitalize())
-    args, error = call.get("tool_args") or {}, result["tool_result"]
+    args, error = call.get("tool_args") or {}, _result(result)["data"]
     on = [", ".join(map(str, v)) if isinstance(v, list) else str(v)
           for v in (args.get(k) for k in ("name", "area", "floor")) if v]
     on += [", ".join(d.replace("_", " ") for d in (domain if isinstance(domain, list) else [domain]))
@@ -69,8 +84,7 @@ def transcript(recording):
             turns[-1]["assist"] = item["content"].strip()
         elif item["role"] == "assistant":
             calls.update({call.get("id"): call for call in item.get("tool_calls") or []})
-        elif (turns and item["role"] == "tool_result" and isinstance(item.get("tool_result"), dict)
-              and "error" in item["tool_result"]):
+        elif turns and _failed(item):
             turns[-1].setdefault("failed", []).append(step(calls.get(item.get("tool_call_id")) or {}, item))
     return turns or [{"you": ((t.get("user") or {}).get("content") or "").strip(), "assist": ""}
                      for t in recording.get("turns", [])]
@@ -86,8 +100,7 @@ def replayed(turns):
 def failed_calls(recording):
     """How many of Assist's tool calls failed (Home Assistant answered with an error): a sign the user didn't get
     what they asked for."""
-    return sum(1 for item in _content(recording, False)
-               if item["role"] == "tool_result" and isinstance(item.get("tool_result"), dict) and "error" in item["tool_result"])
+    return sum(1 for item in _content(recording, False) if _failed(item))
 
 
 def recording_turns(recording, replay=True):
@@ -96,12 +109,13 @@ def recording_turns(recording, replay=True):
     replay=False is for analysis: it also accepts turns Home Assistant handled itself, without the AI model
     (no prepared context; marked handled_locally), which a replay could not reproduce.
 
-    Each turn's source is the recording's own home snapshot, not a copy (megabytes, and this runs on the event loop):
-    readers only read it, from a recording that is already their own copy (Recorder.export).
+    Each turn's source is the recording's own home snapshot, not a copy (megabytes, and this runs on the event loop),
+    and its actions the recording's own call log (None where it kept none, P8.2.10): readers only read them, from a
+    recording that is already their own copy (Recorder.export).
     """
     if recording.get("format") != 1:
         raise CaseError("Unsupported recording format")
-    if recording.get("status") not in {"session_expired", "interrupted", "capture_timed_out"}:
+    if recording.get("status") not in CLOSED:
         raise CaseError("Recording is still active")
     if replay and recording.get("compact"):  # Its home snapshot keeps only the devices it involved (retention.py).
         raise CaseError("This conversation was compacted to save space, so it can't be replayed")
@@ -143,7 +157,7 @@ def recording_turns(recording, replay=True):
             raise CaseError(f"Turn {number} has missing or duplicate tool results")
         exchange.update(number=number, source=snapshot["source"], handled_locally=bool(local),
                         prepared=deepcopy(snapshot.get("prepared")), history=deepcopy(history),
-                        calls=deepcopy(calls), results=deepcopy(results), actions=snapshot.get("actions") or [],
+                        calls=deepcopy(calls), results=deepcopy(results), actions=snapshot.get("actions"),
                         final_reply=finals[-1]["content"], ended=finals[-1]["created"])
     return exchanges
 
@@ -153,8 +167,7 @@ def calls_in(messages):
     result: [{tool, args, result}]."""
     asked = {c.get("id"): c for m in messages if m.get("role") == "assistant" for c in m.get("tool_calls") or []}
     return [{"tool": m.get("tool_name"), "args": (asked.get(m.get("tool_call_id")) or {}).get("tool_args") or {},
-             "result": m["result"] if "result" in m else {"data": m.get("tool_result")}}  # tool_result: before 2026.10.
-            for m in messages if m.get("role") == "tool_result"]
+             "result": _result(m)} for m in messages if m.get("role") == "tool_result"]
 
 
 def replayable_turns(recording):

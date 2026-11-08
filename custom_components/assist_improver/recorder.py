@@ -28,8 +28,9 @@ from homeassistant.helpers.storage import Store
 from homeassistant.util.dt import utcnow
 
 from . import targets, touchpoints
+from .cases import CLOSED
 from .happened import uncalled
-from .retention import CLOSED, pack, unpack
+from .retention import pack, unpack
 from .const import DOMAIN, SAVE_DELAY, STORAGE_VERSION, VERSION
 from .digest import kept
 from .records import Recording, RecordingSummary

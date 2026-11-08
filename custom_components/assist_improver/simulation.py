@@ -160,7 +160,7 @@ def assist_settings(recording, turn):
     kept, each setting the request's own changes moved, as they left it. What a device reports beyond what it was
     asked (the track a playlist it was asked to play is on) isn't Assist's doing."""
     follow, out = follow_ons(turn), {}
-    if "actions" in ((recording.get("turns") or [])[turn["number"] - 1:turn["number"]] or [{}])[0]:
+    if turn.get("actions") is not None:
         for action in turn.get("actions") or []:
             data = action.get("data") or {}
             for entity in set() if action.get("error") else happened.named(action["action"], data, turn["source"]):

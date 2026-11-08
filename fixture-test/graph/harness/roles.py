@@ -822,7 +822,7 @@ class Assistant:
         if behaviour == EXTRA_TURN_GONE and turn == 1:  # Everything its goal took, in its first turn.
             calls = [c for t in turns for c in t["calls"]]
         elif behaviour == FAILED_UNSENT:  # Sends nothing to a device whose command failed at home in this turn.
-            failed = {(a.get("data") or {}).get("entity_id") for a in turns[turn - 1]["actions"] if a.get("error")}
+            failed = {(a.get("data") or {}).get("entity_id") for a in turns[turn - 1]["actions"] or [] if a.get("error")}
             calls = [c for c in turns[turn - 1]["calls"] if not set(self._targets(c)) & failed]
             return None if calls == turns[turn - 1]["calls"] else self._calls(calls, turn, answering)
         elif behaviour == SIDE_EFFECT_GONE:  # Leaves the devices it changed unasked alone.

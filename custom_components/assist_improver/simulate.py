@@ -323,14 +323,13 @@ def _recorded_turn(recording, recorded, number):
     """A recorded turn as the judge reads it (_turn), with what the home did in it (_home_did): its call log where the
     recording keeps one (P8.2.10), and each change of a device's state or settings the turn's request made."""
     turn = recorded[number - 1]
-    raw = (recording.get("turns") or [])[number - 1] if number <= len(recording.get("turns") or []) else {}
     changes = [{"entity_id": c["entity_id"], "old": c["old"].get("state"), "new": c["new"].get("state"),
                 "attributes_changed": {k: [(c["old"].get("attributes") or {}).get(k), v]
                                        for k, v in (c["new"].get("attributes") or {}).items()
                                        if (c["old"].get("attributes") or {}).get(k) != v}}
                for c in _request_changes(recording, turn)]
     return _turn(number, turn["messages"][0]["content"], turn["messages"][1:], _home_did(
-        turn["messages"][1:], raw.get("actions") if "actions" in raw else None, turn["source"], changes))
+        turn["messages"][1:], turn["actions"], turn["source"], changes))
 
 
 def judgeable(goal, view, goals):

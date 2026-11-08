@@ -193,7 +193,7 @@ def build_digest(recording):
 
     out_turns, mentioned = [], {}  # mentioned: {entity: the first turn that names it}
     for turn in turns:
-        steps, named = [], _named(turn["actions"])
+        steps, named = [], _named(turn["actions"] or [])
         for message in turn["messages"][1:]:
             if message["role"] == "assistant":
                 if message.get("content"):

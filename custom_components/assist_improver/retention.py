@@ -23,6 +23,8 @@ from datetime import timedelta
 from homeassistant.helpers.storage import STORAGE_DIR
 from homeassistant.util.dt import parse_datetime, utcnow
 
+from .cases import CLOSED
+from .digest import caused
 from .trace import journal, remove, stored
 
 KEEP_FULL_DAYS = 30
@@ -31,7 +33,6 @@ KEEP_HISTORY_DAYS = 365
 TRACE_DAYS = 7
 TRACE_MAX_BYTES = 20 * 1024 * 1024
 READ_EVENTS = ("created", "content_added", "deleted")  # The events cases.py reads; the rest are copies.
-CLOSED = ("session_expired", "interrupted", "capture_timed_out")
 
 
 def _diff(base, source):
@@ -104,7 +105,7 @@ def involved(recording):
     went on (a change carrying a user or a parent context; sensors reporting by themselves don't count)."""
     windows = _windows(recording)
     found = {c["entity_id"] for c in recording.get("state_changes", [])
-             if _caused(c) and any(_during(c.get("at"), w) for w in windows)}
+             if caused(c) and any(_during(c.get("at"), w) for w in windows)}
     for message in (recording.get("chat_log") or {}).get("content", []):
         # HA's chat log writes the tool's result, and a copy of the bare intent response as tool_result.
         for result in (message.get("result"), message.get("tool_result")):
@@ -122,11 +123,6 @@ def _targets(result):
             return {t.get("id") for k in ("success", "failed") for t in layer.get(k) or []
                     if isinstance(t, dict) and t.get("id")}
     return set()
-
-
-def _caused(change):
-    context = ((change.get("new") or {}).get("context") or {})
-    return bool(context.get("user_id") or context.get("parent_id"))
 
 
 def _windows(recording):
