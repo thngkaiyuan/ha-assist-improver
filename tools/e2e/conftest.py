@@ -404,10 +404,18 @@ def _ha_core(command):
 def _stop_process(process, timeout=45):
     """Stop Home Assistant gently, then anything left in its process group by force. Its replay workers, each in a
     session of its own, end with it: their input closes. On the bench, its container is stopped (s6 stops Home
-    Assistant gently); on HA OS, its Supervisor stops it, and its /config is copied back into the folder."""
+    Assistant gently); on HA OS, its Supervisor stops it, and its /config is copied back into the folder. A stop there
+    that's refused, fails or times out ends the session: that Home Assistant may still run, and no journey may start on
+    it."""
+    failed = None
     if process.stop and (HAOS or process.poll() is None):  # HA OS's Home Assistant may outlive its log's ssh.
-        subprocess.run(process.stop, timeout=timeout + 15 + (HAOS_BUSY if HAOS else 0), stdout=subprocess.DEVNULL,
-                       stderr=subprocess.DEVNULL, check=False)
+        try:
+            subprocess.run(process.stop, timeout=timeout + 15 + (HAOS_BUSY if HAOS else 0), stdout=subprocess.DEVNULL,
+                           stderr=subprocess.PIPE, text=True, check=bool(HAOS))
+        except subprocess.SubprocessError as error:
+            if not HAOS:
+                raise
+            failed = error
     if process.poll() is None:
         try:
             process.send_signal(signal.SIGTERM)
@@ -431,6 +439,8 @@ def _stop_process(process, timeout=45):
         process.wait(10)
     process.log.close()
     _RUNNING.discard(process)
+    if failed:
+        pytest.exit(f"HA OS's Home Assistant didn't stop: {failed}\n{failed.stderr or ''}", returncode=1)
     if HAOS:
         _haos_pull(process.folder)
 

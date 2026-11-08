@@ -12,10 +12,9 @@ work=${BENCH_WORK:-$(mktemp -d)}
 mkdir -p "$work"
 start=$SECONDS
 
-# The channel's versions: HA OS's (its generic x86-64 VM image), the Supervisor's and Home Assistant's.
+# The channel's versions: HA OS's (its generic x86-64 VM image) and Home Assistant's; the Supervisor's in known().
 versions=$(curl -fsSL -A assist-improver-bench "https://version.home-assistant.io/$channel.json")
 os=$(jq -r .hassos.ova <<< "$versions")
-supervisor=$(jq -r .supervisor <<< "$versions")
 core=${2:-$(jq -r '.homeassistant["qemux86-64"]' <<< "$versions")}
 curl -fsSL "https://os-artifacts.home-assistant.io/$os/haos_ova-$os.qcow2.xz" | xz -dc > "$work/haos.qcow2"
 
@@ -61,8 +60,11 @@ wait_for() {  # wait_for SECONDS WHAT COMMAND...: until COMMAND succeeds.
   done
 }
 installed() { [ "$(on "ha $1 info --raw-json" | jq -r .data.version)" = "$2" ]; }
-known() {  # Whether the Supervisor's latest is the channel's Supervisor, once it has read its channel's versions again.
-  on "ha supervisor reload" && [ "$(on "ha supervisor info --raw-json" | jq -r .data.version_latest)" = "$supervisor" ]
+known() {  # Whether the Supervisor's latest is the channel's Supervisor, each read again: the channel's, then the
+  # Supervisor's own, so both meet on one publish (wait_for runs it in this shell: supervisor keeps the last read).
+  supervisor=$(curl -fsSL -A assist-improver-bench "https://version.home-assistant.io/$channel.json" |
+    jq -r .supervisor) && on "ha supervisor reload" &&
+    [ "$(on "ha supervisor info --raw-json" | jq -r .data.version_latest)" = "$supervisor" ]
 }
 core() {  # core ARGS...: `ha core ARGS`. While the Supervisor runs a job on Home Assistant (its install, which ends by
   # starting it, or an update), it refuses another: tried again every 5 s, for up to 15 minutes.
@@ -89,6 +91,7 @@ wait_for 1800 "Home Assistant $core" installed core "$core"
 booted=$((SECONDS - start))
 echo "== HA OS $(on "ha os info --raw-json" | jq -r .data.version) (Linux $(on "uname -r")), Supervisor" \
   "$(on "ha supervisor info --raw-json" | jq -r .data.version), Home Assistant $core ($channel; ready in $booted s)"
+core options --watchdog=false  # The Supervisor restarts no Home Assistant on its own: a crash stays one.
 core stop  # Each journey starts it on a config of its own (tools/e2e/conftest.py).
 
 # The journeys, one Home Assistant at a time, at phone size (the screen's sizes are the image runs' to cover); then
