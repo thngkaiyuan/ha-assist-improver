@@ -254,10 +254,9 @@ def _folder(providers):
 
 
 def environment(folder):
-    """A worker's environment: the real instance's, without its Supervisor access (DETAILS P11.8.3), so nothing in a
-    sandbox can reach the host through the Supervisor; and its temporary files in its folder, as Python's (BOOT), so
-    libraries and child processes that read TMPDIR or SQLITE_TMPDIR put theirs there too (C's tmpfile() reads
-    neither)."""
+    """A worker's environment: the real instance's without the Supervisor's variables (SUPERVISOR*, HASSIO*: DETAILS
+    P11.8.3); and its temporary files in its folder, as Python's (BOOT), so libraries and child processes that read
+    TMPDIR or SQLITE_TMPDIR put theirs there too (C's tmpfile() reads neither)."""
     return {**{k: v for k, v in os.environ.items() if not k.startswith(("SUPERVISOR", "HASSIO"))},
             **dict.fromkeys(("TMPDIR", "TEMP", "TMP", "SQLITE_TMPDIR"), folder)}
 

@@ -39,7 +39,7 @@ from .exploration import BY_ASSISTANT
 from .failures import contained
 from .instructions import assistant_config, is_edit, target
 from .replay import today as setup_today
-from .sandbox import SANDBOX_KEY, Sandbox, observe, seed, seed_options, setup_of
+from .sandbox import SANDBOX_KEY, Sandbox, observe, seed, seed_options, set_up, setup_of
 from .serialization import plain
 from .sessions import applies, footprint
 from .simulate import agent_of
@@ -691,7 +691,6 @@ async def _save(hass, automations, saving):
     applying saves them: each through what Home Assistant's automation editor does once it has written its file (its
     automations, the home's with the change's in place or added), its reload of that automation; then each turned on or
     off through its service."""
-    from homeassistant.setup import async_setup_component
     from homeassistant.util.yaml import dump
     if new := saving.get("automations"):
         kept = [a for a in automations if a.get("id") is None or str(a["id"]) not in new]
@@ -703,7 +702,7 @@ async def _save(hass, automations, saving):
                 with open(hass.config.path(name), "w", encoding="utf-8") as file:
                     file.write(text)
         await hass.async_add_executor_job(write)
-        if "automation" not in hass.config.components and not await async_setup_component(hass, "automation", {}):
+        if "automation" not in hass.config.components and not await set_up(hass, "automation"):
             raise RuntimeError("The sandbox could not load the automations")
         for automation_id in new:
             await hass.services.async_call("automation", "reload", {"id": automation_id}, blocking=True)

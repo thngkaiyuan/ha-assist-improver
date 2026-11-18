@@ -1619,10 +1619,11 @@ Citations in parentheses name the maintainer's earlier notes, which aren't in th
   own startup, with no device integrations and no web server. It sets up Home Assistant's core (Assist, scripts,
   automations, scenes, the sun), the home's storage and YAML helpers, and the stand-ins (P11.4), with what they depend
   on (their manifests' dependencies, as Home Assistant sets them up); never discovery, the cloud, the network, the
-  recorder or the Supervisor's, even when something depends on them: refused before their setup runs. The real
-  instance stays the one Home Assistant's helpers find. Sandbox log lines stay out of Home Assistant's log. Everyday
-  Assist carries on unaffected while replays run. (MILESTONE-6.md, 2026-10-23; FEASIBILITY.md; DESIGN.md; Kai,
-  2026-11-18: "lets switch to a blocklist instead")
+  recorder or the Supervisor's, even when something depends on them: what the sandbox sets up is refused before its
+  setup runs, and what comes in on its own (a platform an entry forwards to, an integration's own setup) right after.
+  The real instance stays the one Home Assistant's helpers find. Sandbox log lines stay out of Home Assistant's log.
+  Everyday Assist carries on unaffected while replays run. (MILESTONE-6.md, 2026-10-23; FEASIBILITY.md; DESIGN.md;
+  Kai, 2026-11-18: "lets switch to a blocklist instead")
   - **P11.8.1** Each replay's sandbox runs in a fresh process of its own, gone with the replay, in a session of its
     own: a signal to its process group doesn't reach Home Assistant. (Kai, 2026-11-04: "trading a few seconds for much
     cleaner code definitely worth it")
