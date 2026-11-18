@@ -179,7 +179,9 @@ async def test_a_line_handed_to_an_improvement_whose_undo_is_in_flight_stays_han
         return await read(*args)
     monkeypatch.setattr(module, "read", reading)
     second_tab = asyncio.ensure_future(improvements.decide("b", "undo", user_id="alex"))
-    await paused.wait()
+    reached = asyncio.ensure_future(paused.wait())
+    await asyncio.wait({second_tab, reached}, return_when=asyncio.FIRST_COMPLETED)  # An undo that ended says why.
+    assert paused.is_set(), f"B's undo ended before it read its record: {second_tab.result()}"
     await improvements.decide("a", "undo", user_id="alex")  # Keeps A's line for B: B's own now.
     improvements.changesets = Changesets(home.hass, writer=failing_writes(1))
     go.set()

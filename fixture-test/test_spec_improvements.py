@@ -669,8 +669,9 @@ async def test_a_change_whose_panel_went_away_midway_is_finished_by_the_next_pan
     asked = await open_panel(hass, first, editor, answering=False)
     deciding = hass.async_create_task(command(hass, first, panel.ws_decide, type=f"{DOMAIN}/decide",
                                               improvement_id="imp1", decision="accept", note=""))
-    while not asked:
+    while not asked and not deciding.done():  # A decision that ended says why.
         await asyncio.sleep(0.01)
+    assert asked, f"The decision ended before it asked the panel: {deciding.result()}"
     finishing = Editors(hass)
     if gone == "closed":
         await editor.save(asked[0]["kind"], asked[0]["id"], asked[0]["config"])  # Saved, but its answer never comes.

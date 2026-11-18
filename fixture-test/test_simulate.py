@@ -850,7 +850,9 @@ async def test_a_cancelled_replay_closes_its_sandbox(hass, monkeypatch, effect_g
     client.reply = second_request_never_answers
     trial = await replay(hass, monkeypatch, record)
     task = asyncio.create_task(trial.run())
-    await waiting.wait()
+    reached = asyncio.create_task(waiting.wait())
+    await asyncio.wait({task, reached}, return_when=asyncio.FIRST_COMPLETED)  # A replay that ended says why.
+    assert waiting.is_set(), f"The replay ended before turn 2's request: {task.result()}"
     assert trial.home.sandbox is not None
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
