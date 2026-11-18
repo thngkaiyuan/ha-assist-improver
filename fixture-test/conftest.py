@@ -259,14 +259,17 @@ def ffmpeg_stand_in(tmp_path_factory):
 @pytest.fixture(autouse=True)
 def inline_worker(monkeypatch):
     """Replays' sandboxes serve from the test's own process, through the same JSON as a worker process's
-    (test_worker.py starts real ones). A sandbox takes its worker's process's time zone as its own: this one gets it
-    back after each test."""
+    (test_worker.py starts real ones). A sandbox takes its worker's process's time zone as its own, and HA's frame
+    helper as its own: after each test the zone is put back and the helper forgets that test's hass, as HA's own test
+    plugin does, so a later test's report of deprecated use never goes to a closed one."""
+    from homeassistant.helpers import frame
     from homeassistant.util import dt as dt_util
     from custom_components.assist_improver import worker
     monkeypatch.setattr(worker, "INLINE", True)
     zone = dt_util.get_default_time_zone()
     yield
     dt_util.set_default_time_zone(zone)
+    frame.async_setup(None)
 
 
 class ScriptedProvider:
