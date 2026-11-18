@@ -116,6 +116,9 @@ HELPERS = ["input_boolean.desk_lamp_power", "input_boolean.ceiling_light_power",
 STARTUP_SECONDS = 180
 EXPECT_TIMEOUT = 60_000  # ms: the longest a screen waits for the pipeline (a run takes seconds with the fake).
 expect.set_options(timeout=EXPECT_TIMEOUT)
+# ms: the longest an action (a click, a fill) waits for what it acts on; never for the pipeline, which a journey
+# expects first. A page's load keeps EXPECT_TIMEOUT.
+ACTION_TIMEOUT = 15_000
 
 _RUNNING = set()  # Home Assistant processes still running: stopped at exit, whatever happens.
 _NUMBERS = itertools.count(1)  # Each test's config folder, numbered in the order the tests ran.
@@ -890,7 +893,8 @@ class Screen:
     def elsewhere(self):
         tab = self.page.context.new_page()
         jscov.start(tab)
-        tab.set_default_timeout(EXPECT_TIMEOUT)
+        tab.set_default_timeout(ACTION_TIMEOUT)
+        tab.set_default_navigation_timeout(EXPECT_TIMEOUT)
         return Screen(tab, self.ha, self.size)
 
 
@@ -911,7 +915,8 @@ def page(browser, ha, request):
         f"window.localStorage.setItem('hassTokens', {json.dumps(json.dumps(tokens))});")
     tab = context.new_page()
     jscov.start(tab)
-    tab.set_default_timeout(EXPECT_TIMEOUT)
+    tab.set_default_timeout(ACTION_TIMEOUT)
+    tab.set_default_navigation_timeout(EXPECT_TIMEOUT)
     screen = Screen(tab, ha, size)
     tab.on("pageerror", lambda err: screen.errors.append(f"{err.name}: {err.message} {(err.stack or '')[:600]}"))
     tab.on("console", lambda msg: msg.type == "error" and msg.text.startswith("e2e:") and screen.rejections.append(
