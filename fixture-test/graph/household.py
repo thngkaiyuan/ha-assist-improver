@@ -138,6 +138,8 @@ class Interface:
     records = _missing("records")                # (conversation, round) -> {stage: that stage's record of it}
     shown = _missing("shown")                    # (conversation) -> {screen: the stage it shows it at}; a chip or
                                                  #   hold that contradicts the record shows as what it says instead
+    standing = _missing("standing")              # (conversation) -> {screen: the outcome its chip tells the household,
+                                                 #   in P0.12's words; None for a chip of another stage}
     trace = _missing("trace")                    # (conversation) -> [Moment]
     path = _missing("path")                      # (conversation, round=None) -> the stages it went through, in order
     handoffs = _missing("handoffs")              # (conversation) -> [Handoff]

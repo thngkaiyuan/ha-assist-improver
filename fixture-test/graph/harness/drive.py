@@ -11,11 +11,14 @@ from household import Missing
 from custom_components.assist_improver.cases import digest, recording_turns
 
 STAGE_KEYS = {"Triage": "triage", "Analyze": "analyze", "Propose": "propose", "Simulate": "test", "Write up": "write"}
-# The outcome each Your household chip names, in P0.12's words (DETAILS P14.3.10-16: Looked smooth, No trouble found,
-# Improved, Declined, No fix found, Marked as a test, Couldn't be read).
-OUTCOME_CHIPS = {"smooth": "looked smooth", "fine": "no trouble found", "nofix": "no fix found", "improved": "improved",
-                 "declined": "declined", "test": "marked as a test", "unreadable": "couldn't be read",
-                 "archived": "archived", "duplicate": "duplicate"}
+# What each Your household chip tells the household, in P0.12's words (DETAILS P14.3.10-16, P14.3.23: Looked smooth,
+# No trouble found, Improved, Declined, No fix found, Marked as a test, Couldn't be read, Couldn't reproduce).
+TOLD = {"smooth": "looked smooth", "fine": "no trouble found", "nofix": "no fix found", "improved": "improved",
+        "declined": "declined", "test": "marked as a test", "unreadable": "couldn't be read", "archived": "archived",
+        "duplicate": "duplicate", "unreproducible": "couldn't reproduce"}
+# The outcome each names on the flow record: its own, but Couldn't reproduce's is no fix found, its round's Propose
+# record saying the baseline ran and didn't reproduce.
+OUTCOME_CHIPS = {**TOLD, "unreproducible": "no fix found"}
 # The stages each chip a screen shows a conversation with names (DETAILS P14.3): Still going is at Your Assist, New
 # and Sent in at Your Assist or Triage; each outcome in Your household has a chip of its own.
 CHIPS = {"active": ("Your Assist",), "waiting": ("Your Assist", "Triage"), "sent": ("Your Assist", "Triage"),
@@ -679,28 +682,40 @@ class Drive:
         names more than one), and in Your household as that stage only while it names the record's outcome. Each also
         gets its hold, whose why the chip's tooltip shows: in as the stage while it's the record's (cause and why; none
         while the record holds it nowhere)."""
-        from custom_components.assist_improver import panel
-        _, listing = self._world.call(self._world.ws(panel.ws_conversations, type="assist_improver/conversations",
-                                                     ids=[conversation.id]))
-        _, page = self._world.call(self._world.ws(panel.ws_conversation, type="assist_improver/conversation",
-                                                  recording_id=conversation.id))
         record = self._runtime.flow.place(conversation.id)
         hold = record["held"] and {"cause": record["held"]["cause"], "why": record["held"]["why"]}
-        screens = {"conversations list": next((s for s in listing["stands"] if s["id"] == conversation.id), {}),
-                   "conversation page": page}
         out = {}
-        for screen, shows in screens.items():
-            stage, chip = shows.get("stage"), shows.get("status")
-            if stage is None or chip is None:
-                raise Missing(f"shown: the {screen} doesn't say where it is: stage {stage!r}, chip {chip!r}")
-            if chip not in CHIPS:
-                raise Missing(f"harness: the stage the chip {chip!r} names (DETAILS P14.3)")
+        for screen, shows in self._screens(conversation).items():
+            stage, chip = shows["stage"], shows["status"]
             outcome = OUTCOME_CHIPS.get(chip)
             out[screen] = stage
             out[f"{screen}'s chip"] = (stage if stage in CHIPS[chip] and outcome in (None, record["outcome"])
                                        else " or ".join(CHIPS[chip]) + (f" ({outcome})" if outcome else ""))
             out[f"{screen}'s hold"] = stage if shows.get("held") == hold else f"held {shows.get('held')!r}"
         return out
+
+    def standing(self, conversation):
+        """{screen: the outcome its chip tells the household, in P0.12's words (None for a chip of another stage)},
+        from what the conversations list and the conversation's own page get, as shown reads them."""
+        return {screen: TOLD.get(shows["status"]) for screen, shows in self._screens(conversation).items()}
+
+    def _screens(self, conversation):
+        """{screen: what it gets of the conversation}: the conversations list (where it stands, whatever its filters)
+        and the conversation's own page, each with its stage and chip."""
+        from custom_components.assist_improver import panel
+        _, listing = self._world.call(self._world.ws(panel.ws_conversations, type="assist_improver/conversations",
+                                                     ids=[conversation.id]))
+        _, page = self._world.call(self._world.ws(panel.ws_conversation, type="assist_improver/conversation",
+                                                  recording_id=conversation.id))
+        screens = {"conversations list": next((s for s in listing["stands"] if s["id"] == conversation.id), {}),
+                   "conversation page": page}
+        for screen, shows in screens.items():
+            stage, chip = shows.get("stage"), shows.get("status")
+            if stage is None or chip is None:
+                raise Missing(f"the {screen} doesn't say where it is: stage {stage!r}, chip {chip!r}")
+            if chip not in CHIPS:
+                raise Missing(f"harness: the stage the chip {chip!r} names (DETAILS P14.3)")
+        return screens
 
     def counts(self):
         """{stage: how many conversations Settings shows there}, from what Settings gets."""

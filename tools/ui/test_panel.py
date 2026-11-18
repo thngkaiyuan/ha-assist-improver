@@ -219,8 +219,8 @@ CHATS = [{"id": "c1", "started": ago(5), "turns": 2, "said": "Turn on the porch 
 
 # What each standing can do, as conversations.row says for a past conversation: be sent in (from Your household, or at
 # Your Assist), and be taken by a picked run (new, sent in, looked smooth, or held).
-SENDABLE = ("waiting", "sent", "active", "smooth", "fine", "nofix", "duplicate", "improved", "declined", "test",
-            "unreadable", "archived")
+SENDABLE = ("waiting", "sent", "active", "smooth", "fine", "nofix", "unreproducible", "duplicate", "improved", "declined",
+            "test", "unreadable", "archived")
 RUNNABLE = ("waiting", "sent", "smooth")
 # The flow stage each chip stands at (one held at Triage shows New or Sent in, as one at Your Assist does).
 AT = {"active": "Your Assist", "waiting": "Your Assist", "sent": "Your Assist", "queued": "Analyze",
@@ -4925,8 +4925,9 @@ def test_a_failed_step_is_escaped(open_panel):
 
 
 STAGES = [("queued", "To analyze"), ("fine", "No trouble found"), ("working", "Looking for a fix"),
-          ("review", "Up for review"), ("declined", "Declined"), ("duplicate", "Already covered"), ("improved", "Improved"),
-          ("test", "Marked as a test"), ("unreadable", "Couldn't be read")]
+          ("review", "Up for review"), ("declined", "Declined"), ("unreproducible", "Couldn't reproduce"),
+          ("duplicate", "Already covered"), ("improved", "Improved"), ("test", "Marked as a test"),
+          ("unreadable", "Couldn't be read")]
 # A row for each, with the longest first words the list shows on a phone.
 STAGED = [{"id": f"s{n}", "started": ago(5 + n), "turns": 4, "said": "Turn on the lights in the front porch and the garden.",
            "reply": "Which porch light do you mean?", "status": status, "note": None, "failed": 2,
@@ -4938,8 +4939,8 @@ def test_each_conversation_a_run_took_in_says_the_stage_its_at(open_panel):
     expect(panel.find(".cs-row .chip")).to_have_text([label for _, label in STAGES])
     panel.click("#cs-all")
     expect(panel.find("#cs-run")).to_have_count(0)  # None can go in again: only Archive and Delete apply.
-    expect(panel.find("#cs-many-archive")).to_have_text("Archive (8)")  # Not the one up for review: decided instead.
-    expect(panel.find("#cs-many-ask")).to_have_text("Delete (9)")
+    expect(panel.find("#cs-many-archive")).to_have_text("Archive (9)")  # Not the one up for review: decided instead.
+    expect(panel.find("#cs-many-ask")).to_have_text("Delete (10)")
     panel.click("#cs-all")
     expect(panel.find("button.chip.cs-review")).to_have_count(1)
     panel.click("button.chip.cs-review")  # Up for review: the chip opens that review.
@@ -5491,12 +5492,30 @@ def test_one_with_no_fix_found_says_so_quietly_and_is_sent_in_again_only_opened_
 
 
 def test_one_no_idea_could_be_tested_on_has_the_same_chip_with_its_own_bubble(open_panel):
-    """DETAILS P14.3.14, P17.20.6: No fix found because no idea could be tested on it (the row says so)."""
+    """DETAILS P14.3.14, P17.20.6: No fix found because no idea could be tested on it (the row says so), as when it
+    can't be replayed."""
     untested = {**CHATS[3], "status": "nofix", "untestable": True}  # “Warm up the car.”
     panel = open_panel(replies(conversations=listing([CHATS[0], untested])))
     chip = panel.find(".cs-row").nth(1).locator(".chip")
     expect(chip).to_have_text("No fix found")
     expect(chip).to_have_attribute("title", "No fix could be tested on this conversation.")
+
+
+@pytest.mark.parametrize("dark", [False, True], ids=["light", "dark"])
+def test_one_whose_baseline_didnt_reproduce_says_couldnt_reproduce_quietly_beside_no_fix_found(open_panel, dark):
+    """SPEC P0.12, DETAILS P14.3.23, P17.20.7: its own chip and bubble, quiet grey as No fix found (P14.3.20)."""
+    nofix, untested = {**CHATS[2], "status": "nofix"}, {**CHATS[3], "status": "unreproducible"}
+    panel = open_panel(replies(conversations=listing([nofix, untested])), dark=dark)
+    chip = panel.find(".cs-row").nth(1).locator(".chip")
+    expect(chip).to_have_text("Couldn't reproduce")
+    expect(chip).to_have_attribute(
+        "title", "The test couldn't make this trouble happen again, so no fix could be tested.")
+    expect(panel.find(".cs-row").nth(0).locator(".chip")).to_have_attribute(
+        "title", "No fix worked. Send it in again with a note for one more look.")  # Its tests found none.
+    color = lambda css: panel.find(css).evaluate(  # noqa: E731
+        "(el) => ['color', 'borderColor', 'backgroundColor'].map((k) => getComputedStyle(el)[k]).join(' ')")
+    assert color(".chip.cs-unreproducible") == color(".chip.cs-nofix")
+    assert not low_contrast(panel, [".chip.cs-unreproducible"], 3)
 
 
 def test_already_covered_and_held_say_why_in_their_tooltips(open_panel):
@@ -5518,13 +5537,23 @@ def test_already_covered_and_held_say_why_in_their_tooltips(open_panel):
     expect(panel.find("#cs-send")).to_have_text("Send this one in")
 
 
-def test_the_status_filter_lists_no_fix_found_and_already_covered_where_they_come(open_panel):
-    rows = [CHATS[0], CHATS[1], {**CHATS[2], "status": "duplicate"}, {**CHATS[3], "status": "nofix"}]
+def test_the_status_filter_lists_no_fix_found_couldnt_reproduce_and_already_covered_where_they_come(open_panel):
+    """DETAILS P14.4.10: Couldn't reproduce next to No fix found, each with how many stand so."""
+    rows = [CHATS[0], CHATS[1], {**CHATS[2], "status": "duplicate"}, {**CHATS[3], "status": "nofix"},
+            {**CHATS[3], "id": "c5", "status": "unreproducible"}, {**CHATS[3], "id": "c6", "status": "unreproducible"}]
     panel = open_panel(replies(conversations=listing(rows)))
     panel.click("#cs-status")
     expect(panel.find(".cs-status-opt .cs-status-name")).to_have_text(
-        ["All", "New", "Looking for a fix", "No fix found", "Already covered"])
-    expect(panel.find(".cs-status-opt .cs-status-n")).to_have_text(["1", "1", "1", "1"])
+        ["All", "New", "Looking for a fix", "No fix found", "Couldn't reproduce", "Already covered"])
+    expect(panel.find(".cs-status-opt .cs-status-n")).to_have_text(["1", "1", "1", "2", "1"])
+    counts = listing(rows)["by_status"]
+    panel.answer("conversations", listing([], by_status=counts))
+    panel.click("#cs-status-all")  # None: then only those.
+    panel.answer("conversations", listing(rows[4:], by_status=counts))
+    panel.click("[data-cs-status='unreproducible']")
+    assert panel.calls("conversations")[-1]["statuses"] == ["unreproducible"]
+    expect(panel.find("#cs-status")).to_have_text("Couldn't reproduce▾")
+    expect(panel.find(".cs-row .chip")).to_have_text(["Couldn't reproduce", "Couldn't reproduce"])
 
 
 def test_a_picked_runs_confirmation_names_up_to_three_by_their_first_words_and_counts_the_rest(open_panel):

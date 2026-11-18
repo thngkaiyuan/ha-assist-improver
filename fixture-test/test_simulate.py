@@ -156,7 +156,7 @@ async def test_a_baseline_whose_three_tries_stop_at_the_first_turn_unlike_the_re
     with pytest.raises(simulate.Untestable) as raised:
         await run(hass, runtime)
     assert str(raised.value) == "Tried 3 times without the change: turn 1 didn't do what it did in the conversation."
-    assert raised.value.conversation and len(client.requests) == 3
+    assert raised.value.conversation and raised.value.unreproduced and len(client.requests) == 3
     kept = tries(runtime)
     assert [r["plan"]["try"] for r in kept] == [1, 2, 3] and len(runtime.replays.items) == 3
     for one in kept:
@@ -244,7 +244,7 @@ async def test_a_baseline_whose_three_tries_dont_go_as_it_went_is_not_reproducib
                                                "answer": "not simulated"}]
     assert str(raised.value) == (f"Tried 3 times without the change: {unfinished}; turn 1 didn't do what it did in "
                                  "the conversation.")
-    assert raised.value.conversation and not client.blocks and effect_guards == []
+    assert raised.value.conversation and raised.value.unreproduced and not client.blocks and effect_guards == []
 
 
 @pytest.mark.parametrize("why", ["seed", "identity"])
@@ -274,6 +274,7 @@ async def test_a_baseline_whose_replay_cant_start_stops_at_once_with_no_second_t
     [only] = tries(runtime)
     assert only["status"] == "unsupported" and "turn" not in only["error"]
     assert raised.value.conversation and client.requests == [] and effect_guards == []
+    assert not raised.value.unreproduced  # No try ran: it can't be replayed (DETAILS P6.6.7).
 
 
 # Each turn its own root goal on the relay: off (as turn 1 left it), still off, off again (turn 3 switched it back on
@@ -1510,7 +1511,7 @@ async def test_a_question_the_baseline_answers_right_first_time_is_set_aside_and
     monkeypatch.setattr(simulate, "check_facts", check)
     with pytest.raises(simulate.Untestable, match="nothing the household had trouble with happened again") as raised:
         await run(hass, runtime, measures.goals_of(ASKED_AGAIN))
-    assert raised.value.conversation and len(tries(runtime)) == 3
+    assert raised.value.conversation and raised.value.unreproduced and len(tries(runtime)) == 3
 
 
 @pytest.mark.asyncio
@@ -1599,7 +1600,7 @@ def test_a_recording_made_in_sandbox_mode_cant_be_replayed():
     record["practice"] = {"simulated_changes": [], "unsimulated_actions": []}  # As earlier versions left it.
     with pytest.raises(simulate.Untestable, match="sandbox mode") as raised:
         simulate.before_plan(record, recorded_today(record))
-    assert raised.value.conversation
+    assert raised.value.conversation and not raised.value.unreproduced
 
 
 def test_readiness_reads_every_turn_and_the_before_plan_doesnt_depend_on_the_goals():

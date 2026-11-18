@@ -2,6 +2,7 @@
 Assist's tool files one, so a run lets it in (past the quick check with a note), never twice. Each row's chip, whether
 the list shows it, and whether it can be sent in or picked come from its flow record (conversations.row)."""
 
+from copy import deepcopy
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -559,19 +560,59 @@ async def test_each_place_on_the_flow_record_has_its_chip_and_says_whether_it_is
     assert archived == {"changed": int(row["archivable"])}  # The selection's Archive leaves one it can't out.
 
 
+UNLIKE = "Tried 3 times without the change: turn 1 didn't do what it did in the conversation."
+
+
 @pytest.mark.asyncio
-async def test_no_fix_found_on_one_no_idea_could_be_tested_on_keeps_its_chip_and_says_so(improver):
-    """DETAILS P14.3.14: the same chip, and the row says which No fix found it is, for its bubble: one whose round's
-    Propose record says no idea could be tested on it (P6.6.7), not one whose tests found no fix."""
+async def test_one_whose_baseline_didnt_reproduce_stands_as_couldnt_reproduce_one_that_cant_be_replayed_no_fix_found(
+        improver):
+    """SPEC P0.12, DETAILS P14.3.14, P14.3.23: a round that ended with no fix stands as Couldn't reproduce where its
+    Propose record says its baseline's tries ran and none went as the conversation went (unreproduced, P6.6.5), and as
+    No fix found otherwise: its tests found none, or no idea could be tested on it some other way (it can't be
+    replayed), the row saying so for its bubble. One recorded before the record said which (no unreproduced) stays No
+    fix found, whatever its why says. The Status filter chooses Couldn't reproduce on its own."""
     hass = improver.hass
     seat(improver, "nofix001", "Your household", outcome="no fix found")
-    untested = seat(improver, "nofix002", "Your household", outcome="no fix found")
-    untested["rounds"]["1"]["records"]["Propose"] = {"attempts": [], "untestable": {
-        "why": "Tried 3 times without the change: turn 1 didn't do what it did in the conversation.", "at": "now"}}
-    _, page = await ask(hass, panel.ws_conversations, archived=True)
+    for rid, untestable in [("nofix002", {"why": UNLIKE, "unreproduced": True}),
+                            ("nofix003", {"why": "It can't be replayed: it was recorded in sandbox mode",
+                                          "unreproduced": False}),
+                            ("nofix004", {"why": UNLIKE})]:  # Recorded before.
+        seat(improver, rid, "Your household", outcome="no fix found")["rounds"]["1"]["records"]["Propose"] = {
+            "attempts": [], "untestable": {**untestable, "at": "now"}}
+    ids = ["nofix001", "nofix002", "nofix003", "nofix004"]
+    _, page = await ask(hass, panel.ws_conversations, archived=True, ids=ids)
     rows = {row["id"]: row for row in page["conversations"]}
-    assert rows["nofix001"]["status"] == rows["nofix002"]["status"] == "nofix"
-    assert rows["nofix002"]["untestable"] is True and "untestable" not in rows["nofix001"]
+    assert [rows[rid]["status"] for rid in ids] == ["nofix", "unreproducible", "nofix", "nofix"]
+    assert [rows[rid].get("untestable") for rid in ids] == [None, None, True, True]
+    assert page["by_status"] == {"nofix": 3, "unreproducible": 1}
+    assert {s["id"]: s["status"] for s in page["stands"]} == {rid: rows[rid]["status"] for rid in ids}
+    assert all(row["hidden"] and row["sendable"] and row["runnable"] for row in rows.values())  # Settled alike.
+    _, chosen = await ask(hass, panel.ws_conversations, archived=True, statuses=["unreproducible"])
+    assert [row["id"] for row in chosen["conversations"]] == ["nofix002"]
+    _, opened = await ask(hass, panel.ws_conversation, recording_id="nofix002")
+    assert opened["status"] == "unreproducible"
+    assert improver.runtime.flow.place("nofix002")["outcome"] == "no fix found"  # The outcome stored is the same.
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("why", ["unlike", "cant-start"])
+async def test_a_round_no_idea_could_be_tested_in_keeps_whether_its_baseline_ran_and_didnt_reproduce(improver, why):
+    """DETAILS P6.6.7: Propose keeps, on the round's record, why no idea can be tested on the conversation and whether
+    that's because its baseline's tries ran and none went as it went (simulate.Untestable.unreproduced): here each
+    asks which relay before it acts. One whose replay can't start (a turn lacking who said it) never ran a try."""
+    record = deepcopy(improver.friction)
+    if why == "cant-start":
+        del record["turns"][1]["prepared"]["context"]["context"]["parent_id"]
+    await improver.arrives(record)
+    improver.client.blocks = [[{"type": "text", "text": "Which relay?"}]] * 3  # Each of the baseline's tries.
+    run = await improver.run()
+    assert run["status"] == "done", run["error"]
+    flow = improver.runtime.flow
+    untestable = flow.round_of(record["id"])["records"]["Propose"]["untestable"]
+    assert flow.place(record["id"])["outcome"] == "no fix found"
+    assert untestable["unreproduced"] is (why == "unlike")
+    _, opened = await ask(improver.hass, panel.ws_conversation, recording_id=record["id"])
+    assert opened["status"] == {"unlike": "unreproducible", "cant-start": "nofix"}[why]
 
 
 @pytest.mark.asyncio

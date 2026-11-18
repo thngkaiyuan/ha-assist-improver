@@ -4,9 +4,11 @@ and how sending it in again brings it back for a new round.
 Each test reaches the product only through household.py, and fails as Missing until the product offers what it needs.
 """
 
-from household import (BROKEN, FINE, FRICTION, NO_FIX, SAME_CAUSE, SIDE_EFFECT, SMOOTH, UNMET, UNREADABLE,
-                       Household)
+from household import (ANSWERED_BY_AN_AUTOMATION, BROKEN, FINE, FRICTION, NO_FIX, SAME_CAUSE, SIDE_EFFECT, SMOOTH,
+                       UNMET, UNREADABLE, Household)
 from spec_graph import refines
+
+GOES_UNLIKE_IT_WENT = "replays it without the change leaving its goal unmet, though the conversation met it"
 
 
 def improvement_for(home, talk):
@@ -44,6 +46,22 @@ def test_a_pipeline_verdict_ends_a_conversation_in_your_household_and_not_even_t
         assert home.place(held).stage == ended_at and home.place(held).held
         assert home.moved(home.run("stage", stage=ended_at)) == {held}
         stays_out_until_sent_in_again(home, talk)
+
+
+@refines("P0.12")
+def test_one_whose_trouble_the_test_couldnt_make_happen_again_is_told_couldnt_reproduce_not_no_fix_found():
+    """No idea can be tested on either conversation, so no proposal is made and no test is spent (P0.9). The household
+    is told which: couldn't reproduce where the replay without a change ran and none of its tries went as the
+    conversation went, no fix found where it can't be replayed at all (a turn an automation answered). Couldn't
+    reproduce can be sent in again, for a new round, as any other."""
+    home = Household()
+    home.stand_in("Simulate", GOES_UNLIKE_IT_WENT)
+    unlike, unreplayable = home.converse(FRICTION), home.converse(ANSWERED_BY_AN_AUTOMATION)
+    home.run()
+    for talk, told in [(unlike, "couldn't reproduce"), (unreplayable, "no fix found")]:
+        assert home.place(talk).stage == "Your household" and home.tests(talk) == [], told
+        assert set(home.standing(talk).values()) == {told}
+    stays_out_until_sent_in_again(home, unlike)
 
 
 @refines("P0.12")
