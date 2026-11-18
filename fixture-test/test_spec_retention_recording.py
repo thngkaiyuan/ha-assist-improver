@@ -7,7 +7,6 @@ Sources: DETAILS.md (P8. Recording, intake and privacy), INSTALL.md (Inspect rec
 strings.json, and the docstrings of recorder.py, snapshot.py, serialization.py and retention.py.
 """
 
-import asyncio
 from copy import deepcopy
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -41,12 +40,13 @@ from ha_task import stand_in
 from recordings import TARGET, make_recording
 from test_exploration import Transport
 from test_milestone1 import fake_entry, recording_hass  # noqa: F401 (fixture)
+from test_recorder_io import next_save  # noqa: F401 (fixture)
 from test_retention import with_home
 from kit import seat
 from custom_components.assist_improver import async_setup_entry, async_unload_entry, hypotheses, retention, triage
 from custom_components.assist_improver import recorder as recorder_module, snapshot as snapshot_module
 from custom_components.assist_improver.cases import CaseError, recording_turns, replayable_turns
-from custom_components.assist_improver.const import DOMAIN
+from custom_components.assist_improver.const import DOMAIN, SAVE_DELAY
 from custom_components.assist_improver.exploration import SessionView
 from custom_components.assist_improver.recorder import Recorder
 from custom_components.assist_improver.reflective import RoleRuns, run_role
@@ -527,15 +527,17 @@ async def test_another_integrations_ai_task_call_isnt_recorded_whether_or_not_it
 # --- Closing and flushing --------------------------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_writes_are_saved_on_their_own_within_about_a_second(recording_hass, effect_guards):
-    recorder = Recorder(recording_hass)
+async def test_writes_are_saved_on_their_own_within_about_a_second(recording_hass, next_save, effect_guards):
+    recorder, loop = Recorder(recording_hass), recording_hass.loop
     await recorder.start()
     try:
+        asked = loop.time()
         recorder.on_chat("debounced", "created", {"chat_log": {"content": []}})
         key = only_key(recorder)
-        await asyncio.sleep(0.5)  # INSTALL.md: writes are debounced by one second, so not saved at once...
-        assert recorder.status()["pending_writes"] == 1 and await stored(recorder, key) is None
-        await asyncio.sleep(1.0)  # ...but saved about a second later.
+        # INSTALL.md: writes are debounced by one second, so not saved at once...
+        assert recorder.status()["pending_writes"] == 1
+        assert asked + SAVE_DELAY <= recorder.timer.when() <= loop.time() + SAVE_DELAY
+        await next_save()  # ...but saved about a second later, on their own.
         await recording_hass.async_block_till_done()
         assert recorder.status()["pending_writes"] == 0
         assert (await stored(recorder, key))["conversation_id"] == "debounced"

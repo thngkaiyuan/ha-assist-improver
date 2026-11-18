@@ -93,7 +93,7 @@ async def test_one_sent_in_during_a_run_the_household_cancels_still_gets_its_own
     hass, pipeline, model, flow = improver.hass, improver.runtime.pipeline, improver.model, improver.runtime.flow
     improver.entry.options = {**improver.entry.options, CONF_PAUSED: ["propose", "write"]}
     await improver.arrives(improver.friction)
-    thinking, hold, triage = asyncio.Event(), asyncio.Event(), model.triage
+    hold, thinking, triage = asyncio.Event(), asyncio.Event(), model.triage
 
     async def slow(hass, payload, tools):  # The full run's quick check takes a while.
         thinking.set()
@@ -101,7 +101,9 @@ async def test_one_sent_in_during_a_run_the_household_cancels_still_gets_its_own
         return await triage(hass, payload, tools)
     monkeypatch.setattr(model, "triage", slow)
     pipeline.start(trigger="manual")
-    await asyncio.wait_for(thinking.wait(), 10)
+    reached = asyncio.ensure_future(thinking.wait())
+    await asyncio.wait({pipeline._task, reached}, return_when=asyncio.FIRST_COMPLETED)  # A run that ended says why.
+    assert thinking.is_set(), f"The run ended before its quick check: {pipeline.current}"
     assert pipeline.running and flow.place("friction01")["stage"] == "Triage"
 
     await improver.arrives(variant(improver.friction, "second001", "Please toggle the fixture relay."))
@@ -109,11 +111,9 @@ async def test_one_sent_in_during_a_run_the_household_cancels_still_gets_its_own
     await ask(hass, panel.ws_run_cancel)
     with pytest.raises(asyncio.CancelledError):
         await pipeline._task
-    hold.set()
-    await asyncio.sleep(0.2)
     assert pipeline.current["trigger"] == "filed"  # Its own run, right after the one cancelled.
-    if pipeline.running:
-        await pipeline._task
+    hold.set()
+    await pipeline._task
     assert pipeline.current["moved"] == ["second001"]
     assert flow.round_of("second001")["records"]["Analyze"]["analysis"]  # Analysed, past the quick check.
 

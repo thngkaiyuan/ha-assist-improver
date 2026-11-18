@@ -51,6 +51,22 @@ def saves(monkeypatch):
     return found
 
 
+@pytest.fixture
+def next_save(monkeypatch):
+    """Awaits the recorder's next save, done: however long its timer and the save take on a busy loop."""
+    done, save = asyncio.Event(), Recorder.save
+
+    async def saving(self, keys, now):
+        await save(self, keys, now)
+        done.set()
+    monkeypatch.setattr(Recorder, "save", saving)
+
+    async def saved():
+        await asyncio.wait_for(done.wait(), 10)  # One that never comes fails, never hangs.
+        done.clear()
+    return saved
+
+
 async def started(hass):
     recorder = Recorder(hass)
     await recorder.start()
@@ -346,17 +362,16 @@ async def test_saved_when_a_turn_is_added_when_it_closes_and_otherwise_every_15_
 
 
 @pytest.mark.asyncio
-async def test_the_timer_saves_a_change_once_it_is_due(home, saves, monkeypatch, effect_guards):
+async def test_the_timer_saves_a_change_once_it_is_due(home, saves, next_save, monkeypatch, effect_guards):
     hass = home
     monkeypatch.setattr(recorder_module, "SAVE_DELAY", 0.01)
     monkeypatch.setattr(recorder_module, "SAVE_EVERY", 0.5)
     recorder, key = await started(hass)
-    await asyncio.sleep(0.1)
+    await next_save()
     assert saves == [key]
     hass.states.async_set("light.desk", "on")
-    await asyncio.sleep(0.05)
-    assert saves == [key] and recorder.timer is not None
-    await asyncio.sleep(0.7)
+    assert saves == [key] and recorder.timer.when() >= recorder.saved[key] + recorder_module.SAVE_EVERY  # Not yet due.
+    await next_save()
     assert saves == [key] * 2 and not recorder.dirty and recorder.timer is None  # No chat log to watch: no ticks.
     await recorder.stop()
     assert effect_guards == []

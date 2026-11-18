@@ -6,6 +6,7 @@ Behaviour is checked through the public functions, the panel's websocket command
 providers' own add-AI-Task flows are scripted, and every AI Task is synthetic.
 """
 
+import asyncio
 import json
 import pathlib
 import re
@@ -472,14 +473,17 @@ async def test_adding_an_ai_task_stops_and_says_why_when_the_providers_flow_goes
 
 
 @pytest.mark.asyncio
-async def test_a_new_ai_task_is_chosen_as_soon_as_the_provider_adds_its_entity(recording_hass):
+async def test_a_new_ai_task_is_chosen_as_soon_as_the_provider_adds_its_entity(recording_hass, monkeypatch):
     hass = recording_hass
     openai = ai_tasks(hass, (None, "openai_conversation", {}))["openai_conversation"]
+    looked, looking, entries = [], asyncio.Event(), er.async_entries_for_config_entry
 
-    def add_entity():  # The provider reloads, then adds it: its registry entry, then its state.
-        er.async_get(hass).async_get_or_create("ai_task", "openai_conversation", "uid-later", config_entry=openai,
-                                               config_subentry_id="sub-2", suggested_object_id="assist_improver")
-        hass.loop.call_later(0.05, hass.states.async_set, "ai_task.assist_improver", "unknown")
+    def look(registry, config_entry_id):  # The improver looks for the new AI Task's entity.
+        if config_entry_id == openai.entry_id:
+            looked.append(config_entry_id)
+            looking.set()
+        return entries(registry, config_entry_id)
+    monkeypatch.setattr(er, "async_entries_for_config_entry", look)
 
     async def init(handler, context):
         return {"type": "form", "flow_id": "f", "errors": None, "data_schema": probatio.Schema(
@@ -488,12 +492,21 @@ async def test_a_new_ai_task_is_chosen_as_soon_as_the_provider_adds_its_entity(r
     async def configure(flow_id, answer):
         openai.subentries = {**openai.subentries, "sub-2": SimpleNamespace(subentry_type="ai_task_data",
                                                                            data={"recommended": True})}
-        hass.loop.call_later(0.05, add_entity)
         return {"type": "create_entry"}
     hass.config_entries.subentries = SimpleNamespace(async_init=init, async_configure=configure)
-    started = hass.loop.time()
-    assert await ai_setup.create_ai_task(hass, openai.entry_id, "default") == ("ai_task.assist_improver", None)
-    assert hass.loop.time() - started < 0.4  # Not at a next look half a second on.
+    creating = hass.async_create_task(ai_setup.create_ai_task(hass, openai.entry_id, "default"))
+    reached = asyncio.ensure_future(looking.wait())
+    await asyncio.wait({creating, reached}, return_when=asyncio.FIRST_COMPLETED)  # One that ended says why.
+    assert not creating.done(), f"It ended before it looked for the entity: {creating.result()}"
+    assert len(looked) == 1  # Not there yet: it waits.
+    # The provider reloads, then adds it: its registry entry, then its state. The improver looks at each, at once, not
+    # at a next look later on.
+    er.async_get(hass).async_get_or_create("ai_task", "openai_conversation", "uid-later", config_entry=openai,
+                                           config_subentry_id="sub-2", suggested_object_id="assist_improver")
+    assert len(looked) == 2
+    hass.states.async_set("ai_task.assist_improver", "unknown")
+    assert len(looked) == 3
+    assert await creating == ("ai_task.assist_improver", None)
     assert hass.states.get("ai_task.assist_improver") is not None  # Ready to be checked (assess).
 
 
