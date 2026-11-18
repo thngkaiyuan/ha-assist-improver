@@ -303,7 +303,8 @@ def anthropic_entry(sub_data, sub_title="Claude AI Task", domain="anthropic"):
 def task_device(hass, entry, subentry_id):
     """The device an AI Task's provider registers for it, its model named as the provider's own entity names it:
     Anthropic's and OpenAI's entity classes here; for others (the offline suite lacks their libraries), the model their
-    settings name, Ollama's without its tag; OpenRouter names none. Its ID."""
+    settings name, Ollama's without its tag; OpenRouter names none. Its ID. A DeviceInfo is read through as_dict():
+    Home Assistant 2026.12 deprecates reading it as a mapping."""
     sub = entry.subentries[subentry_id]
     subentry = SimpleNamespace(subentry_id=subentry_id, subentry_type="ai_task_data", title=sub.title,
                                data=dict(sub.data))
@@ -311,9 +312,9 @@ def task_device(hass, entry, subentry_id):
         coordinator = SimpleNamespace(get_model_info=lambda model: (ModelInfo(
             id=model, type="model", display_name=model, created_at=datetime(1970, 1, 1, tzinfo=UTC),
             lifecycle="active"), True))
-        info = AnthropicTaskEntity(SimpleNamespace(runtime_data=coordinator), subentry).device_info
+        info = AnthropicTaskEntity(SimpleNamespace(runtime_data=coordinator), subentry).device_info.as_dict()
     elif entry.domain == "openai_conversation":
-        info = OpenAIBaseLLMEntity(SimpleNamespace(), subentry).device_info
+        info = OpenAIBaseLLMEntity(SimpleNamespace(), subentry).device_info.as_dict()
     else:
         model = sub.data.get("chat_model") or sub.data.get("model")
         info = {"model": model.partition(":")[0]} if model and entry.domain != "open_router" else {}
