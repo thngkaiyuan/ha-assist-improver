@@ -75,7 +75,10 @@ core() {  # core ARGS...: `ha core ARGS`. While the Supervisor runs a job on Hom
   done
 }
 wait_for 600 "SSH" on true
-wait_for 900 "the Supervisor" on "ha supervisor info"
+# Until the Supervisor has started: an image's Supervisor older than its channel's answers while it updates itself, then
+# restarts, and only a Supervisor done starting says it runs (supervisor/core.py, Core.start).
+wait_for 900 "the Supervisor" sh -c \
+  "ssh -F '$BENCH_HAOS' haos 'ha info --raw-json' | jq -e '.data.state == \"running\"'"
 
 # The channel's Supervisor, once the Supervisor has read the channel's versions (it updates to the latest it knows,
 # whatever version is asked for), then the Home Assistant asked for (the landing page first, while the Supervisor
