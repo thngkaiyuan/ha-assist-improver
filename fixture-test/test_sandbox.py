@@ -396,6 +396,60 @@ async def test_a_sandbox_installs_nothing_and_never_sets_up_the_supervisors_inte
     assert effect_guards == []
 
 
+def custom_integration(monkeypatch, folder, domain, dependencies, iot_class):
+    """A custom integration where Home Assistant's loader finds it (custom_components is a namespace package here),
+    depending on others by its manifest; its setup does nothing."""
+    import json
+    (folder / "custom_components" / domain).mkdir(parents=True)
+    (folder / "custom_components" / domain / "manifest.json").write_text(json.dumps({
+        "domain": domain, "name": domain, "version": "1.0.0", "dependencies": dependencies, "iot_class": iot_class,
+        "codeowners": [], "requirements": [], "documentation": "https://example.invalid"}))
+    (folder / "custom_components" / domain / "__init__.py").write_text(
+        "async def async_setup(hass, config):\n    return True\n")
+    monkeypatch.syspath_prepend(str(folder))
+
+
+@pytest.mark.asyncio
+async def test_what_never_sets_up_in_a_sandbox_is_refused_before_its_setup_runs_though_an_integration_depends_on_it(
+        hass, effect_guards, monkeypatch, tmp_path):
+    """An integration the sandbox sets up brings what it depends on, but never the network, discovery, the cloud, the
+    recorder or the Supervisor's (DETAILS P11.8): one depending on the network is refused before anything of it is set
+    up, so the network's own setup never runs in a sandbox."""
+    from homeassistant.components import network
+    custom_integration(monkeypatch, tmp_path, "fixture_finder", ["network"], "calculated")
+    ran = []
+
+    async def network_setup(hass, config):
+        ran.append("network")
+        return True
+    monkeypatch.setattr(network, "async_setup", network_setup)
+    sandbox = await Sandbox.start("UTC", RELAY_AND_PORCH)
+    try:
+        with pytest.raises(RuntimeError, match="network"):
+            await sandbox.run(lambda h: seed(h, integrations=["fixture_finder"]))
+        assert ran == [] and not {"network", "fixture_finder"} & sandbox.hass.config.components
+    finally:
+        await sandbox.stop()
+    assert effect_guards == []
+
+
+@pytest.mark.asyncio
+async def test_a_sandbox_sets_up_what_its_integrations_depend_on_whatever_that_reaches(
+        hass, effect_guards, monkeypatch, tmp_path):
+    """What an integration the sandbox sets up depends on by its manifest is set up with it, as Home Assistant sets it
+    up (DETAILS P11.8), whatever it reaches: on HA 2026.12, Assist's pipeline brings voice_support."""
+    from homeassistant.loader import async_get_integration
+    custom_integration(monkeypatch, tmp_path, "fixture_lamps", ["fixture_hub"], "calculated")
+    custom_integration(monkeypatch, tmp_path, "fixture_hub", [], "local_push")
+    sandbox = await started(integrations=["fixture_lamps"])
+    try:
+        pipeline = await sandbox.run(lambda h: async_get_integration(h, "assist_pipeline"))
+        assert {"fixture_lamps", "fixture_hub", *pipeline.dependencies} <= sandbox.hass.config.components
+    finally:
+        await sandbox.stop()
+    assert effect_guards == []
+
+
 PORCH_HOME = kept_home({
     "time_zone": "UTC", "home_name": "Fixture Home", "areas": {}, "devices": {},
     "entities": {"switch.relay": {"name": None, "aliases": ["Relay"]},
