@@ -45,8 +45,8 @@ Assist Improver's, or a blocking call it caught in the improver's code on its ev
   say "Done.".
 - Devices are simulated: template lights and a switch backed by helpers (`config/configuration.yaml`), in rooms,
   exposed to Assist. Nothing is called the "reading lamp", so asking for it is a real friction an alias fixes.
-- Test-only (`config/custom_components/e2e_support`): Home Assistant ends an idle chat session after 6 seconds instead
-  of 5 minutes, so a conversation ends, and the recorder closes it, soon after its last turn.
+- Test-only (`config/custom_components/e2e_support`): a journey ends its conversations once they're over
+  (`ha.end_conversations()`), as Home Assistant's five idle minutes would, and the recorder closes them.
 
 ## How it's set up
 

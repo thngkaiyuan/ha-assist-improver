@@ -50,6 +50,7 @@ def test_an_objection_the_fix_answers_closes_and_the_filing_after_it_needs_no_tu
     page.assist(OBJECTED)
     expect(page.assist(FILED)).to_contain_text("Filed")
     page.close_assist()
+    ha.end_conversations()
     run = ha.wait_for_run("filed")
     assert run["status"] == "done", run
 
@@ -82,6 +83,7 @@ def test_a_request_said_again_is_a_step_the_fix_closes_and_a_filing_after_it_was
     expect(page.assist("Turn on the desk lamp")).to_contain_text("Turned on the Desk lamp")
     expect(page.assist(FILED)).to_contain_text("Filed")
     page.close_assist()
+    ha.end_conversations()
     run = ha.wait_for_run("filed")
     assert run["status"] == "done", run
 

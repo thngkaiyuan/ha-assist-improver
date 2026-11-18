@@ -309,6 +309,7 @@ def test_accepted_knowledge(page, ha):
     say(page, ASKED, "couldn't find")
     expect(page.assist(REMEMBER)).to_contain_text("Filed")
     page.close_assist()
+    ha.end_conversations()
     run = ha.wait_for_run("filed")
     assert run["status"] == "done", run
 

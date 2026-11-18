@@ -79,8 +79,8 @@ def listed(ha, words):
 
 
 def ended(ha, words):
-    """Waits for the conversation to end (Home Assistant ends its chat session once it's idle: CONVERSATION_TIMEOUT
-    in the throwaway Home Assistant): its row, once it's no longer still going."""
+    """The conversation, ended (ha.end_conversations): its row, once it's no longer still going."""
+    ha.end_conversations()
     return ha.wait(lambda: (row := listed(ha, words)) and row["status"] != "active" and row,
                    what=f"“{words}” to end")
 

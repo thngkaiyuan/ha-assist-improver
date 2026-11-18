@@ -24,6 +24,7 @@ def test_a_wrong_answer_about_the_home_is_trouble_and_a_fix_that_checks_answers_
     expect(page.assist("Is the desk lamp on or not?")).to_contain_text("is off")
     expect(page.assist(FILED)).to_contain_text("Filed")
     page.close_assist()
+    ha.end_conversations()
     run = ha.wait_for_run("filed")
     assert run["status"] == "done", run
 

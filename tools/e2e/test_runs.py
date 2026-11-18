@@ -52,7 +52,8 @@ def stands(ha, said):
 
 
 def wait_ended(ha, *said):
-    """Each of these conversations has ended (its chat session idled out) and is new: closed, waiting for a run."""
+    """Each of these conversations, ended (ha.end_conversations), is new: closed, waiting for a run."""
+    ha.end_conversations()
     return ha.wait(lambda: all((r := stands(ha, s)) and r["status"] == "waiting" for s in said),
                    what=f"{', '.join(said)} to end")
 
@@ -118,7 +119,7 @@ def test_run_now_takes_in_what_nobody_sent_in(page, ha, fake_model):
     page.close_assist()
     ha.wait(lambda: ha.state(CEILING)["state"] == "on", what="Assist to turn the ceiling light on")
 
-    # Both end (their chat sessions idle out); nothing runs on its own: neither was sent in.
+    # Both end; nothing runs on its own: neither was sent in.
     wait_ended(ha, UNKNOWN, KNOWN)
     assert ha.run() is None, "No run starts for a conversation nobody sent in (P0.7)"
 
@@ -423,6 +424,7 @@ def test_an_open_page_follows_a_run_that_starts_after_it_loaded(page, ha):
     expect(phone.assist(said)).to_contain_text("Turned on the Floor lamp")
     expect(phone.assist("File an improvement: it should say which room")).to_contain_text("Filed")
     phone.close_assist()
+    ha.end_conversations()
     run = ha.wait_for_run("filed")
     assert run["status"] == "done", run
     settled = stands(ha, said)

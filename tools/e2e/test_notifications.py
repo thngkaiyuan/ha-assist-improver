@@ -162,6 +162,7 @@ def test_review_notification(page, ha, notifications):
 
     # The fix waits in Your review: nothing is applied, and no notice says it was.
     file_from_assist(page, ASKED, FILED)
+    ha.end_conversations()
     first = ha.wait_for_run("filed")
     assert first["status"] == "done", first
     a = improvement(ha, TITLE, status="awaiting_review")["id"]
@@ -186,6 +187,7 @@ def test_review_notification(page, ha, notifications):
     # A second conversation, filed the same way: its improvement joins the same notification, not one of its own.
     before = first["id"]
     file_from_assist(page, ASKED_TOO, FILED_TOO)
+    ha.end_conversations()
     second = wait_next_run(ha, before)
     assert second["status"] == "done", second
     b = improvement(ha, TITLE_TOO, status="awaiting_review")["id"]

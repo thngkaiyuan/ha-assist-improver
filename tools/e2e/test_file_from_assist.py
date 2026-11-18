@@ -36,7 +36,9 @@ def file_from_assist(page, ha):
     row = page.conversation_row(ASKED)
     expect(page.chip(row)).to_have_text("Sent in")
 
-    # It ends (its chat session idles out) and the fast lane runs it on its own; nobody pressed Run.
+    # It ends (its chat session, as five idle minutes would end it) and the fast lane runs it on its own; nobody
+    # pressed Run.
+    ha.end_conversations()
     run = ha.wait_for_run("filed")
     assert run["status"] == "done", run
 

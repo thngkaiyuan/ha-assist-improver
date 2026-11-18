@@ -60,7 +60,8 @@ def listed(ha, said):
 
 
 def all_ended(ha, *said):
-    """Each of these conversations has ended (its chat session idled out) and is new: {said: its row}."""
+    """Each of these conversations, ended (ha.end_conversations), is new: {said: its row}."""
+    ha.end_conversations()
     return ha.wait(lambda: (rows := {s: listed(ha, s) for s in said})
                    and all(r and r["status"] == "waiting" for r in rows.values()) and rows,
                    what=f"{', '.join(said)} to end")

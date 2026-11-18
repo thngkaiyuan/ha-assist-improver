@@ -74,6 +74,7 @@ def up_for_review(page, ha):
     expect(page.assist(ASKED)).to_contain_text("couldn't find")
     expect(page.assist(FILED)).to_contain_text("Filed")
     page.close_assist()
+    ha.end_conversations()
     run = ha.wait_for_run("filed")
     assert run["status"] == "done", run
     page.sidebar_count(1)
@@ -212,6 +213,7 @@ def test_accept_then_undo_a_script(page, ha):
     expect(page.assist(ASKED)).to_contain_text("couldn't find")
     expect(page.assist(SCRIPTED)).to_contain_text("Filed")
     page.close_assist()
+    ha.end_conversations()
     run = ha.wait_for_run("filed")
     assert run["status"] == "done", run
     page.sidebar_count(1)
@@ -277,6 +279,7 @@ def test_accept_then_undo_a_scene_and_an_automation(page, ha):
     expect(page.assist(ASKED)).to_contain_text("couldn't find")
     expect(page.assist(SCENED)).to_contain_text("Filed")
     page.close_assist()
+    ha.end_conversations()
     run = ha.wait_for_run("filed", timeout=180)
     assert run["status"] == "done", run
     page.sidebar_count(1)

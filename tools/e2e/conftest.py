@@ -106,7 +106,6 @@ from playwright.sync_api import expect, sync_playwright  # noqa: E402
 PHONE = {"width": 402, "height": 874}  # The design target.
 DESKTOP = {"width": 1280, "height": 800}
 SIZES = {"phone": PHONE, "desktop": DESKTOP}
-CONVERSATION_TIMEOUT = 6  # Seconds an idle chat session lasts in the throwaway HA (e2e_support).
 ASSISTANT_MODEL = "claude-haiku-4-5"  # The household's assistant's model, chosen explicitly (assistant_model).
 AREAS = {"Study": ["light.desk_lamp"], "Living room": ["light.ceiling_light", "light.floor_lamp"],
          "Kitchen": ["switch.kettle"]}
@@ -330,7 +329,7 @@ def _write_config(folder, port, model_url):
                     ignore=shutil.ignore_patterns("__pycache__"))
     text = (HERE / "config/configuration.yaml").read_text()
     (folder / "configuration.yaml").write_text(
-        text.replace("{port}", str(port)).replace("{conversation_timeout}", str(CONVERSATION_TIMEOUT))
+        text.replace("{port}", str(port))
         .replace("{model_url}", model_url.replace("//127.0.0.1:", f"//{HAOS_HOST}:") if HAOS else ""))
     shutil.copytree(ROOT / "custom_components/assist_improver", folder / "custom_components/assist_improver",
                     dirs_exist_ok=True, ignore=shutil.ignore_patterns("__pycache__"))
@@ -481,6 +480,7 @@ class HomeAssistant:
     - assistant_model(model): the household's assistant on that model, or (None) on HA's recommended settings;
       assistant_instructions(text): those lines added to its instructions.
     - run(): Assist Improver's current or last run; wait_for_run(trigger): one with that trigger, once finished.
+    - end_conversations(): the conversations end, as five idle minutes would end them.
     """
 
     def __init__(self, folder, port, process, login):
@@ -573,6 +573,13 @@ class HomeAssistant:
         return self.wait(lambda: (run := self.run()) and run.get("trigger") == trigger
                          and run.get("status") != "running" and run, timeout=timeout,
                          what=f"a {trigger} run to finish")
+
+    def end_conversations(self):
+        """Each chat session ends, as Home Assistant ends one after five idle minutes (e2e_support): now, or one still
+        answering a request once that's done. A journey ends its conversations once they're over."""
+        self.wait(lambda: self.ws.call("call_service", domain="e2e_support", service="end_conversations",
+                                       return_response=True)["response"]["in_use"] == 0,
+                  what="the conversations to end")
 
     def log(self):
         return self.read("home-assistant.log") or ""

@@ -38,11 +38,9 @@ logger:
     custom_components.assist_improver: info
     custom_components.assist_improver.worker: debug  # The replay workers' own lines, the guard's among them.
 
-# Test-only (custom_components/e2e_support): Home Assistant ends a chat session after this many idle seconds, not
-# five minutes, so a conversation ends, and the recorder closes it, soon after its last turn. On HA OS, the stand-in
-# model's address (conftest.py fills it in there).
+# Test-only (custom_components/e2e_support): a journey ends its conversations once they're over, as five idle minutes
+# would. On HA OS, the stand-in model's address (conftest.py fills it in there).
 e2e_support:
-  conversation_timeout: {conversation_timeout}
   model_url: "{model_url}"
 
 # The simulated devices: template lights and a switch, each backed by a helper Assist isn't shown. Their names make
