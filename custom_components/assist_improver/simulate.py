@@ -973,7 +973,8 @@ async def _baseline(hass, model, replays, without, recording, goals, session, we
     facts = {k: v["answers"] for k, v in told_before.items() if k not in aside}
     aside |= measures.set_aside(measures.judge(goals, home, without["said"], states, aside, facts), went,
                                 goals) & objections
-    # A filing as the replay with the change decides it, at its own turn: the objections judged on the replies before.
+    # A filing as the replay with the change decides it, at its own turn (the objections judged on the replies before),
+    # except that what's set aside holds it open no more.
     aside |= {g["key"] for g in goals if g.get("kind") == "wrap-up" and went["goals"].get(g["key"]) == "unmet"
               and measures.wrap_up(goals, home, g, {k: state_of([a for a in v["answers"] if a["turn"] < g["turn"]])
                                                     for k, v in heard_before.items()}, aside, facts) == "met"}

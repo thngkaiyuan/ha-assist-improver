@@ -160,9 +160,10 @@ def _open(goals, view, windows, goal, turn, states, aside, facts=None):
     return True
 
 
-def _wrap_up(goals, view, windows, goal, states, aside, facts=None):
+def _wrap_up(goals, view, windows, goal, states, aside, facts=None, aside_holds=True):
     """A wrap-up as its turn starts: met once its root goal was met and nothing else of the root's is open (an earlier
-    sub-goal, or one in the note or a revision note); indeterminate when the root can't be told."""
+    sub-goal, or one in the note or a revision note); indeterminate when the root can't be told. A goal set aside is
+    open, as in a replay (_open), unless aside_holds is False (wrap_up)."""
     keyed, turn = {g["key"]: g for g in goals}, goal["turn"]
     root = keyed[root_of(goals, goal)]
     if root.get("kind") == "fact":
@@ -177,15 +178,16 @@ def _wrap_up(goals, view, windows, goal, states, aside, facts=None):
     else:
         met = _reached_by(view, root, windows[root["key"]], turn)
     others = [g for g in goals if g is not goal and g is not root and root_of(goals, g) == root["key"]
-              and not (isinstance(g["label"], int) and g["label"] >= turn)]
+              and (aside_holds or g["key"] not in aside) and not (isinstance(g["label"], int) and g["label"] >= turn)]
     return "met" if met and not any(
         _open(goals, view, windows, g, turn, states, aside, facts) for g in others) else "unmet"
 
 
 def wrap_up(goals, view, goal, conduct, aside=(), facts=None):
     """A wrap-up's state as its turn starts (_wrap_up), with what the judge said of the objections and questions by
-    then."""
-    return _wrap_up(goals, view, _windows(goals), goal, conduct, aside, facts)
+    then, as the baseline sets it aside by (DETAILS P6.6.2): a goal set aside can't be told either way, so it holds
+    the wrap-up open no more."""
+    return _wrap_up(goals, view, _windows(goals), goal, conduct, aside, facts, aside_holds=False)
 
 
 def judge(goals, view, said, conduct=CONVERSATION, aside=(), facts=None):
