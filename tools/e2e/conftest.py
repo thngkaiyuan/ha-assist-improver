@@ -576,7 +576,7 @@ class HomeAssistant:
     def moving(self):
         """What shows a run moving: the run (its stage and progress, as the panel shows them), and how many lines the
         replay workers have logged in Home Assistant's output (e2e-hass.log). Each replay's sandbox and each evidence
-        probe runs in a worker of its own, which logs its guard's line as it starts and its own as it goes."""
+        probe runs in a worker of its own, which logs its guard's line, and its sandbox's start, as it starts."""
         output = self.folder / "e2e-hass.log"
         lines = output.read_text(errors="replace").count(WORKER_LINE) if output.exists() else 0
         return self.run(), lines
