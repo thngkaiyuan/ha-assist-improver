@@ -460,25 +460,31 @@ async def test_what_never_sets_up_in_a_sandbox_and_comes_in_by_an_integrations_o
 
 
 def test_every_setup_a_sandbox_starts_goes_through_set_up():
-    """One way in (sandbox.set_up, DETAILS P11.8): no code of the improver's starts a setup but set_up and the setups
-    it's handed (by), whether by Home Assistant's setup or a config entry's add, setup or flow, so none skips its check
-    first."""
+    """One way in (sandbox.set_up, DETAILS P11.8): no code of the improver's starts a setup, by any of the ways Home
+    Assistant offers (its setup, a platform's, a discovered one's, a config entry's add, setup, reload, flow or
+    forwarding), but set_up and the setups it's handed (by), so none skips its check first. The only other sites: the
+    stand-in entry's own platforms (its setup runs only from set_up's by, those platforms checked first), and the real
+    instance's reloads of its own entries (a sandbox holds neither the improver's entry nor applies a change)."""
     import ast
     from pathlib import Path
+    sites = {("sandbox.py", "set_up"), ("standin.py", "async_setup_entry"), ("__init__.py", "options_updated"),
+             ("changeset.py", "_loaded_again")}
 
     def starts(call):
         func = call.func
         name = func.id if isinstance(func, ast.Name) else func.attr if isinstance(func, ast.Attribute) else None
         within = func.value.attr if isinstance(func, ast.Attribute) and isinstance(func.value, ast.Attribute) else None
-        return name == "async_setup_component" or (name, within) in {
-            ("async_add", "config_entries"), ("async_setup", "config_entries"), ("async_init", "flow")}
+        return name in {"async_setup_component", "async_prepare_setup_platform", "async_load_platform",
+                        "async_create_flow", "async_forward_entry_setups"} or (name, within) in {
+            ("async_add", "config_entries"), ("async_setup", "config_entries"), ("async_reload", "config_entries"),
+            ("async_schedule_reload", "config_entries"), ("async_init", "flow")}
 
     outside, handed = [], 0
     for path in sorted(Path(sandbox_module.__file__).parent.rglob("*.py")):
         tree = ast.parse(path.read_text())
         allowed = set()
         for node in ast.walk(tree):
-            if isinstance(node, ast.AsyncFunctionDef) and node.name == "set_up" and path.name == "sandbox.py":
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and (path.name, node.name) in sites:
                 allowed |= set(ast.walk(node))
             if isinstance(node, ast.Call) and getattr(node.func, "id", None) == "set_up":
                 for by in (k.value for k in node.keywords if k.arg == "by"):
