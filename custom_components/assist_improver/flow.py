@@ -565,14 +565,14 @@ class Flow:
         (P6.3.4): the round's, given back as it is, not counted again; on another setup, a new one. When the proposer
         acts again after a test, that test sent it back to Propose, paid for by the round's tests.
         simulate.Untestable: why it can't be tested (a conversation no idea can be tested on is marked so for its
-        round); Failed: the machinery cut it off, and it can run again."""
+        round, as _propose marks it); Failed: the machinery cut it off, and it can run again."""
         conv = self.record(rid)
         record = conv["rounds"][str(conv["round"])]["records"]["Propose"]
         try:  # Decided from today's plan each time: a repeat on the same plan replays nothing (its replays are kept).
             test = await simulate.test(self.hass, self.entry, self.runtime, rid, self._judged(conv), hypothesis)
         except simulate.Untestable as err:
             if err.conversation:
-                record["untestable"] = {"why": str(err), "at": utcnow().isoformat()}
+                record["untestable"] = {"why": str(err), "at": utcnow().isoformat(), "unreproduced": err.unreproduced}
                 await self.save()
             raise
         except simulate.Transient as err:
@@ -592,7 +592,8 @@ class Flow:
 
     async def _propose(self, rid, conv):
         """The conversation's baseline first (simulate.baseline): on one no idea can be tested on, no proposer runs,
-        and the round ends as when it sends nothing on, its record saying why (DETAILS P6.6.7). Otherwise the
+        and the round ends as when it sends nothing on, its record saying why, and whether it's because the baseline's
+        tries ran and none went as it went (unreproduced: Couldn't reproduce, DETAILS P6.6.7). Otherwise the
         proposer, on this conversation, with the household in view: it collects the reviewer's approval
         (ask_reviewer) and Simulate's validation (test_idea) for each idea, spending the round's tests as it sees fit,
         and sends on one idea that has both (P0.4, P0.9): a round brings its conversation one improvement (P0.6,
@@ -612,7 +613,7 @@ class Flow:
         try:  # Decided afresh each time, from today's plan: free while that's unchanged (DETAILS P6.6.7, P6.7.1).
             await simulate.baseline(self.hass, self.entry, self.runtime, rid, self._judged(conv))
         except simulate.Untestable as err:
-            current["untestable"] = {"why": str(err), "at": utcnow().isoformat()}
+            current["untestable"] = {"why": str(err), "at": utcnow().isoformat(), "unreproduced": err.unreproduced}
         except simulate.Transient as err:  # The machinery cut it off: tried again, then held (P0.8).
             raise Failed(str(err)) from err
         except Exception as err:  # A crash is Propose's failure, this conversation's alone (P0.8).

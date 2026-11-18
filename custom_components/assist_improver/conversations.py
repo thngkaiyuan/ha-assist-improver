@@ -93,11 +93,14 @@ def standing(runtime, rid, place=None):
     """Where a conversation stands, as its chip names it, from its flow record (place: flow.Flow.place, if read): at
     Your Assist or Triage, sent if it was sent in (filed while still going too), else still going while recorded, else
     waiting (New); at Your review, unclear while a question waits for the household, cannot when Home Assistant
-    answered a turn itself (P9.9.9), else review; in Your household, by its outcome."""
+    answered a turn itself (P9.9.9), else review; in Your household, by its outcome, except that no fix found is
+    unreproducible (Couldn't reproduce) where its baseline's tries ran and none went as it went (DETAILS P6.6.7)."""
     flow = runtime.flow
     place = place or flow.place(rid)
     stage = place["stage"]
     if stage == "Your household":
+        if place["outcome"] == "no fix found" and (_untestable(flow, rid) or {}).get("unreproduced"):
+            return "unreproducible"
         return OUTCOMES[place["outcome"]]
     if stage == "Your review":
         question = flow.question(rid)
@@ -109,6 +112,12 @@ def standing(runtime, rid, place=None):
     if stage == "Your Assist" and (runtime.recorder.index.get(rid) or {}).get("status") == "active":
         return "active"
     return "waiting"
+
+
+def _untestable(flow, rid):
+    """Why no idea could be tested on a conversation in its latest round, as its Propose record keeps it: {why, at,
+    unreproduced: its baseline's tries ran and none went as it went}; None when nothing says so."""
+    return ((flow.round_of(rid) or {}).get("records", {}).get("Propose") or {}).get("untestable")
 
 
 def row(runtime, rid):
@@ -125,7 +134,6 @@ def row(runtime, rid):
     status, stage = standing(runtime, rid, place), place["stage"]
     off = place["archived"] or stage == "Your household" or status in ("review", "unclear")
     held = place["held"]
-    proposed = (flow.round_of(rid) or {}).get("records", {}).get("Propose") or {}
     return {"status": status, "hidden": bool(off) and not flow.unarchived(rid),
             "sendable": stage == "Your household" or (stage == "Your Assist" and not held),
             "runnable": flow.waiting(rid) or bool(held) or stage == "Your household",
@@ -133,7 +141,7 @@ def row(runtime, rid):
             "stage": stage, "held": {"cause": held["cause"], "why": held["why"]} if held else None,
             "covered_by": place["covered_by"],
             **({"cant_improve": cant_improve(flow.hass, flow.question(rid))} if status == "cannot" else {}),
-            **({"untestable": True} if status == "nofix" and proposed.get("untestable") else {})}
+            **({"untestable": True} if status == "nofix" and _untestable(flow, rid) else {})}
 
 
 async def questions(runtime):

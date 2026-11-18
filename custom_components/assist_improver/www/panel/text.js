@@ -32,13 +32,16 @@ export const TEXT = {
                            fine: "No trouble found", unclear: "Question for you", cannot: "Can't improve",
                            working: "Looking for a fix",
                            writing: "Writing it up", review: "Up for review",
-                           declined: "Declined", nofix: "No fix found", duplicate: "Already covered", improved: "Improved",
+                           declined: "Declined", nofix: "No fix found", unreproducible: "Couldn't reproduce",
+                           duplicate: "Already covered", improved: "Improved",
                            test: "Marked as a test", unreadable: "Couldn't be read", archived: "Archived"},
                   smoothTip: "Nothing to improve, at a quick look. Send it in for a full analysis.",
                   // A chip's tooltip, where it says what comes next; held, why (flow.py's words).
                   nofixTip: "No fix worked. Send it in again with a note for one more look.",
                   // No fix found because no idea could be tested on it (DETAILS P6.6.7).
                   untestableTip: "No fix could be tested on this conversation.",
+                  // Couldn't reproduce: the baseline's tries ran and none went as the conversation went (P6.6.7).
+                  unreproducibleTip: "The test couldn't make this trouble happen again, so no fix could be tested.",
                   fineTip: "Nothing went wrong, as far as it could tell. Send it in again with a note if something did.",
                   // A conversation Home Assistant answered itself, not the AI (DETAILS P9.9.9): the chip's bubble.
                   cannotTip: "Home Assistant's built-in commands answered “{quote}”, not your AI assistant, and " +

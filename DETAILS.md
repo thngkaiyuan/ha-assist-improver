@@ -148,7 +148,7 @@ Citations in parentheses name the maintainer's earlier notes, which aren't in th
   - **P3.1.1** A conversation still going is recording. Once it ends it's new, and waits at Your Assist until a run
     admits it. (SPEC-CORE.md §1; Kai, 2026-10-24)
   - **P3.1.2** A stage can end a conversation, sending it to Your household: Triage (Looked smooth), Analyze (No
-    trouble found, Couldn't be read), Propose (No fix found), Your review (Improved, Declined).
+    trouble found, Couldn't be read), Propose (No fix found, Couldn't reproduce), Your review (Improved, Declined).
     (SPEC-CORE.md §1, 2026-10-26)
   - **P3.1.3** Stages are responsibilities: they needn't be separate services, or each a separate paid model call.
     (PRODUCT-SPEC.md, 2026-10-21)
@@ -164,9 +164,9 @@ Citations in parentheses name the maintainer's earlier notes, which aren't in th
     and out of each stage")
   - **P3.2.4** Every kind of conversation can flow end to end through every stage and every edge back.
     (fixture-test/SPEC.md, from README)
-- **P3.3 Your household.** Everything already decided and out of the pipeline: improved, no fix found, declined, no
-  trouble found, looked smooth, marked as a test, couldn't be read, and archived. Archived conversations are kept
-  ("deleted but stored") so other changes are checked against them; Delete for good removes one.
+- **P3.3 Your household.** Everything already decided and out of the pipeline: improved, no fix found, couldn't
+  reproduce, declined, no trouble found, looked smooth, marked as a test, couldn't be read, and archived. Archived
+  conversations are kept ("deleted but stored") so other changes are checked against them; Delete for good removes one.
   (Kai, 2026-10-26)
   - **P3.3.1** An archived conversation is out of the pipeline: no run admits it (full, picked or fast lane), no
     stage works on it or counts it (in Settings' stages or on the Run button), and its trouble is never proposed for.
@@ -589,7 +589,8 @@ Citations in parentheses name the maintainer's earlier notes, which aren't in th
   - **P6.6.6** A conversation gets up to three baseline tries per setup (P6.7.1), a fixed number, on top of its
     counterfactuals; a try the machinery cut off isn't one (P6.3.5). (PRODUCT-SPEC.md; Kai, 2026-11-05)
   - **P6.6.7** The baseline runs as Propose takes the conversation up, before the proposer. One no idea can be tested
-    on (it can't be replayed, or P6.6.5) gets no proposal: the round ends No fix found (P6.3.6), or a revision's or
+    on (it can't be replayed, or P6.6.5) gets no proposal: the round ends Couldn't reproduce when its baseline's
+    tries ran and none went as the conversation went (P6.6.5), else No fix found (P6.3.6), or a revision's or
     conflict's earlier version stays up. (P0.9)
 - **P6.7 No resampling.** A test is never repeated in the hope of a better result; only a baseline gets its tries
   (P6.6.5). A different plan (a change in how replays are judged, or the baseline it branches from) is a different
@@ -2121,10 +2122,10 @@ Citations in parentheses name the maintainer's earlier notes, which aren't in th
   - **P14.3.13** Declined: its improvement was declined, and it's archived (P12.4.12). (TEXT-REVIEW.md: 2026-10-25; Kai,
     2026-10-26)
   - **P14.3.14** No fix found: none of its goals with trouble has a fix, because the conversation's counterfactuals
-    are used up, the proposer said why it's outside the assistant's control, or no idea can be tested on it (P6.6.7).
-    Tooltip: 'No fix worked. Send it in again with a note for one more look.', or for one no idea could be tested on,
-    'No fix could be tested on this conversation.' (TEXT-REVIEW.md "No fix found": Kai approved 2026-10-25; the
-    second added 2026-11-07)
+    are used up, the proposer said why it's outside the assistant's control, or no idea can be tested on it (P6.6.7),
+    unless that's Couldn't reproduce (P14.3.23). Tooltip: 'No fix worked. Send it in again with a note for one more
+    look.', or for one no idea could be tested on, 'No fix could be tested on this conversation.' (TEXT-REVIEW.md "No
+    fix found": Kai approved 2026-10-25; the second added 2026-11-07)
   - **P14.3.15** Marked as a test: the household said it was a test. Decisions made with the earlier menu still hold.
     (TEXT-REVIEW.md: 2026-10-25; fixture-test/SPEC.md)
   - **P14.3.16** Couldn't be read: no stage can read it. One that couldn't be read after being sent in again shows
@@ -2136,14 +2137,17 @@ Citations in parentheses name the maintainer's earlier notes, which aren't in th
   - **P14.3.19** A conversation archived by hand, where a stage would otherwise work on it, is out of the pipeline. It
     never shows that stage's chip, so it's never 'Looking for a fix' while Propose leaves it out. (SPEC-CORE.md C5:
     Kai 2026-10-26; FINDINGS #79)
-  - **P14.3.20** No trouble found, No fix found and Declined are quiet grey (Kai: "less interesting"). New, Sent in,
-    Looking for a fix and No fix yet have a blue outline. 'Says more' is amber. (TEXT-REVIEW.md: Kai 2026-10-25
-    21:31)
+  - **P14.3.20** No trouble found, No fix found, Couldn't reproduce and Declined are quiet grey (Kai: "less
+    interesting"). New, Sent in, Looking for a fix and No fix yet have a blue outline. 'Says more' is amber.
+    (TEXT-REVIEW.md: Kai 2026-10-25 21:31)
   - **P14.3.21** Every chip fits on one line of a 402px phone row beside long first words. The widest may push the
     row's '· {n} failed steps' onto a second line. (TEXT-REVIEW.md: 2026-10-25)
   - **P14.3.22** An improvement shows as applied only once every changed value has been read back. If an undo fails,
     it shows 'needs attention', with exactly what is in place and what isn't. The screen always shows the real
     status. (MILESTONE-7.md; ROADMAP.md)
+  - **P14.3.23** Couldn't reproduce: no idea can be tested on it because its baseline's tries ran and none went as
+    the conversation went (P6.6.5, P6.6.7). Tooltip: 'The test couldn't make this trouble happen again, so no fix
+    could be tested.' (Kai, 2026-11-18: "Yes, as shown")
 
 - **P14.4 The conversations list.** The home page's 'Your conversations' surfaces only conversations that need the
   household: Still going, New, Sent in, and those being worked on. (Kai: 2026-10-26, "only conversations that
@@ -2176,8 +2180,8 @@ Citations in parentheses name the maintainer's earlier notes, which aren't in th
     in two. (Kai: 2026-10-25; Kai, 2026-10-30: "Of course it has to be for both")
   - **P14.4.9** The household can choose conversations by where they stand (every Improved one, say), then Select
     all and Archive. (TEXT-REVIEW.md "The Status filter": Kai 2026-10-25)
-  - **P14.4.10** Wherever statuses are listed to choose from, No fix yet and No fix found come after Looking for a fix
-    and Declined. (TEXT-REVIEW.md "No fix found": Kai approved 2026-10-25)
+  - **P14.4.10** Wherever statuses are listed to choose from, No fix yet, No fix found and Couldn't reproduce come
+    after Looking for a fix and Declined. (TEXT-REVIEW.md "No fix found": Kai approved 2026-10-25)
   - **P14.4.11** Each row shows its sign of trouble as '{n} failed step(s)'. (TEXT-REVIEW.md: 2026-10-25)
   - **P14.4.12** An opened conversation reads turn by turn as chat bubbles, labelled You (on the right) and Assist (on
     the left). A failed step shows where it happened, between what you said and Assist's reply, as 'Failed step:
@@ -2789,8 +2793,8 @@ words, those words are the requirement; elsewhere the behaviour lives in its own
     "Still going" (still recording) · "Sent in" (filed or sent in, until a stage past Triage takes it) · "New" (not
     looked at yet: new, or waiting at Triage) · "To analyze" (at Analyze) · "Looking for a fix" (at Propose) · "No fix
     yet" (at Propose after a fix was tried, tests left) · "Up for review" (at Your review; opens that review) ·
-    "Looked smooth" · "No trouble found" · "Declined" · "Improved" · "No fix found" · "Marked as a test" · "Couldn't be
-    read" (in Your household).
+    "Looked smooth" · "No trouble found" · "Declined" · "Improved" · "No fix found" · "Couldn't reproduce" · "Marked
+    as a test" · "Couldn't be read" (in Your household).
   - **P17.20.3** "Looked smooth"'s bubble: "Nothing to improve, at a quick look. Send it in for a full analysis."
     (TEXT-REVIEW.md ✓, Kai 2026-10-25)
   - **P17.20.4** "No trouble found"'s bubble: "Nothing went wrong, as far as it could tell. Send it in again with a note
@@ -2800,6 +2804,8 @@ words, those words are the requirement; elsewhere the behaviour lives in its own
   - **P17.20.6** "No fix found"'s bubble: "No fix worked. Send it in again with a note for one more look.", or for
     one no idea could be tested on (P6.6.7): "No fix could be tested on this conversation." (TEXT-REVIEW.md, Kai
     approved 2026-10-25; the second added 2026-11-07)
+  - **P17.20.7** "Couldn't reproduce"'s bubble: "The test couldn't make this trouble happen again, so no fix could be
+    tested." (Kai, 2026-11-18: "Yes, as shown")
 
 - **P17.21** The review's words:
   - **P17.21.1** What an improvement gets, on the home list and the review's header: "{n} new thing(s) Assist can do"

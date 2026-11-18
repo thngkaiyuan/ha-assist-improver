@@ -305,7 +305,7 @@ function badge(row) {
   // Where it stands; one up for review is its own button beside the row (reviewLink), so it can open that review.
   // Its tooltip says what comes next, or, held, why (flow.py's words).
   const C = TEXT.conversations, tips = {smooth: C.smoothTip, nofix: row.untestable ? C.untestableTip : C.nofixTip,
-    fine: C.fineTip, duplicate: C.duplicateTip};
+    unreproducible: C.unreproducibleTip, fine: C.fineTip, duplicate: C.duplicateTip};
   const text = row.held ? fill(C.heldTip, {why: row.held.why}) : tips[row.status];
   const tip = text ? ` title="${esc(text)}"` : "";
   return row.status === "review" && row.review || cannot(row) ? ""
@@ -476,7 +476,8 @@ function sortMenu(cv) {
 
 // The Status filter's choices, in the order a conversation moves through them.
 const STATUSES = ["waiting", "sent", "active", "smooth", "queued", "fine", "unclear", "cannot", "working", "writing",
-                  "review", "declined", "nofix", "duplicate", "improved", "test", "unreadable", "archived"];
+                  "review", "declined", "nofix", "unreproducible", "duplicate", "improved", "test", "unreadable",
+                  "archived"];
 // The standings to choose from: those some conversation matching the rest has, and any chosen.
 const standing = (cv, s) => (cv.byStatus[s] || 0) + (cv.away?.byStatus[s] || 0);  // In the list and below Show archived.
 const choosable = (cv) => STATUSES.filter((s) => standing(cv, s) || cv.only?.has(s));

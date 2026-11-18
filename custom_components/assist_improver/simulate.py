@@ -76,11 +76,12 @@ GOAL_FIELDS = ("key", "label", "kind", "entity_id", "entity_ids", "state", "stat
 
 
 class Untestable(CaseError):
-    """Why an idea can't be tested on its conversation: this idea alone, or (conversation) any idea on it."""
+    """Why an idea can't be tested on its conversation: this idea alone, or (conversation) any idea on it; unreproduced:
+    because its baseline's tries ran and none went as the conversation went (DETAILS P6.6.5)."""
 
-    def __init__(self, why, *, conversation=False):
+    def __init__(self, why, *, conversation=False, unreproduced=False):
         super().__init__(why)
-        self.conversation = conversation
+        self.conversation, self.unreproduced = conversation, unreproduced
 
 
 class Transient(Exception):
@@ -889,7 +890,7 @@ async def baseline(hass, entry, runtime, rid, goals):
         except Unlike as err:
             whys.append(str(err))
         if before["try"] == TRIES:
-            raise Untestable(unlike(whys), conversation=True)
+            raise Untestable(unlike(whys), conversation=True, unreproduced=True)
         before = tried_again(before)
     return {**judged, "before": before, "without": without, "today": today, "recording": recording, "goals": goals,
             "turns": turns, "session": session, "model": model}
