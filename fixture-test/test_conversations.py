@@ -2,6 +2,8 @@
 Assist's tool files one, so a run lets it in (past the quick check with a note), never twice. Each row's chip, whether
 the list shows it, and whether it can be sent in or picked come from its flow record (conversations.row)."""
 
+import json
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -157,7 +159,8 @@ async def test_a_past_conversation_sent_in_goes_in_past_the_quick_check_with_the
     assert sent == {"status": "sent", "hidden": False}
     assert runtime.flow.sent("friction01")["note"] == "Press it in one go."
     assert runtime.flow.sent("friction01")["by"] == "alex"
-    saved = (await runtime.flow.store.async_load())["conversations"]["friction01"]
+    # Read without awaiting: the run the send started can't take it in (and clear its mark) first.
+    saved = json.loads(Path(runtime.flow.store.path).read_text())["data"]["conversations"]["friction01"]
     assert saved["sent"]["note"] == "Press it in one go."  # On disk too.
     assert runtime.pipeline.running and runtime.pipeline.current["trigger"] == "filed"
     await runtime.pipeline._task

@@ -93,14 +93,15 @@ async def test_one_sent_in_during_a_run_the_household_cancels_still_gets_its_own
     hass, pipeline, model, flow = improver.hass, improver.runtime.pipeline, improver.model, improver.runtime.flow
     improver.entry.options = {**improver.entry.options, CONF_PAUSED: ["propose", "write"]}
     await improver.arrives(improver.friction)
-    hold, triage = asyncio.Event(), model.triage
+    thinking, hold, triage = asyncio.Event(), asyncio.Event(), model.triage
 
     async def slow(hass, payload, tools):  # The full run's quick check takes a while.
+        thinking.set()
         await hold.wait()
         return await triage(hass, payload, tools)
     monkeypatch.setattr(model, "triage", slow)
     pipeline.start(trigger="manual")
-    await asyncio.sleep(0.2)
+    await asyncio.wait_for(thinking.wait(), 10)
     assert pipeline.running and flow.place("friction01")["stage"] == "Triage"
 
     await improver.arrives(variant(improver.friction, "second001", "Please toggle the fixture relay."))

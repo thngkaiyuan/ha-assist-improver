@@ -16,7 +16,7 @@ from test_conversations import ask
 from kit import candidate_turn, improver, variant  # noqa: F401 - improver is a fixture.
 from test_on_demand import file
 import kit
-from custom_components.assist_improver import analysis, async_setup_entry, async_unload_entry, panel
+from custom_components.assist_improver import analysis, async_setup_entry, async_unload_entry, panel, simulate
 from custom_components.assist_improver.const import CONF_AI_TASK, CONF_CHECK_AI_TASK, CONF_TRIAGE_AI_TASK
 from custom_components.assist_improver.reflective import RoleRuns
 
@@ -108,10 +108,19 @@ async def test_a_conversation_deleted_during_a_run_leaves_propose_its_count_and_
     paused(improver, "write")
     asked = proposals(improver, monkeypatch)
     improver.client.blocks = before(improver.friction) + candidate_turn()
+    proposing, go_on, baseline = asyncio.Event(), asyncio.Event(), simulate.baseline
+
+    async def held(*args):  # The run's first step, friction01's baseline, waits till Alex has deleted.
+        proposing.set()
+        await go_on.wait()
+        return await baseline(*args)
+    monkeypatch.setattr(simulate, "baseline", held)
     pipeline.start(trigger="manual")
+    await asyncio.wait_for(proposing.wait(), 10)
     assert await ask(hass, panel.ws_conversation_delete, recording_id="second001") == (
         "ok", {"deleted": "second001", "queued": True})
     assert flow.counts()["Propose"] == 1, "Propose still counted the deleted conversation"
+    go_on.set()
     await pipeline._task
     await hass.async_block_till_done()
     done = pipeline.current
