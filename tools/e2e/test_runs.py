@@ -435,5 +435,5 @@ def test_an_open_page_follows_a_run_that_starts_after_it_loaded(page, ha):
     page.show_archived()
     expect(page.chip(same.locator(".cs-row").filter(has_text=said))).to_have_text(SETTLED[settled["status"]])
     if not page.phone:
-        expect(page.page.locator("ha-sidebar").get_by_text("Assist Improver", exact=True)).to_be_visible()
+        expect(page.sidebar_item(0)).to_be_visible()
     assert page.errors == [], (page.errors, page.rejections, page.blocked)

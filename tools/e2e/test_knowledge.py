@@ -139,13 +139,6 @@ def knowledge_read(system):
     return lines
 
 
-def sidebar_count(page, n):
-    """Waits until Home Assistant's sidebar names Assist Improver with n improvements waiting (the panel is made again
-    when that count changes, so a journey waits for it before acting on the new panel)."""
-    item = page.page.locator("ha-sidebar").get_by_text(re.compile(r"^\s*Assist Improver(\s+\(\d+\))?\s*$")).first
-    expect(item).to_have_text(re.compile(rf"^\s*Assist Improver{rf'\s+\({n}\)' if n else ''}\s*$"))
-
-
 # The journeys.
 
 def test_lines_by_hand(page, ha):
@@ -320,7 +313,7 @@ def test_accepted_knowledge(page, ha):
     assert run["status"] == "done", run
 
     # Up for review: what changes is the household knowledge, one line for everyone; nothing is applied yet.
-    sidebar_count(page, 1)
+    page.sidebar_count(1)
     panel = open_review(page)
     change = panel.locator("details[data-key=changes] .file")
     expect(change).to_have_count(1)
@@ -334,7 +327,7 @@ def test_accepted_knowledge(page, ha):
     expect(panel.locator(".footer .done-msg")).to_contain_text("Applied. Assist uses it from your next request.")
     saved(ha, "the accepted line", [LINE])
     assert ha.aliases(LAMP) == [] and ha.state(LAMP)["state"] == "off"
-    sidebar_count(page, 0)
+    page.sidebar_count(0)
     page.shot("knowledge-accepted")
 
     # Settings: the chip counts it, and the modal shows it under Everyone.
@@ -358,7 +351,7 @@ def test_accepted_knowledge(page, ha):
     page.panel.locator(".footer #undo-link").click()
     expect(page.panel.locator(".footer .done-msg")).to_contain_text("Undone: what was there before is back.")
     saved(ha, "the line taken out", [])
-    sidebar_count(page, 1)
+    page.sidebar_count(1)
     open_settings(page)
     expect(lines_chip(page)).to_have_text(chip_says(page, 0))
     modal = open_lines(page)

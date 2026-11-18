@@ -123,14 +123,6 @@ def file_from_assist(page, asked, filed):
     page.close_assist()
 
 
-def sidebar_count(page, n):
-    """Home Assistant's sidebar names Assist Improver with n improvements waiting (P12.10.5): the panel is made again
-    when that count changes, so a journey waits for it before acting on the new panel."""
-    item = page.page.locator("ha-sidebar").get_by_text(re.compile(r"^\s*Assist Improver(\s+\(\d+\))?\s*$")).first
-    count = rf"\s+\({n}\)" if n else ""
-    expect(item).to_have_text(re.compile(rf"^\s*Assist Improver{count}\s*$"))
-
-
 def open_notifications(page):
     """Home Assistant's notifications, from the dashboard's sidebar (on the phone, behind the sidebar toggle): the
     drawer."""
@@ -223,7 +215,7 @@ def test_review_notification(page, ha, notifications):
     ha.wait(lambda: ha.aliases(CEILING) == ["Big light"], what="the ceiling light's new name")
     note = notifications.summary("1 improvement to review")
     assert TITLE_TOO not in note["message"], note
-    sidebar_count(page, 1)
+    page.sidebar_count(1)
 
     drawer = open_notifications(page)
     summary = notice(drawer, "to review")
@@ -247,7 +239,7 @@ def test_review_notification(page, ha, notifications):
     expect(panel.locator(".footer .done-msg")).to_contain_text("Thanks.")
     notifications.summary(None)
     assert notifications.ours() == [], notifications.now()
-    sidebar_count(page, 0)
+    page.sidebar_count(0)
 
     drawer = open_notifications(page)
     expect(notice(drawer, "to review")).to_have_count(0)

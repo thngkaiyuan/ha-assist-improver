@@ -46,7 +46,7 @@ def file_from_assist(page, ha):
     improvement = panel.locator(".item").filter(has=page.page.locator(".go"))  # Up for review: it opens.
     expect(improvement).to_have_count(1)
     if not page.phone:
-        expect(page.page.locator("ha-sidebar").get_by_text("Assist Improver (1)")).to_be_visible()
+        expect(page.sidebar_item(1)).to_be_visible()
     expect(row).to_have_count(0)
 
     # Under Show archived, the conversation stands at Your review: its chip says so and opens the review.

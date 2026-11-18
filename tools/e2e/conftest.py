@@ -780,6 +780,7 @@ class Screen:
     - assist(text): type a request in the Assist dialog (opened from the dashboard, open_assist(), if it
       isn't open) and send it: the locator of Assist's reply, once it's shown. close_assist() closes the dialog.
     - open_panel(): Assist Improver from the sidebar (on the phone, behind the sidebar toggle): the panel's locator.
+      sidebar_item(waiting): its link in the sidebar; sidebar_count(n) waits until it names n improvements waiting.
     - conversation_row(words): the panel's row ("Your conversations") for the conversation whose words include
       `words`; chip(row) its status chip ("Sent in", "Up for review", ...).
     - shot(name): with E2E_SHOTS=1, a full-page screenshot in the test's Home Assistant folder (kept with E2E_KEEP=1),
@@ -844,11 +845,25 @@ class Screen:
             self.page.keyboard.press("Escape")
             expect(chat).to_be_hidden()
 
+    def sidebar_item(self, waiting=None):
+        """Assist Improver's link in Home Assistant's sidebar, also in the phone's closed drawer, with `waiting`
+        improvements in its name when given (0: none). Home Assistant's controls are found by role and name, never by a
+        span or icon inside them: their inside is the frontend's to change (frontend#55831 laid the link over its
+        label)."""
+        count = r"(\s+\(\d+\))?" if waiting is None else (rf"\s+\({waiting}\)" if waiting else "")
+        return self.page.locator("ha-sidebar").get_by_role(
+            "link", name=re.compile(rf"^Assist Improver{count}$"), include_hidden=True)
+
+    def sidebar_count(self, n):
+        """Wait until the sidebar names Assist Improver with n improvements waiting (P14.11.5): the panel is made
+        again when that count changes, so a journey waits for it before acting on the new panel."""
+        expect(self.sidebar_item(n)).to_have_count(1)
+
     def open_panel(self):
         """Assist Improver, from the sidebar (on the phone, behind the sidebar toggle)."""
         if self.phone:
             self.page.get_by_role("button", name="Sidebar toggle").click()
-        self.page.locator("ha-sidebar").get_by_text("Assist Improver").first.click()
+        self.sidebar_item().click()
         expect(self.page).to_have_url(re.compile(re.escape(f"{self.ha.url}/assist-improver")))
         panel = self.page.locator("assist-improver-panel")
         expect(panel).to_be_attached()

@@ -65,15 +65,6 @@ def improvement_id(page):
     return found.group(1)
 
 
-def sidebar_count(page, n):
-    """Wait until Home Assistant's sidebar names Assist Improver with n improvements waiting (P14.11.5): the panel is
-    made again when that count changes, so a journey waits for it before acting on the new panel. The sidebar is
-    in the page at both sizes (behind its toggle on the phone)."""
-    item = page.page.locator("ha-sidebar").get_by_text(re.compile(r"^\s*Assist Improver(\s+\(\d+\))?\s*$")).first
-    count = rf"\s+\({n}\)" if n else ""
-    expect(item).to_have_text(re.compile(rf"^\s*Assist Improver{count}\s*$"))
-
-
 def up_for_review(page, ha):
     """A conversation whose improvement waits at Your review, reached as Alex would (test_file_from_assist.py): asked
     for in the Assist dialog by a name Assist doesn't know, filed from there, taken in by the fast lane once it ends.
@@ -85,7 +76,7 @@ def up_for_review(page, ha):
     page.close_assist()
     run = ha.wait_for_run("filed")
     assert run["status"] == "done", run
-    sidebar_count(page, 1)
+    page.sidebar_count(1)
     panel = page.open_panel()
     expect(panel.locator("h1").filter(has_text="1 improvement to review")).to_be_visible()
     panel.locator(".item").filter(has_text=TITLE).click()
@@ -158,7 +149,7 @@ def test_accept_then_undo(page, ha):
     expect(panel.locator("h1 .chip")).to_have_text("Applied")
     ha.wait(lambda: ha.aliases(LAMP) == ["Reading lamp"], what="the desk lamp's new alias")
     assert ha.state(LAMP)["state"] == "off" and ha.state(HELPER)["state"] == "off", "Accepting runs nothing"
-    sidebar_count(page, 0)  # Nothing waits any more (the panel is made again: the footer still says what happened).
+    page.sidebar_count(0)  # Nothing waits any more (the panel is made again: the footer still says what happened).
     expect(done).to_contain_text("Applied.")
     page.shot("accepted")
 
@@ -185,7 +176,7 @@ def test_accept_then_undo(page, ha):
     expect(panel.locator(".footer .done-msg")).to_contain_text("Undone: what was there before is back.")
     expect(panel.locator("h1 .chip")).to_have_text("To review")
     ha.wait(lambda: ha.aliases(LAMP) == [], what="the alias to be taken out")
-    sidebar_count(page, 1)
+    page.sidebar_count(1)
     # No decision pops up where Undo was: Decide again, beside what happened, brings the decision bar back.
     expect(panel.locator(".footer #decide")).to_have_count(0)
     expect(panel.locator(".footer #undo-link")).to_have_count(0)
@@ -223,7 +214,7 @@ def test_accept_then_undo_a_script(page, ha):
     page.close_assist()
     run = ha.wait_for_run("filed")
     assert run["status"] == "done", run
-    sidebar_count(page, 1)
+    page.sidebar_count(1)
     panel = page.open_panel()
     panel.locator(".item").filter(has_text="reading lamp script").click()
     expect(page.page).to_have_url(re.compile(r"/assist-improver\?id="))
@@ -241,7 +232,7 @@ def test_accept_then_undo_a_script(page, ha):
     assert saves == [("POST", "reading_lamp")]  # Saved from the page, as the signed-in admin.
     assert ha.state(SCRIPT)["state"] == "off" and ha.exposed(SCRIPT)  # Loaded and exposed, never run.
     assert ha.state(LAMP)["state"] == "off" and ha.state(HELPER)["state"] == "off"
-    sidebar_count(page, 0)
+    page.sidebar_count(0)
     page.goto("/config/script/dashboard")  # Home Assistant's own list of scripts.
     expect(page.page.get_by_text("Reading lamp", exact=True).first).to_be_visible()
     page.shot("script-accepted")
@@ -288,7 +279,7 @@ def test_accept_then_undo_a_scene_and_an_automation(page, ha):
     page.close_assist()
     run = ha.wait_for_run("filed", timeout=180)
     assert run["status"] == "done", run
-    sidebar_count(page, 1)
+    page.sidebar_count(1)
     panel = page.open_panel()
     panel.locator(".item").filter(has_text="reading lamp scene").click()
     review = improvement_id(page)
@@ -377,7 +368,7 @@ def test_revise_with_note(page, ha):
     expect(history.locator(":scope > summary")).to_have_text("Earlier improvements (1)")
     history.locator(":scope > summary").click()
     expect(history.locator(".item").filter(has_text=TITLE).locator(".chip")).to_have_text("Replaced by a revision")
-    sidebar_count(page, 1)
+    page.sidebar_count(1)
 
     # The conversation stands at Your review with the revised version: its chip opens that one.
     row = page.conversation_row(ASKED)
@@ -446,7 +437,7 @@ def test_decline(page, ha, why):
     expect(panel.locator("h1 .chip")).to_have_text("Declined")
     expect(panel.locator(".footer #decide")).to_have_count(0)
     expect(panel.locator(".footer #undo-link")).to_have_count(0)
-    sidebar_count(page, 0)
+    page.sidebar_count(0)
     page.shot("declined")
 
     # The decision is kept with its reason or note (the record Your review hands on).
@@ -508,7 +499,7 @@ def test_accept_meets_a_conflict_and_is_sent_back_to_resolve(page, ha):
     expect(panel.locator(".footer .done-msg #resolve-link")).to_have_text("Send it back to resolve")
     expect(panel.locator(".footer #note")).to_have_count(0)
     assert ha.aliases(MOVED) == [], "Nothing was written"
-    sidebar_count(page, 0)  # Not waiting for review any more: the panel is made again, and still asks.
+    page.sidebar_count(0)  # Not waiting for review any more: the panel is made again, and still asks.
     expect(panel.locator(".footer .done-msg")).to_contain_text("Nothing was changed.")
     expect(panel.locator("div.conflict")).to_have_text(f"Can't apply it now:{why}")
     expect(panel.locator(".footer .done-msg #resolve-link")).to_have_text("Send it back to resolve")
@@ -548,7 +539,7 @@ def test_accept_meets_a_conflict_and_is_sent_back_to_resolve(page, ha):
     expect(history.locator(":scope > summary")).to_have_text("Earlier improvements (1)")
     history.locator(":scope > summary").click()
     expect(history.locator(".item").filter(has_text=TITLE).locator(".chip")).to_have_text("Replaced by a revision")
-    sidebar_count(page, 1)
+    page.sidebar_count(1)
     row = page.conversation_row(ASKED)
     page.show_archived()
     expect(row.locator(".cs-review")).to_have_text("Up for review")

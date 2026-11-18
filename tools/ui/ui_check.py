@@ -84,7 +84,8 @@ def _open(page, url):
 def repairs(page):
     _open(page, f"{HA}/config/repairs")
     page.wait_for_timeout(2000)
-    item = page.get_by_text("Assist Improver needs an AI model")
+    # The row by its role and name, never the text inside it, which HA lays the row's control over (frontend#55831).
+    item = page.get_by_role("button", name="Assist Improver needs an AI model")
     if not item.count():
         if page.get_by_text("There are currently no repairs pending").count() == 0:
             expect(page.get_by_role("list", name="Repairs")).to_be_visible()  # Other integrations' repairs.
