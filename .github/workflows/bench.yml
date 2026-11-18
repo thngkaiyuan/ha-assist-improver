@@ -37,12 +37,14 @@ jobs:
           PLAYWRIGHT_BROWSERS_PATH=tools/ui/browsers tools/e2e/.venv/bin/python -m playwright install --with-deps chromium
       # As root: Home Assistant runs as root in its container, as under the Supervisor, and keeps its stores private.
       - name: Tests
+        timeout-minutes: 50  # Under the job's: a step past it fails, so the logs below are kept (a job is cancelled).
         env:
+          CHECK_BUDGET: 2700  # check.sh stops what still runs at 45 minutes, each suite with its result so far.
           CHECK_LOGS: ${{ runner.temp }}/logs
           VERSION: ${{ inputs.version }}
         run: |
           sudo git config --system --add safe.directory "$PWD"
-          sudo --preserve-env=CHECK_LOGS tools/bench/run.sh "$VERSION" --landlock ${{ matrix.landlock }}
+          sudo --preserve-env=CHECK_BUDGET,CHECK_LOGS tools/bench/run.sh "$VERSION" --landlock ${{ matrix.landlock }}
       - name: Logs readable by the runner (root wrote them)
         if: failure()
         run: |
@@ -76,6 +78,7 @@ jobs:
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
       - name: Journeys on HA OS
+        timeout-minutes: 110  # Under the job's, as the image jobs' Tests.
         env:
           BENCH_WORK: ${{ runner.temp }}/haos
           CHANNEL: ${{ inputs.channel }}

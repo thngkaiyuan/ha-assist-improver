@@ -126,8 +126,10 @@ jobs:
           PLAYWRIGHT_BROWSERS_PATH=tools/ui/browsers tools/e2e/.venv/bin/python -m playwright install --with-deps chromium
       - id: coverage
         name: Tests, measured
+        timeout-minutes: 50  # Under the job's, as the bench's Tests (bench.yml).
         env:
           BENCH_LANDLOCK: applied
+          CHECK_BUDGET: 2700
           CHECK_LOGS: ${{ runner.temp }}/logs
         run: |
           set -o pipefail
