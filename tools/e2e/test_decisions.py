@@ -280,7 +280,7 @@ def test_accept_then_undo_a_scene_and_an_automation(page, ha):
     expect(page.assist(SCENED)).to_contain_text("Filed")
     page.close_assist()
     ha.end_conversations()
-    run = ha.wait_for_run("filed", timeout=180)
+    run = ha.wait_for_run("filed")
     assert run["status"] == "done", run
     page.sidebar_count(1)
     panel = page.open_panel()

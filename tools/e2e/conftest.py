@@ -118,6 +118,10 @@ expect.set_options(timeout=EXPECT_TIMEOUT)
 # ms: the longest an action (a click, a fill) waits for what it acts on; never for the pipeline, which a journey
 # expects first. A page's load keeps EXPECT_TIMEOUT.
 ACTION_TIMEOUT = 15_000
+# s: the longest a journey waits on a run that shows no sign of moving (HomeAssistant.wait_for_run). A run's whole
+# length grows with the machine's load, so nothing here bounds that: the check's deadline does (CHECK_BUDGET).
+RUN_STALL = 60
+WORKER_LINE = "Replay worker: "  # How Home Assistant logs a replay worker's own lines (config/configuration.yaml).
 
 _RUNNING = set()  # Home Assistant processes still running: stopped at exit, whatever happens.
 _NUMBERS = itertools.count(1)  # Each test's config folder, numbered in the order the tests ran.
@@ -479,7 +483,8 @@ class HomeAssistant:
     - wait(check, timeout, what): poll check() until truthy (wait_until).
     - assistant_model(model): the household's assistant on that model, or (None) on HA's recommended settings;
       assistant_instructions(text): those lines added to its instructions.
-    - run(): Assist Improver's current or last run; wait_for_run(trigger): one with that trigger, once finished.
+    - run(): Assist Improver's current or last run; wait_for_run(trigger, after): one with that trigger, or the first
+      after another, once it has ended, waited on as long as it moves (moving()).
     - end_conversations(): the conversations end, as five idle minutes would end them.
     """
 
@@ -568,11 +573,37 @@ class HomeAssistant:
         """Assist Improver's run in progress, or its last one (assist_improver/run: trigger, status, ...)."""
         return self.ws.call("assist_improver/run")["run"]
 
-    def wait_for_run(self, trigger, timeout=60):
-        """The first run with this trigger (filed: the fast lane; manual; revision; ...) once it has finished."""
-        return self.wait(lambda: (run := self.run()) and run.get("trigger") == trigger
-                         and run.get("status") != "running" and run, timeout=timeout,
-                         what=f"a {trigger} run to finish")
+    def moving(self):
+        """What shows a run moving: the run (its stage and progress, as the panel shows them), and how many lines the
+        replay workers have logged in Home Assistant's output (e2e-hass.log). Each replay's sandbox and each evidence
+        probe runs in a worker of its own, which logs its guard's line as it starts and its own as it goes."""
+        output = self.folder / "e2e-hass.log"
+        lines = output.read_text(errors="replace").count(WORKER_LINE) if output.exists() else 0
+        return self.run(), lines
+
+    def wait_for_run(self, trigger=None, after=None):
+        """The run with this trigger (filed: the fast lane; manual; revision; ...), or the first after the one with id
+        `after`, once it has ended, however it ended. Waited on as long as it moves (moving): it fails at once when
+        Home Assistant has stopped, and once nothing moved for RUN_STALL seconds (no run started, or it's stuck)."""
+        what = f"a {trigger} run" if trigger else "the next run"
+        seen, still, last = None, time.monotonic(), None
+        while time.monotonic() - still < RUN_STALL:
+            if self.process.poll() is not None:
+                raise AssertionError(f"Home Assistant stopped while waiting for {what} to end")
+            try:
+                now = self.moving()
+            except Exception as err:  # noqa: BLE001 - not this moment: Home Assistant may be busy.
+                last = err
+            else:
+                run = now[0]
+                if (run and run.get("status") != "running" and (trigger is None or run.get("trigger") == trigger)
+                        and run.get("id") != after):
+                    return run
+                if now != seen:
+                    seen, still = now, time.monotonic()
+            time.sleep(0.25)
+        raise AssertionError(f"Nothing moved for {RUN_STALL} s waiting for {what} to end; the run as last seen: "
+                             f"{seen and seen[0]}" + (f" (last error: {last!r})" if last else ""))
 
     def end_conversations(self):
         """Each chat session ends, as Home Assistant ends one after five idle minutes (e2e_support): now, or one still

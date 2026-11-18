@@ -107,12 +107,6 @@ def stands(ha, said, **fields):
     return ha.wait(record, what=f"“{said}” with {fields}")
 
 
-def wait_next_run(ha, before):
-    """The run started after the one with id `before` (None: the first), once it has finished."""
-    return ha.wait(lambda: (run := ha.run()) and run.get("id") != before and run.get("status") != "running" and run,
-                   what="the run to finish")
-
-
 # The screen.
 
 def file_from_assist(page, asked, filed):
@@ -188,7 +182,7 @@ def test_review_notification(page, ha, notifications):
     before = first["id"]
     file_from_assist(page, ASKED_TOO, FILED_TOO)
     ha.end_conversations()
-    second = wait_next_run(ha, before)
+    second = ha.wait_for_run(after=before)
     assert second["status"] == "done", second
     b = improvement(ha, TITLE_TOO, status="awaiting_review")["id"]
     notifications.summary("2 improvements to review")

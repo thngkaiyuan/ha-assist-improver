@@ -63,12 +63,6 @@ def last_run_id(ha):
     return run and run.get("id")
 
 
-def wait_next_run(ha, before):
-    """The run started after the one with id `before` (None: the first run), once it has finished."""
-    return ha.wait(lambda: (run := ha.run()) and run.get("id") != before and run.get("status") != "running" and run,
-                   what="the run to finish")
-
-
 # The screen.
 
 def ask_by_unknown_name(page, then=EXPLAINED):
@@ -142,7 +136,7 @@ def test_run_now_takes_in_what_nobody_sent_in(page, ha, fake_model):
     modal.locator("#start-run").click()
     expect(modal).to_be_hidden()
 
-    run = wait_next_run(ha, before)
+    run = ha.wait_for_run(after=before)
     assert run["trigger"] == "manual" and not run.get("picked") and not run.get("only"), run
     assert run["status"] == "done", run
     assert run["progress"].get("new_improvements") == 1 and run["progress"].get("analyzed") == 1, run["progress"]
@@ -210,7 +204,7 @@ def test_run_now_takes_in_one_assist_got_right_the_second_time(page, ha):
     modal = confirm_run(panel, "Run on 1 new conversation?")
     modal.locator("#start-run").click()
     expect(modal).to_be_hidden()
-    run = wait_next_run(ha, before)
+    run = ha.wait_for_run(after=before)
     assert run["status"] == "done", run
 
     # Up for review, with the alias the user's first words needed; nothing changed in the home yet.
@@ -255,7 +249,7 @@ def test_blocked_stage_holds_until_released(page, ha):
     expect(modal).to_contain_text("Analyze is blocked.")
     modal.locator("#start-run").click()
     expect(modal).to_be_hidden()
-    run = wait_next_run(ha, before)
+    run = ha.wait_for_run(after=before)
     assert run["status"] == "done", run
 
     # Held at Analyze, because Analyze is blocked: in Home Assistant, ...
@@ -306,7 +300,7 @@ def test_blocked_stage_holds_until_released(page, ha):
     before = run["id"]
     modal.locator("#start-run").click()
     expect(modal).to_be_hidden()
-    run = wait_next_run(ha, before)
+    run = ha.wait_for_run(after=before)
     assert run["trigger"] == "manual" and run["status"] == "done", run
     assert run["progress"].get("new_improvements") == 1, run["progress"]
 
