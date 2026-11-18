@@ -3,6 +3,7 @@ Assistant, its scheduler, timers, templates and the sun read one time, which sta
 to each turn's recorded time, and lets waits pass at once inside a turn, never past the next recorded turn; an
 automation's week runs through seven simulated days within a budget."""
 
+import asyncio
 from copy import deepcopy
 from datetime import UTC, datetime, timedelta
 import json
@@ -322,6 +323,39 @@ async def test_a_two_turn_replay_keeps_turn_ones_chat_log_and_runs_turn_two_at_i
     fired = datetime.fromisoformat(two["automation.between"]["attributes"]["last_triggered"])
     assert first + timedelta(minutes=5) <= fired < first + timedelta(minutes=5, seconds=1)
     assert "automation.later" not in two
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("process", ["worker", "inline"])
+async def test_a_slow_start_up_leaves_turn_one_at_its_recorded_time_and_the_home_between_turns_as_recorded(
+        hass, monkeypatch, request, process):
+    """The sandbox's start-up is slow, as on a busy host: each step of it, until turn 1, waits seconds first, longer
+    than the time from turn 1 to the household's automation due between the turns. Turn 1 still runs at its recorded
+    time, and the automation fires between the turns at its time, in a worker's process and in the tests' own."""
+    from custom_components.assist_improver import worker as worker_module
+    if process == "worker":
+        request.getfixturevalue("provider_process")
+    begin, ops = worker_module.Worker.call, []
+
+    async def slow(self, op, **args):
+        if "home.turn" not in ops:
+            await asyncio.sleep(4)
+        ops.append(op)
+        return await begin(self, op, **args)
+    monkeypatch.setattr(worker_module.Worker, "call", slow)
+    record = conversation(timedelta(seconds=30))
+    first = datetime.fromisoformat(record["turns"][0]["source"]["at"])
+    automations = [{"id": "between", "alias": "Between", "triggers": [at(first + timedelta(seconds=10))],
+                    "actions": porch()}]
+    found, requests = await replayed(hass, monkeypatch, record, [*relay_off(), [{"type": "text", "text": "Ok."}]],
+                                     through=2, automations=automations)
+    assert found["status"] == "reproduced", found.get("error")
+    assert ops.index("home.turn") >= 3  # Start-up took 12 seconds or more.
+    assert first <= said(system(requests[0])) < first + timedelta(seconds=3)
+    one, two = (step["home"] for step in found["steps"])
+    assert PORCH not in one and two[PORCH]["state"] == "on"
+    fired = datetime.fromisoformat(two["automation.between"]["attributes"]["last_triggered"])
+    assert first + timedelta(seconds=10) <= fired < first + timedelta(seconds=11)
 
 
 @pytest.mark.asyncio
