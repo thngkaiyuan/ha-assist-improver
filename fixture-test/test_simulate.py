@@ -1514,6 +1514,32 @@ async def test_a_question_the_baseline_answers_right_first_time_is_set_aside_and
 
 
 @pytest.mark.asyncio
+async def test_a_filing_held_open_only_by_what_the_baseline_set_aside_is_set_aside_too_and_nothing_is_left_to_remove(
+        hass, monkeypatch, effect_guards):
+    """DETAILS P6.6.2: the relay went off as asked; the household objected, filed it, and noted it. Without the change
+    no reply shows what they objected to, so the objection and the note are set aside, and the filing after them, whose
+    root was met with only those open under it, didn't happen again either. With nothing the household had trouble
+    with happening again, no try reproduces: the conversation can't be tested, and no replay with the change runs."""
+    record = recording()
+    _, client, runtime = await setup(hass, monkeypatch, record)
+    client.blocks = before(record) * 3  # Each of the baseline's tries.
+    _, check = judging_by(lambda turn, reply: False)
+    monkeypatch.setattr(simulate, "check_conduct", check)
+    filed = {**ANALYSIS, "turns": 4, "goals": [
+        {"turn": 1, "summary": "Relay off", "kind": "state", "entity_id": TARGET, "state": "off"},
+        {"turn": 2, "summary": "Not like that", "kind": "conduct", "about": 1, "quote": "Say less", "serves": 1},
+        {"turn": 3, "summary": "Filed it", "kind": "wrap-up", "serves": 1},
+        {"turn": 3, "summary": "Relay back on", "kind": "state", "entity_id": TARGET, "state": "on"},
+        ANALYSIS["goals"][3],
+        {"turn": 5, "summary": "The note", "kind": "conduct", "about": "all", "quote": "Say less", "serves": 1}]}
+    with pytest.raises(simulate.Untestable) as raised:
+        await run(hass, runtime, measures.goals_of(filed))
+    assert str(raised.value) == "Tried 3 times without the change: nothing the household had trouble with happened again."
+    assert raised.value.conversation and len(tries(runtime)) == 3 and not client.blocks and effect_guards == []
+    assert all(r["plan"]["kind"] == "before" for r in runtime.replays.items.values())
+
+
+@pytest.mark.asyncio
 async def test_a_judges_verdict_that_couldnt_be_given_after_a_replay_is_asked_again_alone_without_a_new_replay(
         hass, monkeypatch, effect_guards):
     """DETAILS P6.3.5.1: the judge couldn't answer for the replay with the change, so the test is cut off; asked again,

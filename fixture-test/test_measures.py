@@ -121,6 +121,23 @@ def test_a_wrap_up_is_met_once_its_root_was_met_with_nothing_else_of_the_roots_o
     assert measures.set_aside(before, went, goals) == {"3:2"}
 
 
+def test_as_the_baseline_sets_goals_aside_one_set_aside_holds_no_wrap_up_open_though_in_a_replay_it_still_does():
+    """DETAILS P6.6.2: a goal set aside can't be told either way. The lamp came on and neither the objection nor the
+    note came back without the change, so the filing after them didn't happen again either: wrap_up, which the baseline
+    sets a filing aside by, finds it met. In a replay a goal set aside is still open (judge, needed: P6.4)."""
+    goals = measures.goals_of({"turns": 3, "goals": [state(1, LAMP, "on"), {
+        "turn": 2, "summary": "Not like that", "kind": "conduct", "about": 1, "quote": "Say less", "serves": 1}, {
+        "turn": 3, "summary": "Filed it", "kind": "wrap-up", "serves": 1}, {
+        "turn": 4, "summary": "The note", "kind": "conduct", "about": "all", "quote": "Say less", "serves": 1}]})
+    lit, filed, aside = view({LAMP: "off"}, (LAMP, "off", "on", 1)), goals[2], {"2:1", "4:3"}
+    assert measures.wrap_up(goals, lit, filed, {"2:1": "met"}, aside) == "met"
+    assert measures.wrap_up(goals, lit, filed, {"2:1": "met"}, {"4:3"}) == "met"
+    assert measures.wrap_up(goals, lit, filed, {"2:1": "unmet"}, {"4:3"}) == "unmet"  # Not set aside: it's open.
+    assert measures.wrap_up(goals, view({LAMP: "off"}), filed, {}, aside) == "unmet"  # The root wasn't met.
+    assert measures.judge(goals, lit, [1, 2, 3], {}, aside)["goals"]["3:2"] == "unmet"
+    assert measures.needed(goals, lit, 3, aside)
+
+
 def test_a_replay_says_a_turn_only_while_a_goal_on_it_is_open_and_always_a_roots_and_a_thanks():
     """DETAILS P6.4: a part or repair not reached yet, a step whose goal isn't met yet, an objection (until it's
     judged as the replay goes), a wrap-up while anything of its root is open, a goal set aside; a turn with no goal."""
