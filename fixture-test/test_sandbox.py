@@ -396,17 +396,29 @@ async def test_a_sandbox_installs_nothing_and_never_sets_up_the_supervisors_inte
     assert effect_guards == []
 
 
-def custom_integration(monkeypatch, folder, domain, dependencies, iot_class):
+def custom_integration(monkeypatch, folder, domain, dependencies, iot_class, setup="return True"):
     """A custom integration where Home Assistant's loader finds it (custom_components is a namespace package here),
-    depending on others by its manifest; its setup does nothing."""
+    depending on others by its manifest; its setup does only what setup (its body) says."""
     import json
     (folder / "custom_components" / domain).mkdir(parents=True)
     (folder / "custom_components" / domain / "manifest.json").write_text(json.dumps({
         "domain": domain, "name": domain, "version": "1.0.0", "dependencies": dependencies, "iot_class": iot_class,
         "codeowners": [], "requirements": [], "documentation": "https://example.invalid"}))
     (folder / "custom_components" / domain / "__init__.py").write_text(
-        "async def async_setup(hass, config):\n    return True\n")
+        f"async def async_setup(hass, config):\n    {setup}\n")
     monkeypatch.syspath_prepend(str(folder))
+
+
+def never_runs(monkeypatch):
+    """The network's own setup, stood in: what of it ran."""
+    from homeassistant.components import network
+    ran = []
+
+    async def network_setup(hass, config):
+        ran.append("network")
+        return True
+    monkeypatch.setattr(network, "async_setup", network_setup)
+    return ran
 
 
 @pytest.mark.asyncio
@@ -415,14 +427,8 @@ async def test_what_never_sets_up_in_a_sandbox_is_refused_before_its_setup_runs_
     """An integration the sandbox sets up brings what it depends on, but never the network, discovery, the cloud, the
     recorder or the Supervisor's (DETAILS P11.8): one depending on the network is refused before anything of it is set
     up, so the network's own setup never runs in a sandbox."""
-    from homeassistant.components import network
     custom_integration(monkeypatch, tmp_path, "fixture_finder", ["network"], "calculated")
-    ran = []
-
-    async def network_setup(hass, config):
-        ran.append("network")
-        return True
-    monkeypatch.setattr(network, "async_setup", network_setup)
+    ran = never_runs(monkeypatch)
     sandbox = await Sandbox.start("UTC", RELAY_AND_PORCH)
     try:
         with pytest.raises(RuntimeError, match="network"):
@@ -431,6 +437,56 @@ async def test_what_never_sets_up_in_a_sandbox_is_refused_before_its_setup_runs_
     finally:
         await sandbox.stop()
     assert effect_guards == []
+
+
+@pytest.mark.asyncio
+async def test_what_never_sets_up_in_a_sandbox_and_comes_in_by_an_integrations_own_setup_is_refused_right_after_it(
+        hass, effect_guards, monkeypatch, tmp_path):
+    """What comes in on its own, an integration's setup setting the network up itself, is refused right after that
+    setup (DETAILS P11.8): the sandbox goes no further, to its stand-ins."""
+    from custom_components.assist_improver.standin import STANDIN
+    custom_integration(monkeypatch, tmp_path, "fixture_scanner", [], "calculated",
+                       'from homeassistant.setup import async_setup_component\n'
+                       '    return await async_setup_component(hass, "network", {})')
+    ran = never_runs(monkeypatch)
+    sandbox = await Sandbox.start("UTC", RELAY_AND_PORCH)
+    try:
+        with pytest.raises(RuntimeError, match="network"):
+            await sandbox.run(lambda h: seed(h, integrations=["fixture_scanner"]))
+        assert ran == ["network"] and not sandbox.hass.config_entries.async_entries(STANDIN)
+    finally:
+        await sandbox.stop()
+    assert effect_guards == []
+
+
+def test_every_setup_a_sandbox_starts_goes_through_set_up():
+    """One way in (sandbox.set_up, DETAILS P11.8): no code of the improver's starts a setup but set_up and the setups
+    it's handed (by), whether by Home Assistant's setup or a config entry's add, setup or flow, so none skips its check
+    first."""
+    import ast
+    from pathlib import Path
+
+    def starts(call):
+        func = call.func
+        name = func.id if isinstance(func, ast.Name) else func.attr if isinstance(func, ast.Attribute) else None
+        within = func.value.attr if isinstance(func, ast.Attribute) and isinstance(func.value, ast.Attribute) else None
+        return name == "async_setup_component" or (name, within) in {
+            ("async_add", "config_entries"), ("async_setup", "config_entries"), ("async_init", "flow")}
+
+    outside, handed = [], 0
+    for path in sorted(Path(sandbox_module.__file__).parent.rglob("*.py")):
+        tree = ast.parse(path.read_text())
+        allowed = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.AsyncFunctionDef) and node.name == "set_up" and path.name == "sandbox.py":
+                allowed |= set(ast.walk(node))
+            if isinstance(node, ast.Call) and getattr(node.func, "id", None) == "set_up":
+                for by in (k.value for k in node.keywords if k.arg == "by"):
+                    allowed |= set(ast.walk(by))
+                    handed += 1
+        outside += [f"{path.name}:{n.lineno}" for n in ast.walk(tree)
+                    if isinstance(n, ast.Call) and starts(n) and n not in allowed]
+    assert outside == [] and handed >= 3  # The core entries', the stand-ins' and the assistant's.
 
 
 @pytest.mark.asyncio
