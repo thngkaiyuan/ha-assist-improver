@@ -107,7 +107,8 @@ for base in "$PWD" "$(git rev-parse --path-format=absolute --git-common-dir)/.."
 done
 [ -n "$runner" ] || { echo "haos.sh: no tools/e2e/.venv (tools/e2e/README.md)" >&2; exit 1; }
 status=0
-E2E_KEEP=1 E2E_RUNS_DIR=$runs "$runner" -m pytest tools/e2e -q -p no:cacheprovider -k "not desktop" || status=$?
+E2E_KEEP=1 E2E_RUNS_DIR=$runs "$runner" -m pytest tools/e2e -q -p no:cacheprovider -p pytest_sigterm -k "not desktop" \
+  || status=$?
 "$runner" tools/bench/logcheck.py "Landlock skipped: Function not implemented" "$runs"/*/*/e2e-hass.log || status=1
 echo "== HA OS bench: $((SECONDS - start)) s"
 exit "$status"

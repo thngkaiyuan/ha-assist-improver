@@ -120,9 +120,6 @@ expect.set_options(timeout=EXPECT_TIMEOUT)
 _RUNNING = set()  # Home Assistant processes still running: stopped at exit, whatever happens.
 _NUMBERS = itertools.count(1)  # Each test's config folder, numbered in the order the tests ran.
 _STUCK = []  # On HA OS, why a stop failed: that Home Assistant may still run, so none starts after it.
-# Being stopped (SIGTERM: tools/check.sh stops a suite so) is an interrupt, so the session still stops every Home
-# Assistant it started.
-signal.signal(signal.SIGTERM, signal.default_int_handler)
 
 
 @atexit.register

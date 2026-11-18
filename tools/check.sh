@@ -6,6 +6,8 @@
 # Usage: tools/check.sh [--coverage DIR]. CHECK_LOGS=<folder> keeps the logs (and a failing journey's Home Assistant
 # folder) there; a new temp folder otherwise, kept and printed when something fails. On the bench (tools/bench/run.sh
 # sets BENCH_IMAGE), the offline and graph suites run in Home Assistant's image, and each journey's Home Assistant too.
+# CHECK_BUDGET=<seconds>: once the suites have run that long, those still running are stopped as on Ctrl-C, each with
+# its result so far, so a stuck or slow suite still leaves every suite's line and log (the CI jobs set it).
 # --coverage DIR (an empty folder outside the checkout; not on the bench, whose image has no coverage.py): every
 # process measures the integration's code into DIR, the panel's JavaScript too, and tools/coverage/report.py prints the
 # figure and writes DIR/totals.json.
@@ -70,19 +72,20 @@ pytest_ha() {  # pytest on Home Assistant's Python: the checkout's .venv, or on 
   exec tools/bench/ha.sh run "assist-improver-$1-$$" --cpus 8 --memory 8G -e "BENCH_LANDLOCK=${BENCH_LANDLOCK:-}" \
     -- sh tools/bench/tests.sh "${@:2}"
 }
+ARGS=(-q -p no:cacheprovider -p pytest_sigterm)  # Each suite takes being stopped as an interrupt (pytest_sigterm.py).
 run() {
   case $1 in
-    offline) pytest_ha offline fixture-test -q -p no:cacheprovider -n "$(workers 4)" ;;
+    offline) pytest_ha offline fixture-test "${ARGS[@]}" -n "$(workers 4)" ;;
     panel) PLAYWRIGHT_BROWSERS_PATH=$BROWSERS \
-      exec "$RUNNER" -m pytest tools/ui/test_panel.py -q -p no:cacheprovider -n "$(workers 3)" ;;
-    e2e) E2E_RUNS_DIR=$LOGS/e2e-runs exec "$RUNNER" -m pytest tools/e2e -q -p no:cacheprovider -n "$(workers 8 2)" ;;
-    graph) pytest_ha graph fixture-test/graph --graph -q -p no:cacheprovider -n "$(workers 6)" ;;
+      exec "$RUNNER" -m pytest tools/ui/test_panel.py "${ARGS[@]}" -n "$(workers 3)" ;;
+    e2e) E2E_RUNS_DIR=$LOGS/e2e-runs exec "$RUNNER" -m pytest tools/e2e "${ARGS[@]}" -n "$(workers 8 2)" ;;
+    graph) pytest_ha graph fixture-test/graph --graph "${ARGS[@]}" -n "$(workers 6)" ;;
   esac
 }
 
-# Each suite in a process group of its own (job control). Ctrl-C, or the script being stopped, stops each suite with
-# SIGTERM (an interrupt can arrive ignored: a script started in the background ignores it), which the journeys take
-# as an interrupt, stopping the Home Assistants they started.
+# Each suite in a process group of its own (job control). Ctrl-C, or the script being stopped (by CHECK_BUDGET too),
+# stops each suite with SIGTERM (an interrupt can arrive ignored: a script started in the background ignores it), which
+# every suite takes as an interrupt, the journeys stopping the Home Assistants they started.
 set -m
 pids=()
 trap 'for pid in ${pids[@]+"${pids[@]}"}; do kill -TERM -- "-$pid" 2>/dev/null; done' INT TERM HUP
@@ -90,6 +93,12 @@ for suite in "${SUITES[@]}"; do
   run "$suite" > "$LOGS/$suite.log" 2>&1 &
   pids+=($!)
 done
+watchdog=
+if [ -n "${CHECK_BUDGET:-}" ]; then
+  { sleep "$CHECK_BUDGET" && kill -TERM $$; } 2>/dev/null &
+  watchdog=$!
+  disown  # Not a job of this script's: its stop isn't news.
+fi
 
 failed=()
 for i in "${!SUITES[@]}"; do
@@ -102,7 +111,9 @@ for i in "${!SUITES[@]}"; do
   grep -E '^(FAILED|ERROR) ' "$LOGS/$suite.log" | sed 's/^/   /'
   [ "$status" = 0 ] || failed+=("$suite")
 done
+[ -z "$watchdog" ] || kill -- "-$watchdog" 2>/dev/null  # Before the trap goes, or its stop would end this script.
 trap - INT TERM HUP
+[ -z "$watchdog" ] || [ $((SECONDS - start)) -lt "$CHECK_BUDGET" ] || echo "== over budget: stopped at $CHECK_BUDGET s"
 if [ -n "$COVERAGE" ]; then  # Not measured itself.
   IMPROVER_COVERAGE= "$PY" tools/coverage/report.py "$COVERAGE" 2>&1 || failed+=(coverage)
 fi
