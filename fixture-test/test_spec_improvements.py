@@ -653,7 +653,7 @@ async def test_a_change_home_assistant_stopped_midway_is_undone_once_it_has_star
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("gone", ["closed", "hung"])
-async def test_a_change_whose_panel_went_away_midway_is_finished_by_the_next_panel_opened(home, monkeypatch, gone):
+async def test_a_change_whose_panel_went_away_midway_is_finished_by_the_next_panel_opened(home, gone):
     """The panel saving a change's script went away (its tab closed, or it stopped answering): the change stops where
     it stands, nothing is recorded as decided, and it says it was interrupted. Nothing else applies meanwhile; the
     next panel opened finishes it first, its scripts too, says what that did, and the improvement can be accepted
@@ -662,7 +662,6 @@ async def test_a_change_whose_panel_went_away_midway_is_finished_by_the_next_pan
     from homeassistant.core import CoreState
     hass = home.hass
     hass.set_state(CoreState.running)
-    monkeypatch.setattr(panel.EditorChannel, "TIMEOUT", 0.2)
     improvements = await reviewing(home, improvement(home))
     before = await home_now(home)
     first, editor = Connection(), Editors(hass)
@@ -679,6 +678,8 @@ async def test_a_change_whose_panel_went_away_midway_is_finished_by_the_next_pan
     else:  # Another admin opens the panel meanwhile: its finish waits for the change under way.
         meanwhile = hass.async_create_task(ws(panel.ws_changeset_finish, hass, finishing,
                                               type=f"{DOMAIN}/changeset/finish"))
+        _, answer = hass.data[panel.ANSWERS][asked[0]["key"]]
+        answer.set_exception(TimeoutError())  # Its time to answer runs out (EditorChannel.TIMEOUT), whatever it is.
     assert await deciding == ("error", "interrupted", "It was interrupted before it finished.")
     assert asked[0]["id"] == "close_garage" and len(asked) == 1
     item = improvements.get("imp1")
