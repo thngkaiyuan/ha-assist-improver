@@ -53,9 +53,9 @@ Between two of Kai's own words, the later wins.
   be broad. The proposer and its reviewer look at the household as a whole. (Kai, 2026-10-26)
 - **P0.11 Your review.** The household accepts, asks for a revision, or declines. Decline declines the improvement and
   archives the conversation, nothing more. A question for the household waits here too. (Kai, 2026-10-26)
-- **P0.12 Your household.** Everything decided and out of the pipeline: improved, no fix found, declined, no trouble
-  found, looked smooth, marked as a test, couldn't be read, duplicate (another conversation's improvement covers it),
-  archived (kept for checking other changes against). Any of them can be sent in again, for a new round.
-  (Kai, 2026-10-26)
+- **P0.12 Your household.** Everything decided and out of the pipeline: improved, no fix found, couldn't reproduce,
+  declined, no trouble found, looked smooth, marked as a test, couldn't be read, duplicate (another conversation's
+  improvement covers it), archived (kept for checking other changes against). Any of them can be sent in again, for a
+  new round. (Kai, 2026-10-26)
 - **P0.13 No endless loops.** Every edge that sends a conversation back costs a capped budget or needs a person.
   (Kai, 2026-10-26)
