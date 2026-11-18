@@ -131,3 +131,28 @@ async def test_the_ai_task_the_improver_adds_through_anthropics_own_flow_has_hig
     assert reason is None and entity_id.startswith("ai_task.") and not broken
     assert (data["chat_model"], data["effort"], data["max_tokens"]) == ("claude-opus-5-5", "high", 16000)
     assert assessed["ok"] and assessed["effort"] == "high" and effect_guards == []
+
+
+@pytest.mark.asyncio
+async def test_an_assistant_whose_provider_never_sets_up_in_a_sandbox_is_refused_before_its_setup_runs(
+        hass, provider, effect_guards, monkeypatch):
+    """Home Assistant Cloud's own agent: the cloud never sets up in a sandbox (DETAILS P11.8), so its assistant can't
+    replay there, and neither the cloud's setup nor that of what only it depends on (accounts, webhooks) runs."""
+    from homeassistant import config_entries, setup
+    await household_assistant(hass, "cloud")
+    attempted, original = [], setup.async_setup_component
+
+    async def recorded(hass, domain, config):
+        attempted.append(domain)
+        return await original(hass, domain, config)
+    for module in (setup, config_entries):
+        monkeypatch.setattr(module, "async_setup_component", recorded)
+    record = prepared_recording()
+    home = SandboxHome(hass, record, record["turns"][0], "improver-replay-fixture",
+                       {**recorded_today(record), "assistant": assistant_of(hass, AGENT)})
+    try:
+        with pytest.raises(Exception, match="can't set up cloud"):
+            await home.load_assistant()
+    finally:
+        await home.stop()
+    assert "conversation" in attempted and not {"cloud", "auth", "webhook"} & set(attempted) and effect_guards == []
