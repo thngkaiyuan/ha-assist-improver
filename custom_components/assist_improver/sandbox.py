@@ -54,10 +54,11 @@ SANDBOX_LOG_LIMIT = 200
 GAP_SECONDS = 30
 # Integrations a sandbox sets up for real (DETAILS P11.8), besides homeassistant, intent and llm (start), the storage
 # and YAML helpers the home has (setup_now's), the domains of the stand-ins' entities, and the improver for its
-# Assist tools (seed's filing).
+# Assist tools (seed's filing); each with what Home Assistant sets up with it, its manifest's dependencies.
 CORE = ("conversation", "assist_pipeline", "sun", "script", "automation", "scene")
-# Never set up in a sandbox, whatever the home or Assist's tools name: the Supervisor's integration, whose services act
-# on the host, the cloud, the network and discovery, and the recorder (DETAILS P11.8.3).
+# Never set up in a sandbox, whatever the home or Assist's tools name, or what depends on it (_closed): the
+# Supervisor's integration, whose services act on the host, the cloud, the network and discovery, and the recorder
+# (DETAILS P11.8, P11.8.3).
 NEVER = {"hassio", "cloud", "network", "recorder", "dhcp", "ssdp", "zeroconf", "usb", "bluetooth"}
 # What of hass.config a sandbox takes from today's (Config.async_update's names): never its folders, allowlists or
 # components.
@@ -494,15 +495,16 @@ async def seed(hass, *, person=None, integrations=(), timer_device=None, filing=
     if filing:
         from .llm import REPLAYED_FILING
         hass.data[REPLAYED_FILING] = True
+        await _closed(hass, DOMAIN)
         if not await async_setup_component(hass, DOMAIN, {}):  # Assist asks the platforms of set-up integrations.
             raise RuntimeError("The sandbox could not set up the improver")
-    domains, real = _real(setup)
     for entry_id, entry in (setup.get("entries") or {}).items():  # A core integration's own entry (the sun's).
         if entry["domain"] in CORE and not entry.get("disabled_by"):
             await hass.config_entries.async_add(_entry(entry_id, entry))
     platforms = {p.value for p in Platform}
     wanted = [d for d in ("conversation", "assist_pipeline", "sun", *(setup.get("helpers") or {}), *integrations)
               if d not in hass.config.components]
+    await _closed(hass, *wanted)
     for domain in wanted:
         conf = ((setup.get("helpers") or {}).get(domain) or {}).get("yaml") or {}
         if not await async_setup_component(hass, domain, conf):
@@ -515,6 +517,8 @@ async def seed(hass, *, person=None, integrations=(), timer_device=None, filing=
                                                "entities": {}})["entities"]
         for entity_id in unregistered:
             found.setdefault(entity_id.split(".", 1)[0], []).append(entity_id)
+    await _closed(hass, standin.STANDIN,
+                  *{domain for found in sandbox.groups.values() for domain in found["entities"]})
     for group, found in sandbox.groups.items():
         made = await hass.config_entries.flow.async_init(standin.STANDIN, context={"source": SOURCE_IMPORT},
                                                          data={"group": group, "title": found["title"]})
@@ -532,7 +536,7 @@ async def seed(hass, *, person=None, integrations=(), timer_device=None, filing=
         async_register_timer_handler(hass, timer_device, lambda *args: None)
     _hold_delayed_commands(hass)
     _outside(hass, setup.get("services") or {})
-    await _closed(hass, domains, setup)
+    await _closed(hass, *own)
     # Running, without firing HA's start events: automations are live, but none triggers on a start. They load
     # after the states are seeded, so seeding triggers none either; each restores whether it's on as the home had it.
     hass.set_state(CoreState.running)
@@ -540,6 +544,7 @@ async def seed(hass, *, person=None, integrations=(), timer_device=None, filing=
         if conf and not await async_setup_component(hass, domain, {domain: conf}):
             raise RuntimeError(f"The sandbox could not load the {domain}s")
     await hass.async_block_till_done()
+    await _closed(hass)
     for entity_id in exposure_changes or {}:  # A change to something HA couldn't load can't be tested.
         if (state := hass.states.get(entity_id)) is None or state.state == "unavailable":
             raise RuntimeError(f"{entity_id} could not be loaded")
@@ -562,16 +567,19 @@ def _entry(entry_id, entry):
             version=1, minor_version=1, unique_id=None, subentries_data=None, discovery_keys=MappingProxyType({}))
 
 
-async def _closed(hass, domains, setup):
-    """No integration that reaches devices or services is set up in a sandbox: each loaded one is set up for real
-    here, an entity domain, the stand-in or its web server, or one with no devices or services to reach (no iot_class,
-    or calculated), and never one of NEVER (DETAILS P11.8)."""
-    from homeassistant.loader import async_get_integration
-    allowed = {*domains, *(p.value for p in Platform), standin.STANDIN, "http", "intent", "llm"}
-    for domain in sorted(c for c in hass.config.components if "." not in c):
-        if domain in NEVER or (domain not in allowed and (await async_get_integration(hass, domain)).iot_class
-                               not in (None, "calculated")):
-            raise RuntimeError(f"The sandbox set up {domain}, which reaches devices or services")
+async def _closed(hass, *domains):
+    """None of NEVER is set up in a sandbox (DETAILS P11.8). Before domains are set up: none is among them, nor among
+    what Home Assistant sets up with them (their manifests' dependencies, as its setup resolves them; never their
+    after_dependencies, which it sets up only when something else asks for them), so the setup of none runs. After
+    each step, none was set up after all: an integration's own setup can set up another."""
+    from homeassistant.loader import async_get_integrations
+    found = set(hass.config.components)
+    for domain, integration in (await async_get_integrations(hass, domains)).items():
+        found.add(domain)
+        if not isinstance(integration, Exception):  # One not found fails its setup.
+            found |= await integration.resolve_dependencies() or set()  # None: one missing fails its setup.
+    if never := sorted(found & NEVER):
+        raise RuntimeError(f"The sandbox can't set up {never[0]}, which reaches devices or services")
 
 
 async def load_assistant(hass, entry, agent):
@@ -609,6 +617,7 @@ async def load_assistant(hass, entry, agent):
     if made.entity_id != entity_id:
         raise RuntimeError(f"The sandbox gave the assistant {made.entity_id}, not {entity_id}")
     before = _actions(hass)
+    await _closed(hass, loaded.domain)
     set_up = await hass.config_entries.async_setup(loaded.entry_id)
     await hass.async_block_till_done()
     # What the provider brought with it reaches beyond the home but for the turn's own call: its own actions, and
@@ -629,6 +638,7 @@ async def load_assistant(hass, entry, agent):
         if not built_in and state is not ConfigEntryState.SETUP_RETRY:  # A custom provider that can't load here.
             raise CaseError(why + " | so it can't be replayed")
         raise RuntimeError(why)
+    await _closed(hass)
     STATS["assistants"] += 1
     _timed("assistant", clock.REAL_MONOTONIC() - began)
     return entity_id
