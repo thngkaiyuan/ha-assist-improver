@@ -536,8 +536,10 @@ async def test_writes_are_saved_on_their_own_within_about_a_second(recording_has
         key = only_key(recorder)
         # INSTALL.md: writes are debounced by one second, so not saved at once...
         assert recorder.status()["pending_writes"] == 1
-        assert asked + SAVE_DELAY <= recorder.timer.when() <= loop.time() + SAVE_DELAY
+        due = recorder.timer.when()
+        assert asked + SAVE_DELAY <= due <= loop.time() + SAVE_DELAY
         await next_save()  # ...but saved about a second later, on their own.
+        assert recorder.saved[key] >= due  # Not before.
         await recording_hass.async_block_till_done()
         assert recorder.status()["pending_writes"] == 0
         assert (await stored(recorder, key))["conversation_id"] == "debounced"

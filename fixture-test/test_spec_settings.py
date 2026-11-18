@@ -504,9 +504,11 @@ async def test_a_new_ai_task_is_chosen_as_soon_as_the_provider_adds_its_entity(r
     er.async_get(hass).async_get_or_create("ai_task", "openai_conversation", "uid-later", config_entry=openai,
                                            config_subentry_id="sub-2", suggested_object_id="assist_improver")
     assert len(looked) == 2
+    added = hass.loop.time()
     hass.states.async_set("ai_task.assist_improver", "unknown")
     assert len(looked) == 3
     assert await creating == ("ai_task.assist_improver", None)
+    assert hass.loop.time() - added < ai_setup.APPEAR_TIMEOUT  # Chosen then, not once its wait ran out.
     assert hass.states.get("ai_task.assist_improver") is not None  # Ready to be checked (assess).
 
 
