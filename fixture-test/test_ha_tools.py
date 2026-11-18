@@ -1,7 +1,7 @@
 """Home Assistant's own tools for the proposer and reviewer: Kai approved an "Assist Improver" system user that
 gives the roles that propose and review Home Assistant's read-only admin tools. The bundle holds only the pinned
-read-only tools Home Assistant ships, run for real here; a tool Home Assistant adds or renames fails the first test
-until it's pinned or left out with a reason (ha_tools.py)."""
+read-only tools Home Assistant ships, run for real here; a read-only tool Home Assistant adds or renames fails the
+first test until it's pinned or left out with a reason (ha_tools.py). One that acts needs nothing: it's never kept."""
 
 import importlib
 import logging
@@ -10,9 +10,8 @@ from types import SimpleNamespace
 
 import homeassistant.components
 import pytest
-from awesomeversion import AwesomeVersion
 from homeassistant.auth import auth_manager_from_config
-from homeassistant.const import EVENT_COMPONENT_LOADED, KEY_DATA_LOGGING, __version__ as HA_VERSION
+from homeassistant.const import EVENT_COMPONENT_LOADED, KEY_DATA_LOGGING
 from homeassistant.core import Context
 from homeassistant.helpers import llm
 from homeassistant.setup import async_setup_component
@@ -53,21 +52,18 @@ def context(user_id=None):
 
 @pytest.mark.parametrize("supervisor", [False, True])  # Its log reader is the Supervisor's there, the core's here.
 @pytest.mark.asyncio
-async def test_every_tool_of_home_assistants_api_is_pinned_left_out_or_never(hass, supervisor, caplog):
+async def test_every_read_only_tool_home_assistant_ships_is_pinned_or_left_out_and_only_the_pinned_are_kept(
+        hass, supervisor, caplog):
     if supervisor:  # Its tools load only where Home Assistant's Supervisor library is installed.
         pytest.importorskip("aiohasupervisor")
     user = await home_assistant(hass, supervisor)
     everything = await llm.async_get_api(hass, llm.LLM_API_HOME_ASSISTANT, context(user.id))
     assert not [r for r in caplog.records if r.levelno >= logging.ERROR]  # No platform failed giving its tools.
-    names = {t.name for t in everything.tools}
-    known = ha_tools.PINNED | set(ha_tools.LEFT_OUT) | ha_tools.NEVER
-    absent = {"system_log__get_logs"} if supervisor else supervisors(known)
-    if AwesomeVersion(HA_VERSION) < AwesomeVersion("2026.12.0.dev0"):  # Offered from 2026.12.
-        absent |= {"hassio__get_apps"}
-    assert names == known - absent
+    reads = {t.name for t in everything.tools if ha_tools._built_in(t) and t.annotations.read_only}
+    assert reads <= ha_tools.PINNED | set(ha_tools.LEFT_OUT)  # A new one is pinned, or left out with why.
+    assert {t.name for t in everything.tools if ha_tools.kept(t)} == ha_tools.PINNED & reads  # None that acts.
     assert all(ha_tools.kept(t) for t in everything.tools if t.name in ha_tools.PINNED)  # Each reaches the roles.
-    assert all(not t.annotations.read_only for t in everything.tools if t.name in ha_tools.NEVER)
-    assert not ha_tools.PINNED & (set(ha_tools.LEFT_OUT) | ha_tools.NEVER)
+    assert not ha_tools.PINNED & set(ha_tools.LEFT_OUT)
 
 
 @pytest.mark.asyncio

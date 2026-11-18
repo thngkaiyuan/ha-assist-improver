@@ -27,7 +27,7 @@ LEFT_OUT = {
     "homeassistant__search_actions": "the improver's own lookups are wider (find_actions)",
     "llm__GetDateTime": "the recording has it",
 }
-NEVER = {"homeassistant__call_action", "config__reload_config_entry"}  # They act.
+# A tool Home Assistant doesn't mark read-only acts (its marks default to acting): never kept, never listed.
 
 
 def _built_in(tool):
