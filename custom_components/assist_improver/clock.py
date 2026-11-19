@@ -3,8 +3,8 @@
 worker.BOOT installs it before Home Assistant is imported (install), freezegun-style as Home Assistant's own tests set
 the time: time.time, time.time_ns, time.monotonic, time.monotonic_ns and datetime's now, utcnow and today read the real
 clock moved on by the worker's clock, which starts at the moment BOOT is given (a conversation's, or a test's branch
-turn's), stands there until the first turn or window (Clock.release) and only ever moves forward, so the sandbox's
-Home Assistant, its scheduler and the sun all read one time.
+turn's), stands there until the first turn or window, or an evidence probe's seeding (Clock.release), and only ever
+moves forward, so the sandbox's Home Assistant, its scheduler and the sun all read one time.
 Python's thread waits keep the real clock (threading and queue are imported first), and so does the worker for its own
 timings and limits (REAL_MONOTONIC). Limits: IDs made in C (Home Assistant's ULIDs) and time.localtime() with no
 argument read the real clock.
@@ -35,7 +35,8 @@ SMALLEST = 1e-6  # Seconds: a timer due sooner is waited for.
 class Clock:
     """The real clock moved on: wall-clock reads start at a moment, and the clock only moves forward from there, wall
     clock and monotonic alike. Started at a moment, its wall clock stands there until released (release: the first
-    turn, or a window), however long the sandbox takes to start; monotonic runs on, so what its start waits for comes."""
+    turn, a window, or an evidence probe once seeded), however long the sandbox takes to start; monotonic runs on, so
+    what its start waits for comes."""
 
     def __init__(self, start=None):
         self.offset = 0 if start is None else round(start * 1e9) - REAL_TIME_NS()  # Wall clock, ns.

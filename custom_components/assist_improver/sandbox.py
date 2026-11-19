@@ -951,6 +951,7 @@ async def observe(hass, source, moves=()):
     (standin.StandIn.hold), what another integration here holds takes it through Home Assistant (_reproduce), and a
     state nothing holds is set as it moved."""
     from homeassistant.core import State
+    hass.loop.clock.release()  # A test's first turn, at its branch: the clock started at its time (clock.Clock).
     await advance(hass, source.get("at"))
     _run_at(hass, source)
     sandbox = hass.data[SANDBOX_KEY]

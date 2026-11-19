@@ -361,6 +361,22 @@ async def test_a_slow_start_up_leaves_turn_one_at_its_recorded_time_and_the_home
 
 
 @pytest.mark.asyncio
+async def test_others_moves_at_a_branch_turn_set_off_a_wait_for_the_time_that_passes(hass, real_worker):
+    """A test's sandbox starts at its branch turn's time, where others' moves come first: the porch they switched on
+    sets off the household's automation, which waits for the next even second, then switches the relay off."""
+    waits = {"id": "waits", "alias": "Waits", "triggers": [{"trigger": "state", "entity_id": PORCH, "to": "on"}],
+             "actions": [{"wait_for_trigger": [{"trigger": "time_pattern", "seconds": "/2"}], "timeout": 10,
+                          "continue_on_timeout": False}, {"action": "switch.turn_off", "target": {"entity_id": TARGET}}]}
+    record = conversation()
+    home = await clock_home(hass, record, recorded_today(record, scripts={}, automations=[waits]))
+    try:
+        await home.observe(record["turns"][0]["source"], [{PORCH: {"state": "on", "attributes": {}, "removed": []}}])
+        assert (await home.snapshot())["states"][TARGET] == "off"
+    finally:
+        await home.stop()
+
+
+@pytest.mark.asyncio
 async def test_a_wait_turn_one_set_off_passing_five_minutes_still_leaves_turn_one_in_turn_twos_chat_log(
         hass, monkeypatch, provider_process):
     """Turn 1 sets off the household's automation that waits nine minutes, then switches the porch on; turn 2 came ten
