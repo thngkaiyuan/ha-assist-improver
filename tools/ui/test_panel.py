@@ -2070,7 +2070,7 @@ def test_a_search_after_closing_one_shows_the_list_it_finds(open_panel, where, t
     if then == "search":
         panel.find("#cs-search").click()
         panel.page.keyboard.type("porch")
-        panel.page.wait_for_timeout(500)
+        panel.searched("porch")
     else:
         panel.click("[data-days='1']")
     panel.settle()
@@ -3317,7 +3317,7 @@ REMADE = """(dark) => { document.querySelector("assist-improver-panel").remove()
 
 
 def faded(panel):
-    panel.page.wait_for_timeout(50)  # An animation starts on the frame after its style.
+    panel.still()  # Every fade begun is over, so each has said it started.
     return panel.page.evaluate("window.__fades")
 
 
