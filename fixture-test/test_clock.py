@@ -126,10 +126,12 @@ async def test_triggers_the_sun_templates_and_timers_agree_with_the_virtual_cloc
         assert world["states"][PORCH] == "on"
 
         await tool(home, "intent__HassPauseTimer")
+        [paused] = await left(home)
+        assert running - 1 <= paused <= running  # Whole seconds: the real time it ran on till it paused.
         await home.observe({"at": (START + timedelta(minutes=5)).isoformat()}, [])
-        assert await left(home) == [running]  # Paused: three minutes on, the same time left.
+        assert await left(home) == [paused]  # Paused: three minutes on, the same time left.
         await tool(home, "intent__HassIncreaseTimer", minutes=5)
-        assert await left(home) == [running + 300]
+        assert await left(home) == [paused + 300]
         await tool(home, "intent__HassUnpauseTimer")
         later = max(rising, START + timedelta(minutes=20)) + timedelta(minutes=1)  # Past the timer's end and sunrise.
         await home.observe({"at": later.isoformat()}, [])
