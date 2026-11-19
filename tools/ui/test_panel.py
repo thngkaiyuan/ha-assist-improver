@@ -36,6 +36,7 @@ STATIC = "/assist_improver_static/"  # Where Home Assistant serves www/ (panel.p
 ORIGIN = "http://panel.test"
 PREFER = "assist_pipeline/pipeline/set_preferred"  # Home Assistant's own: the assistant Assist uses by default.
 NOW = datetime(2026, 10, 25, 2, 0, tzinfo=timezone.utc)
+REFRESH = 3000  # ms: how often an open page reads the run again (app.js, poll).
 PHONE = {"width": 402, "height": 874}  # The design target.
 SMALL_PHONE = {"width": 360, "height": 780}
 TABLET = {"width": 900, "height": 1000}  # Near where the settings track switches between its two layouts.
@@ -454,10 +455,11 @@ class Panel:
 
     @contextmanager
     def standing_still(self, *held):
-        """The clock stands still (timers and frames wait with it, until run_for moves it on) from before the panel's
-        refresh timer is set: these replies its load waits for are let go once it stands, so the next refresh is 3 s
-        of the clock away and whatever changes meanwhile changes without one. It runs again at the end, whatever
-        happened (the panel's teardown waits for a frame)."""
+        """The clock stands still (timers and frames wait with it, until run_for moves it on): the refresh due comes
+        within REFRESH of it, whatever the host's speed. These held replies, which the panel's load waits for, are let
+        go once it stands, so the refresh timer is set with it standing: the next refresh is a whole REFRESH of the
+        clock away, and whatever changes sooner changes without one. It runs again at the end, whatever happened (the
+        panel's teardown waits for a frame)."""
         self.page.clock.pause_at(NOW)
         try:
             for kind in held:
@@ -526,7 +528,10 @@ class Panel:
     def release(self, kind, settle=True):
         """The held reply let go, and what it brings drawn (not settle: only answered, as while the clock stands still)."""
         self.page.evaluate("(t) => window.__release(t)", f"assist_improver/{kind}")
-        self.settle() if settle else self.answered()
+        if settle:
+            self.settle()
+        else:
+            self.answered()
 
     def click(self, css):
         self.find(css).first.click()
@@ -1307,10 +1312,12 @@ def test_a_run_in_progress_can_be_cancelled(open_panel):
 
 def test_a_run_in_progress_refreshes_itself_and_shows_what_it_found(open_panel):
     panel = open_panel(replies(run=status(run("running", stage="write", progress={"total": 1, "done": 0}))))
-    panel.answer("run", status(run(progress={"new_improvements": 1})))
-    panel.answer("improvements", {"improvements": PENDING[:1]})
-    expect(panel.find("h1")).to_have_text("1 improvement to review", timeout=8000)  # Refreshed every few seconds.
-    expect(panel.find(".run")).to_have_count(0)
+    with panel.standing_still():
+        panel.answer("run", status(run(progress={"new_improvements": 1})))
+        panel.answer("improvements", {"improvements": PENDING[:1]})
+        panel.page.clock.run_for(REFRESH)
+        expect(panel.find("h1")).to_have_text("1 improvement to review")  # Refreshed every few seconds.
+        expect(panel.find(".run")).to_have_count(0)
 
 
 @pytest.mark.parametrize("before", [None, run()], ids=["no-run-yet", "after-a-run"])
@@ -1320,10 +1327,12 @@ def test_an_open_home_page_notices_a_run_that_starts_after_it_loaded(open_panel,
     (DETAILS P5.9.2)."""
     panel = open_panel(replies(run=status(before)))
     expect(panel.find("h1")).to_have_count(0)
-    panel.answer("run", status({**run(progress={"new_improvements": 1}, trigger="filed"), "id": "r2"}))
-    panel.answer("improvements", {"improvements": PENDING[:1]})
-    expect(panel.find("h1")).to_have_text("1 improvement to review", timeout=8000)
-    expect(panel.find(".cs-last")).to_have_text("Last run 5 min ago · 1 new improvement")
+    with panel.standing_still():
+        panel.answer("run", status({**run(progress={"new_improvements": 1}, trigger="filed"), "id": "r2"}))
+        panel.answer("improvements", {"improvements": PENDING[:1]})
+        panel.page.clock.run_for(REFRESH)
+        expect(panel.find("h1")).to_have_text("1 improvement to review")
+        expect(panel.find(".cs-last")).to_have_text("Last run 5 min ago · 1 new improvement")
 
 
 def test_a_run_that_ends_before_a_send_reads_it_is_still_followed_to_where_it_settles(open_panel):
@@ -1344,8 +1353,11 @@ def test_a_run_that_ends_before_a_send_reads_it_is_still_followed_to_where_it_se
     panel.change_at("run", {"run": status({**run(trigger="filed", minutes=0), "id": "r2"}),
                             "conversations": listing(CHATS[1:], hidden=1, stands=[fine]),
                             "conversations?archived": listing([fine], hidden=1)})
-    panel.click("#cs-send")
-    expect(chip).to_have_text("No trouble found", timeout=8000)  # At its next refresh.
+    with panel.standing_still():
+        panel.find("#cs-send").click()
+        panel.answered()
+        panel.page.clock.run_for(REFRESH)
+        expect(chip).to_have_text("No trouble found")  # At its next refresh.
 
 
 def test_settings_follow_a_run_that_ended_before_a_change_there_read_it(open_panel):
@@ -1356,8 +1368,11 @@ def test_settings_follow_a_run_that_ended_before_a_change_there_read_it(open_pan
     expect(panel.find(".history .h-empty")).to_be_visible()
     panel.change_at("run", {"run": status(run(progress={"new_improvements": 1})),
                             "log": {"events": [event_run(progress={"new_improvements": 1})]}})
-    panel.click("[data-gate='propose']")
-    expect(panel.find(".h-row .h-text > div").first).to_have_text("Run finished", timeout=8000)
+    with panel.standing_still():
+        panel.find("[data-gate='propose']").click()
+        panel.answered()
+        panel.page.clock.run_for(REFRESH)
+        expect(panel.find(".h-row .h-text > div").first).to_have_text("Run finished")
 
 
 def test_a_run_started_here_that_ends_as_the_page_reads_it_shows_what_it_found(open_panel):
@@ -1369,8 +1384,11 @@ def test_a_run_started_here_that_ends_as_the_page_reads_it_shows_what_it_found(o
     panel.click("#cs-run")
     panel.change_at("run", {"run": status({**run(progress={"new_improvements": 1}, minutes=0), "id": "r2"}),
                             "improvements": {"improvements": PENDING[:1]}})
-    panel.click("#start-run")
-    expect(panel.find("h1")).to_have_text("1 improvement to review", timeout=8000)
+    with panel.standing_still():
+        panel.find("#start-run").click()
+        panel.answered()
+        panel.page.clock.run_for(REFRESH)
+        expect(panel.find("h1")).to_have_text("1 improvement to review")
 
 
 def test_a_refresh_redraws_only_the_runs_progress(open_panel):
@@ -1380,8 +1398,10 @@ def test_a_refresh_redraws_only_the_runs_progress(open_panel):
                                run=status(run("running", stage="analyze", progress=progress(3)))))
     panel.page.evaluate("""() => { window.__kept = [...document.querySelector('assist-improver-panel').shadowRoot
         .querySelectorAll('.toolbar, .run .sub, .stepper .step, h1, .item')]; }""")
-    panel.answer("run", status(run("running", stage="analyze", progress=progress(7))))
-    expect(panel.find(".run .sub")).to_contain_text("Conversation 8 of 10, at Analyze.", timeout=5000)
+    with panel.standing_still():
+        panel.answer("run", status(run("running", stage="analyze", progress=progress(7))))
+        panel.page.clock.run_for(REFRESH)
+        expect(panel.find(".run .sub")).to_contain_text("Conversation 8 of 10, at Analyze.")
     assert panel.page.evaluate("window.__kept.length > 7 && window.__kept.every((el) => el.isConnected)")  # Patched, not rebuilt.
 
 
@@ -1393,8 +1413,10 @@ def test_a_refresh_keeps_focus_its_bubble_and_the_scroll(open_panel):
     expect(panel.find("#tip")).to_have_text("Stop this stage.")
     panel.page.evaluate("() => document.scrollingElement.scrollTo(0, 120)")
     runs = len(panel.calls("run"))
-    panel.answer("run", status(run("running", stage="propose")))
-    expect(panel.find(".stn[data-step='propose']")).to_have_class(re.compile(r"\bnow\b"), timeout=5000)
+    with panel.standing_still():
+        panel.answer("run", status(run("running", stage="propose")))
+        panel.page.clock.run_for(REFRESH)
+        expect(panel.find(".stn[data-step='propose']")).to_have_class(re.compile(r"\bnow\b"))
     assert len(panel.calls("run")) > runs
     expect(gate).to_be_focused()
     expect(panel.find("#tip")).to_be_visible()
@@ -1405,8 +1427,10 @@ def test_a_refresh_leaves_an_open_dialog_as_it_was(open_panel):
     panel = open_settings(open_panel, run=status(run("running", stage="analyze")))
     panel.click("#uninstall")
     panel.find(".u-foot .u-cancel").focus()
-    panel.answer("run", status(run("running", stage="propose")))
-    expect(panel.find(".stn[data-step='test']")).to_have_class(re.compile(r"\bnow\b"), timeout=5000)
+    with panel.standing_still():
+        panel.answer("run", status(run("running", stage="propose")))
+        panel.page.clock.run_for(REFRESH)
+        expect(panel.find(".stn[data-step='test']")).to_have_class(re.compile(r"\bnow\b"))
     expect(panel.find(".modal[role='dialog']")).to_have_attribute("aria-label", "Uninstall Assist Improver?")
     expect(panel.find(".u-foot .u-cancel")).to_be_focused()
 
@@ -2092,14 +2116,17 @@ def test_what_a_run_brings_above_the_list_leaves_what_is_read_where_it_is(open_p
         row.evaluate("(el) => el.scrollIntoView({block: 'center'})")
     panel.settle()
     y = row.bounding_box()["y"]
-    if change == "a-run-ends-with-one-more-to-review":
-        panel.answer("run", status({**run(progress={"new_improvements": 1}), "id": "r2"}))
-        panel.answer("improvements", {"improvements": PENDING})
-        expect(panel.find("h1")).to_have_text("2 improvements to review", timeout=8000)  # Refreshed on its own.
-        expect(panel.find(".run")).to_have_count(0)
-    else:
-        panel.answer("run", status(going))
-        expect(panel.find(".run")).to_have_count(1, timeout=8000)
+    with panel.standing_still():
+        if change == "a-run-ends-with-one-more-to-review":
+            panel.answer("run", status({**run(progress={"new_improvements": 1}), "id": "r2"}))
+            panel.answer("improvements", {"improvements": PENDING})
+            panel.page.clock.run_for(REFRESH)
+            expect(panel.find("h1")).to_have_text("2 improvements to review")  # Refreshed on its own.
+            expect(panel.find(".run")).to_have_count(0)
+        else:
+            panel.answer("run", status(going))
+            panel.page.clock.run_for(REFRESH)
+            expect(panel.find(".run")).to_have_count(1)
     panel.settle()
     if change == "a-run-starts-at-the-top":
         assert panel.page.evaluate(TOP) == 0 and row.bounding_box()["y"] > y  # Its progress shows, on top.
@@ -2119,9 +2146,11 @@ def test_a_run_ending_with_a_menu_open_leaves_what_is_read_where_it_is(open_pane
     panel.settle()
     panel.click({"status": "#cs-status", "order": "#cs-sort"}[menu])
     y = row.bounding_box()["y"]
-    panel.answer("run", status({**run(progress={"new_improvements": 1}), "id": "r2"}))
-    panel.answer("improvements", {"improvements": PENDING})
-    expect(panel.find(".run")).to_have_count(0, timeout=8000)
+    with panel.standing_still():
+        panel.answer("run", status({**run(progress={"new_improvements": 1}), "id": "r2"}))
+        panel.answer("improvements", {"improvements": PENDING})
+        panel.page.clock.run_for(REFRESH)
+        expect(panel.find(".run")).to_have_count(0)
     panel.settle()
     assert abs(row.bounding_box()["y"] - y) < 1, (row.bounding_box(), y)
 
@@ -2137,9 +2166,11 @@ def test_a_run_ending_while_earlier_improvements_are_read_leaves_them_where_they
     panel.settle()
     row = panel.find("[data-id='e6']")
     y = row.bounding_box()["y"]
-    panel.answer("run", status({**run(progress={"new_improvements": 1}), "id": "r2"}))
-    panel.answer("improvements", {"improvements": PENDING + early})
-    expect(panel.find(".run")).to_have_count(0, timeout=8000)
+    with panel.standing_still():
+        panel.answer("run", status({**run(progress={"new_improvements": 1}), "id": "r2"}))
+        panel.answer("improvements", {"improvements": PENDING + early})
+        panel.page.clock.run_for(REFRESH)
+        expect(panel.find(".run")).to_have_count(0)
     panel.settle()
     assert abs(row.bounding_box()["y"] - y) < 1, (row.bounding_box(), y)
 
@@ -3375,11 +3406,13 @@ def test_a_run_finishing_moves_nothing_on_screen_into_a_fade(open_panel):
     panel.still()  # Their fades done.
     panel.page.evaluate(FADES)
     # The run ends, and the list read again no longer has the one above the opened one: it moves up a row.
-    panel.answer("conversations", listing([c for c in CHATS if c["id"] != "c1"]))
-    panel.answer("run", status(run(progress={"new_improvements": 1})))
-    expect(panel.find(".run")).to_have_count(0, timeout=8000)  # Refreshed every few seconds.
-    expect(panel.find("[data-cs='c1']")).to_have_count(0)
-    expect(panel.find(".cs-read .cs-turn").first).to_be_visible()
+    with panel.standing_still():
+        panel.answer("conversations", listing([c for c in CHATS if c["id"] != "c1"]))
+        panel.answer("run", status(run(progress={"new_improvements": 1})))
+        panel.page.clock.run_for(REFRESH)
+        expect(panel.find(".run")).to_have_count(0)  # Refreshed every few seconds.
+        expect(panel.find("[data-cs='c1']")).to_have_count(0)
+        expect(panel.find(".cs-read .cs-turn").first).to_be_visible()
     assert faded(panel) == []
 
 
@@ -4511,16 +4544,18 @@ def test_uninstalls_copy_button_sits_in_the_boxs_corner_clear_of_the_lines_as_th
 def test_copy_puts_the_lines_on_the_clipboard_and_shows_a_check_mark_for_a_moment(open_panel):
     panel = open_uninstall(open_panel)
     panel.page.evaluate(STUB_CLIPBOARD)
-    panel.host.get_by_role("button", name="Copy", exact=True).click()
-    copied = panel.host.get_by_role("button", name="Copied", exact=True)
-    expect(copied).to_have_attribute("data-tip", "Copied")
-    expect(copied.locator("path")).to_have_attribute("d", CHECK)
-    assert panel.page.evaluate("window.__copied") == [LEARNED_TEXT]  # The exact text.
-    assert panel.contrast("#u-copy") >= 3
-    expect(panel.find("#u-confirm")).to_be_disabled()  # Copying isn't ticking.
-    again = panel.host.get_by_role("button", name="Copy", exact=True)
-    expect(again).to_have_attribute("data-tip", "Copy", timeout=4000)  # Back after about two seconds.
-    expect(again.locator("path")).not_to_have_attribute("d", CHECK)
+    with panel.standing_still():
+        panel.host.get_by_role("button", name="Copy", exact=True).click()
+        copied = panel.host.get_by_role("button", name="Copied", exact=True)
+        expect(copied).to_have_attribute("data-tip", "Copied")
+        expect(copied.locator("path")).to_have_attribute("d", CHECK)
+        assert panel.page.evaluate("window.__copied") == [LEARNED_TEXT]  # The exact text.
+        assert panel.contrast("#u-copy") >= 3
+        expect(panel.find("#u-confirm")).to_be_disabled()  # Copying isn't ticking.
+        panel.page.clock.run_for(2000)
+        again = panel.host.get_by_role("button", name="Copy", exact=True)
+        expect(again).to_have_attribute("data-tip", "Copy")  # Back after about two seconds.
+        expect(again.locator("path")).not_to_have_attribute("d", CHECK)
 
 
 def test_copying_by_keyboard_the_tip_says_copied(open_panel):
