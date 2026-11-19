@@ -8,7 +8,7 @@ export const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({"&": "&amp
 // leaves its section as it was (app.js).
 export const note = (name, words) => `data-tip="${esc(words)}" tabindex="0" role="note"
   aria-label="${esc(`${name}: ${words}`)}"`;
-export const explained = (cls, name, words) => `<span class="${cls}" ${note(name, words)}>${esc(name)}</span>`;
+export const explained = (cls, name, words) => `<span class="${esc(cls)}" ${note(name, words)}>${esc(name)}</span>`;
 
 // "1 fix", "2 fixes", "3 conversations".
 export const plural = (n, word) => `${n} ${word}${n === 1 ? "" : /(?:s|x|z|ch|sh)$/.test(word) ? "es" : "s"}`;

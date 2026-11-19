@@ -310,8 +310,8 @@ function badge(row, beside) {
   const text = row.held ? fill(C.heldTip, {why: row.held.why}) : tips[row.status];
   const name = C.status[row.status] || row.status;
   if (row.status === "review" && row.review || cannot(row) || !!text !== beside) return "";
-  return text ? explained(`chip cs-${row.status} cs-noted`, name, text)
-    : `<span class="chip cs-${row.status}">${esc(name)}</span>`;
+  return text ? explained(`chip cs-${row.status} cs-noted`, name, text)  // explained escapes the class.
+    : `<span class="chip cs-${esc(row.status)}">${esc(name)}</span>`;
 }
 
 // One Home Assistant answered itself (DETAILS P9.9.9): what to do, said in full in its bubble, which a tap or focus
@@ -384,7 +384,7 @@ function dots(cv, row, shown) {
       : shown.archivable ? `<button role="menuitem" id="cs-archive" data-id="${id}" ${busy}>${svg("archive")}${esc(P.archive)}</button>` : ""}
       <button role="menuitem" class="danger" id="cs-delete-ask" data-id="${id}" ${busy}>${svg("trash")}${esc(P.delete)}</button></div>` : "";
   return `<span class="cs-actions"><button class="cs-dots" id="cs-actions" aria-haspopup="menu" aria-expanded="${open}"
-      aria-label="${esc(P.more)}" title="${esc(P.more)}">${svg("dots")}</button>${menu}</span>`;
+      aria-label="${esc(P.more)}" data-tip="${esc(P.more)}">${svg("dots")}</button>${menu}</span>`;
 }
 
 function confirm(cv, row, where, error = "") {
@@ -399,7 +399,7 @@ function confirm(cv, row, where, error = "") {
 
 function rowHtml(p, cv, row) {
   const C = TEXT.conversations, opened = cv.opened === row.id, picked = cv.picked.has(row.id);
-  const pick = `<label class="cs-pick" title="${esc(C.pick)}"><input type="checkbox" data-cs-pick="${esc(row.id)}" ${picked ? "checked" : ""}
+  const pick = `<label class="cs-pick" data-tip="${esc(C.pick)}"><input type="checkbox" data-cs-pick="${esc(row.id)}" ${picked ? "checked" : ""}
         aria-label="${esc(fill(C.pickOne, {said: row.said || C.nothing}))}"></label>`;
   const failed = row.failed ? ` · <span class="cs-failed">${esc(plural(row.failed, C.failedStep))}</span>` : "";
   // Keyed, so a row moves whole when the list changes above it (morph): an opened conversation never fades in again.
@@ -454,7 +454,7 @@ export function section(p) {
       ${last ? `<p class="cs-last">${esc(last)}</p>` : ""}
       ${nothingYet ? "" : `<div class="cs-controls"><div class="cs-bar"><span class="cs-find"><input type="search" id="cs-search" placeholder="${esc(C.search)}"
         aria-label="${esc(C.search)}" value="${esc(cv.query)}">${cv.query ? `<button class="cs-clear-search" id="cs-search-clear"
-        type="button" aria-label="${esc(C.clearSearch)}" title="${esc(C.clearSearch)}">&#10005;</button>` : ""}</span>
+        type="button" aria-label="${esc(C.clearSearch)}" data-tip="${esc(C.clearSearch)}">&#10005;</button>` : ""}</span>
         <span class="cs-filters">${seg(DAYS, cv.days, "days")}${statusFilter(cv)}</span>${sortMenu(cv)}</div>${
           selectAllBox(cv, "cs-all", false)}</div>`}${rows}${archived}</section>`;
 }

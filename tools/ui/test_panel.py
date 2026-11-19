@@ -5013,8 +5013,13 @@ def test_a_conversation_and_its_failed_steps_read_clearly_in_light_and_dark(open
 
 
 def test_a_failed_step_is_escaped(open_panel):
-    panel = open_panel(replies(conversation={**chat(), "turns": [{"you": XSS, "assist": XSS,
-                                                                  "failed": [{"step": XSS, "error": XSS}]}]}))
+    """And where one stands, held (its chip beside the row's button, its why in its bubble) or not (in the button)."""
+    rows = [{**CHATS[0], "status": XSS, "held": {"cause": "blocked", "why": XSS}}, {**CHATS[1], "status": XSS}]
+    panel = open_panel(replies(conversations=listing(rows), conversation={**chat(), "turns": [
+        {"you": XSS, "assist": XSS, "failed": [{"step": XSS, "error": XSS}]}]}))
+    expect(panel.find(".cs-line .chip")).to_have_text([XSS, XSS])
+    expect(panel.find(".cs-line > .chip").first).to_have_attribute("data-tip", f"Held: {XSS}")
+    assert_escaped(panel)
     panel.click("[data-cs='c1']")
     expect(panel.find(".cs-step-what")).to_contain_text(XSS)
     expect(panel.find(".cs-step-error")).to_have_text(XSS)
@@ -6136,9 +6141,9 @@ def assert_bubble(panel, words, width):
 
 
 def test_a_status_chip_with_words_shows_its_bubble_at_a_tap_on_a_phone_and_opens_nothing(open_panel):
-    """Kai, approving the fix: "these chips would show their bubble on a tap, the way the 'Can't improve' chip already
-    does". On a touch phone, a tap on each chip with words (every status's, held's) shows its bubble with them, in the
-    list and below Show archived, and opens nothing; screen readers read its name and words. A tap on the row's words,
+    """DETAILS P17.5.1 (Kai, 2026-11-19: "approved the fix"): on a touch phone, a tap on each chip with words (every
+    status's, held's) shows its bubble with them, as Can't improve's does, in the list and below Show archived, and
+    opens nothing; screen readers read its name and words. A tap on the row's words,
     or beside its chip, opens the row as before, and so does one on a chip with nothing more to say (New, Archived)."""
     rows, away = explaining_rows()
     panel = open_panel(replies(conversations=listing(rows, hidden=len(away))), mobile=True)
@@ -6169,6 +6174,65 @@ def test_a_status_chip_with_words_shows_its_bubble_at_a_tap_on_a_phone_and_opens
     panel.page.touchscreen.tap(beside["x"] + beside["width"] / 2, line["y"] + 4)
     panel.settle()
     expect(panel.find(".cs-row.open [data-cs='e0']")).to_have_count(1)
+
+
+def swipe(panel, el, dy=150):
+    """A thumb put on el, then moved up dy, through the browser's own touch input: the page scrolls, as on a phone."""
+    b, cdp = el.bounding_box(), panel.page.context.new_cdp_session(panel.page)
+    x, y = b["x"] + b["width"] / 2, b["y"] + b["height"] / 2
+    for kind, d in [("touchStart", 0)] + [("touchMove", dy * i / 8) for i in range(1, 9)] + [("touchEnd", None)]:
+        cdp.send("Input.dispatchTouchEvent", {"type": kind, "touchPoints": [] if d is None else [{"x": x, "y": y - d}]})
+
+
+def test_a_swipe_that_starts_on_a_chip_with_words_takes_its_bubble_away_at_once(open_panel):
+    """A thumb on a chip that scrolls the page instead leaves no bubble behind where the chip was: in the list, and
+    on a review."""
+    rows = [{**r, "id": f"{r['id']}-{n}"} for n in range(3) for r in explaining_rows()[0]]  # A page to scroll.
+    for panel, css in ((open_panel(replies(conversations=listing(rows)), mobile=True), ".cs-line > .chip"),
+                       (explaining_review(open_panel, mobile=True), ".tests summary .result.more-words")):
+        chip, opened = panel.find(css).first, panel.find(".cs-row.open, details[open]")
+        was = opened.count()
+        with panel.standing_still():
+            swipe(panel, chip)
+            expect(panel.find("#tip")).to_be_hidden()  # At once: the clock stands still, so not by a touch's 2.5 s.
+        panel.page.wait_for_function("scrollY > 50")  # It scrolled.
+        expect(panel.find("#tip")).to_be_hidden()
+        expect(opened).to_have_count(was)  # And opened or closed nothing.
+
+
+@pytest.mark.parametrize("phone", [False, True], ids=["desktop", "phone"])
+def test_a_rows_checkbox_clear_search_and_more_actions_say_so_in_a_bubble_that_steps_aside_as_they_act(open_panel,
+                                                                                                        phone):
+    """DETAILS P17.18.6, P17.18.4, P17.19.5: each one's words show in the panel's bubble, never a native tooltip: on a
+    desktop on hover and at focus; screen readers read its name (the checkbox's, which one). A click, or a tap, acts,
+    its bubble aside."""
+    panel = open_panel(replies(conversations=listing(), conversation=chat(id="c1"), run=status(run(), **NEW)),
+                       size=PHONE if phone else DESKTOP, mobile=phone)
+
+    def acts(css, name, words, done):
+        el = panel.find(css)
+        expect(el).to_have_accessible_name(name)
+        assert el.evaluate("(el) => !el.closest('[title]')")  # No native tooltip, on it or around it.
+        if not phone:
+            el.hover()
+            assert_bubble(panel, words, DESKTOP["width"])
+            panel.page.mouse.move(0, 0)
+            expect(panel.find("#tip")).to_be_hidden()
+            el.focus()
+            assert_bubble(panel, words, DESKTOP["width"])
+        el.tap() if phone else el.click()
+        done()
+        assert panel.find("#tip").is_hidden()  # Aside as it acted (not by a touch's 2.5 s).
+
+    acts("[data-cs-pick='c1']", "Select “Turn on the porch light.”", "Select",
+         lambda: expect(panel.find("[data-cs-pick='c1']")).to_be_checked())
+    panel.find("#cs-search").fill("porch")
+    panel.searched("porch")
+    acts("#cs-search-clear", "Clear search", "Clear search", lambda: expect(panel.find("#cs-search")).to_have_value(""))
+    panel.settle()
+    panel.find("[data-cs='c1']").tap() if phone else panel.click("[data-cs='c1']")
+    panel.settle()
+    acts("#cs-actions", "More actions", "More actions", lambda: expect(panel.find(".cs-menu")).to_have_count(1))
 
 
 def test_a_status_chip_with_words_shows_its_bubble_on_hover_and_on_focus_on_a_desktop(open_panel):

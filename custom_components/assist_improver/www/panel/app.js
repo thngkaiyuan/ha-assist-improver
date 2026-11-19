@@ -107,6 +107,10 @@ export class PanelApp {
       this.root.getElementById("tip").hidden = true;
       this.tipMuted = {text: ev.target?.closest?.("[data-tip]")?.dataset.tip, until: Date.now() + 1500};
     });
+    this.root.addEventListener("pointercancel", () => {  // A touch that turned into a scroll: its bubble goes at once.
+      clearTimeout(this.tipTimer);
+      this.root.getElementById("tip").hidden = true;
+    });
     this.onLocation = () => this.load();
     this.onKey = (ev) => {
       // The conversations' Status and order menus, an opened one's ⋮, and Delete's question (focus back to its ⋮).
