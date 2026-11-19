@@ -20,6 +20,7 @@ reply is synthetic; replies follow the shapes panel.py, settings.py and pipeline
 import itertools
 import os
 import re
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import urlparse
@@ -364,7 +365,29 @@ STUB = """(replies) => {
       return JSON.parse(JSON.stringify(reply));
     } finally { window.__inflight--; }
   };
+  // The panel's smooth scroll (scrollBy, as it brings what was opened into view): where it's going, until a scroll ends
+  // there (scrollend; an instant one just before it ends first, short of there). One with nowhere to go moves nothing,
+  // and is never waited for (Panel.still).
+  window.__smooth = null;
+  const scrollBy = Element.prototype.scrollBy;
+  const bottom = (el) => el.scrollHeight - el.clientHeight;
+  Element.prototype.scrollBy = function (options, ...rest) {
+    if (options && options.behavior === "smooth") {
+      const to = Math.max(0, Math.min(bottom(this), this.scrollTop + (options.top || 0)));
+      window.__smooth = Math.abs(to - this.scrollTop) >= 1 ? {el: this, to} : null;
+    }
+    return scrollBy.call(this, options, ...rest);
+  };
+  document.addEventListener("scrollend", () => {
+    const smooth = window.__smooth;  // At its end, or where the page now ends, if it got shorter on the way.
+    if (smooth && Math.abs(smooth.el.scrollTop - Math.min(smooth.to, bottom(smooth.el))) < 1) window.__smooth = null;
+  }, true);
 }"""
+# Nothing in the panel moves any more but what never stops (a spinner, a pulse): its smooth scroll at rest, and every
+# fade and transition over, still so at a frame (polled at each: the browser has sent what it had to say of them then).
+STILL = """() => { const still = window.__smooth === null && document.querySelector("assist-improver-panel").shadowRoot
+  .getAnimations().every((a) => a.playState === "finished" || a.effect.getComputedTiming().iterations === Infinity);
+  const was = window.__still; window.__still = still; return still && was; }"""
 MOUNT = """(dark) => {
   const el = document.createElement("assist-improver-panel");
   document.body.appendChild(el);
@@ -411,8 +434,37 @@ class Panel:
     def settle(self):
         """Wait until no reply is outstanding and the panel has drawn (and laid out) what came back."""
         for _ in range(2):
-            self.page.wait_for_function("window.__inflight === 0")
+            self.answered()
             self.page.evaluate("() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)))")
+
+    def answered(self):
+        """Wait until no reply is outstanding (and nothing more: while the clock stands still, so do frames)."""
+        self.page.wait_for_function("window.__inflight === 0")
+
+    def still(self):
+        """Wait until nothing in the panel moves any more (STILL): a smooth scroll, a fade."""
+        self.page.evaluate("window.__still = false")
+        self.page.wait_for_function(STILL)
+
+    def searched(self, words):
+        """Wait until the search for these words, asked once typing stops (conversations.js), is answered and drawn."""
+        self.page.wait_for_function("(q) => window.__calls.some((c) => c.type === 'assist_improver/conversations' "
+                                    "&& c.query === q)", arg=words)
+        self.settle()
+
+    @contextmanager
+    def standing_still(self, *held):
+        """The clock stands still (timers and frames wait with it, until run_for moves it on) from before the panel's
+        refresh timer is set: these replies its load waits for are let go once it stands, so the next refresh is 3 s
+        of the clock away and whatever changes meanwhile changes without one. It runs again at the end, whatever
+        happened (the panel's teardown waits for a frame)."""
+        self.page.clock.pause_at(NOW)
+        try:
+            for kind in held:
+                self.release(kind, settle=False)
+            yield
+        finally:
+            self.page.clock.resume()
 
     def find(self, css):
         return self.page.locator(f"assist-improver-panel {css}")
@@ -471,9 +523,10 @@ class Panel:
     def hold(self, kind):
         self.page.evaluate("(t) => window.__hold(t)", f"assist_improver/{kind}")
 
-    def release(self, kind):
+    def release(self, kind, settle=True):
+        """The held reply let go, and what it brings drawn (not settle: only answered, as while the clock stands still)."""
         self.page.evaluate("(t) => window.__release(t)", f"assist_improver/{kind}")
-        self.settle()
+        self.settle() if settle else self.answered()
 
     def click(self, css):
         self.find(css).first.click()
@@ -805,7 +858,7 @@ def test_search_filters_and_select_all_stay_on_top_while_the_list_scrolls(open_p
                                        "assist": "Which porch light do you mean? There are several. " * 3} for n in range(12)]}
     panel = open_panel(replies(conversations=listing(many), conversation=long, run=status(run(), **NEW)), size=size)
     panel.click("[data-cs='m0']")
-    panel.page.wait_for_timeout(600)  # The smooth scroll to it.
+    panel.still()  # The smooth scroll to it.
     panel.page.evaluate("() => document.scrollingElement.scrollBy(0, 600)")
     panel.settle()
     controls, send, footer = (panel.find(css).bounding_box() for css in (".cs-controls", ".cs-send", ".cs-footer"))
@@ -928,7 +981,7 @@ def test_delete_asks_in_the_send_rows_place_where_the_more_actions_were_tapped(o
     panel = open_panel(replies(conversations=listing(MANY), conversation={**chat(id="m3"), "turns": LONG_TALK},
                        run=status(run(), **NEW)), size=size)
     panel.click("[data-cs='m3']")
-    panel.page.wait_for_timeout(700)
+    panel.still()
     panel.find("#cs-note").fill("The front one, always")
     row = box(panel, ".cs-send")
     panel.click("#cs-actions")
@@ -1158,8 +1211,7 @@ def test_the_selection_lasts_through_a_search_and_the_day_filter(open_panel):
     panel.click("[data-cs-pick='c1']")
     panel.answer("conversations", listing([CHATS[1]]))
     panel.find("#cs-search").fill("garage")
-    panel.page.wait_for_timeout(500)
-    panel.settle()
+    panel.searched("garage")
     expect(panel.find(".cs-row")).to_have_count(1)
     expect(panel.find("#cs-many-ask")).to_have_text("Delete (1)")  # c1, out of sight, is still selected.
     panel.click("[data-cs-pick='c2']")
@@ -1239,15 +1291,17 @@ def test_a_run_in_progress_sits_above_the_reviews_without_a_second_run_button(op
 
 
 def test_a_run_in_progress_can_be_cancelled(open_panel):
-    panel = open_panel(replies(run=status(run("running", stage="analyze"))))
-    panel.answer("run", status(run("cancelled")))
-    panel.hold("run/cancel")
-    panel.find("#cancel-run").click()
-    expect(panel.find("#cancel-run")).to_have_text("Cancelling…")
-    expect(panel.find("#cancel-run")).to_be_disabled()
-    panel.release("run/cancel")
-    assert len(panel.calls("run/cancel")) == 1
-    expect(panel.find(".run")).to_have_count(0, timeout=1500)  # Straight away, not at the next refresh (3 s).
+    panel = open_panel(replies(run=status(run("running", stage="analyze"))), held=["run"])
+    with panel.standing_still("run"):
+        panel.answer("run", status(run("cancelled")))
+        panel.hold("run/cancel")
+        panel.find("#cancel-run").click()
+        expect(panel.find("#cancel-run")).to_have_text("Cancelling…")
+        expect(panel.find("#cancel-run")).to_be_disabled()
+        panel.release("run/cancel", settle=False)
+        assert len(panel.calls("run/cancel")) == 1
+        panel.page.clock.run_for(1500)
+        expect(panel.find(".run")).to_have_count(0)  # Straight away, not at the next refresh (3 s).
     expect(panel.find(".cs-last")).to_contain_text("Last run cancelled 5 min ago")
 
 
@@ -1467,7 +1521,7 @@ def test_a_failure_to_load_says_why_with_a_way_back(open_panel):
 
 def test_while_loading_it_says_so(open_panel):
     panel = open_panel(held=["improvements"])
-    expect(panel.text("Loading…")).to_be_visible(timeout=1000)
+    expect(panel.text("Loading…")).to_be_visible()
     panel.release("improvements")
     expect(panel.text("Loading…")).to_have_count(0)
 
@@ -1794,7 +1848,7 @@ def test_an_opened_conversations_send_row_keeps_clear_of_the_home_indicator_with
     panel = open_panel(replies(conversations=listing(many), conversation=long, run=status(last, **NEW)))
     panel.page.evaluate(SAFE, INSETS["portrait"])
     panel.click("[data-cs='m0']")
-    panel.page.wait_for_timeout(600)  # The smooth scroll to it.
+    panel.still()  # The smooth scroll to it.
     send = box(panel, "#cs-send")
     assert send["y"] + send["height"] <= 874 - 34, send
     expect(panel.find(".cs-footer")).to_have_count(0 if running else 1)
@@ -1813,7 +1867,7 @@ def test_one_opened_low_with_no_send_row_and_no_run_bar_brings_its_first_turn_cl
     row.evaluate("(el) => document.scrollingElement.scrollBy(0, el.getBoundingClientRect().top - 760)")  # Low down.
     panel.settle()
     row.click()
-    panel.page.wait_for_timeout(700)  # The smooth scroll to it.
+    panel.still()  # The smooth scroll to it.
     expect(panel.find("#cs-send")).to_have_count(0)
     expect(panel.find(".cs-footer")).to_have_count(0)
     first = box(panel, ".cs-turn")
@@ -1832,7 +1886,7 @@ def test_a_lower_conversation_opened_shows_its_head_below_the_pinned_controls_un
     panel.settle()
     target = panel.find("[data-cs='m8']")
     target.click()
-    panel.page.wait_for_timeout(700)  # The smooth scroll to it.
+    panel.still()  # The smooth scroll to it.
     head, controls = target.bounding_box(), box(panel, ".cs-controls")
     assert head["y"] >= controls["y"] + controls["height"] - 0.5, (head, controls)
 
@@ -1899,7 +1953,7 @@ def test_opening_a_conversation_whose_start_is_in_view_moves_nothing(open_panel)
     panel = open_panel(replies(conversations=listing(MANY), conversation={**chat(id="m1"), "turns": LONG_TALK},
                                run=status(run(), **NEW)))
     panel.click("[data-cs='m1']")
-    panel.page.wait_for_timeout(700)  # As long as a smooth scroll would take.
+    panel.still()  # Had it asked for a smooth scroll, that too.
     expect(panel.find(".cs-read .cs-turn").first).to_be_visible()
     assert panel.page.evaluate(TOP) == 0
 
@@ -1919,10 +1973,10 @@ def test_one_opened_low_on_the_screen_scrolls_once_it_is_in_just_enough_to_show_
     head = low.bounding_box()["y"]
     panel.hold("conversation")
     low.click()
-    panel.page.wait_for_timeout(700)
+    panel.still()
     assert low.bounding_box()["y"] == head  # Not while it loads.
     panel.release("conversation")
-    panel.page.wait_for_timeout(700)  # The smooth scroll.
+    panel.still()  # The smooth scroll.
     first, send = box(panel, ".cs-read .cs-turn"), box(panel, ".cs-send")
     assert 6 <= send["y"] - (first["y"] + first["height"]) <= 10, (first, send)  # Just enough.
     assert low.bounding_box()["y"] >= box(panel, ".cs-controls")["y"] + box(panel, ".cs-controls")["height"] - 0.5
@@ -1934,7 +1988,7 @@ def test_opening_one_just_below_an_open_conversation_keeps_it_under_the_finger(o
     panel = open_panel(replies(conversations=listing(MANY), conversation={**chat(id="m6"), "turns": LONG_TALK},
                                run=status(run(), **NEW)))
     panel.click("[data-cs='m6']")
-    panel.page.wait_for_timeout(700)
+    panel.still()
     below = panel.find("[data-cs='m7']")
     below.evaluate("(el) => el.scrollIntoView({block: 'center'})")  # m7's head mid-screen, m6 open above it.
     panel.settle()
@@ -1943,7 +1997,7 @@ def test_opening_one_just_below_an_open_conversation_keeps_it_under_the_finger(o
     below.click()
     assert abs(below.bounding_box()["y"] - head) < 1  # m6 closed above it: it hasn't moved.
     panel.release("conversation")
-    panel.page.wait_for_timeout(700)
+    panel.still()
     assert abs(below.bounding_box()["y"] - head) < 1  # Its first turn already in view: nothing more moves.
     expect(panel.find(".cs-row.open [data-cs]")).to_have_attribute("data-cs", "m7")  # The one open now.
     # As long again as it was: the page holds no length of its own, and shortens as ever when the list does.
@@ -1961,7 +2015,7 @@ def test_at_the_pages_end_what_closes_leaves_the_row_tapped_under_the_finger(ope
     natural = panel.page.evaluate(length)
     panel.page.evaluate(end)
     panel.click("[data-cs='m23']")
-    panel.page.wait_for_timeout(700)
+    panel.still()
     panel.page.evaluate(end)
     panel.settle()
     row = panel.find("[data-cs='m22']" if tap == "the-one-above" else "[data-cs='m23']")
@@ -1973,7 +2027,7 @@ def test_at_the_pages_end_what_closes_leaves_the_row_tapped_under_the_finger(ope
     held = "document.querySelector('assist-improver-panel').style.minHeight"
     if tap == "the-one-above":
         panel.release("conversation")
-        panel.page.wait_for_timeout(700)
+        panel.still()
         assert row.bounding_box()["y"] <= head + 1  # Once it's in, scrolled only on, never pulled down.
         expect(panel.find(".cs-row.open [data-cs]")).to_have_attribute("data-cs", "m22")
         assert panel.page.evaluate(held) == ""  # As long again as it was: let go.
@@ -2003,7 +2057,7 @@ def test_a_search_after_closing_one_shows_the_list_it_finds(open_panel, where, t
         panel.page.evaluate(end)
     panel.settle()
     row.click()
-    panel.page.wait_for_timeout(800)
+    panel.still()
     if where == "at-the-end":
         panel.page.evaluate(end)
     panel.settle()
@@ -2113,7 +2167,7 @@ def test_sending_one_in_near_the_top_leaves_it_where_it_is(open_panel, size):
     panel = open_panel(replies(conversations=listing(MANY), conversation=chat(id="m6"), run=status(run(), **NEW)),
                        size=size)
     panel.click("[data-cs='m6']")
-    panel.page.wait_for_timeout(700)
+    panel.still()
     below = panel.find("[data-cs='m7']")
     below.evaluate("(el) => document.scrollingElement.scrollBy(0, el.getBoundingClientRect().top - 250)")
     panel.settle()
@@ -2132,7 +2186,7 @@ def test_a_conversation_that_cant_be_read_says_why_above_the_run_bar(open_panel)
     low = [row for row in panel.find("[data-cs]").all()
            if row.bounding_box()["y"] + row.bounding_box()["height"] <= footer["y"]][-1]
     low.click()
-    panel.page.wait_for_timeout(700)
+    panel.still()
     why = box(panel, ".cs-read .conflict")
     assert why["y"] + why["height"] <= box(panel, ".cs-footer")["y"], why
 
@@ -2412,7 +2466,7 @@ def test_what_went_wrong_notes_motion_isnt_simulated_in_every_view(open_panel, s
     assert_no_horizontal_scroll(panel)
     if shots := os.environ.get("UI_SHOTS"):  # A visual check: UI_SHOTS=<folder> saves each view there.
         panel.find(".details-body .note").evaluate("(note) => note.scrollIntoView({block: 'center'})")
-        panel.page.wait_for_timeout(500)  # The section's opening fade.
+        panel.still()  # The section's opening fade.
         panel.page.screenshot(path=f"{shots}/review-motion-{'phone' if size == PHONE else 'desktop'}-{'dark' if dark else 'light'}.png")
 
 
@@ -3318,7 +3372,7 @@ def test_a_run_finishing_moves_nothing_on_screen_into_a_fade(open_panel):
     panel.click(".history > summary")
     panel.click("[data-cs='c3']")
     expect(panel.find(".cs-read .cs-turn").first).to_be_visible()
-    panel.page.wait_for_timeout(300)  # Their fades done.
+    panel.still()  # Their fades done.
     panel.page.evaluate(FADES)
     # The run ends, and the list read again no longer has the one above the opened one: it moves up a row.
     panel.answer("conversations", listing([c for c in CHATS if c["id"] != "c1"]))
@@ -3428,9 +3482,9 @@ def test_every_dynamic_string_on_a_review_is_escaped(open_panel):
 
 # Settings: the pipeline as a track, each AI step's model a click away.
 
-def open_settings(open_panel, size=DESKTOP, dark=True, **over):
+def open_settings(open_panel, size=DESKTOP, dark=True, held=(), **over):
     over.setdefault("run", status(run(progress={"new_improvements": 2})))
-    return open_panel(replies(**over), path="/assist-improver?view=settings", size=size, dark=dark)
+    return open_panel(replies(**over), path="/assist-improver?view=settings", size=size, dark=dark, held=held)
 
 
 STEP_TITLES = ["Your Assist", "Triage", "Analyze", "Propose", "Review", "Simulate", "Write up", "Your review",
@@ -3886,10 +3940,13 @@ def test_every_step_explains_itself_in_a_bubble_not_on_the_page(open_panel):
 
 
 def test_cancel_run_in_the_settings_cancels(open_panel):
-    panel = open_settings(open_panel, run=status(run("running", stage="analyze")))
-    panel.answer("run", status(run("cancelled")))
-    panel.find("#cancel-run").click()
-    expect(panel.find("#run-now")).to_be_visible(timeout=1500)  # Straight away, not at the next refresh (3 s).
+    panel = open_settings(open_panel, run=status(run("running", stage="analyze")), held=["run"])
+    with panel.standing_still("run"):
+        panel.answer("run", status(run("cancelled")))
+        panel.find("#cancel-run").click()
+        panel.answered()
+        panel.page.clock.run_for(1500)
+        expect(panel.find("#run-now")).to_be_visible()  # Straight away, not at the next refresh (3 s).
     assert panel.calls("run/cancel")
 
 
@@ -4264,7 +4321,7 @@ def test_a_failed_household_line_edit_keeps_what_was_typed(open_panel):
     panel.find("#kn-text").fill("Quiet hours start at 22:30.")
     panel.click("#kn-save")
     expect(panel.find(".kn-editor .error-text")).to_be_visible()
-    expect(panel.find("#kn-text")).to_have_value("Quiet hours start at 22:30.", timeout=1000)
+    expect(panel.find("#kn-text")).to_have_value("Quiet hours start at 22:30.")
 
 
 def test_the_household_lines_open_as_they_are_now(open_panel):
@@ -4358,8 +4415,7 @@ def test_household_search_appears_for_a_long_list_and_filters_it(open_panel):
 
 def test_an_empty_household_says_nothing_is_learned_yet(open_panel):
     panel = open_household(open_panel, everyone=(), people=())
-    expect(panel.find(".modal")).to_contain_text("Nothing learned yet: accepted improvements add lines here.",
-                                                 timeout=1000)
+    expect(panel.find(".modal")).to_contain_text("Nothing learned yet: accepted improvements add lines here.")
 
 
 @pytest.mark.parametrize("close", ["close", "outside", "escape"])
@@ -4853,7 +4909,7 @@ def test_conversations_lead_the_home_page_newest_first_with_where_each_stands(op
 def test_conversations_are_found_by_what_was_said_and_when(open_panel):
     panel = open_panel(replies())
     panel.find("#cs-search").fill("porch")
-    panel.page.wait_for_timeout(500)
+    panel.searched("porch")
     assert panel.calls("conversations")[-1]["query"] == "porch"
     panel.click("[data-days='7']")
     assert panel.calls("conversations")[-1]["days"] == 7
@@ -5366,7 +5422,7 @@ def test_a_conversation_that_cant_be_deleted_says_why_and_stays(open_panel, talk
     shown = chat() if talk == "short" else {**chat(), "turns": LONG_TALK}
     panel = open_panel(replies(conversation=shown, conversation__delete=fail("That conversation isn't kept.")))
     panel.click("[data-cs='c1']")
-    panel.page.wait_for_timeout(700)
+    panel.still()
     panel.click("#cs-actions")
     panel.click("#cs-delete-ask")
     panel.click("#cs-delete")
@@ -5583,8 +5639,7 @@ def test_a_match_shows_where_the_words_are_marked(open_panel):
     found = {**CHATS[0], "reply": "Which porch light?", "match": "…then turned off the garage lights as well."}
     panel = open_panel(replies(conversations=listing([found])))
     panel.find("#cs-search").fill("garage")
-    panel.page.wait_for_timeout(400)
-    panel.settle()
+    panel.searched("garage")
     expect(panel.find(".cs-match")).to_have_text("…then turned off the garage lights as well.")
     expect(panel.find(".cs-match mark")).to_have_text("garage")  # Instead of the first reply, where it was found.
     expect(panel.find(".cs-row .cs-reply")).to_have_count(1)
@@ -5605,8 +5660,7 @@ def test_a_time_searched_puts_the_closest_first_and_no_order_is_shown_as_chosen(
     expect(panel.find("#cs-sort")).to_have_text("Newest▾")
     panel.answer("conversations", {**listing([{**CHATS[0], "timed": True}]), "closest": True})
     panel.find("#cs-search").fill("friday 10:40pm")
-    panel.page.wait_for_timeout(400)
-    panel.settle()
+    panel.searched("friday 10:40pm")
     expect(panel.find("#cs-sort")).to_have_text("Sort▾")  # The closest first: none of the three.
     panel.click("#cs-sort")
     expect(panel.find("[data-order].on")).to_have_count(0)
@@ -5627,8 +5681,7 @@ def test_a_search_can_be_cleared_with_one_click(open_panel):
     panel = open_panel(replies())
     expect(panel.find("#cs-search-clear")).to_have_count(0)  # Nothing to clear.
     panel.find("#cs-search").fill("porch")
-    panel.page.wait_for_timeout(400)
-    panel.settle()
+    panel.searched("porch")
     expect(panel.find("#cs-search-clear")).to_have_attribute("aria-label", "Clear search")
     panel.hold("conversations")  # Home Assistant slow to answer: the box is empty at once all the same.
     panel.find("#cs-search-clear").click()
@@ -5764,7 +5817,7 @@ def test_an_opened_conversations_send_row_stays_in_view_above_the_run_bar(open_p
     expect(panel.find(".cs-footer")).to_be_visible()  # New ones waiting: the Run bar shows.
     panel.click("[data-cs='c1']")
     expect(panel.find(".cs-turn")).to_have_count(20)
-    panel.page.wait_for_timeout(600)  # The smooth scroll to it.
+    panel.still()  # The smooth scroll to it.
     panel.page.evaluate("() => document.scrollingElement.scrollBy(0, 200)")
     panel.settle()
     send, bar = panel.find("#cs-send").bounding_box(), panel.find(".cs-footer").bounding_box()
