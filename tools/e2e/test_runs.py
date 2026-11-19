@@ -37,7 +37,8 @@ UNKNOWN = "Turn on the reading lamp"  # A name Assist doesn't know: Assist can't
 EXPLAINED = "The reading lamp is the desk lamp in the study"  # Said next, to Assist: which lamp that is.
 RENAMED = "Turn on the desk lamp"  # Or asked again by the lamp's own name, which Assist knows.
 KNOWN = "Turn on the ceiling light"  # A name Assist knows: Assist turns the light on.
-SETTLED = {"fine": "No trouble found", "nofix": "No fix found"}  # A round that ends with nothing to review: chips.
+SETTLED = {"fine": "No trouble found", "nofix": "No fix found",  # A round that ends with nothing to review: chips.
+           "unreproducible": "Couldn't reproduce"}
 SCHEDULES = ["Only when you run it", "Every day at 3:00, on new conversations",
              "Every Sunday at 3:00, on new conversations"]  # The Run menu's words (DETAILS P5.3.2).
 
