@@ -6200,6 +6200,43 @@ def test_a_swipe_that_starts_on_a_chip_with_words_takes_its_bubble_away_at_once(
         expect(opened).to_have_count(was)  # And opened or closed nothing.
 
 
+SCROLLING = [{**r, "id": f"{r['id']}-{n}"} for n in range(4) for r in explaining_rows()[0]]  # A page to scroll.
+
+
+def test_a_scroll_puts_away_the_bubble_a_tap_showed(open_panel):
+    """On a touch phone: a bubble a tap showed goes once the page scrolls, however it scrolls, rather than staying put
+    on the screen while its chip moves away under it."""
+    panel = open_panel(replies(conversations=listing(SCROLLING)), mobile=True)
+    chip = panel.find(".cs-row:has([data-cs='e1-0']) .cs-line > .chip")
+    chip.tap()
+    assert_bubble(panel, EXPLAINED[1][2], PHONE["width"])
+    with panel.standing_still():  # So not by a touch's 2.5 s.
+        panel.page.evaluate("scrollBy(0, 100)")
+        expect(panel.find("#tip")).to_be_hidden()
+
+
+def test_a_scroll_puts_away_a_bubble_focus_showed_but_not_tabs_own_scroll_to_it(open_panel):
+    """On a desktop, a bubble keyboard focus showed goes at a wheel scroll; Tab to a chip below the screen scrolls the
+    page to it first, and its bubble shows by it."""
+    panel = open_panel(replies(conversations=listing(SCROLLING)), size=DESKTOP)
+    panel.page.mouse.move(8, DESKTOP["height"] / 2)  # Beside the list, which moves under it.
+    panel.find("[data-cs='e1-0']").focus()
+    panel.page.keyboard.press("Tab")
+    chip = panel.find(".cs-row:has([data-cs='e1-0']) .cs-line > .chip")
+    expect(chip).to_be_focused()
+    assert_bubble(panel, EXPLAINED[1][2], DESKTOP["width"])
+    panel.page.mouse.wheel(0, 200)
+    expect(panel.find("#tip")).to_be_hidden()
+    below = panel.find(".cs-row:has([data-cs='e1-3']) .cs-line > .chip")
+    assert below.bounding_box()["y"] > DESKTOP["height"], below.bounding_box()  # Below the screen.
+    panel.find("[data-cs='e1-3']").evaluate("(el) => el.focus({preventScroll: true})")
+    panel.page.keyboard.press("Tab")
+    expect(below).to_be_focused()
+    assert_bubble(panel, EXPLAINED[1][2], DESKTOP["width"])
+    tip, at = box(panel, "#tip"), below.bounding_box()
+    assert 0 <= at["y"] - (tip["y"] + tip["height"]) <= 8.5, (tip, at)  # Over it, where it is now.
+
+
 @pytest.mark.parametrize("phone", [False, True], ids=["desktop", "phone"])
 def test_a_rows_checkbox_clear_search_and_more_actions_say_so_in_a_bubble_that_steps_aside_as_they_act(open_panel,
                                                                                                         phone):

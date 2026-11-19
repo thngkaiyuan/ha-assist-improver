@@ -107,10 +107,19 @@ export class PanelApp {
       this.root.getElementById("tip").hidden = true;
       this.tipMuted = {text: ev.target?.closest?.("[data-tip]")?.dataset.tip, until: Date.now() + 1500};
     });
-    this.root.addEventListener("pointercancel", () => {  // A touch that turned into a scroll: its bubble goes at once.
+    // A scroll that moves what a bubble explains puts the bubble away at once, so it never stays behind: the page's
+    // (listened to in tip), a menu's or a sheet's; so does a touch that turned into a scroll. Not a scroll from before
+    // it was placed, such as Tab's to what it focuses.
+    this.untip = (ev) => {
+      const tip = this.root.getElementById("tip");
+      if (tip.hidden) return;
+      const r = ev.type === "scroll" && this.tipAnchor.getBoundingClientRect();
+      if (r && Math.abs(r.left - this.tipAt[0]) + Math.abs(r.top - this.tipAt[1]) < 0.5) return;
       clearTimeout(this.tipTimer);
-      this.root.getElementById("tip").hidden = true;
-    });
+      tip.hidden = true;
+    };
+    this.root.addEventListener("scroll", this.untip, {capture: true, passive: true});
+    this.root.addEventListener("pointercancel", this.untip);
     this.onLocation = () => this.load();
     this.onKey = (ev) => {
       // The conversations' Status and order menus, an opened one's ⋮, and Delete's question (focus back to its ⋮).
@@ -146,6 +155,8 @@ export class PanelApp {
     window.removeEventListener("keydown", this.onKey);
     this.resize.disconnect();
     this.letGo?.();
+    this.scrolled?.removeEventListener("scroll", this.untip);
+    this.scrolled = null;
   }
 
   setHass(hass) {
@@ -396,8 +407,16 @@ export class PanelApp {
     tip.textContent = el.dataset.tip;
     if (tip.hidden) fade(tip);
     tip.hidden = false;
+    const scroller = this.scroller(), page = scroller === (document.scrollingElement || document.documentElement);
+    const scrolled = page ? document : scroller;  // Whatever scrolls the page now, its scroll putting the bubble away.
+    if (scrolled !== this.scrolled) {
+      this.scrolled?.removeEventListener("scroll", this.untip);
+      scrolled.addEventListener("scroll", this.untip, {passive: true});
+      this.scrolled = scrolled;
+    }
     tip.style.left = "0px";  // Measured at the screen's edge: where the last one was, the screen's edge could narrow it.
     const r = el.getBoundingClientRect(), w = tip.offsetWidth, h = tip.offsetHeight;
+    this.tipAt = [r.left, r.top];  // Where it was placed by: a scroll that moves it from there puts the bubble away.
     const edge = this.root.querySelector(".status-strip").offsetHeight + 8;  // Clear of a phone's status bar.
     const pop = el.closest(".pop"), p = pop?.getBoundingClientRect();
     if (pop && !pop.classList.contains("sheet")) {  // Beside a menu, so the bubble never covers its other options.
