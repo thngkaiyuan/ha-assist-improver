@@ -394,9 +394,11 @@ export class PanelApp {
   tip(ev, show) {
     // A bubble with more about whatever is under the pointer (or focused): explanations on demand, not on the page.
     const tip = this.root.getElementById("tip"), el = ev.target?.closest?.("[data-tip]");
+    // Only leaving what it explains puts it away: not the pointer leaving something else, as when the page scrolls
+    // under a mouse at rest (Tab's scroll to what it focuses).
+    if (!show && (!el || el !== this.tipAnchor || el.contains(ev.relatedTarget))) return;
     clearTimeout(this.tipTimer);
     if (!show) {
-      if (el && el.contains(ev.relatedTarget)) return;
       if (ev.pointerType === "touch") { this.tipTimer = setTimeout(() => { tip.hidden = true; }, 2500); return; }
       tip.hidden = true;
       return;

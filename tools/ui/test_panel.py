@@ -1415,9 +1415,9 @@ def test_a_refresh_keeps_focus_its_bubble_and_the_scroll(open_panel):
     panel = open_settings(open_panel, size={"width": 1280, "height": 500}, run=status(run("running", stage="analyze")),
                           log={"events": [event_run(minutes=n + 1) for n in range(8)]})
     gate = panel.find("[data-gate='propose']")
-    gate.focus()
-    expect(panel.find("#tip")).to_have_text("Stop this stage.")
     panel.page.evaluate("() => document.scrollingElement.scrollTo(0, 120)")
+    gate.focus()  # Once scrolled, so its bubble is by it, whenever that scroll's event comes.
+    expect(panel.find("#tip")).to_have_text("Stop this stage.")
     runs = len(panel.calls("run"))
     with panel.standing_still():
         panel.answer("run", status(run("running", stage="propose")))
@@ -6235,6 +6235,23 @@ def test_a_scroll_puts_away_a_bubble_focus_showed_but_not_tabs_own_scroll_to_it(
     assert_bubble(panel, EXPLAINED[1][2], DESKTOP["width"])
     tip, at = box(panel, "#tip"), below.bounding_box()
     assert 0 <= at["y"] - (tip["y"] + tip["height"]) <= 8.5, (tip, at)  # Over it, where it is now.
+
+
+def test_only_leaving_what_it_explains_puts_a_bubble_away(open_panel):
+    """A bubble focus showed stays while the mouse moves from one thing to another elsewhere on the page, as it does
+    when the page scrolls under a mouse at rest (Tab's scroll to what it focuses); leaving its chip puts it away."""
+    panel = open_panel(replies(conversations=listing(SCROLLING)), size=DESKTOP)
+    panel.find("[data-cs='e1-0']").focus()
+    panel.page.keyboard.press("Tab")
+    assert_bubble(panel, EXPLAINED[1][2], DESKTOP["width"])
+    said = [box(panel, f"[data-cs='e{n}-0'] .cs-said") for n in (2, 3, 4)]
+    for at in said:  # Across the words of one row, then the next: none of them its chip.
+        panel.page.mouse.move(at["x"] + 4, at["y"] + at["height"] / 2)
+    expect(panel.find("#tip")).to_have_text(EXPLAINED[1][2])
+    assert panel.find("#tip").is_visible()
+    panel.find(".cs-row:has([data-cs='e1-0']) .cs-line > .chip").hover()
+    panel.page.mouse.move(said[0]["x"] + 4, said[0]["y"] + said[0]["height"] / 2)
+    expect(panel.find("#tip")).to_be_hidden()
 
 
 @pytest.mark.parametrize("phone", [False, True], ids=["desktop", "phone"])
