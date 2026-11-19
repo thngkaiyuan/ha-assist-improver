@@ -11,9 +11,10 @@ worker. The worker's process is the sandbox's, so its time zone is the home's, a
 it.
 
 The sandbox runs on one clock (clock.py, DETAILS P6.2.5): seeded as the home at a recorded turn's moment, it starts
-then, and moves on to each later turn's recorded time before that turn (advance), timers due on the way firing at
-their times. Inside a turn the clock runs at real speed, but while the turn's tool calls run and its result settles
-(windows, snapshot), waits pass at once: a script's delay, a timed automation due before the next recorded turn.
+then (it stands there until that turn, however long the sandbox takes to start), and moves on to each later turn's
+recorded time before that turn (advance), timers due on the way firing at their times. Inside a turn the clock runs
+at real speed, but while the turn's tool calls run and its result settles (windows, snapshot), waits pass at once: a
+script's delay, a timed automation due before the next recorded turn.
 """
 
 import asyncio
@@ -830,6 +831,7 @@ async def run_turn(hass, text, conversation_id, context, language, agent_id, dev
     from homeassistant.core import Context
     from homeassistant.helpers import chat_session
     sandbox, usage, held = hass.data[SANDBOX_KEY], [], {}
+    hass.loop.clock.release()  # The first turn runs from its recorded moment, where the clock stood (clock.Clock).
     marks = {k: len(getattr(sandbox, k)) for k in MARKED}
     with _call_log(hass, held, context["id"]) as actions:  # Until what the turn set off has run (snapshot).
         with chat_session.async_get_chat_session(  # Its owner: whoever says the turn (async_converse).

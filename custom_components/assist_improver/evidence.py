@@ -116,6 +116,7 @@ async def _start(recording, turn, today, setup=None):
     except BaseException:
         await sandbox.stop()
         raise
+    sandbox.clock.release()  # Its probe starts at the turn's moment (clock.Clock).
     return sandbox
 
 
