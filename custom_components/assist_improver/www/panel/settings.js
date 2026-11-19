@@ -2,7 +2,7 @@
 // knowledge (household.js), one run control, the history of what the improver did, and Uninstall.
 
 const v = new URL(import.meta.url).search;  // ?v=<version>, passed on to every module this one loads.
-const [{esc, plural, fill, listed, ago}, {TEXT, STAGES, STEPS, AT_WORK, COUNTS, SCHEDULE, GATE_NAMES}, {svg, glyph},
+const [{esc, plural, fill, listed, ago, note}, {TEXT, STAGES, STEPS, AT_WORK, COUNTS, SCHEDULE, GATE_NAMES}, {svg, glyph},
        track, common, pickers, household] = await Promise.all(
   ["format", "text", "icons", "track", "common", "pickers", "household"].map((name) => import(`./${name}.js${v}`)));
 
@@ -23,7 +23,7 @@ function step(p, id, L, s) {
     const kind = isPaused || blocked ? "held" : id === "requests" ? "in" : id === "you" ? "out" : "";
     const what = id === "requests" ? fill(B.new, {n}) : id === "you" ? fill(B.review, {n})
       : [blocked && fill(B.held, {n: blocked}), n > blocked && fill(B.waiting, {n: n - blocked})].filter(Boolean).join(" · ");
-    badge = `<span class="badge ${kind}" data-tip="${what}">${n}</span>`;
+    badge = `<span class="badge ${kind}" ${note(station.title, what)}>${n}</span>`;  // The count; what it counts, in its bubble.
   }
   let chip = "";
   if (station.role) {
@@ -46,7 +46,7 @@ function step(p, id, L, s) {
     const lines = p.household?.lines || 0, K = TEXT.knowledge;
     chip = `<div class="chip-row"><button class="chip-model" data-knowledge="1" data-tip="${esc(K.tip)}">${
       glyph("mdi:book-heart-outline", "in-chip")}${esc(fill(K[L.vertical ? "chipShort" : "chip"], {n: plural(lines, "line")}))}</button>${
-      preview.applied ? `<span class="done-count" data-tip="${esc(fill(B.applied, {n: preview.applied}))}">${svg("check")}${preview.applied}</span>` : ""}</div>`;
+      preview.applied ? `<span class="done-count" ${note(station.title, fill(B.applied, {n: preview.applied}))}>${svg("check")}${preview.applied}</span>` : ""}</div>`;
   }
   const gate = station.gate ? `<button class="gate ${isPaused ? "paused" : ""}" data-gate="${station.gate}"
     data-tip="${esc(fill(TEXT.block[isPaused ? "blocked" : "tip"], {step: station.title.toLowerCase()}))}"

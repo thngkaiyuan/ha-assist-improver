@@ -395,14 +395,15 @@ export class PanelApp {
     tip.style.left = "0px";  // Measured at the screen's edge: where the last one was, the screen's edge could narrow it.
     const r = el.getBoundingClientRect(), w = tip.offsetWidth, h = tip.offsetHeight;
     const edge = this.root.querySelector(".status-strip").offsetHeight + 8;  // Clear of a phone's status bar.
-    const pop = el.closest(".pop:not(.sheet)");
-    if (pop) {  // Beside a menu, so the bubble never covers its other options.
-      const p = pop.getBoundingClientRect(), right = p.right + 8 + w <= window.innerWidth - 8;
+    const pop = el.closest(".pop"), p = pop?.getBoundingClientRect();
+    if (pop && !pop.classList.contains("sheet")) {  // Beside a menu, so the bubble never covers its other options.
+      const right = p.right + 8 + w <= window.innerWidth - 8;
       tip.style.left = `${right ? p.right + 8 : Math.max(8, p.left - w - 8)}px`;
       tip.style.top = `${Math.min(Math.max(edge, r.top + r.height / 2 - h / 2), window.innerHeight - h - 8)}px`;
       return;
     }
-    const top = r.top - h - 8 < edge ? r.bottom + 8 : r.top - h - 8;
+    // Over what it explains, or under it without the room; above a phone's sheet, so it never covers the options.
+    const top = pop ? Math.max(edge, p.top - h - 8) : r.top - h - 8 < edge ? r.bottom + 8 : r.top - h - 8;
     tip.style.left = `${Math.min(Math.max(8, r.left + r.width / 2 - w / 2), window.innerWidth - w - 8)}px`;
     tip.style.top = `${top}px`;
   }

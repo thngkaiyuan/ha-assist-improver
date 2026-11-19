@@ -3,7 +3,7 @@
 // check; and the assistant Your Assist uses.
 
 const v = new URL(import.meta.url).search;  // ?v=<version>, passed on to every module this one loads.
-const [{esc, fill}, {TEXT, STEPS}] = await Promise.all(["format", "text"].map((name) => import(`./${name}.js${v}`)));
+const [{esc, fill, note}, {TEXT, STEPS}] = await Promise.all(["format", "text"].map((name) => import(`./${name}.js${v}`)));
 
 export const task = (s, entityId) => s.ai_tasks.find((t) => t.entity_id === entityId);
 
@@ -32,13 +32,17 @@ const PICKERS = {
       : `<div class="pop-lead">${esc(TEXT.assistant.none)}</div>`);
   },
   test(p, s) {
+    // What the number costs, in its bubble: on the number, so a tap on − or + only steps it. What's off means, on the
+    // reply check's head.
     const n = s.tests_per_goal;
     return `<div class="pop-head"><b>Simulate</b> on your assistant</div>
-      <div class="stepper-row" data-tip="${esc(fill(TEXT.simulate.cost, {n}))}">
+      <div class="stepper-row">
       <button class="round" id="t-minus" ${n <= 1 ? "disabled" : ""}>&#8722;</button>
-      <span class="t-n">${n}</span><button class="round" id="t-plus" ${n >= 20 ? "disabled" : ""}>+</button></div>
+      <span class="t-n" ${note(`${n} ${TEXT.simulate.per}`, fill(TEXT.simulate.cost, {n}))}>${n}</span><button class="round"
+        id="t-plus" ${n >= 20 ? "disabled" : ""}>+</button></div>
       <div class="pop-lead" style="text-align:center">${esc(TEXT.simulate.per)}</div>
-      <div class="pop-head" data-tip="${esc(TEXT.repliesOff)}">Check replies with</div>${options(s, s.roles.feedback_check, "feedback_check")}`;
+      <div class="pop-head" ${note("Check replies with", TEXT.repliesOff)}>Check replies with</div>${
+        options(s, s.roles.feedback_check, "feedback_check")}`;
   },
   create(p, s, pop, step) {
     // A new AI Task for this step, added to an AI provider with the model the step needs suggested.
@@ -59,7 +63,8 @@ const PICKERS = {
   },
   role(p, s, pop, step) {
     const role = s.roles[pop.role];
-    return `<div class="pop-head" data-tip="${esc(step.tip)} ${esc(TEXT.models[role.size])}"><b>${esc(step.title)}</b> uses</div>
+    return `<div class="pop-head" ${note(`${step.title} uses`, `${step.tip} ${TEXT.models[role.size]}`)}><b>${
+      esc(step.title)}</b> uses</div>
       ${options(s, role, pop.role)}<div class="opt new" id="new-task">+ New AI Task…</div>
       ${s.recommended === false ? `<div class="opt new recommended" id="use-recommended" data-tip="${esc(TEXT.models.recommendedTip)}">${
         pop.busy ? esc(TEXT.models.recommendedBusy) : `&#10022; ${esc(TEXT.models.recommended)}`}</div>` : ""}

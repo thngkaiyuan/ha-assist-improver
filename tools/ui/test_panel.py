@@ -4161,7 +4161,7 @@ def test_tests_per_conversation_each_round_are_a_bounded_stepper(open_panel):
     panel.click(".stn[data-step='test'] .chip-model")
     expect(panel.find("#pop .t-n")).to_have_text("3")
     expect(panel.find("#pop .stepper-row + .pop-lead")).to_have_text("tests per conversation, each round")
-    expect(panel.find("#pop .stepper-row")).to_have_attribute(
+    expect(panel.find("#pop .stepper-row .t-n")).to_have_attribute(  # On the number: a tap on − or + only steps it.
         "data-tip", "Each test replays one of your conversations with a fix, on your own assistant: 3 each round "
                     "costs at most about 3 times that conversation, plus up to three replays of it without the fix")
     panel.click("#t-plus")
@@ -6286,6 +6286,111 @@ def test_a_held_chip_in_the_developer_view_says_why_in_its_bubble(open_panel, si
             panel.page.keyboard.press("Tab")
             expect(chip).to_be_focused()
         assert_bubble(panel, why, size["width"])
+
+
+# Settings' counts that explain themselves (P14.9.3): each step's badge and what's applied, its step and its words.
+SETTINGS_EXPLAINED = [("requests", ".badge", "Your Assist", "3 new: the next run takes them in"),
+                      ("analyze", ".badge", "Analyze", "2 held while blocked · 3 held"),
+                      ("you", ".badge", "Your review", "1 to review"),
+                      ("household", ".done-count", "Your household", "4 applied")]
+# What a picker's headings and Simulate's number say in their bubbles (P15, P17.16.6).
+ANALYZE_USES = ("Reads each conversation to identify your intents, and where Assist could've done better. Needs "
+                "judgement: a strong model works best.")
+TESTS_COST = ("Each test replays one of your conversations with a fix, on your own assistant: 3 each round costs "
+              "at most about 3 times that conversation, plus up to three replays of it without the fix")
+REPLIES_OFF = "Replies are checked with the write-up model when off"
+
+
+def explaining_settings(open_panel, **kw):
+    held = status(run(), admits=3, held={"analyze": 5}, causes={"analyze": {"blocked": 2, "cut off": 3}}, review=1,
+                  applied=4)
+    return open_panel(replies(run=held, settings__set=settings(tests=4)), path="/assist-improver?view=settings", **kw)
+
+
+def test_settings_counts_show_their_bubbles_at_a_tap_on_a_phone_and_change_nothing(open_panel):
+    """A tap on a step's badge, or on what's applied, shows what it counts in its bubble, and opens or changes
+    nothing; screen readers read its step and its words."""
+    panel = explaining_settings(open_panel, mobile=True)
+    for step, css, title, words in SETTINGS_EXPLAINED:
+        count = panel.find(f".stn[data-step='{step}'] {css}")
+        count.tap()
+        assert_bubble(panel, words, PHONE["width"])
+        expect(count).to_have_accessible_name(f"{title}: {words}")
+    expect(panel.find("#pop, .modal")).to_have_count(0)
+    assert panel.calls("settings/set") == [] and panel.path() == "/assist-improver?view=settings"
+
+
+def test_settings_counts_show_their_bubbles_on_hover_and_on_focus_on_a_desktop(open_panel):
+    panel = explaining_settings(open_panel, size=DESKTOP)
+    for step, css, _, words in SETTINGS_EXPLAINED:
+        count = panel.find(f".stn[data-step='{step}'] {css}")
+        count.hover()
+        assert_bubble(panel, words, DESKTOP["width"])
+        panel.page.mouse.move(0, 0)
+        expect(panel.find("#tip")).to_be_hidden()
+        panel.find(f".stn[data-step='{step}'] .info-tip").focus()  # Tab from its step's ⓘ reaches it.
+        for _ in range(3):
+            panel.page.keyboard.press("Tab")
+            if count.evaluate("(el) => el.matches(':focus')"):
+                break
+        expect(count).to_be_focused()
+        assert_bubble(panel, words, DESKTOP["width"])
+
+
+def test_a_pickers_headings_and_the_tests_number_show_their_bubbles_at_a_tap_on_a_phone_above_its_sheet(open_panel):
+    """On a phone a picker is a sheet: a tap on its heading, or on Simulate's number, shows its bubble above the sheet,
+    covering none of its options, and picks or changes nothing; a tap on + still steps the number, the bubble aside."""
+    for step, parts in (("analyze", [(".pop-head", "Analyze uses", ANALYZE_USES)]),
+                        ("test", [(".t-n", "3 tests per conversation, each round", TESTS_COST),
+                                  (".pop-head >> nth=1", "Check replies with", REPLIES_OFF)])):
+        panel = explaining_settings(open_panel, mobile=True)
+        panel.find(f".stn[data-step='{step}'] .chip-model").tap()
+        panel.settle()
+        expect(panel.find("#pop.sheet")).to_have_count(1)
+        for css, name, words in parts:
+            part = panel.find(f"#pop {css}")
+            part.tap()
+            assert_bubble(panel, words, PHONE["width"])
+            expect(part).to_have_accessible_name(f"{name}: {words}")
+            tip, sheet = box(panel, "#tip"), box(panel, "#pop")
+            assert tip["y"] + tip["height"] <= sheet["y"], (css, tip, sheet)  # Above it, clear of every option.
+        expect(panel.find("#pop")).to_have_count(1)
+        assert panel.calls("settings/set") == []
+    panel.find("#t-plus").tap()
+    panel.settle()
+    assert panel.calls("settings/set") == [{"type": "assist_improver/settings/set", "tests_per_goal": 4}]
+    expect(panel.find("#pop .t-n")).to_have_text("4")
+    expect(panel.find("#tip")).to_be_hidden()
+
+
+def test_a_pickers_headings_and_the_tests_number_show_their_bubbles_beside_it_on_hover_and_on_focus(open_panel):
+    """On a desktop: on hover, and at focus (Tab from − reaches the number, then the reply check's heading), beside
+    the picker, never over its options (P17.5.2)."""
+    panel = explaining_settings(open_panel, size=DESKTOP)
+
+    def beside(words):
+        assert_bubble(panel, words, DESKTOP["width"])
+        tip, pop = box(panel, "#tip"), box(panel, "#pop")
+        assert tip["x"] >= pop["x"] + pop["width"] or tip["x"] + tip["width"] <= pop["x"], (tip, pop)
+
+    panel.click(".stn[data-step='analyze'] .chip-model")
+    head = panel.find("#pop .pop-head")
+    head.hover()
+    beside(ANALYZE_USES)
+    panel.page.mouse.move(0, 0)
+    expect(panel.find("#tip")).to_be_hidden()
+    head.focus()
+    beside(ANALYZE_USES)
+    panel.page.keyboard.press("Escape")
+    panel.click(".stn[data-step='test'] .chip-model")
+    panel.find("#pop .t-n").hover()
+    beside(TESTS_COST)
+    panel.find("#t-minus").focus()
+    for css, words in ((".t-n", TESTS_COST), ("#t-plus", None), (".pop-head >> nth=1", REPLIES_OFF)):
+        panel.page.keyboard.press("Tab")
+        expect(panel.find(f"#pop {css}")).to_be_focused()
+        if words:
+            beside(words)
 
 
 def test_archiving_reads_again_what_a_run_would_take(open_panel):

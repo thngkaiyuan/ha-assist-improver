@@ -2610,9 +2610,9 @@ words, those words are the requirement; elsewhere the behaviour lives in its own
   TEXT-REVIEW.md "The home page, at a glance")
 - **P17.5** Explanations are bubbles, not text on the page. (DESIGN.md "Text is kept to a minimum"; Kai, 2026-10-24)
   - **P17.5.1** A bubble shows on hover and on focus, never only on click, and stays while hovered or focused; a click
-    puts it aside, except on what's there to explain (a chip, an ⓘ): a tap there shows it, opening nothing. (Kai,
-    2026-10-24: "show information in a bubble when hovered over - not click"; fixture-test/SPEC.md; Kai, 2026-11-19:
-    "approved the fix", chips that "show their bubble on a tap")
+    puts it aside, except on what's there to explain (a chip, a count, a heading, an ⓘ): a tap there shows it,
+    opening nothing. (Kai, 2026-10-24: "show information in a bubble when hovered over - not click";
+    fixture-test/SPEC.md; Kai, 2026-11-19: "approved the fix")
   - **P17.5.2** A bubble beside a menu never covers the menu's options. (fixture-test/SPEC.md)
   - **P17.5.3** A bubble's text is plain text, never markup. (fixture-test/SPEC.md)
   - **P17.5.4** Each stage on the settings diagram explains itself in a small bubble beside it (P17.16.1). (Kai,
