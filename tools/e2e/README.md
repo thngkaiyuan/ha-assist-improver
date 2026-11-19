@@ -80,8 +80,9 @@ browser refuses any request beyond 127.0.0.1; no model call is paid; no fixed sl
 - `test_conversations.py`: the conversations list. Delete from Assist Improver from the ⋮: it asks first, Cancel keeps
   it, and once confirmed it's gone from the list, the run and Home Assistant's stores. Conversations are found by what
   was said or replied, by when, by day (Today is today's) and in each order; the older ones are recorded now, then
-  moved back on disk while Home Assistant is stopped. A run on two picked conversations asks first and moves only
-  those, then the Status filter finds them by where they stand.
+  moved back on disk while Home Assistant is stopped, and it starts again in the time zone it ran in (on HA OS too,
+  stood in). A run on two picked conversations asks first and moves only those, then the Status filter finds them by
+  where they stand.
 - `test_knowledge.py`: household knowledge (Your household's lines): added, edited and deleted from Settings, also
   when changed on another screen; what the household's assistant reads of them (everyone's, then the speaker's, never
   another person's); and an accepted improvement's line, which shows in the modal and goes again on Undo.

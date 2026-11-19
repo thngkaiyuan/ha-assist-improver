@@ -35,7 +35,9 @@ a picked run), P14.7.2 (its confirmation names them), P14.10.2 (History: 'Run fi
 
 from datetime import datetime, time, timedelta, timezone
 import json
+import os
 import re
+from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -121,42 +123,51 @@ def _rewrite(path, change):
 
 @pytest.fixture
 def midday(ha):
-    """Home Assistant moved to a time zone where it's midday now (12:xx), as its household would set it, and in its
-    configuration.yaml for a restart. Taken before `page`, whose browser opens in Home Assistant's time zone."""
+    """Home Assistant moved to a time zone where it's midday now (12:xx), as its household would set it (a restart
+    keeps it: _moved). Taken before `page`, whose browser opens in Home Assistant's time zone."""
     hours = 12 - datetime.now(timezone.utc).hour  # From UTC-11 (at 23:xx UTC) to UTC+12 (at 00:xx UTC).
     zone = f"Etc/GMT{-hours:+d}" if hours else "UTC"  # Etc's signs are POSIX's: Etc/GMT-8 is 8 hours ahead.
-    path = ha.folder / "configuration.yaml"
-    path.write_text(re.sub(r"(?m)^(\s*time_zone:).*$", rf"\g<1> {zone}", path.read_text()))
     ha.ws.call("config/core/update", time_zone=zone)
+
+
+def _moved(ha, model_url, when):
+    """Home Assistant stopped, each of these conversations ({rid: when it started}) moved back in time on disk to when
+    it says, as if it had been recorded then (every timestamp of its recording, index entry, words and flow record,
+    moved by the same amount), and started again on the same port, in the time zone it ran in: configuration.yaml's
+    wins at the start, so it's written there once Home Assistant has stopped (on HA OS, its /config copied back then).
+    Its process."""
+    zone = ha.ws.call("get_config")["time_zone"]
+    _stop_process(ha.process)  # Gently: the improver saves everything it holds as Home Assistant stops.
+    config = ha.folder / "configuration.yaml"
+    config.write_text(re.sub(r"(?m)^(\s*time_zone:).*$", rf"\g<1> {zone}", config.read_text()))
+    storage = ha.folder / ".storage"
+    index = json.loads((storage / INDEX).read_text())["data"]["sessions"]
+    shifts = {rid: datetime.fromisoformat(index[rid]["started"]) - at for rid, at in when.items()}
+    for rid, by in shifts.items():
+        _rewrite(storage / f"assist_improver.session_{rid}", lambda data, by=by: data.update(_earlier(data, by)))
+
+    def entries(key, kind):
+        def change(data):
+            for rid, by in shifts.items():
+                if rid in (data.get(kind) or {}):
+                    data[kind][rid] = _earlier(data[kind][rid], by)
+        _rewrite(storage / key, change)
+    entries(INDEX, "sessions")
+    entries(WORDS, "transcripts")
+    entries(FLOW, "conversations")
+    _set_port(ha.folder, ha.port)
+    return _start_process(ha.folder, model_url, ha.port)
 
 
 @pytest.fixture
 def restart(ha, fake_model):
-    """recorded_at({rid: when it started}): Home Assistant stopped, each of these conversations moved back in time on
-    disk to when it says, as if it had been recorded then (every timestamp of its recording, index entry, words and
-    flow record, moved by the same amount), and Home Assistant started again on the same port and logged in. Taken
-    before `page`, so a failing test's screenshot is taken while Home Assistant still runs."""
+    """recorded_at({rid: when it started}): Home Assistant restarted with these conversations moved back in time on
+    disk (_moved), and logged in again. Taken before `page`, so a failing test's screenshot is taken while Home
+    Assistant still runs."""
     started = []
 
     def recorded_at(when):
-        _stop_process(ha.process)  # Gently: the improver saves everything it holds as Home Assistant stops.
-        storage = ha.folder / ".storage"
-        index = json.loads((storage / INDEX).read_text())["data"]["sessions"]
-        shifts = {rid: datetime.fromisoformat(index[rid]["started"]) - at for rid, at in when.items()}
-        for rid, by in shifts.items():
-            _rewrite(storage / f"assist_improver.session_{rid}", lambda data, by=by: data.update(_earlier(data, by)))
-
-        def entries(key, kind):
-            def change(data):
-                for rid, by in shifts.items():
-                    if rid in (data.get(kind) or {}):
-                        data[kind][rid] = _earlier(data[kind][rid], by)
-            _rewrite(storage / key, change)
-        entries(INDEX, "sessions")
-        entries(WORDS, "transcripts")
-        entries(FLOW, "conversations")
-        _set_port(ha.folder, ha.port)
-        ha.process = _start_process(ha.folder, fake_model.url, ha.port)
+        ha.process = _moved(ha, fake_model.url, when)
         started.append(ha.process)
         ha.wait(lambda: _ready(ha.port) or ha.process.poll() is not None, timeout=STARTUP_SECONDS,
                 what="Home Assistant to start again")
@@ -406,6 +417,35 @@ def test_find_conversations_by_words_day_and_order(midday, restart, page, ha):
     expect(panel.locator(".cs-empty")).to_have_text("No conversations match.")
     page.shot("combined")
     assert page.errors == [], (page.errors, page.rejections, page.blocked)
+
+
+def test_a_restart_on_ha_os_keeps_the_time_zone_home_assistant_ran_in(tmp_path, monkeypatch):
+    """Journey 2's restart on HA OS, stood in with no Home Assistant (its ssh runs here, on a folder as its /config,
+    and its Supervisor's commands succeed): Home Assistant, moved to midday's zone, starts again in that zone, not in
+    configuration.yaml's as copied back from HA OS when it stopped."""
+    haos, stand_ins, folder = tmp_path / "haos", tmp_path / "bin", tmp_path / "t01"
+    for path in (haos, stand_ins, folder / ".storage"):
+        path.mkdir(parents=True)
+    (stand_ins / "ssh").write_text('#!/bin/sh\nfor command; do :; done\nexec sh -c "$command"\n')  # Its last word.
+    for name in ("ha", "docker"):
+        (stand_ins / name).write_text("#!/bin/sh\n")
+    for path in stand_ins.iterdir():
+        path.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{stand_ins}{os.pathsep}{os.environ['PATH']}")
+    monkeypatch.setattr("conftest.HAOS", str(tmp_path / "ssh_config"))
+    monkeypatch.setattr("conftest.HAOS_CONFIG", str(haos))
+    monkeypatch.setattr("conftest._STUCK", [])
+    (folder / "configuration.yaml").write_text("homeassistant:\n  time_zone: Asia/Singapore\n"
+                                               "  internal_url: http://127.0.0.1:8123\n")
+    (folder / ".storage" / INDEX).write_text(json.dumps({"data": {"sessions": {}}}))
+    model = "http://127.0.0.1:9"
+    ws = SimpleNamespace(call=lambda kind: {"time_zone": "Etc/GMT+11"})  # As midday left it.
+    ha = SimpleNamespace(folder=folder, port=8123, ws=ws, process=_start_process(folder, model, 8123))
+    process = _moved(ha, model, {})
+    try:
+        assert "  time_zone: Etc/GMT+11\n" in (haos / "configuration.yaml").read_text()
+    finally:
+        _stop_process(process)
 
 
 # Journey 3's conversations, in the order they're had.
