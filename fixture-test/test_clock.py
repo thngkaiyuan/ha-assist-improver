@@ -3,7 +3,6 @@ Assistant, its scheduler, timers, templates and the sun read one time, which sta
 to each turn's recorded time, and lets waits pass at once inside a turn, never past the next recorded turn; an
 automation's week runs through seven simulated days within a budget."""
 
-import asyncio
 from copy import deepcopy
 from datetime import UTC, datetime, timedelta
 import json
@@ -126,12 +125,10 @@ async def test_triggers_the_sun_templates_and_timers_agree_with_the_virtual_cloc
         assert world["states"][PORCH] == "on"
 
         await tool(home, "intent__HassPauseTimer")
-        [paused] = await left(home)
-        assert running - 1 <= paused <= running  # Whole seconds: the real time it ran on till it paused.
         await home.observe({"at": (START + timedelta(minutes=5)).isoformat()}, [])
-        assert await left(home) == [paused]  # Paused: three minutes on, the same time left.
+        assert await left(home) == [running]  # Paused: three minutes on, the same time left.
         await tool(home, "intent__HassIncreaseTimer", minutes=5)
-        assert await left(home) == [paused + 300]
+        assert await left(home) == [running + 300]
         await tool(home, "intent__HassUnpauseTimer")
         later = max(rising, START + timedelta(minutes=20)) + timedelta(minutes=1)  # Past the timer's end and sunrise.
         await home.observe({"at": later.isoformat()}, [])
@@ -325,55 +322,6 @@ async def test_a_two_turn_replay_keeps_turn_ones_chat_log_and_runs_turn_two_at_i
     fired = datetime.fromisoformat(two["automation.between"]["attributes"]["last_triggered"])
     assert first + timedelta(minutes=5) <= fired < first + timedelta(minutes=5, seconds=1)
     assert "automation.later" not in two
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("process", ["worker", "inline"])
-async def test_a_slow_start_up_leaves_turn_one_at_its_recorded_time_and_the_home_between_turns_as_recorded(
-        hass, monkeypatch, request, process):
-    """The sandbox's start-up is slow, as on a busy host: each step of it, until turn 1, waits seconds first, longer
-    than the time from turn 1 to the household's automation due between the turns. Turn 1 still runs at its recorded
-    time, and the automation fires between the turns at its time, in a worker's process and in the tests' own."""
-    from custom_components.assist_improver import worker as worker_module
-    if process == "worker":
-        request.getfixturevalue("provider_process")
-    begin, ops = worker_module.Worker.call, []
-
-    async def slow(self, op, **args):
-        if "home.turn" not in ops:
-            await asyncio.sleep(4)
-        ops.append(op)
-        return await begin(self, op, **args)
-    monkeypatch.setattr(worker_module.Worker, "call", slow)
-    record = conversation(timedelta(seconds=30))
-    first = datetime.fromisoformat(record["turns"][0]["source"]["at"])
-    automations = [{"id": "between", "alias": "Between", "triggers": [at(first + timedelta(seconds=10))],
-                    "actions": porch()}]
-    found, requests = await replayed(hass, monkeypatch, record, [*relay_off(), [{"type": "text", "text": "Ok."}]],
-                                     through=2, automations=automations)
-    assert found["status"] == "reproduced", found.get("error")
-    assert ops.index("home.turn") >= 3  # Start-up took 12 seconds or more.
-    assert first <= said(system(requests[0])) < first + timedelta(seconds=3)
-    one, two = (step["home"] for step in found["steps"])
-    assert PORCH not in one and two[PORCH]["state"] == "on"
-    fired = datetime.fromisoformat(two["automation.between"]["attributes"]["last_triggered"])
-    assert first + timedelta(seconds=10) <= fired < first + timedelta(seconds=11)
-
-
-@pytest.mark.asyncio
-async def test_others_moves_at_a_branch_turn_set_off_a_wait_for_the_time_that_passes(hass, real_worker):
-    """A test's sandbox starts at its branch turn's time, where others' moves come first: the porch they switched on
-    sets off the household's automation, which waits for the next even second, then switches the relay off."""
-    waits = {"id": "waits", "alias": "Waits", "triggers": [{"trigger": "state", "entity_id": PORCH, "to": "on"}],
-             "actions": [{"wait_for_trigger": [{"trigger": "time_pattern", "seconds": "/2"}], "timeout": 10,
-                          "continue_on_timeout": False}, {"action": "switch.turn_off", "target": {"entity_id": TARGET}}]}
-    record = conversation()
-    home = await clock_home(hass, record, recorded_today(record, scripts={}, automations=[waits]))
-    try:
-        await home.observe(record["turns"][0]["source"], [{PORCH: {"state": "on", "attributes": {}, "removed": []}}])
-        assert (await home.snapshot())["states"][TARGET] == "off"
-    finally:
-        await home.stop()
 
 
 @pytest.mark.asyncio

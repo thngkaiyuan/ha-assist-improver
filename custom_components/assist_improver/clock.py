@@ -3,15 +3,14 @@
 worker.BOOT installs it before Home Assistant is imported (install), freezegun-style as Home Assistant's own tests set
 the time: time.time, time.time_ns, time.monotonic, time.monotonic_ns and datetime's now, utcnow and today read the real
 clock moved on by the worker's clock, which starts at the moment BOOT is given (a conversation's, or a test's branch
-turn's), stands there until the first turn or window, or an evidence probe's seeding (Clock.release), and only ever
-moves forward, so the sandbox's Home Assistant, its scheduler and the sun all read one time.
+turn's) and only ever moves forward, so the sandbox's Home Assistant, its scheduler and the sun all read one time.
 Python's thread waits keep the real clock (threading and queue are imported first), and so does the worker for its own
 timings and limits (REAL_MONOTONIC). Limits: IDs made in C (Home Assistant's ULIDs) and time.localtime() with no
 argument read the real clock.
 
 The sandbox's event loop (Loop) moves the clock on by itself only inside a window (Window): while nothing is ready, no
 executor job is pending and no file but its own wake-up pipe is watched, the clock moves to the next timer, never past
-the window's cap; outside windows it runs at real speed, once released.
+the window's cap; outside windows it runs at real speed.
 
 In the tests' own process (worker.INLINE), which is also the real instance's, patch() installs the same reads, and
 each sandbox's threads read a clock of their own (join); every other thread reads the real clock.
@@ -34,35 +33,20 @@ SMALLEST = 1e-6  # Seconds: a timer due sooner is waited for.
 
 class Clock:
     """The real clock moved on: wall-clock reads start at a moment, and the clock only moves forward from there, wall
-    clock and monotonic alike. Started at a moment, its wall clock stands there until released (release: the first
-    turn, a window, or an evidence probe once seeded), however long the sandbox takes to start; monotonic runs on, so
-    what its start waits for comes."""
+    clock and monotonic alike."""
 
     def __init__(self, start=None):
         self.offset = 0 if start is None else round(start * 1e9) - REAL_TIME_NS()  # Wall clock, ns.
         self.moved = 0  # How far it was moved on since it started, ns: what monotonic reads on top of the real one.
-        self.stood = None if start is None else round(start * 1e9)  # Its wall clock while it stands, ns.
-
-    def time_ns(self):
-        stood = self.stood
-        return REAL_TIME_NS() + self.offset if stood is None else stood
 
     def now(self):
         """Its time, in seconds since the epoch."""
-        return self.time_ns() / 1e9
+        return (REAL_TIME_NS() + self.offset) / 1e9
 
     def forward(self, seconds):
         step = max(0, round(seconds * 1e9))
         self.offset += step
         self.moved += step
-        if self.stood is not None:
-            self.stood += step
-
-    def release(self):
-        """Its wall clock runs on from where it stands."""
-        if self.stood is not None:
-            self.offset = self.stood - REAL_TIME_NS()
-            self.stood = None
 
     def move_to(self, moment):
         """On to a moment (seconds since the epoch), if it's later than now."""
@@ -75,12 +59,12 @@ def _clock():
 
 def _time():
     clock = _clock()
-    return REAL_TIME() if clock is None else clock.time_ns() / 1e9
+    return REAL_TIME() if clock is None else REAL_TIME() + clock.offset / 1e9
 
 
 def _time_ns():
     clock = _clock()
-    return REAL_TIME_NS() if clock is None else clock.time_ns()
+    return REAL_TIME_NS() if clock is None else REAL_TIME_NS() + clock.offset
 
 
 def _monotonic():
@@ -168,7 +152,6 @@ class Window:
         self.settled = loop.create_future()
 
     def __enter__(self):
-        self.loop.clock.release()  # Wall clock and monotonic move on together from here (Clock).
         self.loop.window = self
         return self
 
