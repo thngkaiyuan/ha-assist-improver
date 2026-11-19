@@ -553,6 +553,10 @@ class Panel:
 LOADS = itertools.count(1)
 
 
+# As Home Assistant's own page has it: a phone (is_mobile) lays the page out at its own width.
+VIEWPORT = '<meta name="viewport" content="width=device-width, initial-scale=1">'
+
+
 def serve(theme):
     """The stand-in origin: www/'s files at Home Assistant's static path, and a page in the theme for every address."""
     def answer(route):
@@ -562,8 +566,8 @@ def serve(theme):
             assert file.is_relative_to(WWW) and file.suffix == ".js", path
             route.fulfill(content_type="text/javascript", body=file.read_text())
         else:
-            route.fulfill(content_type="text/html",
-                          body=f"<!doctype html><html><head><style>{theme}</style></head><body></body></html>")
+            route.fulfill(content_type="text/html", body=f"<!doctype html><html><head>{VIEWPORT}<style>{theme}</style>"
+                                                          "</head><body></body></html>")
     return answer
 
 
@@ -587,8 +591,10 @@ def browser():
 def open_panel(browser):
     opened = []
 
-    def open_(answers=None, path="/assist-improver", size=PHONE, dark=True, held=(), touch=False):
-        context = browser.new_context(viewport=size, color_scheme="dark" if dark else "light", has_touch=touch)
+    def open_(answers=None, path="/assist-improver", size=PHONE, dark=True, held=(), touch=False, mobile=False):
+        # touch: a touch screen; mobile: a touch phone, as Safari on an iPhone (is_mobile, and touch).
+        context = browser.new_context(viewport=size, color_scheme="dark" if dark else "light",
+                                      has_touch=touch or mobile, is_mobile=mobile)
         page = context.new_page()
         jscov.start(page)
         errors, dialogs = [], []
@@ -1345,7 +1351,7 @@ def test_a_run_that_ends_before_a_send_reads_it_is_still_followed_to_where_it_se
     panel.answer("conversations?archived", listing([smooth], hidden=1))
     panel.click("#cs-archived")
     panel.click("[data-cs='c1']")
-    chip = panel.find(".cs-row:has([data-cs='c1']) .cs-head .chip")
+    chip = panel.find(".cs-row:has([data-cs='c1']) .cs-line .chip")
     expect(chip).to_have_text("Looked smooth")
     # While its run goes: back in the list, at Analyze. Once it's over: no trouble found, and archived again.
     panel.answer("conversations", listing([{**CHATS[0], "status": "queued"}, *CHATS[1:]]))
@@ -2362,7 +2368,7 @@ def test_a_test_whose_replay_made_assist_wordier_says_so(open_panel, size, dark)
         {"summary": "Close the garage at night", "improved": False, "result": ["not improved"], **CLOSED}])
     chip = panel.find(".tests > li").nth(0).locator(".result.more-words")
     expect(chip).to_have_text("Says more")
-    expect(chip).to_have_attribute("title", "Assist's replies: about 19 words each, 4 before.")
+    expect(chip).to_have_attribute("data-tip", "Assist's replies: about 19 words each, 4 before.")
     expect(panel.find(".tests > li").nth(1).locator(".more-words")).to_have_count(0)
     expect(panel.find(".more-words-line")).to_have_text("With this change, Assist's replies got longer in 1 of these.")
     assert_no_horizontal_scroll(panel)
@@ -2432,7 +2438,7 @@ def test_an_automations_review_says_when_it_runs_and_what_its_week_did_each_run_
     expect(rows.locator(".kind")).to_have_text(["new", "edited", "turned off"])
     expect(rows.nth(0).locator(".when")).to_have_text("At 18:00 · If Porch light is off")
     expect(rows.locator(".week")).to_have_text(["7 runs at 18:00", "2 runs added at 23:00, 1 dropped at 22:00"])
-    expect(rows.nth(0).locator(".week")).to_have_attribute("title", "Over a simulated week after your conversation")
+    expect(rows.nth(0).locator(".week")).to_have_attribute("data-tip", "Over a simulated week after your conversation")
     expect(rows.locator(".result")).to_have_text(["week not simulated"])
     look = "(el) => { const s = getComputedStyle(el); return [s.fontSize, s.color, s.backgroundColor]; }"
     when, week = (rows.nth(0).locator(css) for css in (".when", ".week"))
@@ -5050,12 +5056,21 @@ def test_no_trouble_found_is_quiet_like_declined_and_still_reads(open_panel, dar
 
 @pytest.mark.parametrize("size", [PHONE, DESKTOP], ids=["phone", "desktop"])
 def test_every_stage_fits_its_row_beside_what_was_said(open_panel, size):
+    """Each status chip in one place, whether its bubble has words (beside the row's button) or not (in it): 12px after
+    what was said, 16px from the row's end, centred on the row."""
     panel = open_panel(replies(conversations=listing(STAGED)), size=size)
     for row in panel.find(".cs-row").all():
-        line, chip, said = (row.locator(css).first.bounding_box() for css in (".cs-line", ".chip", ".cs-said"))
+        line, chip, said, text = (row.locator(css).first.bounding_box()
+                                  for css in (".cs-line", ".chip", ".cs-said", ".cs-text"))
         assert chip["x"] + chip["width"] <= line["x"] + line["width"] + 0.5, (row.inner_text(), chip, line)
         assert chip["height"] < 30, row.inner_text()  # One line.
         assert said["width"] >= 120, (row.inner_text(), said)  # What was said still reads.
+        if not row.locator(".cs-review").count():  # Up for review: a button of its own.
+            assert abs(chip["x"] - text["x"] - text["width"] - 12) < 0.5, (row.inner_text(), chip, text)
+            assert abs(line["x"] + line["width"] - chip["x"] - chip["width"] - 16) < 0.5, (row.inner_text(), chip)
+            assert abs(chip["y"] + chip["height"] / 2 - line["y"] - line["height"] / 2) < 0.5, (row.inner_text(), chip)
+    expect(panel.find(".cs-line > .chip[role='note']")).to_have_text(["No trouble found", "Couldn't reproduce",
+                                                                       "Already covered"])  # Beside: those with words.
     assert_no_horizontal_scroll(panel)
 
 
@@ -5107,7 +5122,7 @@ def test_an_opened_conversation_is_archived_out_of_the_list_and_comes_back_with_
     panel.click("#cs-archived")
     assert panel.calls("conversations")[-1]["archived"] is True
     expect(panel.find(".cs-row.cs-archived [data-cs='c1']")).to_have_count(1)
-    expect(panel.find(".cs-row:has([data-cs='c1']) .cs-head .chip")).to_have_text("Archived")
+    expect(panel.find(".cs-row:has([data-cs='c1']) .cs-line .chip")).to_have_text("Archived")
     expect(panel.find("#cs-archived")).to_be_checked()
     panel.answer("conversation", {**chat("archived"), "hidden": True})
     panel.click("[data-cs='c1']")
@@ -5123,7 +5138,7 @@ def test_an_opened_conversation_is_archived_out_of_the_list_and_comes_back_with_
     expect(panel.find(".cs-row.cs-archived")).to_have_count(0)
     expect(panel.find("[data-cs='c1']")).to_have_count(1)  # Still there, once.
     expect(panel.find(".cs-turn").first).to_be_visible()  # And still open.
-    expect(panel.find(".cs-row:has([data-cs='c1']) .cs-head .chip")).to_have_text("New")  # As its record says (P0.2).
+    expect(panel.find(".cs-row:has([data-cs='c1']) .cs-line .chip")).to_have_text("New")  # As its record says (P0.2).
     panel.click("#cs-actions")
     expect(panel.find("#cs-archive")).to_be_visible()
     expect(panel.find(".cs-show-archived")).to_have_count(0)  # Nothing archived now.
@@ -5402,7 +5417,7 @@ def test_the_opened_one_stays_in_view_while_it_is_read_though_a_run_settled_it(o
     assert panel.calls("conversations")[-1]["ids"] == ["c2"]  # The opened one (c1 went in with the run).
     expect(panel.find(".cs-said")).to_have_text(["Turn on the porch light.", "Open the garage.", "What's the weather?",
                                                  "Warm up the car."])  # Where it was.
-    expect(panel.find(".cs-row.open.cs-archived .cs-head .chip")).to_have_text("No trouble found")
+    expect(panel.find(".cs-row.open.cs-archived .cs-line .chip")).to_have_text("No trouble found")
     panel.click("#cs-actions")
     expect(panel.find("#cs-unarchive")).to_be_visible()  # Archived now: its ⋮ offers Unarchive.
     panel.click("#cs-menu-close")
@@ -5545,7 +5560,7 @@ def test_one_the_quick_check_found_smooth_can_be_picked_or_sent_in_but_not_by_se
     panel = open_panel(replies(conversations=listing(rows), conversation=chat("smooth", id="c4")))
     chip = panel.find(".cs-row").nth(2).locator(".chip")
     expect(chip).to_have_text("Looked smooth")
-    expect(chip).to_have_attribute("title", "Nothing to improve, at a quick look. Send it in for a full analysis.")
+    expect(chip).to_have_attribute("data-tip", "Nothing to improve, at a quick look. Send it in for a full analysis.")
     panel.click("#cs-all")  # Selected, but not run by Select all: each would be a full analysis.
     expect(panel.find("[data-cs-pick='c4']")).to_be_checked()
     expect(panel.find("#cs-run")).to_have_text("Run on 2 conversations")
@@ -5563,7 +5578,7 @@ def test_one_with_no_fix_found_says_so_quietly_and_is_sent_in_again_only_opened_
                                conversation__send={"status": "sent", "hidden": False}))
     chip = panel.find(".cs-row").nth(1).locator(".chip")
     expect(chip).to_have_text("No fix found")
-    expect(chip).to_have_attribute("title", "No fix worked. Send it in again with a note for one more look.")
+    expect(chip).to_have_attribute("data-tip", "No fix worked. Send it in again with a note for one more look.")
     assert "cs-nofix" in classes(chip)  # Quiet grey, as Declined.
     expect(chip).to_have_css("color", panel.find(".cs-row").nth(1).locator(".cs-sub").evaluate(
         "el => getComputedStyle(el).color"))
@@ -5589,7 +5604,7 @@ def test_one_no_idea_could_be_tested_on_has_the_same_chip_with_its_own_bubble(op
     panel = open_panel(replies(conversations=listing([CHATS[0], untested])))
     chip = panel.find(".cs-row").nth(1).locator(".chip")
     expect(chip).to_have_text("No fix found")
-    expect(chip).to_have_attribute("title", "No fix could be tested on this conversation.")
+    expect(chip).to_have_attribute("data-tip", "No fix could be tested on this conversation.")
 
 
 @pytest.mark.parametrize("dark", [False, True], ids=["light", "dark"])
@@ -5600,9 +5615,9 @@ def test_one_whose_baseline_didnt_reproduce_says_couldnt_reproduce_quietly_besid
     chip = panel.find(".cs-row").nth(1).locator(".chip")
     expect(chip).to_have_text("Couldn't reproduce")
     expect(chip).to_have_attribute(
-        "title", "The test couldn't make this trouble happen again, so no fix could be tested.")
+        "data-tip", "The test couldn't make this trouble happen again, so no fix could be tested.")
     expect(panel.find(".cs-row").nth(0).locator(".chip")).to_have_attribute(
-        "title", "No fix worked. Send it in again with a note for one more look.")  # Its tests found none.
+        "data-tip", "No fix worked. Send it in again with a note for one more look.")  # Its tests found none.
     color = lambda css: panel.find(css).evaluate(  # noqa: E731
         "(el) => ['color', 'borderColor', 'backgroundColor'].map((k) => getComputedStyle(el)[k]).join(' ')")
     assert color(".chip.cs-unreproducible") == color(".chip.cs-nofix")
@@ -5618,9 +5633,9 @@ def test_already_covered_and_held_say_why_in_their_tooltips(open_panel):
                                conversation=chat("duplicate", id="c2")))
     chips = panel.find(".cs-row .chip")
     expect(chips.nth(1)).to_have_text("Already covered")
-    expect(chips.nth(1)).to_have_attribute("title", "Another conversation's improvement covers it.")
+    expect(chips.nth(1)).to_have_attribute("data-tip", "Another conversation's improvement covers it.")
     expect(chips.nth(2)).to_have_text("To analyze")
-    expect(chips.nth(2)).to_have_attribute("title", "Held: Analyze is blocked.")
+    expect(chips.nth(2)).to_have_attribute("data-tip", "Held: Analyze is blocked.")
     panel.click("[data-cs-pick='c3']")
     expect(panel.find("#cs-run")).to_have_text("Run on 1 conversation")
     panel.click("[data-cs='c2']")
@@ -5896,7 +5911,7 @@ def test_no_trouble_found_says_so_quietly_and_is_sent_in_again_only_opened_with_
     chip = panel.find(".cs-row").nth(1).locator(".chip")
     expect(chip).to_have_text("No trouble found")
     expect(chip).to_have_attribute(
-        "title", "Nothing went wrong, as far as it could tell. Send it in again with a note if something did.")
+        "data-tip", "Nothing went wrong, as far as it could tell. Send it in again with a note if something did.")
     assert "cs-fine" in classes(chip)  # Quiet grey, as Declined.
     panel.click("#cs-all")  # Selected (to archive or delete), but never run: it goes in opened, with a note.
     expect(panel.find("#cs-run")).to_have_text("Run on 1 conversation")
@@ -6005,7 +6020,7 @@ def test_what_a_change_leaves_open_is_in_their_words_with_each_reply_and_reason_
         "data-tip", "It didn't happen without the change either, so this test couldn't show it.")
     chip = panel.find(".tests li .result.still-open")
     expect(chip).to_have_text("2 still open")
-    expect(chip).to_have_attribute("title", "Something you pointed out still happened in a reply with this change.")
+    expect(chip).to_have_attribute("data-tip", "Something you pointed out still happened in a reply with this change.")
     assert not low_contrast(panel, [".rp-open .line", ".rp-open-head"], 4.5)
     assert not low_contrast(panel, [".tests li .result"], 3)  # A small chip, as each test's result always was.
     assert_no_horizontal_scroll(panel)
@@ -6024,7 +6039,7 @@ def test_a_chip_for_what_only_couldnt_be_told_says_so_and_none_shows_when_nothin
     chips = panel.find(".tests li .result.still-open")
     expect(chips).to_have_text(["1 still open"])
     expect(chips).to_have_attribute(
-        "title", "It didn't happen without the change either, so this test couldn't show it.")
+        "data-tip", "It didn't happen without the change either, so this test couldn't show it.")
 
 
 # Where each conversation is, by its flow record (conversations.standing): a fix waiting for its write-up, a
@@ -6085,6 +6100,192 @@ def test_the_status_filter_finds_the_conversations_that_cant_be_improved(open_pa
     panel.click("#cs-status-all")  # None: then just these.
     panel.click("[data-cs-status='cannot']")
     assert panel.calls("conversations")[-1]["statuses"] == ["cannot"]
+
+
+# A chip that explains itself, as Can't improve does: its words in its bubble (DETAILS P17.5.1), on a phone at a tap.
+# Each status's that has words (P14.3, P17.20), and held's (P4.3), as the list shows them: the row, its chip, its words.
+EXPLAINED = [({"status": "smooth"}, "Looked smooth",
+              "Nothing to improve, at a quick look. Send it in for a full analysis."),
+             ({"status": "nofix"}, "No fix found", "No fix worked. Send it in again with a note for one more look."),
+             ({"status": "nofix", "untestable": True}, "No fix found", "No fix could be tested on this conversation."),
+             ({"status": "unreproducible"}, "Couldn't reproduce",
+              "The test couldn't make this trouble happen again, so no fix could be tested."),
+             ({"status": "fine"}, "No trouble found",
+              "Nothing went wrong, as far as it could tell. Send it in again with a note if something did."),
+             ({"status": "duplicate", "covered_by": "imp-9"}, "Already covered",
+              "Another conversation's improvement covers it."),
+             ({"status": "queued", "held": {"cause": "blocked", "why": "Analyze is blocked."}}, "To analyze",
+              "Held: Analyze is blocked.")]
+
+
+def explaining_rows():
+    """A row for each chip that explains itself, then one with nothing more to say (New); and archived, one of each."""
+    rows = [{**CHATS[3], "id": f"e{n}", "said": f"Turn on the lamp in room {n}.", **row}
+            for n, (row, _, _) in enumerate(EXPLAINED)]
+    away = [{**CHATS[3], "id": "a1", "said": "Close the blinds.", "status": "fine", "hidden": True},
+            {**CHATS[3], "id": "a2", "said": "Lock the back door.", "status": "archived", "hidden": True}]
+    return rows + [CHATS[0]], away
+
+
+def assert_bubble(panel, words, width):
+    tip = panel.find("#tip")
+    expect(tip).to_be_visible()
+    expect(tip).to_have_text(words)
+    box = tip.bounding_box()
+    assert box["x"] >= 8 - 0.5 and box["x"] + box["width"] <= width - 8 + 0.5, box  # On the screen.
+
+
+def test_a_status_chip_with_words_shows_its_bubble_at_a_tap_on_a_phone_and_opens_nothing(open_panel):
+    """Kai, approving the fix: "these chips would show their bubble on a tap, the way the 'Can't improve' chip already
+    does". On a touch phone, a tap on each chip with words (every status's, held's) shows its bubble with them, in the
+    list and below Show archived, and opens nothing; screen readers read its name and words. A tap on the row's words,
+    or beside its chip, opens the row as before, and so does one on a chip with nothing more to say (New, Archived)."""
+    rows, away = explaining_rows()
+    panel = open_panel(replies(conversations=listing(rows, hidden=len(away))), mobile=True)
+    panel.answer("conversations?archived", listing(away, hidden=len(away)))
+    panel.find("#cs-archived").tap()
+    panel.settle()
+    chip = lambda key: panel.find(f".cs-row:has([data-cs='{key}']) .cs-line .chip")  # noqa: E731
+    for key, name, words in [(f"e{n}", name, words) for n, (_, name, words) in enumerate(EXPLAINED)] + [
+            ("a1", *EXPLAINED[4][1:])]:  # The last, archived.
+        expect(chip(key)).to_have_text(name)
+        chip(key).tap()
+        assert_bubble(panel, words, PHONE["width"])
+        expect(chip(key)).to_have_role("note")
+        expect(chip(key)).to_have_accessible_name(f"{name}: {words}")
+    expect(panel.find(".cs-row.open")).to_have_count(0)  # Reading them opened nothing.
+    assert panel.calls("conversation") == []
+    # A tap on a chip with nothing more to say (New; Archived, below Show archived), or on the row's words, opens it.
+    for key, part in (("c1", ".cs-line .chip"), ("a2", ".cs-line .chip"), ("e3", ".cs-said")):
+        panel.find(f".cs-row:has([data-cs='{key}']) {part}").tap()
+        panel.settle()
+        expect(panel.find(f".cs-row.open [data-cs='{key}']")).to_have_count(1)
+        expect(panel.find(".cs-turn")).to_have_count(2)
+    panel.find("[data-cs='e3'] .cs-said").tap()  # And closes it, as before.
+    panel.settle()
+    expect(panel.find(".cs-row.open")).to_have_count(0)
+    line, beside = box(panel, ".cs-row:has([data-cs='e0']) .cs-line"), box(panel, ".cs-row:has([data-cs='e0']) .chip")
+    assert beside["y"] - line["y"] >= 8, (line, beside)  # Room above the chip, which is the row's.
+    panel.page.touchscreen.tap(beside["x"] + beside["width"] / 2, line["y"] + 4)
+    panel.settle()
+    expect(panel.find(".cs-row.open [data-cs='e0']")).to_have_count(1)
+
+
+def test_a_status_chip_with_words_shows_its_bubble_on_hover_and_on_focus_on_a_desktop(open_panel):
+    """DETAILS P17.5.1: on hover, gone once the pointer leaves; and at keyboard focus, Tab from its row."""
+    rows, _ = explaining_rows()
+    panel = open_panel(replies(conversations=listing(rows)), size=DESKTOP)
+    for n, (_, name, words) in enumerate(EXPLAINED):
+        chip = panel.find(f".cs-row:has([data-cs='e{n}']) .cs-line .chip")
+        chip.hover()
+        assert_bubble(panel, words, DESKTOP["width"])
+        panel.page.mouse.move(0, 0)
+        expect(panel.find("#tip")).to_be_hidden()
+        panel.find(f"[data-cs='e{n}']").focus()
+        panel.page.keyboard.press("Tab")
+        expect(chip).to_be_focused()
+        assert_bubble(panel, words, DESKTOP["width"])
+    expect(panel.find(".cs-row.open")).to_have_count(0)
+
+
+def explaining_review(open_panel, **kw):
+    """A review with each one that explains itself: Says more, and Still open, from a reply (the first test) and set
+    aside (the second); and an automation's week."""
+    tests = [{"summary": "Open the garage doors", "improved": True, "result": ["3 → 1 turns"], "open": 1,
+              "happened": 1, "more_words": {"before": 4, "after": 19}, **OPENED},
+             {"summary": "Close the garage", "improved": True, "result": ["3 → 1 turns"], "open": 1, "happened": 0,
+              **CLOSED}]
+    return open_panel(replies(improvement=review(tests=tests, still_open=STILL_OPEN, automations=[DUSK_WEEK],
+                                                 changes=WEEK_CHANGES[:1], safety=WEEK_SAFETY)),
+                      path="/assist-improver?id=imp1", **kw)
+
+
+# Each one on the review that explains itself: its row, itself, its name and its bubble's words (DETAILS P17.21.3,
+# P17.21.4, P17.17).
+REVIEW_EXPLAINED = [
+    (".tests > li:nth-child(1)", ".result.more-words", "Says more", "Assist's replies: about 19 words each, 4 before."),
+    (".tests > li:nth-child(1)", ".result.still-open", "1 still open",
+     "Something you pointed out still happened in a reply with this change."),
+    (".tests > li:nth-child(2)", ".result.still-open", "1 still open",
+     "It didn't happen without the change either, so this test couldn't show it."),
+    (".autos > li:nth-child(1)", ".week", "7 runs at 18:00", "Over a simulated week after your conversation")]
+
+
+def test_a_reviews_chips_and_week_show_their_bubbles_at_a_tap_on_a_phone_and_leave_their_rows_as_they_were(open_panel):
+    """A tap on Says more, on Still open (either way) or on an automation's week shows its bubble and leaves its test's
+    or automation's row as it was, open or folded; a tap on the rest of the row still folds or opens it."""
+    panel = explaining_review(open_panel, mobile=True)
+    for row, css, name, words in REVIEW_EXPLAINED:
+        section = panel.find(f"{row} > details")
+        was = section.evaluate("(d) => d.open")
+        chip = panel.find(f"{row} summary {css}")
+        expect(chip).to_have_text(name)
+        chip.tap()
+        assert_bubble(panel, words, PHONE["width"])
+        expect(chip).to_have_accessible_name(f"{name}: {words}")
+        panel.settle()
+        assert section.evaluate("(d) => d.open") == was, (name, was)
+    for row, part, was in ((".tests > li:nth-child(1)", "summary > span:nth-child(2)", True),
+                           (".autos > li:nth-child(1)", ".what .name", False)):
+        assert panel.find(f"{row} > details").evaluate("(d) => d.open") is was, row
+        panel.find(f"{row} {part}").tap()
+        panel.settle()
+        assert panel.find(f"{row} > details").evaluate("(d) => d.open") is not was, row
+
+
+def test_a_reviews_chips_and_week_show_their_bubbles_on_hover_and_on_focus_on_a_desktop(open_panel):
+    panel = explaining_review(open_panel, size=DESKTOP)
+    for row, css, _, words in REVIEW_EXPLAINED:
+        panel.find(f"{row} summary {css}").hover()
+        assert_bubble(panel, words, DESKTOP["width"])
+        panel.page.mouse.move(0, 0)
+        expect(panel.find("#tip")).to_be_hidden()
+    panel.find(".tests > li:nth-child(1) summary").focus()  # From the test's row, Tab reaches each in turn.
+    for row, css, _, words in REVIEW_EXPLAINED[:2]:
+        panel.page.keyboard.press("Tab")
+        expect(panel.find(f"{row} summary {css}")).to_be_focused()
+        assert_bubble(panel, words, DESKTOP["width"])
+    panel.find(".autos > li:nth-child(1) summary").focus()
+    panel.page.keyboard.press("Tab")
+    expect(panel.find(".autos > li:nth-child(1) summary .week")).to_be_focused()
+    assert_bubble(panel, REVIEW_EXPLAINED[-1][-1], DESKTOP["width"])
+
+
+def dev_row(n, stage, held=None):
+    """A row of the developer view's Conversations, as devview.conversation_rows sends it."""
+    return {"id": f"{n:032x}", "short": f"{n:08x}", "started": ago(60 * n), "ended": ago(60 * n - 2), "user_turns": 2,
+            "status": "closed", "stored": "full", "bytes": 4200, "stage": stage, "round": 1, "outcome": None,
+            "held": held, "covered_by": None, "failed": 0, "goals": 1, "friction": 1, "improvements": [],
+            "replays": [], "runs": []}
+
+
+HELD_DEV = [dev_row(1, "Analyze", {"cause": "failures", "why": "Analyze failed 3 times in a row."}),
+            dev_row(2, "Write up", {"cause": "blocked", "why": "Write up is blocked."}), dev_row(3, "Your Assist")]
+
+
+@pytest.mark.parametrize("size", [PHONE, DESKTOP], ids=["phone", "desktop"])
+def test_a_held_chip_in_the_developer_view_says_why_in_its_bubble(open_panel, size):
+    """The developer view's Conversations: a held chip's why is in its bubble, at a tap on a phone, on hover and at
+    keyboard focus on a desktop; screen readers read its name and why."""
+    phone = size is PHONE
+    panel = open_panel({**replies(), "assist_improver/dev/conversations": {"rows": HELD_DEV}},
+                       path="/assist-improver?view=developer&tab=conversations", size=size, mobile=phone)
+    for n, (cause, why) in enumerate([(r["held"]["cause"], r["held"]["why"]) for r in HELD_DEV[:2]]):
+        row = panel.find(".dv-table tbody tr").nth(n)
+        chip = row.locator(".dv-chip", has_text="held:")
+        expect(chip).to_have_text(f"held: {cause}")
+        expect(chip).to_have_accessible_name(f"held: {cause}: {why}")
+        if phone:
+            chip.tap()
+        else:
+            chip.hover()
+            assert_bubble(panel, why, size["width"])
+            panel.page.mouse.move(0, 0)
+            expect(panel.find("#tip")).to_be_hidden()
+            row.locator(".dv-copy").focus()
+            panel.page.keyboard.press("Tab")
+            expect(chip).to_be_focused()
+        assert_bubble(panel, why, size["width"])
 
 
 def test_archiving_reads_again_what_a_run_would_take(open_panel):

@@ -159,7 +159,7 @@ def test_run_now_takes_in_what_nobody_sent_in(page, ha, fake_model):
     expect(unknown.locator(".cs-review")).to_have_text("Up for review")
     expect(page.chip(known)).to_have_text("Looked smooth")
     expect(page.chip(known)).to_have_attribute(
-        "title", "Nothing to improve, at a quick look. Send it in for a full analysis.")
+        "data-tip", "Nothing to improve, at a quick look. Send it in for a full analysis.")
     page.shot("after-run")
     unknown.locator(".cs-review").click()
     expect(page.page).to_have_url(re.compile(r"/assist-improver\?id="))
@@ -259,13 +259,13 @@ def test_blocked_stage_holds_until_released(page, ha):
 
     # ... in the list (its chip names the stage; its tooltip says why it's held) ...
     expect(page.chip(row)).to_have_text("To analyze")
-    expect(page.chip(row)).to_have_attribute("title", "Held: Analyze is blocked.")
+    expect(page.chip(row)).to_have_attribute("data-tip", "Held: Analyze is blocked.")
     # ... and on its page: opened, it reads as it went, still held, with why; held, it can't be sent in on its own.
     row.locator(".cs-head").click()
     expect(row.locator(".cs-read .cs-you .cs-says")).to_have_text([UNKNOWN, EXPLAINED])
     expect(row.locator(".cs-read .cs-assist .cs-says").first).to_contain_text("couldn't find")
     expect(page.chip(row)).to_have_text("To analyze")
-    expect(page.chip(row)).to_have_attribute("title", "Held: Analyze is blocked.")
+    expect(page.chip(row)).to_have_attribute("data-tip", "Held: Analyze is blocked.")
     expect(row.locator("#cs-send")).to_have_count(0)
     expect(run_button).to_have_count(0)  # Analyze is still blocked: no run would move it.
     page.shot("held")

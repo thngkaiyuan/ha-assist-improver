@@ -2277,7 +2277,7 @@ Citations in parentheses name the maintainer's earlier notes, which aren't in th
   - **P14.9.3** Each stage card shows how many conversations are at it (P14.1.2). Conversations held there show as
     held, and why can be seen on demand (P4.3). (DESIGN.md; fixture-test/SPEC.md; Kai 2026-10-24, "gates is the
     play/pause behavior I'm looking for")
-  - **P14.9.4** Tooltips show in a bubble on hover, not on click. Menus close on a click outside or Esc, changing
+  - **P14.9.4** Tooltips show in a bubble (P17.5.1). Menus close on a click outside or Esc, changing
     nothing. Model menus show no 'Assist Improver' tooltips. 'Your review' isn't a link. '0 lines learned' has no
     dropdown arrow. (Kai: 2026-10-24)
   - **P14.9.5** Picking a model saves it at once, and a setting that can't be saved says why. On a phone a menu rises
@@ -2610,7 +2610,9 @@ words, those words are the requirement; elsewhere the behaviour lives in its own
   TEXT-REVIEW.md "The home page, at a glance")
 - **P17.5** Explanations are bubbles, not text on the page. (DESIGN.md "Text is kept to a minimum"; Kai, 2026-10-24)
   - **P17.5.1** A bubble shows on hover and on focus, never only on click, and stays while hovered or focused; a click
-    puts it aside. (Kai, 2026-10-24: "show information in a bubble when hovered over - not click"; fixture-test/SPEC.md)
+    puts it aside, except on what's there to explain (a chip, an ⓘ): a tap there shows it, opening nothing. (Kai,
+    2026-10-24: "show information in a bubble when hovered over - not click"; fixture-test/SPEC.md; Kai, 2026-11-19:
+    "approved the fix", chips that "show their bubble on a tap")
   - **P17.5.2** A bubble beside a menu never covers the menu's options. (fixture-test/SPEC.md)
   - **P17.5.3** A bubble's text is plain text, never markup. (fixture-test/SPEC.md)
   - **P17.5.4** Each stage on the settings diagram explains itself in a small bubble beside it (P17.16.1). (Kai,

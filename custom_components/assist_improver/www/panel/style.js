@@ -144,7 +144,7 @@ export const STYLE = `
   .tests .ok .result { color: var(--add-fg); background: var(--add-bg); }
   .tests .no .result { color: var(--secondary-text-color); background: var(--secondary-background-color); }
   .tests .result.more-words, .tests .result.still-open { color: var(--warn-fg);
-    background: color-mix(in srgb, var(--warn-fg) 12%, transparent); }
+    background: color-mix(in srgb, var(--warn-fg) 12%, transparent); cursor: help; }
   /* Each automation it changes: its name, when it runs and its week in a few words under it, a line each (a week that
      couldn't run, a chip beside them); opened, each run. */
   .autos { list-style: none; margin: 0 0 14px; padding: 0; container-type: inline-size; }
@@ -154,6 +154,7 @@ export const STYLE = `
   .autos .what { flex: 1; min-width: 0; } .autos .what .name { font-weight: 500; }
   .autos .when, .autos .week { display: block; font-size: 13px; color: var(--secondary-text-color);
     overflow-wrap: anywhere; }
+  .autos .week { width: fit-content; cursor: help; }  /* Its bubble shows at a tap on its words; the rest toggles. */
   .autos .result { font-size: 12px; padding: 0 8px; border-radius: 10px; white-space: nowrap;
     color: var(--warn-fg); background: color-mix(in srgb, var(--warn-fg) 12%, transparent); }
   @container (max-width: 479px) { .autos .row { flex-wrap: wrap; row-gap: 2px; }
@@ -332,7 +333,7 @@ export const STYLE = `
   .cs-controls .cs-all { display: flex; width: fit-content; margin: 12px 0 0 8px; }
   .cs-row:last-child { border-bottom: none; }
   .cs-row.picked { background: color-mix(in srgb, var(--primary-color) 7%, transparent); }
-  .cs-line { display: flex; align-items: stretch; }
+  .cs-line { display: flex; align-items: stretch; cursor: pointer; }
   .cs-pick { flex: none; display: flex; align-items: center; justify-content: center; width: 48px; cursor: pointer; }
   .cs-head { flex: 1; min-width: 0; display: flex; align-items: center; gap: 12px; padding: 12px 16px 12px 0; border: none;
     background: none; font: inherit; color: inherit; text-align: left; cursor: pointer; }
@@ -347,6 +348,9 @@ export const STYLE = `
   .chip.cs-unclear { border-color: var(--primary-color); color: var(--primary-color); }
   .chip.cs-cannot { align-self: center; flex: none; margin-right: 16px; border-color: var(--warn-fg); color: var(--warn-fg);
     cursor: help; }
+  /* A status with a bubble, beside the row's button so a tap reads it: where it would be in the button. */
+  .cs-head:has(+ .cs-noted) { padding-right: 12px; }
+  .chip.cs-noted { align-self: center; flex: none; margin-right: 16px; cursor: help; }
   button.chip.cs-review { align-self: center; flex: none; margin-right: 16px; font: inherit; font-size: 12px; cursor: pointer;
     border-color: var(--primary-color); background: color-mix(in srgb, var(--primary-color) 14%, transparent); color: var(--primary-color); }
   button.chip.cs-review:hover { background: color-mix(in srgb, var(--primary-color) 24%, transparent); }
@@ -627,7 +631,7 @@ export const STYLE = `
   .dv-copy .ic { width: 13px; height: 13px; } .dv-copy.done { color: var(--add-fg); opacity: 1; }
   .dv-mono { font-family: var(--mono); font-size: 12.5px; }
   .dv-chip { display: inline-block; font-size: 11.5px; line-height: 18px; padding: 0 7px; border-radius: 9px; white-space: nowrap;
-    color: var(--secondary-text-color); background: rgba(127, 127, 127, .14); }
+    color: var(--secondary-text-color); background: rgba(127, 127, 127, .14); } .dv-chip[data-tip] { cursor: help; }
   .dv-chip.c-blue { color: var(--dv-blue); background: rgba(61, 139, 217, .14); }
   .dv-chip.c-green { color: var(--add-fg); background: var(--add-bg); }
   .dv-chip.c-amber { color: var(--dv-amber); background: rgba(201, 134, 26, .15); }

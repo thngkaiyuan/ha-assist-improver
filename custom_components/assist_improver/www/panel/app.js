@@ -94,8 +94,10 @@ export class PanelApp {
     }, true);
     this.root.addEventListener("click", (ev) => {
       // A section about to open from its own summary (a tap, or Enter or Space there): what it shows fades in, marked
-      // before it's drawn open. One drawn open never does.
-      const summary = ev.composedPath()[0]?.closest?.("summary"), section = summary?.parentElement;
+      // before it's drawn open. One drawn open never does. A tap on what explains itself there (a chip with a bubble)
+      // shows its bubble, and the section stays as it was.
+      const target = ev.composedPath()[0], summary = target?.closest?.("summary"), section = summary?.parentElement;
+      if (summary?.contains(target.closest("[data-tip][tabindex]"))) { ev.preventDefault(); return; }
       if (section?.tagName !== "DETAILS" || section.open || summary !== section.querySelector(":scope > summary")) return;
       for (const el of section.children) if (el !== summary) fade(el);
     }, true);
@@ -390,6 +392,7 @@ export class PanelApp {
     tip.textContent = el.dataset.tip;
     if (tip.hidden) fade(tip);
     tip.hidden = false;
+    tip.style.left = "0px";  // Measured at the screen's edge: where the last one was, the screen's edge could narrow it.
     const r = el.getBoundingClientRect(), w = tip.offsetWidth, h = tip.offsetHeight;
     const edge = this.root.querySelector(".status-strip").offsetHeight + 8;  // Clear of a phone's status bar.
     const pop = el.closest(".pop:not(.sheet)");

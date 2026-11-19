@@ -3,7 +3,7 @@
 // after a decision the footer says what happened and offers the way on, never another decision where the last one was.
 
 const v = new URL(import.meta.url).search;  // ?v=<version>, passed on to every module this one loads.
-const [{esc, fill}, {STATUS, TEXT}, common, {dialog}] = await Promise.all([
+const [{esc, fill, explained}, {STATUS, TEXT}, common, {dialog}] = await Promise.all([
   import(`./format.js${v}`), import(`./text.js${v}`), import(`./common.js${v}`), import(`./conversations.js${v}`)]);
 
 // Home Assistant makes the panel's element again whenever its sidebar title (the count) changes, as it does after a
@@ -63,13 +63,14 @@ function replay(t, open) {
 }
 
 function test(p, t, n, open) {
-  // A test's row: what it tested and what it showed, a chip per result; opened (at first), its before and after.
+  // A test's row: what it tested and what it showed, a chip per result; opened (at first), its before and after. Says
+  // more and Still open explain themselves in their bubbles.
   const R = TEXT.review, more = t.more_words;
   const row = `<span class="mark">${t.improved ? "&#10003;" : "&#8211;"}</span><span>${esc(t.summary)}</span>
     <span class="results">${t.result.map((said) => `<span class="result">${esc(said)}</span>`).join("")}${more
-      ? `<span class="result more-words" title="${esc(fill(R.moreWordsTip, more))}">${esc(R.moreWords)}</span>` : ""}${t.open
-      ? `<span class="result still-open" title="${esc(t.happened ? R.open.chipTip : R.open.setAside)}">${
-        esc(fill(R.open.chip, {n: t.open}))}</span>` : ""}</span>`;
+      ? explained("result more-words", R.moreWords, fill(R.moreWordsTip, more)) : ""}${t.open
+      ? explained("result still-open", fill(R.open.chip, {n: t.open}), t.happened ? R.open.chipTip : R.open.setAside)
+      : ""}</span>`;
   const key = `test${n}`;
   return `<li class="${t.improved ? "ok" : "no"}">${t.before?.length || t.after?.length
     ? `<details data-key="${key}" ${p.open.has(key) ? "open" : ""}><summary class="row">${row}</summary>${replay(t, open)}</details>`
@@ -81,8 +82,7 @@ function automation(p, a, n) {
   // configuration), and under that, its simulated week in a few words (a chip when it couldn't run); opened, each run
   // (for a change to one you have, each run the change adds or drops) and what it changed.
   const W = TEXT.review.week, w = a.week, key = `auto${n}`;
-  const week = w ? `<span class="week" title="${esc(W.tip)}">${esc(w.result)}${
-    w.days < 7 ? esc(fill(W.days, w)) : ""}</span>` : "";
+  const week = w ? explained("week", `${w.result}${w.days < 7 ? fill(W.days, w) : ""}`, W.tip) : "";
   const row = `<span class="what"><span class="name">${esc(a.name)}</span> <span class="kind automation">${
     esc(W.change[a.change])}</span><span class="when">${esc([a.when, a.if].filter(Boolean).join(" · "))}</span>${
     week}</span>${a.failed ? `<span class="result">${esc(W.failed)}</span>` : ""}`;

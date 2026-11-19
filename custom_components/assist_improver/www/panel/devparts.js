@@ -3,7 +3,7 @@
 // every value goes through esc().
 
 const v = new URL(import.meta.url).search;  // ?v=<version>, passed on to every module this one loads.
-const [{esc, plural, ago, cls, bytes, dur, num, isIso, stamp, devUrl}, {svg}] = await Promise.all(
+const [{esc, plural, ago, cls, bytes, dur, num, isIso, stamp, devUrl, explained}, {svg}] = await Promise.all(
   ["format", "icons"].map((name) => import(`./${name}.js${v}`)));
 
 // The keys whose values are IDs (each a link to Find).
@@ -70,9 +70,8 @@ export function stageChip(stage) {
 }
 
 export function heldChip(held) {
-  // A hold (its cause, with why on hover): failures red, the rest amber.
-  return held ? `<span class="dv-chip ${held.cause === "failures" ? "c-red" : "c-amber"}" title="${esc(held.why)}">held: ${
-    esc(held.cause)}</span>` : "";
+  // A hold (its cause, with why in its bubble): failures red, the rest amber.
+  return held ? explained(`dv-chip ${held.cause === "failures" ? "c-red" : "c-amber"}`, `held: ${held.cause}`, held.why) : "";
 }
 
 export function timeline(events) {

@@ -8,7 +8,7 @@
 // review is left out on its own until it stands otherwise; Unarchive keeps it in the list.
 
 const v = new URL(import.meta.url).search;  // ?v=<version>, passed on to every module this one loads.
-const [{esc, when, plural, fill}, {TEXT}, {svg}, common] = await Promise.all(
+const [{esc, when, plural, fill, explained}, {TEXT}, {svg}, common] = await Promise.all(
   ["format", "text", "icons", "common"].map((name) => import(`./${name}.js${v}`)));
 
 const DAYS = [["", "all"], ["1", "today"], ["7", "week"], ["30", "month"]];
@@ -301,15 +301,17 @@ function marked(text, query) {
   return out + esc(text.slice(last));
 }
 
-function badge(row) {
+function badge(row, beside) {
   // Where it stands; one up for review is its own button beside the row (reviewLink), so it can open that review.
-  // Its tooltip says what comes next, or, held, why (flow.py's words).
+  // One with more to say (what comes next, or, held, why: flow.py's words) says it in its bubble, beside the row's
+  // button (beside), so a tap reads it and opens nothing; the rest are in the button, opening the row as it does.
   const C = TEXT.conversations, tips = {smooth: C.smoothTip, nofix: row.untestable ? C.untestableTip : C.nofixTip,
     unreproducible: C.unreproducibleTip, fine: C.fineTip, duplicate: C.duplicateTip};
   const text = row.held ? fill(C.heldTip, {why: row.held.why}) : tips[row.status];
-  const tip = text ? ` title="${esc(text)}"` : "";
-  return row.status === "review" && row.review || cannot(row) ? ""
-    : `<span class="chip cs-${row.status}"${tip}>${esc(C.status[row.status] || row.status)}</span>`;
+  const name = C.status[row.status] || row.status;
+  if (row.status === "review" && row.review || cannot(row) || !!text !== beside) return "";
+  return text ? explained(`chip cs-${row.status} cs-noted`, name, text)
+    : `<span class="chip cs-${row.status}">${esc(name)}</span>`;
 }
 
 // One Home Assistant answered itself (DETAILS P9.9.9): what to do, said in full in its bubble, which a tap or focus
@@ -317,9 +319,8 @@ function badge(row) {
 const cannot = (row) => row.cant_improve && !row.held;
 function cannotChip(row) {
   if (!cannot(row)) return "";
-  const C = TEXT.conversations, said = fill(C.cannotTip, row.cant_improve);
-  return `<span class="chip cs-cannot" data-tip="${esc(said)}" tabindex="0" role="note"
-    aria-label="${esc(`${C.status.cannot}: ${said}`)}">${esc(C.status.cannot)}</span>`;
+  const C = TEXT.conversations;
+  return explained("chip cs-cannot", C.status.cannot, fill(C.cannotTip, row.cant_improve));
 }
 
 const reviewLink = (row) => row.status === "review" && row.review
@@ -407,7 +408,7 @@ function rowHtml(p, cv, row) {
       <span class="cs-text"><span class="cs-said">${row.said ? marked(row.said, cv.query) : esc(C.nothing)}</span>
         ${row.match ? `<span class="cs-reply cs-match">${marked(row.match, cv.query)}</span>`
           : row.reply ? `<span class="cs-reply">${marked(row.reply, cv.query)}</span>` : ""}
-        <span class="cs-sub">${row.timed ? `<mark>${esc(when(row.started))}</mark>` : esc(when(row.started))} · ${esc(plural(row.turns || 0, "turn"))}${failed}</span></span>${badge(row)}</button>${reviewLink(row)}${cannotChip(row)}</div>
+        <span class="cs-sub">${row.timed ? `<mark>${esc(when(row.started))}</mark>` : esc(when(row.started))} · ${esc(plural(row.turns || 0, "turn"))}${failed}</span></span>${badge(row, false)}</button>${badge(row, true)}${reviewLink(row)}${cannotChip(row)}</div>
       ${opened ? reading(p, cv, row) : ""}</div>`;
 }
 
@@ -581,6 +582,8 @@ function refilter(p, change) {
 export const actions = {
   click: [
     ["[data-cs]", (p, el) => open(p, p.cv, el.dataset.cs)],
+    // Around a chip beside the row's button (above it, below it, after it), the row opens as anywhere else on it.
+    [".cs-line", (p, el, ev) => ev.target === el && open(p, p.cv, el.querySelector("[data-cs]").dataset.cs)],
     ["[data-cs-review]", (p, el) => p.go(el.dataset.csReview)],
     ["#cs-status", (p) => { p.cv.statusMenu = !p.cv.statusMenu; p.render(); }],
     ["#cs-status-backdrop", (p) => { p.cv.statusMenu = false; p.render(); }],
