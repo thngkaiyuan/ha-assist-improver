@@ -942,12 +942,13 @@ class Screen:
 @pytest.fixture(params=list(SIZES), ids=list(SIZES))
 def page(browser, ha, request):
     """The frontend in a fresh browser context, logged in as the test user (Home Assistant's own token storage),
-    at phone size (402x874) and desktop size (1280x800): each test taking it runs at both (Screen: its helpers)."""
+    in Home Assistant's time zone, at phone size (402x874) and desktop size (1280x800): each test taking it runs at
+    both (Screen: its helpers)."""
     size = request.param
     tokens = {**ha.tokens, "hassUrl": ha.url, "clientId": _client_id(ha.port),
               "expires": int(time.time() * 1000) + ha.tokens["expires_in"] * 1000}
     context = browser.new_context(viewport=SIZES[size], device_scale_factor=1, locale="en-US",
-                                  timezone_id="Asia/Singapore", color_scheme="dark")
+                                  timezone_id=ha.ws.call("get_config")["time_zone"], color_scheme="dark")
     context.add_init_script(  # What an unhandled rejection was (the page error says only "Object" for a non-Error).
         "window.addEventListener('unhandledrejection', (e) => { let r = e.reason; try { r = JSON.stringify(r); } "
         "catch (_) {} console.error('e2e: unhandled rejection', r, (e.reason && e.reason.stack) || ''); });")

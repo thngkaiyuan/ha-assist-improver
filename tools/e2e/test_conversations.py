@@ -17,8 +17,9 @@ Home Assistant has no clock to set back, so the journey then stops Home Assistan
 recording back in time on disk, as it would be had it been recorded then: every timestamp in its recording, in its
 index entry (its start, which the list reads), and in its words' and flow records, moved back by the same amount.
 Started again, Home Assistant and the product read it as any older conversation. Nothing else is changed. The newest
-is moved, the same way, to the moment the checks start from: they all read days, so they all fall on one day (close to
-midnight, the journey waits for the new day first).
+is moved, the same way, to the moment the checks start from: they all read days, so they all fall on one day: Home
+Assistant's time zone (the browser's too) is set to one where it's midday as the journey starts, half a day from the
+next, however long the checks take.
 
 SPEC.md P0.2 (one record every screen reads), P0.7 (a picked run admits the picked ones; only what it admits moves),
 P0.12 (looked smooth is in Your household). DETAILS P8.14.2 (Archive and Delete behind the opened conversation's ⋮),
@@ -32,7 +33,7 @@ are picked; the bottom bar's actions with their counts), P14.6.3 (with some pick
 a picked run), P14.7.2 (its confirmation names them), P14.10.2 (History: 'Run finished · picked').
 """
 
-from datetime import datetime, time, timedelta
+from datetime import datetime, time, timedelta, timezone
 import json
 import re
 from zoneinfo import ZoneInfo
@@ -40,14 +41,13 @@ from zoneinfo import ZoneInfo
 import pytest
 from playwright.sync_api import expect
 
-from conftest import STARTUP_SECONDS, WebSocket, _ready, _running, _set_port, _start_process, _stop_process, wait_until
+from conftest import STARTUP_SECONDS, WebSocket, _ready, _running, _set_port, _start_process, _stop_process
 
 FLOW = "assist_improver.flow"  # Each conversation's flow record (flow.py), as Home Assistant saves it.
 INDEX = "assist_improver.index"  # The recordings' index: each one's start, which the list reads (recorder.py).
 WORDS = "assist_improver.transcripts"  # What each conversation said, kept for the list (conversations.py).
 ON = re.compile(r"\bon\b")  # The chosen button of a segmented control.
 ISO = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:[+-]\d{2}:\d{2}|Z)$")
-ONE_DAY = timedelta(minutes=5)  # The longest journey 2's checks take: from their start, all on one day.
 
 
 # Home Assistant's side.
@@ -117,6 +117,17 @@ def _rewrite(path, change):
         stored = json.loads(path.read_text())
         change(stored["data"])
         path.write_text(json.dumps(stored))
+
+
+@pytest.fixture
+def midday(ha):
+    """Home Assistant moved to a time zone where it's midday now (12:xx), as its household would set it, and in its
+    configuration.yaml for a restart. Taken before `page`, whose browser opens in Home Assistant's time zone."""
+    hours = 12 - datetime.now(timezone.utc).hour  # From UTC-11 (at 23:xx UTC) to UTC+12 (at 00:xx UTC).
+    zone = f"Etc/GMT{-hours:+d}" if hours else "UTC"  # Etc's signs are POSIX's: Etc/GMT-8 is 8 hours ahead.
+    path = ha.folder / "configuration.yaml"
+    path.write_text(re.sub(r"(?m)^(\s*time_zone:).*$", rf"\g<1> {zone}", path.read_text()))
+    ha.ws.call("config/core/update", time_zone=zone)
 
 
 @pytest.fixture
@@ -304,7 +315,7 @@ def sort(panel, order):
     panel.get_by_role("menuitemradio", name=order).click()
 
 
-def test_find_conversations_by_words_day_and_order(restart, page, ha):
+def test_find_conversations_by_words_day_and_order(midday, restart, page, ha):
     """Five conversations recorded at different times: found by what was said (any case) and by what Assist replied,
     the closest when none has every word, by when; the day filters show those of today, of the last 7 and 30 days, or
     all; and the orders put the newest, the most back-and-forth or the oldest first."""
@@ -320,8 +331,6 @@ def test_find_conversations_by_words_day_and_order(restart, page, ha):
     # The older ones, recorded earlier, and the newest now, the checks' start (see the module's docstring), in Home
     # Assistant's time zone.
     zone = ZoneInfo(ha.ws.call("get_config")["time_zone"])
-    wait_until(lambda: (datetime.now(zone) + ONE_DAY).date() == datetime.now(zone).date(),
-               timeout=ONE_DAY.total_seconds() + 60, interval=1, what="the new day")
     now = datetime.now(zone)
     midnight = datetime.combine(now.date(), time(), zone)
     starts = {TODAY: now, YESTERDAY: midnight - timedelta(minutes=1), DAYS_3: now - timedelta(days=3),
