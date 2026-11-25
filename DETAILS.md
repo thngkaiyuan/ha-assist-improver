@@ -800,6 +800,13 @@ Citations in parentheses name the maintainer's earlier notes, which aren't in th
     by domain or field, and a page says what it left out. (Kai, 2026-11-05: "I'd like us to fix all those problems,
     but ideally as general and as broadly and cleanly as possible"; Kai, 2026-11-05: "give them a way to sift through
     the readings")
+    - **P7.6.13.1** Nothing cuts a role's tool result, the improver's tools' or Home Assistant's: one over 64,000
+      characters (its compact JSON, as a provider sends it) comes as a view of itself within 32,000, with a handle:
+      the same JSON, each part left out marked with where it is (a JSON Pointer), its size and how many items or lines
+      it holds. read_result reads any part of it a page at a time, or finds words in it; every role with tools has it,
+      and its handles last for the role call. A result within 64,000 characters comes as it is. (Kai, 2026-11-25:
+      "make sure we give them a tool to manage the size, not remove that ability. pagination, or search, some way for
+      them to selectively browse, solves the problem rather than just cutting it off abruptly")
   - **P7.6.14** The proposer and reviewer also read the live home through Home Assistant's own tools, as the
     improver's service user (P7.6.15): an entity's history, a template rendered, an integration's entries in the
     system log, the config entries, and the Supervisor's installed apps where it runs. Only tools Home Assistant
@@ -835,8 +842,8 @@ Citations in parentheses name the maintainer's earlier notes, which aren't in th
     goal's devices are compared with the goal, including the user's choices for settings left open. New aliases and
     names are matched with Home Assistant's own name matching. (MILESTONE-6.md; Kai, 2026-10-23: "Sounds great, please
     go ahead with building those improvements.")
-  - **P7.7.6** Every conversation's recorded tool calls are replayed without and with the change, and calls that
-    now resolve differently are shown. They're signals to weigh, not regressions: a more general script replacing an
+  - **P7.7.6** Every conversation's recorded tool calls are replayed without and with the change, and every call
+    that now resolves differently is shown. They're signals to weigh, not regressions: a more general script replacing an
     old flow is an expected difference. (MILESTONE-6.md; Kai, 2026-10-23)
   - **P7.7.7** A goal that an existing improvement already addresses is noted with that improvement and skipped, not
     made a new idea. Code checks the claim: it's refused when that improvement was applied before the conversation
@@ -1926,7 +1933,8 @@ Citations in parentheses name the maintainer's earlier notes, which aren't in th
   - **P12.8.2** The proposer gets a revision in full: the note, and the improvement it revises (its idea, steps and
     goals). (SPEC-CORE.md S3, 2026-10-26)
   - **P12.8.3** A revised proposal uses the earlier feedback: revision requests and declines feed the next proposal.
-    (ROADMAP.md)
+    (ROADMAP.md) Both roles get each decision upfront, a long value cut saying so, and read_improvement reads any
+    decided improvement whole, declined ones included. (Kai, 2026-11-25)
   - **P12.8.4** The revised version carries a "Revision" tag, and links to the note it answers; one without a note
     names only what it revises. (TEXT-REVIEW.md, 2026-10-25; fixture-test/SPEC.md; DESIGN.md)
   - **P12.8.5** The improvement it replaces shows "Replaced by a revision" and is closed; only the new version waits

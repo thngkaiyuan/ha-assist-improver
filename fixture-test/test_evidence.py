@@ -184,6 +184,34 @@ async def test_recorded_calls_replay_and_changed_resolutions_are_signals(hass, e
 
 
 @pytest.mark.asyncio
+async def test_a_drafts_check_shows_every_signal_every_changed_line_and_what_assist_reads_whole(hass, monkeypatch):
+    """No check cuts what it shows: a result too large to send whole is browsed (DETAILS P7.6.13.1)."""
+    from custom_components.assist_improver import evidence as module
+    found, _ = sessions()
+    checking = Evidence(found, TODAY)
+    lines = [f"- line {n}" for n in range(40)]
+
+    async def replaying(recording, today, setup=None):
+        said = "\n".join(f"{line}{' now' if setup else ''}" for line in lines)
+        return [(turn, "homeassistant__GetLiveContext", {}, {"result": said}) for turn in range(1, 21)]
+    monkeypatch.setattr(module, "replay_calls", replaying)
+    signals = await checking.resolution_signals({"changed": True})
+    changed = signals["calls_resolving_differently"]
+    assert len(changed) == signals["count"] == 20 and "more" not in signals
+    assert all(len(c["result_lines_changed"]) == 80 for c in changed)
+    long = "You are the household's assistant. " * 200
+    monkeypatch.setattr(found, "with_targets", lambda changes: changes, raising=False)
+    monkeypatch.setattr(found, "assistants", lambda: {"plain": {"name": "Plain", "replayable": "abc"}}, raising=False)
+    monkeypatch.setattr(found, "edited", lambda target, changes: (long, []), raising=False)
+
+    async def render(hass, target, template):
+        return {"rendered": template}
+    monkeypatch.setattr(found, "render", render, raising=False)
+    [fact] = await checking.instructions(hypothesis({"kind": "assistant", "target": "plain", "text": "Be brief."}))
+    assert len(long) > 2000 and fact["assist_reads"] == long
+
+
+@pytest.mark.asyncio
 async def test_capabilities_come_from_what_ha_carries_out(hass, effect_guards):
     _, record = sessions()
     found = await capabilities(record, [TARGET, SCRIPT], TODAY)

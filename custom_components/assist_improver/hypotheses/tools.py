@@ -506,7 +506,7 @@ def reviewer_tools(sessions, submit):
             + [DevicesInAreaNow(sessions.household), DeviceDetailsAt(sessions), FindActions(sessions.household),
                ListSessions(sessions), ReadSession(sessions), ReadSessionTurn(sessions), ReadSessionReadings(sessions),
                ReadAssistantInstructions(sessions), ListImprovements(sessions.household, sessions.existing),
-               ReadImprovement(sessions.household, sessions.existing)]
+               ReadImprovement(sessions.household, sessions.existing, sessions.feedback)]
             + ([CheckHypothesis(sessions)] if sessions.evidence else []) + [submit])
 
 

@@ -5,7 +5,7 @@ import json
 
 from .. import changes, changes as reading, evidence
 from ..cases import CaseError, digest
-from ..digest import _clip, _text
+from ..digest import _text
 from ..exploration import related_improvements
 from ..failures import contained
 from ..sessions import SessionSet, device_names, footprint
@@ -17,7 +17,7 @@ from .goals import (FRICTION_KINDS, capabilities, friction, friction_by_goal, go
 # The open friction the generator gets as full scripts upfront (newest first), in characters and sessions; the
 # rest of the open goals come one line each, and read_session reads any session.
 SCENARIO_BUDGET, SCENARIOS_SHOWN = 24000, 12
-DECIDED_CHARS = 1500  # A decided change's longer values (a script's steps, say), cut to this upfront.
+DECIDED_CHARS = 1500  # A decided change's longer values upfront (a script's steps, say); read_improvement reads all.
 CHOICES_SHOWN = 40  # Known choices (what the user picked when a setting was left open) the reviewer gets, newest.
 
 
@@ -236,14 +236,17 @@ def scenario_of(analysis, view):
 
 
 def decisions(feedback):
-    """The household's decisions, as the roles need them to respect them: what was decided on which change (each
-    change whole, any value longer than DECIDED_CHARS clipped, saying so), with the note and reason; the improvement
-    sent back for this round comes in full (sent_back)."""
+    """The household's decisions, as the roles need them to respect them: what was decided on which improvement and
+    change (each change whole, any value longer than DECIDED_CHARS cut, saying read_improvement reads it whole), with
+    the note and reason; the improvement sent back for this round comes in full (sent_back)."""
     out = []
     for item in feedback:
-        changes = [{key: value if len(text := _text(value)) <= DECIDED_CHARS else _clip(text, DECIDED_CHARS)
+        changes = [{key: value if len(text := _text(value)) <= DECIDED_CHARS else (
+                        f"{text[:DECIDED_CHARS]} …[{len(text) - DECIDED_CHARS} more characters: read_improvement "
+                        "reads it whole]")
                     for key, value in change.items() if value not in (None, "", [], {})}
                    for change in item.get("changes") or []]
-        out.append({"title": item.get("title"), "decision": item.get("decision"), "status": item.get("status"),
+        out.append({**({"improvement": item["improvement"]} if item.get("improvement") else {}),
+                    "title": item.get("title"), "decision": item.get("decision"), "status": item.get("status"),
                     **{key: item[key] for key in ("note", "reason") if item.get(key)}, "changes": changes})
     return out

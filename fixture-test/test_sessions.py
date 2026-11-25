@@ -257,17 +257,25 @@ async def test_a_view_and_its_time_zone_are_made_off_the_event_loop(hass, monkey
     assert not any(looked_up) and made and not any(made) and briefed and not any(briefed)
 
 
-def test_decisions_carry_each_change_whole_but_bounded():
+def test_decisions_come_upfront_bounded_and_read_improvement_reads_a_decided_one_whole():
+    """A decided change's long value is cut upfront, saying read_improvement reads it whole, and it does, declined ones
+    too (DETAILS P12.8.3)."""
     steps = [{"action": "switch.turn_on", "target": {"entity_id": TARGET}}] * 40
-    feedback = [{"title": "Name it Garage", "decision": "decline", "status": "declined", "note": "Not that name",
-                 "changes": [{"kind": "registry", "entity_id": TARGET, "aliases": ["Garage"], "name": None,
-                              "area_id": ""},
-                             {"kind": "script", "id": "press", "config": {"sequence": steps[:2]}},
-                             {"kind": "script", "id": "press_all", "config": {"sequence": steps}}]}]
+    changes = [{"kind": "registry", "entity_id": TARGET, "aliases": ["Garage"], "name": None, "area_id": ""},
+               {"kind": "script", "id": "press", "config": {"sequence": steps[:2]}},
+               {"kind": "script", "id": "press_all", "config": {"sequence": steps}}]
+    feedback = [{"improvement": "imp9", "title": "Name it Garage", "decision": "decline", "status": "declined",
+                 "note": "Not that name", "changes": changes, "details": {"changes": changes, "cause": "c"}}]
     [decision] = hypotheses.decisions(feedback)
-    assert decision["note"] == "Not that name" and decision["changes"][0] == {
+    assert decision["improvement"] == "imp9" and decision["note"] == "Not that name" and decision["changes"][0] == {
         "kind": "registry", "entity_id": TARGET, "aliases": ["Garage"]}  # Empty values dropped.
     assert decision["changes"][1] == {"kind": "script", "id": "press", "config": {"sequence": steps[:2]}}
-    clipped = decision["changes"][2]["config"]
-    assert len(clipped) < len(json.dumps(steps)) and clipped.endswith("more characters omitted]")
+    cut = decision["changes"][2]["config"]
+    assert len(cut) < len(json.dumps(steps)) and cut.endswith("more characters: read_improvement reads it whole]")
+    s = household(("sess0001", "Turn on the relay.", True))
+    s.feedback, s.existing = feedback, []
+    read = next(t for t in hypotheses.reviewer_tools(s, hypotheses.SubmitReview(s)) if t.name == "read_improvement")
+    whole = read.run("imp9")
+    assert whole["changes"][2]["config"] == {"sequence": steps} and whole["status"] == "declined"
+    assert "the household decided on imp9" in read.run("imp8")["error"]
 

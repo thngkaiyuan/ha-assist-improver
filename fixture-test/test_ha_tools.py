@@ -71,7 +71,7 @@ async def test_the_roles_bundle_holds_only_the_pinned_read_only_tools_run_as_the
     user = await home_assistant(hass)
     hass.states.async_set("light.fixture_lamp", "on")
     instance = await SessionAPI(hass, tools=[], user_id=user.id).async_get_api_instance(context())
-    assert {t.name for t in instance.tools} == ha_tools.PINNED - supervisors(ha_tools.PINNED)  # No Supervisor.
+    assert {t.name for t in instance.tools} - {"read_result"} == ha_tools.PINNED - supervisors(ha_tools.PINNED)
     render = next(t for t in instance.tools if t.name == "homeassistant__render_template")
     result = await render.async_call(hass, llm.ToolInput(tool_name=render.name, tool_args={
         "template": "{{ states.light | count }} {{ states('light.fixture_lamp') }}"}), context())  # As an AI Task calls.

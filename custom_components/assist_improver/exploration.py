@@ -20,6 +20,7 @@ from homeassistant.util import dt as dt_util
 
 from . import happened
 from .actions import catalogue, controls, find_actions, operations
+from .browse import Results, sized
 from .cases import calls_in, recording_turns
 from .digest import (_clip, _naming, _text, async_time_zone, build_digest, device_of, entity_card, filled, labelled,
                      readings, time_zone)
@@ -757,28 +758,57 @@ class ReadImprovement(RoleTool):
                    "settle whether it addresses a goal.")
     parameters = probatio.Schema({probatio.Required("improvement"): str})
 
-    def __init__(self, view, existing):
+    def __init__(self, view, existing, decided=()):
         super().__init__(view)
-        self.existing = existing
+        self.existing, self.decided = existing, decided  # decided: Improvements.feedback's, declined ones too.
+        if decided:
+            self.description += (" It reads any improvement the household decided on (household_decisions) whole "
+                                 "too, declined ones included.")
 
     def run(self, improvement):
-        found = next((i for i in self.existing if i["improvement"] == improvement), None)
+        found = next((i for i in [*self.existing, *self.decided] if i.get("improvement") == improvement), None)
         if found is None:
+            decided = [i["improvement"] for i in self.decided if i.get("improvement")]
             return {"error": f"There's no improvement {improvement!r}; list_improvements shows "
-                             f"{', '.join(i['improvement'] for i in self.existing) or 'none'}."}
+                             f"{', '.join(i['improvement'] for i in self.existing) or 'none'}"
+                             + (f", and the household decided on {', '.join(decided)}." if decided else ".")}
         return {**{k: v for k, v in found.items() if k not in ("details", "devices")}, **(found.get("details") or {})}
+
+
+class ReadResult(RoleTool):
+    """A role's way through a result too large to send whole (browse.py)."""
+    name = "read_result"
+    description = ("Read a tool's result that came too_large, as a view with a handle: the part at a pointer (at, as "
+                   "the view marks it; empty for the whole result), a page at a time from offset (an item of a list or "
+                   "an object, a character of a text), with next while more remains. Or give find: the places in it "
+                   "that hold every word (plurals too; failing that any), each with its at (and offset in a text), a "
+                   "page at a time with the total.")
+    parameters = probatio.Schema({probatio.Required("handle"): str, probatio.Optional("at", default=""): str,
+                                  probatio.Optional("offset", default=0): int, probatio.Optional("find"): str})
+
+    def __init__(self, results):
+        super().__init__(None)
+        self.results = results
+
+    def run(self, handle, at="", offset=0, find=None):
+        return self.results.read(handle, at, offset, find)
 
 
 class SessionAPI(llm.API):
     """The tools for one recording (or a given list of tools), handed to the AI Task for one role call. Each call
-    of a tool gets a span in the current trace (trace.py)."""
+    of a tool gets a span in the current trace (trace.py); a result too large to send whole comes as a view, and
+    read_result, which a role with tools gets too, reads the rest (browse.py)."""
 
     def __init__(self, hass, view=None, extra_tools=(), tools=None, user_id=None):
         super().__init__(hass=hass, id=API_ID, name="Recorded session")
         tools = list(tools) if tools is not None else [tool(view) for tool in TOOLS] + list(extra_tools)
-        self.tools = [traced_tool(tool) for tool in tools]
+        self.results = Results()  # This role call's results too large to send whole, by handle.
+        self.tools = [sized(traced_tool(tool), self.results) for tool in tools]
+        self.read_result = traced_tool(ReadResult(self.results))
         self.user_id = user_id  # The improver's user, for Home Assistant's own tools (the proposer's and reviewer's).
 
     async def async_get_api_instance(self, llm_context):
-        own = [traced_tool(tool) for tool in await ha_tools(self.hass, self.user_id)]
-        return llm.APIInstance(api=self, api_prompt="", llm_context=llm_context, tools=self.tools + own)
+        own = [sized(traced_tool(tool), self.results) for tool in await ha_tools(self.hass, self.user_id)]
+        tools = self.tools + own
+        return llm.APIInstance(api=self, api_prompt="", llm_context=llm_context,
+                               tools=tools + [self.read_result] if tools else [])

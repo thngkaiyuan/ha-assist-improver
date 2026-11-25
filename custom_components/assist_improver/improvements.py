@@ -188,10 +188,11 @@ class Improvements:
         return deepcopy(self.items[improvement_id])
 
     def feedback(self):
-        """The household's decisions on earlier improvements, for the generator and reviewer: each decided one's
-        title, changes, latest decision (with its note and reason) and status."""
-        return [{"title": item["title"], "changes": deepcopy(item["changes"]), "decision": last["decision"],
-                 "note": last.get("note") or "", "reason": last.get("reason"), "status": item["status"]}
+        """The household's decisions on earlier improvements, for the generator and reviewer: each decided one's id,
+        title, changes, latest decision (with its note and reason) and status, and what read_improvement shows of it."""
+        return [{"improvement": item["id"], "title": item["title"], "changes": deepcopy(item["changes"]),
+                 "decision": last["decision"], "note": last.get("note") or "", "reason": last.get("reason"),
+                 "status": item["status"], "details": self._details(item)}
                 for item in self.items.values() if item.get("decisions") for last in [item["decisions"][-1]]]
 
     async def write_copy(self, entity_id, improvement_ids):

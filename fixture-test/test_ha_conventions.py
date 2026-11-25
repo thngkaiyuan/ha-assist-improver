@@ -174,6 +174,11 @@ def slips(tool, args):
     return out
 
 
+def given(tools):
+    """A role's tools as its code gives them to SessionAPI, which adds read_result itself."""
+    return [tool for name, tool in tools.items() if name != "read_result"]
+
+
 async def handed_back(hass, api, tool, args):
     """What the model gets back for one call, streamed through Home Assistant's chat log as a provider streams it; or
     what happened instead."""
@@ -209,7 +214,7 @@ async def test_every_role_tool_hands_arguments_off_its_schema_back_to_the_model_
     monkeypatch.setattr(Model, "use", staticmethod(watched))
     wrong = {}
     for role, tools in (await tools_of_a_round(improver)).items():
-        api = await SessionAPI(improver.hass, tools=list(tools.values())).async_get_api_instance(CONTEXT)
+        api = await SessionAPI(improver.hass, tools=given(tools)).async_get_api_instance(CONTEXT)
         for name, tool in tools.items():
             for slip, args in slips(tool, kept.get(name, {})).items():
                 answer = await handed_back(improver.hass, api, tool, args)
@@ -227,7 +232,7 @@ async def test_every_role_tool_converts_to_anthropics_tool_format(improver):
     assert {"journey_analyzer", "hypothesis_generator", "hypothesis_reviewer", "editor"} <= set(by_role)
     problems = {}
     for role, tools in by_role.items():
-        api = await SessionAPI(improver.hass, tools=list(tools.values())).async_get_api_instance(CONTEXT)
+        api = await SessionAPI(improver.hass, tools=given(tools)).async_get_api_instance(CONTEXT)
         if found := refused(api.tools, api.custom_serializer):
             problems[role] = found
     assert problems == {}
