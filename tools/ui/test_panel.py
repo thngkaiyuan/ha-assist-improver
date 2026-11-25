@@ -6177,6 +6177,7 @@ def test_a_status_chip_with_words_shows_its_bubble_at_a_tap_on_a_phone_and_opens
     for key, part in (("c1", ".cs-line .chip"), ("a2", ".cs-line .chip"), ("e3", ".cs-said")):
         panel.find(f".cs-row:has([data-cs='{key}']) {part}").tap()
         panel.settle()
+        panel.still()  # The smooth scroll to it: the next tap finds the page at rest, whatever the host's speed.
         expect(panel.find(f".cs-row.open [data-cs='{key}']")).to_have_count(1)
         expect(panel.find(".cs-turn")).to_have_count(2)
     panel.find("[data-cs='e3'] .cs-said").tap()  # And closes it, as before.
@@ -6186,8 +6187,9 @@ def test_a_status_chip_with_words_shows_its_bubble_at_a_tap_on_a_phone_and_opens
     above = line.evaluate("""(el) => { const l = el.getBoundingClientRect(), c = el.querySelector(".chip")
       .getBoundingClientRect(); return {x: c.left + c.width / 2 - l.left, room: c.top - l.top}; }""")
     assert above["room"] >= 8, above  # Room above the chip, which is the row's.
-    # Through the line, so the spot is on the screen and clear of the pinned controls when tapped: where the page was
-    # left scrolled depends on the taps before (2026-11-21 and 22, arm CI: e0 above the screen, the tap on nothing).
+    # Through the line, so it's brought on the screen, clear of the pinned controls, before the tap: the taps before
+    # leave it above the screen, where a tap at raw coordinates reaches nothing (as reproduced for arm CI's failures
+    # here, 2026-11-21 and 22).
     line.tap(position={"x": above["x"], "y": 4})
     panel.settle()
     expect(panel.find(".cs-row.open [data-cs='e0']")).to_have_count(1)
