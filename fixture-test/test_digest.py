@@ -54,12 +54,13 @@ def test_label_coverage_reports_what_is_missing():
         label_coverage(digest, {**label_for(record), "recording_id": "another"})
 
 
-def test_long_tool_results_are_clipped_not_dropped():
+def test_a_long_tool_result_reaches_read_turn_whole():
+    """Nothing cut: a result too large to send whole is browsed (DETAILS P7.6.13.1)."""
     record = make_recording()
     result = next(m for m in record["chat_log"]["content"] if m["role"] == "tool_result")
     result["result"] = {"data": "x" * 20_000}
     step = next(s for s in build_digest(record)["turns"][0]["assistant"] if "result" in s)
-    assert len(step["result"]) < 7_000 and "more characters omitted" in step["result"]
+    assert step["result"] == json.dumps(result["result"], ensure_ascii=False)
 
 
 def test_the_households_recordings_cover_their_labels():

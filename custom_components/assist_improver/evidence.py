@@ -50,7 +50,6 @@ from .weeks import week
 from .worker import job
 
 CONCURRENT = 4  # Workers running the jobs below at once, per instance (worker.job).
-SIGNALS_SHOWN = 15  # Resolution signals listed in full; the count covers the rest.
 JOBS = {"replay": "_replay", "run_scripts": "run_scripts", "match_aliases": "match_aliases",
         "capabilities": "probe_capabilities", "render_instructions": "render_instructions",
         "week": "run_week"}  # What a worker runs here, by name: each starts its own sandbox.
@@ -58,7 +57,6 @@ WEEK_DAYS = 7  # An automation's week (automation_week): simulated days,
 WEEK_SECONDS = 60  # within this many real seconds.
 UNCHECKED = "Home Assistant couldn't check this: "  # A fact the sandbox couldn't give (failures.contained).
 NOT_REPLAYABLE = "can't be replayed"
-RENDERED_SHOWN = 2000  # Characters of rendered instructions shown with a draft.
 SIGNALS_NOTE = ("Each is a recorded tool call that Home Assistant resolves differently with the change: a signal to "
                 "weigh, not proof of a regression. It may be a problem (a name now matches another device, a device "
                 "is no longer reachable), or expected (a more general script or rule now covers what the old call "
@@ -234,7 +232,7 @@ class Evidence:
             else:
                 fact["renders"] = True
                 if "rendered" in rendered:
-                    fact["assist_reads"] = rendered["rendered"][:RENDERED_SHOWN]
+                    fact["assist_reads"] = rendered["rendered"]
                     fact["rendered_for"] = f"its newest conversation that can be replayed ({record['replayable']})"
                 elif rendered.get("renders_quietly"):
                     fact["note"] = ("No conversation with it can seed a sandbox: rendered only for a request without a "
@@ -388,8 +386,7 @@ class Evidence:
                 if was != now:
                     changed.append({"session": session, "turn": turn, "tool": tool, "args": args,
                                     **_difference(was, now)})
-        return {"calls_resolving_differently": changed[:SIGNALS_SHOWN], "count": len(changed),
-                **({"more": f"{len(changed) - SIGNALS_SHOWN} more not shown"} if len(changed) > SIGNALS_SHOWN else {}),
+        return {"calls_resolving_differently": changed, "count": len(changed),
                 "sessions_checked": len(results) - len(skipped), "skipped": skipped, "how_to_read": SIGNALS_NOTE}
 
 
@@ -537,7 +534,7 @@ def _difference(was, now):
         lines = [line for line in difflib.unified_diff(was["result"].splitlines(), now["result"].splitlines(),
                                                        lineterm="", n=0) if line[:1] in "+-" and line[:3] not in
                  ("+++", "---")]
-        return {"result_lines_changed": lines[:12]}
+        return {"result_lines_changed": lines}
     return {"before": was, "after": now}
 
 

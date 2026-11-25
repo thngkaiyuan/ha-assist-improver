@@ -108,8 +108,8 @@ async def test_the_roles_bundle_holds_every_read_only_tool_this_home_assistant_o
     hass.states.async_set("light.fixture_lamp", "on")
     offered = await llm.async_get_api(hass, llm.LLM_API_HOME_ASSISTANT, context(user.id))
     instance = await SessionAPI(hass, tools=[], user_id=user.id).async_get_api_instance(context())
-    theirs = {t.name for t in instance.tools if "__" in t.name}  # Only Home Assistant's are named domain__tool.
-    assert theirs == {t.name for t in offered.tools if ha_tools.kept(t)}
+    # Every one Home Assistant offers and keeps, and read_result, which reads any of their results too large to send.
+    assert {t.name for t in instance.tools} == {t.name for t in offered.tools if ha_tools.kept(t)} | {"read_result"}
     render = next(t for t in instance.tools if t.name == "homeassistant__render_template")
     result = await render.async_call(hass, llm.ToolInput(tool_name=render.name, tool_args={
         "template": "{{ states.light | count }} {{ states('light.fixture_lamp') }}"}), context())  # As an AI Task calls.

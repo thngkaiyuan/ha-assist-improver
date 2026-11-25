@@ -17,7 +17,6 @@ from homeassistant.util import dt as dt_util
 from .cases import CaseError, recording_turns
 
 FORMAT = 1
-RESULT_CHARS = 6000  # A tool result's characters a view shows, for size; what's cut is counted where it's cut (_clip).
 READINGS_SHOWN = 25  # Entities whose readings a view lists upfront, those with the most first; the rest are named.
 # Every change of these is a reading, as Home Assistant's logbook tells one (its ALWAYS_CONTINUOUS_DOMAINS).
 READING_DOMAINS = {"counter", "image", "proximity"}
@@ -106,7 +105,8 @@ def _text(value):
     return value if isinstance(value, str) else json.dumps(value, ensure_ascii=False, default=str)
 
 
-def _clip(text, limit=RESULT_CHARS):
+def _clip(text, limit):
+    """text up to limit characters, saying how many more were left out."""
     return text if len(text) <= limit else text[:limit] + f" …[{len(text) - limit} more characters omitted]"
 
 
@@ -207,7 +207,7 @@ def build_digest(recording):
             elif message["role"] == "tool_result":
                 result = _text(message.get("result"))
                 named.update(ENTITY_ID.findall(result))  # The devices Home Assistant's response names, too.
-                steps.append({"result_of": message.get("tool_name"), "result": _clip(result)})
+                steps.append({"result_of": message.get("tool_name"), "result": result})
         for entity_id in named:
             mentioned.setdefault(entity_id, turn["number"])
         out_turns.append({"turn": turn["number"], "at": turn["messages"][0]["created"],

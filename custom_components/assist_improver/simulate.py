@@ -53,8 +53,8 @@ ASKED_IN_NOTE = "They asked again in the note they sent it in with."
 NOTHING_AGAIN = "nothing the household had trouble with happened again"
 TRIES = 3  # The baseline's tries on one setup (DETAILS P6.6.6).
 # The judge's input, cut for size where it's cut, saying how much (digest._clip): a tool call's result to
-# digest.RESULT_CHARS, a call's data and a failed call's error in what the home did to CALL_CHARS.
-CALL_CHARS = 200
+# RESULT_CHARS, a call's data and a failed call's error in what the home did to CALL_CHARS. The judges have no tools.
+RESULT_CHARS, CALL_CHARS = 6000, 200
 # Whether a replay's Assist turns show what the household objected to: a small model judges only that, one turn at a
 # time, with the turn they objected to as the example (DETAILS P6.1.9, P6.1.11). Its model is set where the feedback
 # check's was (settings' role key).
@@ -273,7 +273,7 @@ def _turn(number, user, items, home=None):
             call = calls.get(item.get("tool_call_id")) or {}
             found = item["result"] if "result" in item else item.get("tool_result")  # tool_result: before 2026.10.
             did.append({"called": item.get("tool_name") or call.get("tool_name"), "with": call.get("tool_args"),
-                        "result": _clip(json.dumps(found, ensure_ascii=False, default=str))})
+                        "result": _clip(json.dumps(found, ensure_ascii=False, default=str), RESULT_CHARS)})
     home = {k: v for k, v in (home or {}).items() if v}
     return [{"turn": number}, {"user_said": user}, {"assistant_did": did}, {"assistant_replied": reply},
             *([{"home_did": home}] if home else [])]

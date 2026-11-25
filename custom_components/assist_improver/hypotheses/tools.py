@@ -391,8 +391,8 @@ class AskReviewer(StampTool):
             return {"error": STOPPED}
         # Kept as it would be tested and sent on: an edit of an assistant's instructions names the assistant it edits.
         kept = {**hypothesis, "changes": self.sessions.with_targets(hypothesis.get("changes"))}
-        review = {"hypothesis": kept, "responses": args.get("responses"), "review": answer, "verdict": verdict(answer),
-                  "checks": checks}
+        # Kept in the round and the proposer's run record without the checks: both roles read them here, only here.
+        review = {"hypothesis": kept, "responses": args.get("responses"), "review": answer, "verdict": verdict(answer)}
         self.reviews.append(review)
         if self.keep is not None:
             await self.keep(review)
@@ -506,7 +506,7 @@ def reviewer_tools(sessions, submit):
             + [DevicesInAreaNow(sessions.household), DeviceDetailsAt(sessions), FindActions(sessions.household),
                ListSessions(sessions), ReadSession(sessions), ReadSessionTurn(sessions), ReadSessionReadings(sessions),
                ReadAssistantInstructions(sessions), ListImprovements(sessions.household, sessions.existing),
-               ReadImprovement(sessions.household, sessions.existing)]
+               ReadImprovement(sessions.household, sessions.existing, sessions.feedback)]
             + ([CheckHypothesis(sessions)] if sessions.evidence else []) + [submit])
 
 
