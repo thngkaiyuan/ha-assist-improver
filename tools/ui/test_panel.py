@@ -6169,9 +6169,13 @@ def test_a_status_chip_with_words_shows_its_bubble_at_a_tap_on_a_phone_and_opens
     panel.find("[data-cs='e3'] .cs-said").tap()  # And closes it, as before.
     panel.settle()
     expect(panel.find(".cs-row.open")).to_have_count(0)
-    line, beside = box(panel, ".cs-row:has([data-cs='e0']) .cs-line"), box(panel, ".cs-row:has([data-cs='e0']) .chip")
-    assert beside["y"] - line["y"] >= 8, (line, beside)  # Room above the chip, which is the row's.
-    panel.page.touchscreen.tap(beside["x"] + beside["width"] / 2, line["y"] + 4)
+    line = panel.find(".cs-row:has([data-cs='e0']) .cs-line")
+    above = line.evaluate("""(el) => { const l = el.getBoundingClientRect(), c = el.querySelector(".chip")
+      .getBoundingClientRect(); return {x: c.left + c.width / 2 - l.left, room: c.top - l.top}; }""")
+    assert above["room"] >= 8, above  # Room above the chip, which is the row's.
+    # Through the line, so the spot is on the screen and clear of the pinned controls when tapped: where the page was
+    # left scrolled depends on the taps before (2026-11-21 and 22, arm CI: e0 above the screen, the tap on nothing).
+    line.tap(position={"x": above["x"], "y": 4})
     panel.settle()
     expect(panel.find(".cs-row.open [data-cs='e0']")).to_have_count(1)
 
