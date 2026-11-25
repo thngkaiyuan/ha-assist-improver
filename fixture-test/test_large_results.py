@@ -333,6 +333,33 @@ async def test_real_shapes_a_year_of_ten_statistics_and_a_pasted_request_come_as
 
 
 @pytest.mark.asyncio
+async def test_home_assistants_own_tools_as_the_proposer_and_reviewer_get_them_are_sized_as_ours_are(hass, monkeypatch):
+    """Every read-only tool Home Assistant ships reaches the proposer and reviewer as ha_tools gives them (run as the
+    improver's user, with no list of ours), and each is sized as the improver's own are: a year of ten temperatures
+    from its history tool comes as a view with a handle, and read_result finds and reads any row; a small result
+    comes as it is."""
+    from test_ha_tools import home_assistant
+    user = await home_assistant(hass)
+    tool, year = history(monkeypatch, 365)
+    alone = (await tool.async_call(hass, llm.ToolInput(tool_name=tool.name, tool_args=year(10)), context())).data
+    instance = await SessionAPI(hass, tools=[], user_id=user.id).async_get_api_instance(context())
+    theirs = [t for t in instance.tools if "__" in t.name]  # Only Home Assistant's are named domain__tool.
+    assert tool.name in {t.name for t in theirs} and all(getattr(t, "_sized", False) for t in theirs)
+    assert [t.name for t in instance.tools if t not in theirs] == ["read_result"]
+    got = await call(instance, tool.name, **year(10))
+    assert got["too_large"]["chars"] == size(alone) > THRESHOLD and len(json_dumps(got)) <= PAGE + 1000
+    [(statistics, rows)] = [(f"/result/{k}/sensor.room_3_temperature/csv", v["sensor.room_3_temperature"]["csv"])
+                            for k, v in alone["result"].items() if isinstance(v, dict)]
+    row = rows.split("\n")[300]
+    [match] = [m for m in (await call(instance, "read_result", handle="r1", find=row))["matches"]
+               if m["at"] == statistics]
+    assert (await call(instance, "read_result", handle="r1", at=statistics, offset=match["offset"]))[
+        "text"].startswith(row + "\n")
+    rendered = await call(instance, "homeassistant__render_template", template="{{ 6 * 7 }}")
+    assert "too_large" not in rendered and "42" in json.dumps(rendered)
+
+
+@pytest.mark.asyncio
 async def test_through_home_assistants_ai_task_no_tool_result_sent_is_over_the_threshold_and_the_tools_never_change(
         recording_hass, effect_guards):
     """The Anthropic integration's own requests: the model calls a large tool, then pages and searches it with

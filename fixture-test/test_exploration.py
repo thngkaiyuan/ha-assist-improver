@@ -114,7 +114,8 @@ async def test_list_areas_shows_each_areas_floor_and_the_floors_with_their_alias
     the floors with their aliases and level, lowest first, so "upstairs" names rooms. A home without floors has
     none to show."""
     from conftest import load_registries
-    from homeassistant.helpers import floor_registry as fr
+    from homeassistant.core import Context
+    from homeassistant.helpers import floor_registry as fr, llm
     from custom_components.assist_improver import hypotheses
     from custom_components.assist_improver.analyzer import to_analysis
     from custom_components.assist_improver.exploration import ListAreas
@@ -140,6 +141,9 @@ async def test_list_areas_shows_each_areas_floor_and_the_floors_with_their_alias
                                 {"floor": "Loft", "aliases": []}]
     overview = view.overview()  # The analyzer's input.
     assert (overview["areas"], overview["floors"]) == (listed["areas"], listed["floors"])
+    context = llm.LLMContext(platform="ai_task", context=Context(), language="en", assistant=None, device_id=None)
+    instance = await SessionAPI(hass, view).async_get_api_instance(context)  # As the model gets it: sized.
+    assert (await instance.async_call_tool(llm.ToolInput(tool_name="list_areas", tool_args={}))).data == listed
     home = copy.deepcopy(source)  # Today's setup, the first floor since renamed: the proposer's and reviewer's.
     home["floors"][first.floor_id]["name"] = "Top floor"
     today = SessionView(as_today(record, home))
