@@ -1,7 +1,8 @@
-"""Home Assistant's own tools for the proposer and reviewer (DETAILS P7.6.14): its Home Assistant API
-(llm.LLM_API_HOME_ASSISTANT, admin only) as the improver's own user (service_user.py), kept to the tools on the pinned
-list below that Home Assistant marks read-only and ships itself. They read the live home. Never the Assist API: under
-an AI Task's context it writes an exposure option into every entity."""
+"""Home Assistant's own tools for the proposer and reviewer (DETAILS P7.6.14): every tool its Home Assistant API
+(llm.LLM_API_HOME_ASSISTANT, admin only) offers that Home Assistant ships itself and marks read-only, as the improver's
+own user (service_user.py), with no list of ours to keep: one Home Assistant adds reaches the roles as it ships. They
+read the live home. Never a tool that acts, never a custom integration's, and never the Assist API: under an AI Task's
+context it writes an exposure option into every entity."""
 
 import probatio
 from homeassistant.core import Context
@@ -10,25 +11,6 @@ from homeassistant.helpers import llm
 
 from . import touchpoints
 from .const import DOMAIN
-
-# The tools a role gets: an entity's history; a template, rendered on the real instance (up to 3 seconds in a thread,
-# then on Home Assistant's event loop; each call counts against the role's tool-call limit); an integration's entries
-# in the system log (why a command failed at home); the config entries; and, where the Supervisor runs, its installed
-# apps (each one's version and state).
-PINNED = {"history__get_history", "homeassistant__render_template", "system_log__get_entries",
-          "config__get_config_entries", "hassio__get_apps"}
-# Read-only too, and left out: why each.
-LEFT_OUT = {
-    "system_health__get_system_info": "the version is known",
-    "config__search_integrations": "the improver never proposes installing an integration",
-    "system_log__get_logs": "size: the entries carry the errors",
-    "hassio__get_logs": "size: the entries carry the errors",
-    "search__search": "the improver's own lookups are wider",
-    "homeassistant__search_actions": "the improver's own lookups are wider (find_actions)",
-    "llm__GetDateTime": "the recording has it",
-}
-# A tool Home Assistant doesn't mark read-only acts (its marks default to acting): never kept, never listed.
-
 
 def _built_in(tool):
     """Whether Home Assistant itself ships a tool (a custom integration's is never trusted, whatever it's called or
@@ -39,12 +21,14 @@ def _built_in(tool):
 
 
 def kept(tool):
-    return tool.name in PINNED and _built_in(tool) and bool(tool.annotations and tool.annotations.read_only)
+    """Whether a role gets one of Home Assistant's tools: Home Assistant ships it and marks it read-only. Its marks
+    default to acting, so a tool it doesn't mark read-only acts, and is never kept."""
+    return _built_in(tool) and bool(tool.annotations and tool.annotations.read_only)
 
 
 async def tools(hass, user_id):
-    """The pinned tools, each called as the improver's user; none without that user (service_user.async_ensure) or
-    Home Assistant's llm integration, or when building them fails (reported: touchpoints)."""
+    """The tools kept (kept), each called as the improver's user; none without that user (service_user.async_ensure)
+    or Home Assistant's llm integration, or when building them fails (reported: touchpoints)."""
     if not user_id:
         return []
     with touchpoints.guarded(hass, "llm_tools"):
