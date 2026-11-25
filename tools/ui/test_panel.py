@@ -392,9 +392,9 @@ STUB = """(replies) => {
 }"""
 # Nothing in the panel moves any more but what never stops (a spinner, a pulse): no smooth scroll asked for, and the
 # page's scrollers where they were, for 10 frames on end, and every fade and transition over. Polled at each frame
-# (Panel.still). A smooth scroll begins moving by the third frame after it's asked for (measured idle, throttled 16
-# times and with every processor busy), and moves at each until it ends; however it ends (there, or cut short by
-# another scroll, which may send no scrollend at all), its scroller stops where it is.
+# (Panel.still). A smooth scroll begins moving by the third frame after it's asked for, and on the way stands still
+# at most a frame at a time (measured idle, throttled 16 times and with every processor busy); however it ends (there,
+# or cut short by another scroll, which may send no scrollend at all), its scroller stops where it is.
 STILL = """() => { const root = document.querySelector("assist-improver-panel").shadowRoot;
   const now = [window.__smooths, ...[...window.__scrollers].flatMap((el) => [el.scrollTop, el.scrollLeft])].join();
   const moving = root.getAnimations().some((a) => a.playState !== "finished"
