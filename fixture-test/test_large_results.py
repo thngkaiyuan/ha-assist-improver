@@ -63,7 +63,7 @@ async def whole(instance, handle, at, offset=0):
     while True:
         page = await call(instance, "read_result", handle=handle, at=at, offset=offset)
         assert "error" not in page, page
-        assert len(json_dumps(page)) <= THRESHOLD  # read_result's own pages are never capped.
+        assert len(json_dumps(page)) <= PAGE  # read_result's own pages are never sized: each holds a page.
         if "value" in page:
             return page["value"]
         if "text" in page:
@@ -79,32 +79,44 @@ async def whole(instance, handle, at, offset=0):
         offset = page["next"]
 
 
+def marker(shown, at):
+    """The key of the marker in a viewed object at a pointer: its last member's, … (or …… beside a member named …)
+    marking where it is itself; else None."""
+    last = next(reversed(shown), None) if isinstance(shown, dict) else None
+    if last and set(last) == {MARK} and isinstance(shown[last], dict) and shown[last].get("at") == at:
+        return last
+    return None
+
+
 async def rebuilt(instance, handle, shown, at=""):
     """What a view (or a part of a page) stands for: what it shows, and each part left out read with read_result."""
-    if isinstance(shown, dict) and MARK in shown:
-        left = shown[MARK]
+    if (mark := marker(shown, at)) is not None:
+        left = shown[mark]
         if "lines" in left:  # A text: its first lines, then the rest.
             return left.get("text", "") + await whole(instance, handle, left["at"], left["offset"])
         here = {key: await rebuilt(instance, handle, item, pointer(at, key)) for key, item in shown.items()
-                if key != MARK}
+                if key != mark}
         rest = await whole(instance, handle, left["at"], left.get("offset", 0))
         return {**here, **rest} if isinstance(rest, dict) else rest
     if isinstance(shown, dict):
         return {key: await rebuilt(instance, handle, item, pointer(at, key)) for key, item in shown.items()}
     if isinstance(shown, list):
         items, rest = list(shown), []
-        if items and isinstance(items[-1], dict) and items[-1].get(MARK, {}).get("at") == at:  # The list's rest.
+        if items and marker(items[-1], at) == MARK:  # The list's rest.
             rest = await whole(instance, handle, at, items.pop()[MARK]["offset"])
         return [await rebuilt(instance, handle, item, pointer(at, n)) for n, item in enumerate(items)] + rest
     return shown
 
 
-def markers(shown):
+def markers(shown, at=""):
     """Every marker of a part left out in a view."""
     if isinstance(shown, dict):
-        found = [shown[MARK]] if isinstance(shown.get(MARK), dict) else []
-        return found + [m for key, item in shown.items() if key != MARK for m in markers(item)]
-    return [m for item in shown for m in markers(item)] if isinstance(shown, list) else []
+        mark = marker(shown, at)
+        return ([shown[mark]] if mark is not None else []) + [m for key, item in shown.items() if key != mark
+                                                              for m in markers(item, pointer(at, key))]
+    if isinstance(shown, list):
+        return [m for n, item in enumerate(shown) for m in markers(item, at if marker(item, at) else pointer(at, n))]
+    return []
 
 
 def history(monkeypatch, days):
@@ -148,10 +160,12 @@ async def test_a_result_within_the_threshold_reaches_the_model_as_it_is(hass, mo
 @pytest.mark.asyncio
 async def test_a_view_and_its_pages_rebuild_the_whole_result_whatever_its_shape(hass):
     """Nothing is lost: for results of many shapes (objects, lists, CSV, one giant line, unicode and escapes, numbers,
-    keys a pointer escapes), the view is at most a page, marks each part left out with where it is, its size and its
-    count, and its markers followed with read_result give back the result exactly."""
+    keys a pointer escapes, long keys at every level, a member named …), the view and each page are at most a page,
+    each part left out is marked with where it is, its size and its count, and its markers followed with read_result
+    give back the result exactly."""
     rng = random.Random(20261125)
-    word = lambda: rng.choice(["a", "state", "csv", "sensor.t7", "a/b", "x~y", "温度", "", "~1"])  # noqa: E731
+    word = lambda: rng.choice(["a", "state", "csv", "sensor.t7", "a/b", "x~y", "温度", "", "~1", MARK,  # noqa: E731
+                               "k" * 250, "é/" * 600])
 
     def shape(depth=0):
         kind = rng.choice(["number", "word", "text"] + ["object", "list", "csv", "line"] * (depth < 4))
@@ -169,16 +183,20 @@ async def test_a_view_and_its_pages_rebuild_the_whole_result_whatever_its_shape(
         if kind == "word":
             return rng.choice([True, False, None, "on", "off"])
         return rng.choice([rng.randint(-10**15, 10**15), rng.random() * 1000, 0, -0.5])
+    long = "x" * 250  # The review's shapes: nested long keys, many very long keys, a member named … beside the rest.
+    given = [{f"a{i}{long}": {f"b{j}{long}": {"v": "y" * 5000} for j in range(30)} for i in range(30)},
+             {f"k{i}" + "x" * 2000: {"v": "y" * 50_000} for i in range(40)},
+             {MARK: "real", **{f"k{i}": "z" * 3000 for i in range(200)}}]
     shapes = 0
-    while shapes < 40:
-        data = {"result": shape(), "more": [shape() for _ in range(rng.randint(0, 3))]}
+    while shapes < 43:
+        data = given.pop() if given else {"result": shape(), "more": [shape() for _ in range(rng.randint(0, 3))]}
         if size(data) <= THRESHOLD:
             continue
         shapes += 1
         instance = await instance_of(hass, Holding(data))
         got = await call(instance, "holding")
         assert got["too_large"]["chars"] == size(data) and len(json_dumps(got)) <= THRESHOLD
-        assert size(got["view"]) <= PAGE + 200  # A page, give or take a marker's brackets.
+        assert size(got["view"]) <= PAGE
         assert all({"at", "chars"} <= set(m) and ("items" in m) != ("lines" in m) for m in markers(got["view"]))
         assert await rebuilt(instance, got["too_large"]["handle"], got["view"]) == json.loads(json_dumps(data))
 
@@ -213,6 +231,16 @@ async def test_read_result_pages_lists_by_item_texts_by_line_and_one_line_by_cha
     assert errors["no pointer"] == {"error": "'entries' isn't a pointer: one starts with / as the view gives it, or "
                                              "is empty for the whole result."}
     assert "a text of" in errors["past a text"]["error"]
+    named = await instance_of(hass, Holding({"k" * 100_000: "on", "after": "the rest", "none": [], "blank": ""}))
+    assert len(json_dumps(await call(named, "holding"))) <= PAGE
+    assert await call(named, "read_result", handle="r1") == {
+        "error": "Offset 0 here can't be shown within a page, even marked: its pointer is too long; the rest starts "
+                 "at offset 1."}
+    assert (await call(named, "read_result", handle="r1", offset=1))["part"] == {
+        "after": "the rest", "none": [], "blank": ""}  # The rest: a name over a page is all it can't show.
+    assert await call(named, "read_result", handle="r1", at="/none") == {"at": "/none", "offset": 0, "items": 0,
+                                                                          "part": []}
+    assert (await call(named, "read_result", handle="r1", at="/blank"))["text"] == ""
     with pytest.raises(probatio.Invalid):  # An argument its schema refuses: Home Assistant tells the model.
         await call(instance, "read_result", handle=handle, offset="two")
 
@@ -221,7 +249,8 @@ async def test_read_result_pages_lists_by_item_texts_by_line_and_one_line_by_cha
 async def test_find_gives_each_place_a_key_a_value_or_a_line_of_a_text_holds_the_words_paged_with_the_total(hass):
     statistics = {f"sensor.t{n}": {"unit": "°C", "csv": "\n".join(f"2026-{m:02d}-01,{20 + n}.{m}" for m in
                                                                   range(1, 13)) + "\n"} for n in range(10)}
-    data = {"statistics": statistics, "pad": ["x" * 300] * 300, "note": "the porch light stays on"}
+    data = {"statistics": statistics, "pad": ["x" * 300] * 300, "note": "the porch light stays on",
+            "street": "Straße " * 100 + "the garden gate" + " Straße" * 100}  # Casefolded, ß is ss: longer.
     instance = await instance_of(hass, Holding(data))
     handle = (await call(instance, "holding"))["too_large"]["handle"]
     find = lambda words, **args: call(instance, "read_result", handle=handle, find=words, **args)  # noqa: E731
@@ -229,6 +258,10 @@ async def test_find_gives_each_place_a_key_a_value_or_a_line_of_a_text_holds_the
     assert key["total"] == 1 and key["matches"] == [{"at": "/statistics/sensor.t7", "text": "sensor.t7"}]
     value = await find("porch lights")  # Plurals too.
     assert value["matches"] == [{"at": "/note", "offset": 0, "text": "note: the porch light stays on"}]
+    [gate] = (await find("garden gate"))["matches"]
+    assert gate["at"] == "/street" and "the garden gate" in gate["text"]
+    read = await call(instance, "read_result", handle=handle, at="/street", offset=gate["offset"])
+    assert gate["text"].startswith("…") and read["text"].startswith(gate["text"][1:-1])  # Read from the snippet.
     line = await find("2026-05-01 27.5")
     [match] = line["matches"]
     assert match["at"] == "/statistics/sensor.t7/csv" and match["text"] == "2026-05-01,27.5"

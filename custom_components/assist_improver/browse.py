@@ -2,9 +2,13 @@
 the compact JSON a provider sends, any AI role's tool, the improver's or Home Assistant's, answers with a view of its
 result and a handle: the same JSON, its first parts shown, and each part left out marked with where it is (a JSON
 Pointer), its size and how many items or lines it holds. read_result (exploration.ReadResult) reads any part of it a
-page at a time, or finds words in it. Nothing is lost; plain JSON only, no Home Assistant state."""
+page at a time, or finds words in it. Each view and page is within PAGE, however long its names. Nothing is lost, but a
+member whose name alone outgrows a page: read_result says so, and where the rest starts. Plain JSON only, no Home
+Assistant state."""
 
 from dataclasses import replace
+from functools import cache
+from itertools import accumulate, islice
 import math
 
 from homeassistant.helpers import llm
@@ -12,11 +16,11 @@ from homeassistant.helpers.json import json_dumps
 from homeassistant.util.json import json_loads
 
 THRESHOLD = 64_000  # Characters of a result's compact JSON a role gets whole.
-PAGE = 32_000  # Characters of a view, and of each page read_result gives.
-PARTS = 16  # A view shares its room among at most this many larger parts: fewer parts, with more of each,
-MARKER = 200  # and each with room for at least a marker.
+PAGE = 32_000  # Characters of a view, and of each page read_result gives at most.
+PARTS = 16  # A view shares its room among at most this many larger parts: fewer parts, with more of each.
 MARK = "…"  # A marker's key: what's left out, and where.
 SNIPPET = 200  # Characters of a found line shown around its first match.
+NAMES = 1000  # Characters of an object's member names an error lists.
 HOW = ("view shows it in part: each part left out is marked … with where it is (at, from offset), its characters "
        "and its items or lines. read_result reads any part a page at a time, or finds words in all of it.")
 
@@ -98,9 +102,12 @@ def _holds(part, path):
     """What the part at path holds, for an error."""
     where = repr(path) if path else "the result"
     if isinstance(part, dict):
-        keys = list(part)
-        return f"{where} has the keys {', '.join(map(repr, keys[:20]))}" + (
-            f" and {len(keys) - 20} more" if len(keys) > 20 else "") + "."
+        names = list(islice(map(repr, part), 20))
+        while names and len(", ".join(names)) > NAMES:  # A long name isn't listed.
+            names.pop()
+        more = len(part) - len(names)
+        return f"{where} has " + (f"the keys {', '.join(names)}" + (f" and {more} more" if more else "")
+                                  if names else f"{more} keys") + "."
     if isinstance(part, list):
         return f"{where} is a list of {len(part)} items" + (f" (0 to {len(part) - 1})." if part else ".")
     if isinstance(part, str):
@@ -109,42 +116,57 @@ def _holds(part, path):
 
 
 def view(value, at="", budget=PAGE):
-    """value as it fits budget characters: whole, or its first parts, each part left out marked."""
+    """value as it fits budget characters, which hold at least its least: whole, or its first parts, each part left
+    out marked."""
     whole = size(value)
     if whole <= budget:
         return value
     if isinstance(value, str):
         return {MARK: _cut(value, at, budget)}
-    if not isinstance(value, (list, dict)):  # A number or a word: never larger than a marker.
-        return value
-    room = budget - size(at) - 70  # The marker for the rest.
-    if room < 0:
+    mark = MARK
+    while isinstance(value, dict) and mark in value:  # A member named … keeps its name: the rest's marker takes …….
+        mark += MARK
+    most = {mark: {"at": at, "offset": len(value), "items": len(value), "chars": whole}}  # The rest's marker, at most.
+    part, upto, used = entries(value, at, 0, budget - size(most) - 1)
+    if not upto:
         return {MARK: {"at": at, "items": len(value), "chars": whole}}
-    part, upto, used = entries(value, at, 0, room)
     if upto < len(value):
         rest = {"at": at, "offset": upto, "items": len(value) - upto, "chars": whole - used}
         if isinstance(part, list):
             part.append({MARK: rest})
         else:
-            part[MARK] = rest
+            part[mark] = rest
     return part
 
 
+def least(value, at, whole):
+    """The fewest characters value (whole of them) takes in a view: whole, or marked as left out."""
+    if isinstance(value, str):
+        return min(whole, size({MARK: {"at": at, "offset": 0, "chars": len(value), "lines": len(value) + 1}}))
+    if isinstance(value, (list, dict)):
+        return min(whole, size({MARK: {"at": at, "items": len(value), "chars": whole}}))
+    return whole
+
+
 def entries(value, at, offset, budget):
-    """A list's items or an object's members from offset, as many as budget shows (at least one): each whole, or the
-    larger ones each in an equal share of what's left, viewed. (part, where it stopped, its characters)."""
+    """A list's items or an object's members from offset, as many as budget characters show: each whole, or the
+    larger ones each viewed in an equal share of what's left, none in less than its least. (part, where it stopped,
+    its characters)."""
     keyed = isinstance(value, dict)
-    pairs = list(value.items() if keyed else enumerate(value))[offset:offset + budget // 2]  # Each takes two or more.
-    costs = [size(v) + (size(k) + 2 if keyed else 1) for k, v in pairs]
-    n, share = _fit(costs, budget)
-    shown = [(k, v if cost <= share else view(v, pointer(at, k), int(share) - (cost - size(v))))
-             for (k, v), cost in zip(pairs[:n], costs)]
-    return (dict(shown) if keyed else [v for _, v in shown]), offset + len(shown), sum(costs[:len(shown)])
+    pairs = list(value.items() if keyed else enumerate(value))[offset:offset + max(budget, 0) // 2]  # Two or more each.
+    names = [size(k) + 2 if keyed else 1 for k, _ in pairs]  # A member's name, colon and comma; an item's comma.
+    wholes = [size(v) for _, v in pairs]
+    costs = [name + whole for name, whole in zip(names, wholes)]
+    floor = cache(lambda i: names[i] + least(pairs[i][1], pointer(at, pairs[i][0]), wholes[i]))  # Of the larger.
+    n, share = _fit(costs, floor, budget - 2)  # The brackets.
+    shown = [(k, v if cost <= share else view(v, pointer(at, k), int(share) - name))
+             for (k, v), name, cost in zip(pairs[:n], names, costs)]
+    return (dict(shown) if keyed else [v for _, v in shown]), offset + n, sum(costs[:n])
 
 
-def _fit(costs, budget):
-    """How many of these entries, in order, a budget shows (at least one), and the share each larger one gets: as many
-    as leave each whole or at least a PARTS-th of the budget (and a marker's room)."""
+def _fit(costs, floor, budget):
+    """How many of these entries, in order, a budget shows, and the share each larger one gets: as many as leave each
+    whole, or with at least a PARTS-th of the budget and never less than its floor (floor(i): its least)."""
     def level(n):  # The share that spends the budget on the first n, each costing at most it; inf: all whole.
         room, ordered = budget, sorted(costs[:n])
         for i, cost in enumerate(ordered):
@@ -152,16 +174,21 @@ def _fit(costs, budget):
                 return room / (n - i)
             room -= cost
         return math.inf
-    low, high = 1, len(costs)
+
+    def shows(n):
+        share = level(n)
+        return share >= budget / PARTS and all(floor(i) <= share for i in range(n) if costs[i] > share)
+    low, high = 0, len(costs)
     while low < high:
         middle = (low + high + 1) // 2
-        low, high = (middle, high) if level(middle) >= max(budget / PARTS, MARKER) else (low, middle - 1)
+        low, high = (middle, high) if shows(middle) else (low, middle - 1)
     return low, level(low)
 
 
 def _cut(text, at, budget):
     """A text too long for budget: its first lines, then where the rest is, its characters and lines."""
-    shown = _window(text, 0, budget - size(at) - 80)
+    most = {MARK: {"text": "", "at": at, "offset": len(text), "chars": len(text), "lines": len(text) + 1}}
+    shown = _window(text, 0, budget - size(most) + 2)  # Its quotes are counted in most.
     rest = text[len(shown):]
     return {**({"text": shown} if shown else {}), "at": at, "offset": len(shown), "chars": len(rest),
             "lines": rest.count("\n") + (not rest.endswith("\n"))}
@@ -179,42 +206,53 @@ def _window(text, offset, room):
 
 def page(part, at, offset):
     """read_result's page of the part at a pointer, from offset: of a text by characters, a line's end closing it where
-    one falls in it; of a list or object by items, each whole or viewed; with next while more remains."""
+    one falls in it; of a list or object by items, each whole or viewed; with next while more remains. Within PAGE."""
     if not isinstance(part, (str, list, dict)):
         return {"at": at, "value": part}
     if offset < 0 or offset and offset >= len(part):
         raise LookupError(f"Offset {offset} is past the end: {_holds(part, at)}")
+    end = len(part)
     if isinstance(part, str):
-        text = _window(part, offset, PAGE)
-        end = offset + len(text)
-        return {"at": at, "offset": offset, "chars": len(part), "text": text,
-                **({"next": end} if end < len(part) else {})}
-    shown, upto, _ = entries(part, at, offset, PAGE)
-    return {"at": at, "offset": offset, "items": len(part), "part": shown,
-            **({"next": upto} if upto < len(part) else {})}
+        text = _window(part, offset, PAGE - size({"at": at, "offset": end, "chars": end, "text": "", "next": end}) + 2)
+        if text or not end:
+            return {"at": at, "offset": offset, "chars": end, "text": text,
+                    **({"next": offset + len(text)} if offset + len(text) < end else {})}
+    else:
+        room = PAGE - size({"at": at, "offset": end, "items": end, "part": [], "next": end}) + 2
+        shown, upto, _ = entries(part, at, offset, room)
+        if upto > offset or not end:
+            return {"at": at, "offset": offset, "items": end, "part": shown, **({"next": upto} if upto < end else {})}
+    raise LookupError(f"Offset {offset} here can't be shown within a page, even marked: its pointer is too long"
+                      + (f"; the rest starts at offset {offset + 1}." if offset + 1 < end and not isinstance(part, str)
+                         else "."))
 
 
 def found(part, at, words, offset):
     """The places under the part at a pointer whose words hold every one of words (plurals too; failing that any,
-    saying so), in order, a page at a time from offset, with the total: each one's pointer, where its line starts in a
-    text (offset), and its text around the first match."""
+    saying so), in order, a page at a time from offset, with the total: each one's pointer, where its text starts in
+    a text (offset), and its text around the first match. Within PAGE."""
     from .exploration import _match
     units = list(_units(part, at))
     hits, matched = _match({i: label + line for i, (_, _, label, line) in enumerate(units)}, words)
     if offset < 0 or offset and offset >= len(hits):
         raise LookupError(f"Offset {offset} is past the end: {len(hits)} places hold {words!r}.")
     wanted = [w.rstrip("s") or w for w in words.casefold().split()]
-    matches, used = [], 0
+    room = PAGE - size({"find": words, "matched": matched, "total": len(hits), "matches": [], "next": len(hits)})
+    matches = []
     for i in hits[offset:]:
         where, start, label, line = units[i]
-        around = _around(line, wanted)
-        match = {"at": where, **({"offset": start + around} if start is not None else {}),
-                 "text": label + ("…" if around else "") + line[around:around + SNIPPET]
-                 + ("…" if around + SNIPPET < len(line) else "")}
-        if matches and used + size(match) + 1 > PAGE:
+        text = label + line
+        around = _around(text, wanted)
+        match = {"at": where, **({"offset": start + max(0, around - len(label))} if start is not None else {}),
+                 "text": ("…" if around else "") + text[around:around + SNIPPET]
+                 + ("…" if around + SNIPPET < len(text) else "")}
+        room -= size(match) + 1
+        if room < 0:
             break
         matches.append(match)
-        used += size(match) + 1
+    if hits[offset:] and not matches:
+        raise LookupError(f"Match {offset} can't be shown within a page: its pointer is too long"
+                          + (f"; the rest starts at offset {offset + 1}." if offset + 1 < len(hits) else "."))
     upto = offset + len(matches)
     return {"find": words, "matched": matched, "total": len(hits), "matches": matches,
             **({"next": upto} if upto < len(hits) else {})}
@@ -240,9 +278,12 @@ def _units(value, at, label=""):
         yield at, None, label, json_dumps(value)
 
 
-def _around(line, words):
-    """Where a found line's text starts: just before its first match, in a long line."""
-    if len(line) <= SNIPPET:
+def _around(text, words):
+    """Where a found text's snippet starts: just before its first match, in a long text."""
+    if len(text) <= SNIPPET:
         return 0
-    first = min((i for w in words if (i := line.casefold().find(w)) >= 0), default=0)
-    return max(0, min(first - SNIPPET // 4, len(line) - SNIPPET))
+    folded = text.casefold()
+    first = min((i for w in words if (i := folded.find(w)) >= 0), default=0)
+    if len(folded) != len(text):  # Casefolding made a letter longer (ß is ss): where the match is in text.
+        first = next(n for n, end in enumerate(accumulate(len(c.casefold()) for c in text)) if end > first)
+    return max(0, min(first - SNIPPET // 4, len(text) - SNIPPET))

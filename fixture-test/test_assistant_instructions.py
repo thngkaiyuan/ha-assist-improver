@@ -594,6 +594,8 @@ async def test_a_missing_fact_in_one_assistants_instructions_is_proposed_tested_
     # Review: the draft came with what Assist would read once it's edited, rendered by Home Assistant.
     [[edited]] = [c["instructions"] for c in model.checks]
     assert edited["renders"] and edited["assist_reads"].endswith(f"The person speaking is {NAME}.")
+    [proposal] = [r for r in runtime.role_runs.runs if r["kind"] == hypotheses.GENERATOR_ROLE]
+    assert [r["verdict"] for r in proposal["reviews"]] == ["approve"] and "checks" not in proposal["reviews"][0]
     assert model.drafts == ["approve"] and model.reviewed[0]["changes"][0]["assistant"] == "Plain assistant"
     # Simulate: the conversation replayed without the change (its 4 turns, 7 requests), then with the edited
     # instructions: the model read who's speaking, and pressed in one turn instead of three.
