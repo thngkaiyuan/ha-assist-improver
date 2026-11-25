@@ -366,29 +366,42 @@ STUB = """(replies) => {
       return JSON.parse(JSON.stringify(reply));
     } finally { window.__inflight--; }
   };
-  // The panel's smooth scroll (scrollBy, as it brings what was opened into view): where it's going, until a scroll ends
-  // there (scrollend; an instant one just before it ends first, short of there). One with nowhere to go moves nothing,
-  // and is never waited for (Panel.still).
-  window.__smooth = null;
-  const scrollBy = Element.prototype.scrollBy;
-  const bottom = (el) => el.scrollHeight - el.clientHeight;
-  Element.prototype.scrollBy = function (options, ...rest) {
-    if (options && options.behavior === "smooth") {
-      const to = Math.max(0, Math.min(bottom(this), this.scrollTop + (options.top || 0)));
-      window.__smooth = Math.abs(to - this.scrollTop) >= 1 ? {el: this, to} : null;
-    }
-    return scrollBy.call(this, options, ...rest);
+  // The page's smooth scrolls (the panel's scrollBy to what was opened, a run's scrollIntoView, any other), counted as
+  // each is asked for, with what each can move: the page's scroller, and every scroller a scrollIntoView sits in
+  // (Panel.still).
+  window.__smooths = 0;
+  window.__scrollers = new Set([document.scrollingElement]);
+  const up = (el) => el.parentElement || el.getRootNode().host;  // Across shadow roots.
+  const asked = (target, name, options) => {
+    if (!options || options.behavior !== "smooth") return;
+    window.__smooths++;
+    if (name === "scrollIntoView") for (let el = target; el; el = up(el)) window.__scrollers.add(el);
+    else if (target !== window) window.__scrollers.add(target);
   };
-  document.addEventListener("scrollend", () => {
-    const smooth = window.__smooth;  // At its end, or where the page now ends, if it got shorter on the way.
-    if (smooth && Math.abs(smooth.el.scrollTop - Math.min(smooth.to, bottom(smooth.el))) < 1) window.__smooth = null;
-  }, true);
+  for (const name of ["scrollBy", "scrollTo", "scroll", "scrollIntoView"]) {
+    const own = Element.prototype[name];
+    Element.prototype[name] = function (options, ...rest) {
+      asked(this, name, options);
+      return own.call(this, options, ...rest);
+    };
+  }
+  for (const name of ["scrollBy", "scrollTo", "scroll"]) {
+    const own = window[name];
+    window[name] = (options, ...rest) => { asked(window, name, options); return own.call(window, options, ...rest); };
+  }
 }"""
-# Nothing in the panel moves any more but what never stops (a spinner, a pulse): its smooth scroll at rest, and every
-# fade and transition over, still so at a frame (polled at each: the browser has sent what it had to say of them then).
-STILL = """() => { const still = window.__smooth === null && document.querySelector("assist-improver-panel").shadowRoot
-  .getAnimations().every((a) => a.playState === "finished" || a.effect.getComputedTiming().iterations === Infinity);
-  const was = window.__still; window.__still = still; return still && was; }"""
+# Nothing in the panel moves any more but what never stops (a spinner, a pulse): no smooth scroll asked for, and the
+# page's scrollers where they were, for 10 frames on end, and every fade and transition over. Polled at each frame
+# (Panel.still). A smooth scroll begins moving by the third frame after it's asked for (measured idle, throttled 16
+# times and with every processor busy), and moves at each until it ends; however it ends (there, or cut short by
+# another scroll, which may send no scrollend at all), its scroller stops where it is.
+STILL = """() => { const root = document.querySelector("assist-improver-panel").shadowRoot;
+  const now = [window.__smooths, ...[...window.__scrollers].flatMap((el) => [el.scrollTop, el.scrollLeft])].join();
+  const moving = root.getAnimations().some((a) => a.playState !== "finished"
+    && a.effect.getComputedTiming().iterations !== Infinity);
+  window.__quiet = !moving && now === window.__was ? window.__quiet + 1 : 0;
+  window.__was = now;
+  return window.__quiet >= 10; }"""
 MOUNT = """(dark) => {
   const el = document.createElement("assist-improver-panel");
   document.body.appendChild(el);
@@ -443,8 +456,8 @@ class Panel:
         self.page.wait_for_function("window.__inflight === 0")
 
     def still(self):
-        """Wait until nothing in the panel moves any more (STILL): a smooth scroll, a fade."""
-        self.page.evaluate("window.__still = false")
+        """Wait until nothing in the panel moves any more (STILL): a smooth scroll, however it ends, a fade."""
+        self.page.evaluate("() => { window.__quiet = 0; window.__was = null; }")
         self.page.wait_for_function(STILL)
 
     def searched(self, words):
