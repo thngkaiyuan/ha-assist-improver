@@ -96,7 +96,9 @@ def test_file_from_assist(page, ha, fake_model):
     assert {"hypothesis_generator", "hypothesis_reviewer", "journey_analyzer", "editor"} <= set(offered), offered
     for role, names in offered.items():
         if role in ("hypothesis_generator", "hypothesis_reviewer"):
-            assert {"history__get_history", "homeassistant__render_template", "system_log__get_logs"} <= names, role
+            # Offered on every install, the Supervisor's or not; action search was left out before.
+            every_install = {"history__get_history", "homeassistant__render_template", "homeassistant__search_actions"}
+            assert every_install <= names, role
             assert not names & {"homeassistant__call_action", "config__reload_config_entry"}, role
         else:  # Home Assistant's are named domain__tool.
             assert not [name for name in names if "__" in name], role

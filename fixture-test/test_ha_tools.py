@@ -14,7 +14,7 @@ import pytest
 from homeassistant.auth import auth_manager_from_config
 from homeassistant.const import EVENT_COMPONENT_LOADED, KEY_DATA_LOGGING
 from homeassistant.core import Context
-from homeassistant.helpers import llm
+from homeassistant.helpers import intent, llm
 from homeassistant.setup import async_setup_component
 
 from custom_components.assist_improver import ha_tools
@@ -57,15 +57,28 @@ class CustomActs(llm.Tool):
     annotations = llm.ToolAnnotations(read_only=False)
 
 
+class OpensTheDoor(intent.IntentHandler):
+    intent_type, description = "CustomOpenDoor", "A custom integration's intent: it acts."
+
+
+def marked_read_only(name):
+    """A custom integration's intent as one of Home Assistant's helper classes makes it, marked read-only by its
+    maker."""
+    return llm.IntentTool(name, OpensTheDoor(), integration="custom", annotations=llm.ToolAnnotations(read_only=True))
+
+
 def with_a_custom_integrations_tools(monkeypatch):
-    """Home Assistant's API offering a custom integration's tools besides its own, as one with an llm platform does."""
+    """Home Assistant's API offering a custom integration's tools besides its own, as one with an llm platform does:
+    those it offers."""
     from homeassistant.components import llm as llm_component
     real = llm_component.async_get_tools
+    custom = [Lookalike(), CustomActs(), marked_read_only("custom__open_door")]
 
     async def offered(hass, llm_context, api_id):
         found = await real(hass, llm_context, api_id)
-        return llm_component.LLMTools(tools=[*found.tools, Lookalike(), CustomActs()], prompt=found.prompt)
+        return llm_component.LLMTools(tools=[*found.tools, *custom], prompt=found.prompt)
     monkeypatch.setattr(llm_component, "async_get_tools", offered)
+    return custom
 
 
 @pytest.mark.parametrize("supervisor", [False, True])  # Its log reader is the Supervisor's there, the core's here.
@@ -75,16 +88,17 @@ async def test_every_read_only_tool_home_assistant_ships_is_kept_and_none_that_a
     if supervisor:  # Its tools load only where Home Assistant's Supervisor library is installed.
         pytest.importorskip("aiohasupervisor")
     user = await home_assistant(hass, supervisor)
-    with_a_custom_integrations_tools(monkeypatch)
+    custom = with_a_custom_integrations_tools(monkeypatch)
     everything = await llm.async_get_api(hass, llm.LLM_API_HOME_ASSISTANT, context(user.id))
     assert not [r for r in caplog.records if r.levelno >= logging.ERROR]  # No platform failed giving its tools.
-    shipped = [t for t in everything.tools if not isinstance(t, (Lookalike, CustomActs))]
+    assert all(any(t is c for t in everything.tools) for c in custom)  # Offered beside Home Assistant's.
+    shipped = [t for t in everything.tools if not any(t is c for c in custom)]
     reads = {t.name for t in shipped if t.annotations and t.annotations.read_only}
     acts = {t.name for t in shipped} - reads
     kept = {t.name for t in everything.tools if ha_tools.kept(t)}
     assert kept == reads and "homeassistant__render_template" in kept  # Every one, whatever this version adds.
     assert acts and not kept & acts  # Home Assistant offers tools that act: none is kept.
-    assert not any(ha_tools.kept(t) for t in everything.tools if isinstance(t, (Lookalike, CustomActs)))
+    assert not any(ha_tools.kept(t) for t in custom)
     assert supervisor == any(name.startswith("hassio__") for name in kept)  # Where the Supervisor runs, its too.
 
 
@@ -131,6 +145,8 @@ def test_a_custom_integrations_tool_is_never_kept_whatever_its_name_and_marks():
     assert not ha_tools.kept(llm.NamespacedTool("history", SimpleNamespace(
         name="get_history", title=None, description="", parameters=None, integration="history",
         annotations=llm.ToolAnnotations(read_only=True))))
+    assert not ha_tools.kept(marked_read_only("history__open_door"))  # Home Assistant's class, the custom's code.
+    assert not ha_tools.kept(llm.NamespacedTool("history", marked_read_only("open_door")))
 
 
 @pytest.mark.asyncio

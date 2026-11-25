@@ -129,8 +129,7 @@ class Sessions(Assistants, SessionSet):
                 for s, turns in self.open_friction() if s not in shown]
         counts = self.counts()
         return {"home": self.household.digest["home"], "time_zone": self.household.digest["time_zone"],
-                "areas": self.household.list_areas(), **({"floors": f} if (f := self.household.floors()) else {}),
-                "assist_tools": self.assist_tools(),
+                **self.household.areas(), "assist_tools": self.assist_tools(),
                 **({"assistants": rows} if (rows := self.assistant_rows()) else {}),
                 "devices_in_friction": self.devices_in_friction(),
                 "friction_scenarios": upfront,

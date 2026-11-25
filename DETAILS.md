@@ -802,22 +802,22 @@ Citations in parentheses name the maintainer's earlier notes, which aren't in th
     but ideally as general and as broadly and cleanly as possible"; Kai, 2026-11-05: "give them a way to sift through
     the readings")
   - **P7.6.14** The proposer and reviewer also read the live home through every tool Home Assistant ships and marks
-    read-only, as the improver's service user (P7.6.15): whatever the running version offers, with no list kept, so
-    one Home Assistant adds reaches them as it ships. On 2026.11 that's ten: numeric sensors' long-term statistics, a
-    template rendered, the system log and its entries, the config entries, system health, the time, and searches of
-    the registries, integrations and actions; 2026.12 adds twenty: automations, scripts and scenes with their
-    configurations and runs, blueprints, repairs, flows in progress, the settings of floors, areas, devices, entities
-    and labels, energy, statistics search and the core configuration; the Supervisor, where it runs, adds its apps and
-    logs. Never a tool that acts, never a custom integration's, and never the Assist API (under an AI Task it writes
-    an exposure option into every entity). The improver's own lookups all stay: each gives what Home Assistant's
-    don't (the conversation's moment, exposure, who changed what, the sandbox, paging, the home's language). A
-    template renders on the real instance, up to 3 seconds in a thread and then on Home Assistant's event loop, and
-    each call counts against the role's tool-call limit (1,000 for Anthropic's AI Task). Their instructions say where
-    each kind of answer comes from, naming no tool: a session's recording, today's setup, or the live home (Home
-    Assistant's tools, named domain__tool). The analyzer and the judges answer from the recording, never the live home,
-    but for what P7.6.13 takes from Home Assistant now; triage and the write-up give one structured answer, with none
-    either. (Kai, 2026-11-05; Kai, 2026-11-25: "expose those tools to our system, and where ours duplicate theirs, we
-    migrate to using theirs allowing us to be responsible for maintaining less code")
+    read-only, as the improver's service user (P7.6.15): whatever the running version offers, with no list kept, so one
+    Home Assistant adds reaches them as it ships. On 2026.11 that's ten: numeric sensors' long-term statistics, a
+    template rendered, the system log and its entries, the config entries, system health, the time, and searches of the
+    registries, integrations and actions; 2026.12 adds twenty: automations, scripts and scenes with their configurations
+    and runs, blueprints, repairs, flows in progress, the settings of floors, areas, devices, entities and labels,
+    energy, statistics search and the core configuration. Where the Supervisor runs, its log reader stands in for the
+    core's, and from 2026.12 it adds its apps. Never a tool that acts, never a custom integration's, and never the
+    Assist API (under an AI Task it writes an exposure option into every entity). The improver's own lookups all stay:
+    each gives what Home Assistant's don't (the conversation's moment, exposure, who changed what, the sandbox, paging,
+    the home's language). A template renders on the real instance, up to 3 seconds in a thread and then on Home
+    Assistant's event loop, and each call counts against the role's tool-call limit (1,000 for Anthropic's AI Task).
+    Their instructions say where each kind of answer comes from, naming no tool: a session's recording, today's setup,
+    or the live home (Home Assistant's tools, named domain__tool). The analyzer and the judges answer from the
+    recording, never the live home, but for what P7.6.13 takes from Home Assistant now; triage and the write-up give one
+    structured answer, with none either. (Kai, 2026-11-05; Kai, 2026-11-25: "expose those tools to our system, and where
+    ours duplicate theirs, we migrate to using theirs allowing us to be responsible for maintaining less code")
   - **P7.6.15** The service user is an "Assist Improver" system user in the administrators group, local only and
     without credentials, so no one can sign in as it. Setup creates it when missing and keeps its id in the config
     entry; a leftover one of that name the entry doesn't name is removed, since Home Assistant's UI can't delete a

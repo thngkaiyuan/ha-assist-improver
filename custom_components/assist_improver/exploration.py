@@ -1,11 +1,12 @@
 """Read-only tools for the roles: read a session turn by turn and explore the household; and the base of each role's
 tool for answering (Submit).
 
-What they show of the home comes from the recording (its conversation and the home snapshot taken at its first turn),
-or for the proposer and reviewer from today's setup, never from the live home, so analysing a session can't change or
-reveal anything beyond what was recorded. Only what an entity can do (its actions) and its integration's name are Home
-Assistant's now (Setup). For the proposer and reviewer, SessionAPI adds every read-only tool Home Assistant ships,
-which read the live home (ha_tools.py).
+What they show of a session's home comes from its recording (its conversation and the home snapshot taken at its first
+turn), never from the live home, so analysing a session can't change or reveal anything beyond what was recorded. The
+proposer's and reviewer's lookups of the household read today's setup instead, taken from the home when the proposal
+starts (proposal.window). Only what an entity can do (its actions) and its integration's name are Home Assistant's now
+(Setup). For the proposer and reviewer, SessionAPI adds every read-only tool Home Assistant ships, which read the live
+home (ha_tools.py).
 """
 
 from contextlib import suppress
@@ -301,8 +302,8 @@ class SessionView:
         """What the analyzer starts with: the whole conversation (what was said), the rooms and floors, and Assist's
         tools."""
         return {"recording_id": self.digest["recording_id"], "home": self.digest["home"],
-                "time_zone": self.digest["time_zone"], "conversation": self.conversation(), "areas": self.list_areas(),
-                **({"floors": floors} if (floors := self.floors()) else {}), "heard_by": self._heard_by(),
+                "time_zone": self.digest["time_zone"], "conversation": self.conversation(), **self.areas(),
+                "heard_by": self._heard_by(),
                 "assist_tools": [t["name"] for t in self.digest["capabilities"]["assist_tools"]],
                 "limitations": [n for n in self.digest["limitations"] if not n.startswith(INTERNAL_NOTES)]}
 
@@ -445,6 +446,11 @@ class SessionView:
         return ([{"area": a["name"], **({"floor": floors[a["floor_id"]]} if a.get("floor_id") in floors else {}),
                   "aliases": list(a.get("aliases") or []), "entities": counts.get(a["name"], 0)} for a in areas]
                 + ([{"area": "No area", "aliases": [], "entities": counts["No area"]}] if "No area" in counts else []))
+
+    def areas(self):
+        """The areas (list_areas) and, in a home with floors, the floors: the rooms as list_areas and the analyzer's
+        and proposer's inputs show them."""
+        return {"areas": self.list_areas(), **({"floors": floors} if (floors := self.floors()) else {})}
 
     def floors(self):
         """The home's floors, lowest first, each with its aliases and its level where set; none in a home without."""
@@ -630,7 +636,7 @@ class ListAreas(RoleTool):
     parameters = probatio.Schema({})
 
     def run(self):
-        return {"areas": self.view.list_areas(), **({"floors": floors} if (floors := self.view.floors()) else {})}
+        return self.view.areas()
 
 
 LISTING = ("Every entity, 25 to a page with the total: those the assistant may use (exposed) and controls first, each "

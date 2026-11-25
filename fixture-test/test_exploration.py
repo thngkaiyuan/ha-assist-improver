@@ -1,5 +1,6 @@
 """The agentic analyzer's session tools, and HA's real OpenRouter AI Task running them."""
 
+import copy
 import json
 from types import SimpleNamespace
 
@@ -117,6 +118,7 @@ async def test_list_areas_shows_each_areas_floor_and_the_floors_with_their_alias
     from custom_components.assist_improver import hypotheses
     from custom_components.assist_improver.analyzer import to_analysis
     from custom_components.assist_improver.exploration import ListAreas
+    from custom_components.assist_improver.proposal import as_today
     from custom_components.assist_improver.serialization import plain
     from custom_components.assist_improver.snapshot import whole
     await load_registries(hass)
@@ -138,8 +140,15 @@ async def test_list_areas_shows_each_areas_floor_and_the_floors_with_their_alias
                                 {"floor": "Loft", "aliases": []}]
     overview = view.overview()  # The analyzer's input.
     assert (overview["areas"], overview["floors"]) == (listed["areas"], listed["floors"])
-    proposer = hypotheses.Sessions([to_analysis(record["id"], ANALYSIS, view)], [view]).overview()
-    assert (proposer["areas"], proposer["floors"]) == (listed["areas"], listed["floors"])
+    home = copy.deepcopy(source)  # Today's setup, the first floor since renamed: the proposer's and reviewer's.
+    home["floors"][first.floor_id]["name"] = "Top floor"
+    today = SessionView(as_today(record, home))
+    sessions = hypotheses.Sessions([to_analysis(record["id"], ANALYSIS, view)], [view])
+    sessions.household = today  # As proposal.window gives it.
+    proposer = sessions.overview()
+    assert {"areas": proposer["areas"], "floors": proposer["floors"]} == ListAreas(today).run()
+    assert proposer["areas"][0]["floor"] == proposer["floors"][1]["floor"] == "Top floor"
+    assert ListAreas(view).run() == listed  # The analyzer's still the conversation's.
     without = SessionView(make_recording())
     assert "floors" not in ListAreas(without).run() and "floors" not in without.overview()
 

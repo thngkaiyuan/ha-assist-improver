@@ -12,12 +12,16 @@ from homeassistant.helpers import llm
 from . import touchpoints
 from .const import DOMAIN
 
+
 def _built_in(tool):
-    """Whether Home Assistant itself ships a tool (a custom integration's is never trusted, whatever it's called or
-    marked)."""
+    """Whether Home Assistant itself ships a tool: its code is that of the built-in integration it's named for
+    (domain__tool). A custom integration's is never trusted, whatever it's called or marked, nor one built from Home
+    Assistant's helpers (an IntentTool takes its name and marks from whoever makes it)."""
+    domain = tool.name.partition("__")[0]
     while isinstance(tool, llm.NamespacedTool):
         tool = tool.tool
-    return type(tool).__module__.startswith(("homeassistant.components.", "homeassistant.helpers."))
+    module = type(tool).__module__
+    return module == f"homeassistant.components.{domain}" or module.startswith(f"homeassistant.components.{domain}.")
 
 
 def kept(tool):
