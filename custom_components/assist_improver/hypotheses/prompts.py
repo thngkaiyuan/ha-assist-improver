@@ -27,12 +27,12 @@ Home Assistant's own published best practices (home-assistant.io, voice_control 
 
 What Assist says (the household's side, which wins over the guidance above for anything Assist says): people want Assist's replies brief. A change adds speech (a stop message, or a line or description telling Assist what to say) only when Assist would otherwise misreport the outcome, and then in a few words ("Pressed."); it never adds caveats or disclaimers the household didn't ask for (what Home Assistant can't sense, what may take a moment). Prefer fixes that have Assist say less; trimming wordy speech is a fine fix when the sessions show it bothered someone."""
 
-# Where each tool's answers come from, for both roles.
+# Where each tool's answers come from, for both roles. It names no tool: Home Assistant's are named domain__tool, and
+# none of the improver's is (fixture-test/test_ha_tools.py).
 SOURCES = ("Tools that take a session answer from its recording, but for a device's actions, which are today's; the "
-           "household's tools (list_areas, find_devices, devices_in_area, device_details without a session, "
-           "read_definition, find_actions) from its setup today, with its newest session's states; Home Assistant's "
-           "own (history__get_history, homeassistant__render_template, system_log__get_entries, "
-           "config__get_config_entries, hassio__get_apps) from the live home, now.")
+           "household's lookups without one (areas, devices, definitions, actions) from its setup today, with its "
+           "newest session's states; your tools named domain__tool are Home Assistant's own and read the live home, "
+           "now.")
 
 # What each assistant's own instructions are for, with the facts recommended for every assistant's (instructions.py).
 ASSISTANT_INSTRUCTIONS = """Assistants' own instructions: each session says which assistant it used (your input's assistants lists them), and read_assistant_instructions shows the exact instructions a session ran with and that assistant's current ones. Faults can lie there. A fault in one assistant's instructions (a fact they don't give, a rule that's wrong or contradicts another) is fixed there, with an assistant change on that assistant: name it in assistant; text adds lines, and replaces lists the lines the text replaces (or removes, without text); lines may use Home Assistant's template values. A household fact, or behaviour every assistant should share, goes in the household knowledge (a preference), not in one assistant's instructions. Recommended facts every assistant's instructions should give Assist, each with the line that gives it: read_assistant_instructions lists those an assistant's instructions lack. Add one only there, and only when a friction's cause is Assist not knowing it (for example, "my room" when Assist didn't know who was speaking):

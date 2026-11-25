@@ -1,5 +1,6 @@
 """The agentic analyzer's session tools, and HA's real OpenRouter AI Task running them."""
 
+import copy
 import json
 from types import SimpleNamespace
 
@@ -104,6 +105,52 @@ def test_search_reaches_every_entity_labelled_ranked_and_paged():
     assert first["next_page"] == 2 and len(second["devices"]) == 8 and "next_page" not in second
     assert view.device_details("light.spare")["same_physical_device"][0]["entity_id"] == "switch.spare"
     assert {"area": "No area", "aliases": [], "entities": PAGE + 8} in view.list_areas()
+
+
+@pytest.mark.asyncio
+async def test_list_areas_shows_each_areas_floor_and_the_floors_with_their_aliases_and_level(hass):
+    """Every role with list_areas sees the floors of the home it reads (a conversation's snapshot, or today's setup
+    for the proposer and reviewer), as the analyzer's and the proposer's input list the areas: each area's floor, and
+    the floors with their aliases and level, lowest first, so "upstairs" names rooms. A home without floors has
+    none to show."""
+    from conftest import load_registries
+    from homeassistant.helpers import floor_registry as fr
+    from custom_components.assist_improver import hypotheses
+    from custom_components.assist_improver.analyzer import to_analysis
+    from custom_components.assist_improver.exploration import ListAreas
+    from custom_components.assist_improver.proposal import as_today
+    from custom_components.assist_improver.serialization import plain
+    from custom_components.assist_improver.snapshot import whole
+    await load_registries(hass)
+    floors = fr.async_get(hass)
+    first = floors.async_create("First floor", aliases={"upstairs"}, level=1)
+    ground = floors.async_create("Ground floor", level=0)
+    floors.async_create("Loft")  # No level.
+    record = make_recording()
+    source = record["turns"][0]["source"]
+    source["floors"] = {f.floor_id: plain(whole(f)) for f in floors.async_list_floors()}  # As a snapshot keeps them.
+    source["areas"]["fixture_area"]["floor_id"] = first.floor_id
+    source["areas"]["hall"] = {"id": "hall", "name": "Hall", "aliases": ["entry"], "floor_id": ground.floor_id}
+    view = SessionView(record)
+    listed = ListAreas(view).run()
+    assert listed["areas"] == [{"area": "Fixture room", "floor": "First floor", "aliases": [], "entities": 2},
+                               {"area": "Hall", "floor": "Ground floor", "aliases": ["entry"], "entities": 0}]
+    assert listed["floors"] == [{"floor": "Ground floor", "aliases": [], "level": 0},
+                                {"floor": "First floor", "aliases": ["upstairs"], "level": 1},
+                                {"floor": "Loft", "aliases": []}]
+    overview = view.overview()  # The analyzer's input.
+    assert (overview["areas"], overview["floors"]) == (listed["areas"], listed["floors"])
+    home = copy.deepcopy(source)  # Today's setup, the first floor since renamed: the proposer's and reviewer's.
+    home["floors"][first.floor_id]["name"] = "Top floor"
+    today = SessionView(as_today(record, home))
+    sessions = hypotheses.Sessions([to_analysis(record["id"], ANALYSIS, view)], [view])
+    sessions.household = today  # As proposal.window gives it.
+    proposer = sessions.overview()
+    assert {"areas": proposer["areas"], "floors": proposer["floors"]} == ListAreas(today).run()
+    assert proposer["areas"][0]["floor"] == proposer["floors"][1]["floor"] == "Top floor"
+    assert ListAreas(view).run() == listed  # The analyzer's still the conversation's.
+    without = SessionView(make_recording())
+    assert "floors" not in ListAreas(without).run() and "floors" not in without.overview()
 
 
 @pytest.mark.asyncio

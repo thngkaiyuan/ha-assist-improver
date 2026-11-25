@@ -22,6 +22,8 @@ config:
 # The frontend's dashboard asks for the recorder's info (as every household's Home Assistant has it).
 recorder:
   purge_keep_days: 1
+# As in a household's default_config: its tools (long-term statistics) are among those the proposer and reviewer get.
+history:
 person:
 conversation:
 assist_pipeline:

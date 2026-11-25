@@ -13,8 +13,8 @@ REVIEWER_ROLE = "hypothesis_reviewer"
 async def run_generator(hass, sessions, entity_id, *, tester, reviewer_entity_id=None, user_id=None):
     """The generator and one long-running reviewer, side by side: (generator run, its submit tool, ask tool,
     reviewer run). The reviewer runs on its own model if given, else the generator's. tester: makes Simulate's stamp,
-    the test_idea tool, from the ask tool (stamps.TestIdea). user_id: the improver's user, as whom both use Home
-    Assistant's own read-only tools (ha_tools.py)."""
+    the test_idea tool, from the ask tool (stamps.TestIdea). user_id: the improver's user, as whom both use every
+    read-only tool Home Assistant ships (ha_tools.py)."""
     async with span("evidence.load"):
         await sessions.prepare()
         await sessions.load_evidence()

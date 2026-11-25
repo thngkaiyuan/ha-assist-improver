@@ -84,9 +84,24 @@ def file_from_assist(page, ha):
     assert page.errors == [], (page.errors, page.rejections, page.blocked)
 
 
-def test_file_from_assist(page, ha):
-    """On the household's assistant as set up (a model chosen explicitly)."""
+def test_file_from_assist(page, ha, fake_model):
+    """On the household's assistant as set up (a model chosen explicitly). The proposer and its reviewer were offered
+    every read-only tool Home Assistant ships, history's among them, and none that acts; the other roles none of them
+    (DETAILS P7.6.14)."""
     file_from_assist(page, ha)
+    offered = {}
+    for record in fake_model.requests[ha.since:]:
+        if record["role"] != "household":
+            offered.setdefault(record["role"], set()).update(t["name"] for t in record["request"].get("tools") or [])
+    assert {"hypothesis_generator", "hypothesis_reviewer", "journey_analyzer", "editor"} <= set(offered), offered
+    for role, names in offered.items():
+        if role in ("hypothesis_generator", "hypothesis_reviewer"):
+            # Offered on every install, the Supervisor's or not; action search was left out before.
+            every_install = {"history__get_history", "homeassistant__render_template", "homeassistant__search_actions"}
+            assert every_install <= names, role
+            assert not names & {"homeassistant__call_action", "config__reload_config_entry"}, role
+        else:  # Home Assistant's are named domain__tool.
+            assert not [name for name in names if "__" in name], role
 
 
 @pytest.mark.parametrize("page", ["phone"], indirect=True)

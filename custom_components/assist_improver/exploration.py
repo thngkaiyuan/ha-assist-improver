@@ -1,10 +1,12 @@
 """Read-only tools for the roles: read a session turn by turn and explore the household; and the base of each role's
 tool for answering (Submit).
 
-What they show of the home comes from the recording (its conversation and the home snapshot taken at its first turn),
-never from the live home, so analysing a session can't change or reveal anything beyond what was recorded. Only what
-an entity can do (its actions) and its integration's name are Home Assistant's now (Setup). For the proposer and
-reviewer, SessionAPI adds Home Assistant's own read-only tools, which read the live home (ha_tools.py).
+What they show of a session's home comes from its recording (its conversation and the home snapshot taken at its first
+turn), never from the live home, so analysing a session can't change or reveal anything beyond what was recorded. The
+proposer's and reviewer's lookups of the household read today's setup instead, taken from the home when the proposal
+starts (proposal.window). Only what an entity can do (its actions) and its integration's name are Home Assistant's now
+(Setup). For the proposer and reviewer, SessionAPI adds every read-only tool Home Assistant ships, which read the live
+home (ha_tools.py).
 """
 
 from contextlib import suppress
@@ -297,9 +299,11 @@ class SessionView:
         return [a for a in entry.get("aliases") or [] if a and a not in names]
 
     def overview(self):
-        """What the analyzer starts with: the whole conversation (what was said), the rooms and Assist's tools."""
+        """What the analyzer starts with: the whole conversation (what was said), the rooms and floors, and Assist's
+        tools."""
         return {"recording_id": self.digest["recording_id"], "home": self.digest["home"],
-                "time_zone": self.digest["time_zone"], "conversation": self.conversation(), "areas": self.list_areas(), "heard_by": self._heard_by(),
+                "time_zone": self.digest["time_zone"], "conversation": self.conversation(), **self.areas(),
+                "heard_by": self._heard_by(),
                 "assist_tools": [t["name"] for t in self.digest["capabilities"]["assist_tools"]],
                 "limitations": [n for n in self.digest["limitations"] if not n.startswith(INTERNAL_NOTES)]}
 
@@ -431,15 +435,29 @@ class SessionView:
         return self._texts[entity_id]
 
     def list_areas(self):
-        """Every area, with its aliases and how many entities it has, then the entities in none (No area)."""
+        """Every area, with its floor where it's on one, its aliases and how many entities it has, then the entities
+        in none (No area)."""
         counts = {}
         for entity_id in self._entities():
             area = _naming(self.source, entity_id)[1] or "No area"
             counts[area] = counts.get(area, 0) + 1
+        floors = {floor_id: f.get("name") for floor_id, f in (self.source.get("floors") or {}).items()}
         areas = sorted(self.source.get("areas", {}).values(), key=lambda a: a.get("name") or "")
-        return ([{"area": a["name"], "aliases": list(a.get("aliases") or []), "entities": counts.get(a["name"], 0)}
-                 for a in areas]
+        return ([{"area": a["name"], **({"floor": floors[a["floor_id"]]} if a.get("floor_id") in floors else {}),
+                  "aliases": list(a.get("aliases") or []), "entities": counts.get(a["name"], 0)} for a in areas]
                 + ([{"area": "No area", "aliases": [], "entities": counts["No area"]}] if "No area" in counts else []))
+
+    def areas(self):
+        """The areas (list_areas) and, in a home with floors, the floors: the rooms as list_areas and the analyzer's
+        and proposer's inputs show them."""
+        return {"areas": self.list_areas(), **({"floors": floors} if (floors := self.floors()) else {})}
+
+    def floors(self):
+        """The home's floors, lowest first, each with its aliases and its level where set; none in a home without."""
+        found = sorted((self.source.get("floors") or {}).values(),
+                       key=lambda f: (f.get("level") is None, f.get("level") or 0, f.get("name") or ""))
+        return [{"floor": f["name"], "aliases": list(f.get("aliases") or []),
+                 **({"level": f["level"]} if f.get("level") is not None else {})} for f in found]
 
     def devices_in_area(self, area, page=1):
         wanted = area.casefold()
@@ -613,11 +631,12 @@ class ReadTurn(RoleTool):
 
 class ListAreas(RoleTool):
     name = "list_areas"
-    description = "List the household's areas (rooms), their aliases and how many entities each has."
+    description = ("List the household's areas (rooms), each with its floor, its aliases and how many entities it has, "
+                   "and its floors, with their aliases and level.")
     parameters = probatio.Schema({})
 
     def run(self):
-        return {"areas": self.view.list_areas()}
+        return self.view.areas()
 
 
 LISTING = ("Every entity, 25 to a page with the total: those the assistant may use (exposed) and controls first, each "

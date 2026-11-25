@@ -1,6 +1,6 @@
 """The improver's own Home Assistant user (DETAILS P7.6.15): a system user named "Assist Improver", in the
 administrators' group and local only, with no credentials, so no one can sign in as it. The proposer and reviewer use
-Home Assistant's own read-only tools as it (ha_tools.py). Its ID is kept in the config entry's data."""
+every read-only tool Home Assistant ships as it (ha_tools.py). Its ID is kept in the config entry's data."""
 
 import logging
 

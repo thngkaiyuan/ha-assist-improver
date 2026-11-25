@@ -791,8 +791,9 @@ Citations in parentheses name the maintainer's earlier notes, which aren't in th
   - **P7.6.13** Every role's lookups reach everything in its view: the recording, for what happened, or today's
     setup, for proposing. Searches and listings return every entity, disabled, hidden and diagnostic ones included,
     each labelled (its category, whether disabled, hidden or exposed), exposed entities and controls first, in pages
-    of 25 with a total. A search reads every text field of the entity, its device (a child device takes its parent's
-    maker and model) and its integration. A card carries the entity's state and registry entries whole, and the
+    of 25 with a total. The areas come with each one's floor, and the floors with their aliases and level. A search
+    reads every text field of the entity, its device (a child device takes its parent's maker and model) and its
+    integration. A card carries the entity's state and registry entries whole, and the
     actions Home Assistant's own descriptions say target it. Those descriptions and an integration's name are all a
     lookup reads from Home Assistant as it is now; the rest is its view's. A conversation's readings come one line per
     entity (the count, first and last), and the rest by entity and time, a page at a time. Every role reads a script's,
@@ -800,18 +801,23 @@ Citations in parentheses name the maintainer's earlier notes, which aren't in th
     by domain or field, and a page says what it left out. (Kai, 2026-11-05: "I'd like us to fix all those problems,
     but ideally as general and as broadly and cleanly as possible"; Kai, 2026-11-05: "give them a way to sift through
     the readings")
-  - **P7.6.14** The proposer and reviewer also read the live home through Home Assistant's own tools, as the
-    improver's service user (P7.6.15): an entity's history, a template rendered, an integration's entries in the
-    system log, the config entries, and the Supervisor's installed apps where it runs. Only tools Home Assistant
-    ships, marks read-only and that are on this pinned list are kept; a test fails when Home Assistant adds or
-    renames a read-only one. Left out: system health and integration search (the version is known; the improver never
-    proposes installing an integration), the two log readers (size; the entries carry the errors), search and action
-    search (the improver's lookups are wider), and the date and time (the recording has it). Never a tool that acts, and
-    never the Assist API (under an AI Task it writes an exposure option into every entity). A template renders on the
-    real instance, up to 3 seconds in a thread and then on Home Assistant's event loop, and each call counts against
-    the role's tool-call limit (1,000 for Anthropic's AI Task). Their instructions say which tools read a recording's
-    moment and which the live home. The analyzer and the judges answer from the recording, never the live home, but
-    for what P7.6.13 takes from Home Assistant now. (Kai, 2026-11-05)
+  - **P7.6.14** The proposer and reviewer also read the live home through every tool Home Assistant ships and marks
+    read-only, as the improver's service user (P7.6.15): whatever the running version offers, with no list kept, so one
+    Home Assistant adds reaches them as it ships. On 2026.11 that's ten: numeric sensors' long-term statistics, a
+    template rendered, the system log and its entries, the config entries, system health, the time, and searches of the
+    registries, integrations and actions; 2026.12 adds twenty: automations, scripts and scenes with their configurations
+    and runs, blueprints, repairs, flows in progress, the settings of floors, areas, devices, entities and labels,
+    energy, statistics search and the core configuration. Where the Supervisor runs, its log reader stands in for the
+    core's, and from 2026.12 it adds its apps. Never a tool that acts, never a custom integration's, and never the
+    Assist API (under an AI Task it writes an exposure option into every entity). The improver's own lookups all stay:
+    each gives what Home Assistant's don't (the conversation's moment, exposure, who changed what, the sandbox, paging,
+    the home's language). A template renders on the real instance, up to 3 seconds in a thread and then on Home
+    Assistant's event loop, and each call counts against the role's tool-call limit (1,000 for Anthropic's AI Task).
+    Their instructions say where each kind of answer comes from, naming no tool: a session's recording, today's setup,
+    or the live home (Home Assistant's tools, named domain__tool). The analyzer and the judges answer from the
+    recording, never the live home, but for what P7.6.13 takes from Home Assistant now; triage and the write-up give one
+    structured answer, with none either. (Kai, 2026-11-05; Kai, 2026-11-25: "expose those tools to our system, and where
+    ours duplicate theirs, we migrate to using theirs allowing us to be responsible for maintaining less code")
   - **P7.6.15** The service user is an "Assist Improver" system user in the administrators group, local only and
     without credentials, so no one can sign in as it. Setup creates it when missing and keeps its id in the config
     entry; a leftover one of that name the entry doesn't name is removed, since Home Assistant's UI can't delete a
